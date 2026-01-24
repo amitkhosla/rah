@@ -95,7 +95,7 @@ func TestGemRouter_Functional(t *testing.T) {
 func TestGemRouter_1000Routes(t *testing.T) {
 	r := New()
 
-	numServices := 10
+	numServices := 1000
 	numEndpoints := 100
 
 	for s := 0; s < numServices; s++ {
