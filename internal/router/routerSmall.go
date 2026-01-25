@@ -5,22 +5,22 @@ import (
 	"sync/atomic"
 )
 
-type RahRouter struct {
-	mu      sync.Mutex   // Protects the Builder during 'Add' calls
-	builder *BuilderNode // The flexible tree for modifications
-	arena   atomic.Value // The ultra-fast static arena for 'Lookup' behind atomic value
+type RahRouterSmall struct {
+	mu      sync.Mutex        // Protects the Builder during 'Add' calls
+	builder *BuilderNodeSmall // The flexible tree for modifications
+	arena   atomic.Value      // The ultra-fast static arena for 'Lookup' behind atomic value
 }
 
-func New() *RahRouter {
-	router := &RahRouter{
-		builder: NewBuilder(), // Starts with an empty BuilderNode
+func NewSmall() *RahRouterSmall {
+	router := &RahRouterSmall{
+		builder: NewBuilderSmall(), // Starts with an empty BuilderNode
 	}
-	router.arena.Store([]RouteNode{})
+	router.arena.Store([]RouteNodeSmall{})
 	return router
 }
 
 // Add inserts a new route. This is the "Writer" path.
-func (r *RahRouter) Add(path string, apiId uint32) {
+func (r *RahRouterSmall) Add(path string, apiId uint16) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -33,17 +33,17 @@ func (r *RahRouter) Add(path string, apiId uint32) {
 
 // Lookup finds the API name. This is the "Reader" path.
 // It uses NO LOCKS and is incredibly fast.
-func (r *RahRouter) Lookup(path string) uint32 {
+func (r *RahRouterSmall) Lookup(path string) uint16 {
 	// We capture the slice header locally to ensure we stay on
 	// one version of the arena for the duration of the lookup.
-	currentArena := r.arena.Load().([]RouteNode)
+	currentArena := r.arena.Load().([]RouteNodeSmall)
 
 	if len(currentArena) == 0 {
 		return 0
 	}
 
 	curr := &currentArena[0]
-	var lastMatchedAPI uint32
+	var lastMatchedAPI uint16
 
 	for {
 		pLen := len(curr.prefix)
@@ -72,7 +72,7 @@ func (r *RahRouter) Lookup(path string) uint32 {
 }
 
 // AddMany adds multiple routes and bakes the arena ONLY ONCE at the end.
-func (r *RahRouter) AddMany(routes map[string]uint32) {
+func (r *RahRouterSmall) AddMany(routes map[string]uint16) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
