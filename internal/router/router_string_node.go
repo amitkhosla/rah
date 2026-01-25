@@ -4,17 +4,16 @@ import (
 	"math/bits"
 )
 
-type RouteNode struct {
+type RouteStringNode struct {
 	prefix      string
 	maskLo      uint64 // bits 0-63
 	maskHi      uint64 // bits 64-127
 	childIdx    uint32 // Offset into the global Arena slice
 	numChildren uint16 // Number of contiguous children starting at childIdx
-	apiId       uint32
-	_           [22]byte
+	apiName     string
 }
 
-func (n *RouteNode) findChildIdx(b byte, arena []RouteNode) *RouteNode {
+func (n *RouteStringNode) findChildIdx(b byte, arena []RouteStringNode) *RouteStringNode {
 	var bit uint64
 	var mask uint64
 	var idx uint32

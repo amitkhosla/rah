@@ -4,20 +4,19 @@ import (
 	"math/bits"
 )
 
-type RouteNode struct {
+type RouteNodeSmall struct {
 	prefix      string
 	maskLo      uint64 // bits 0-63
 	maskHi      uint64 // bits 64-127
-	childIdx    uint32 // Offset into the global Arena slice
-	numChildren uint16 // Number of contiguous children starting at childIdx
-	apiId       uint32
-	_           [22]byte
+	childIdx    uint16 // Offset into the global Arena slice
+	numChildren uint8  // Number of contiguous children starting at childIdx
+	apiId       uint16
 }
 
-func (n *RouteNode) findChildIdx(b byte, arena []RouteNode) *RouteNode {
+func (n *RouteNodeSmall) findChildIdx(b byte, arena []RouteNodeSmall) *RouteNodeSmall {
 	var bit uint64
 	var mask uint64
-	var idx uint32
+	var idx uint16
 
 	if b < 64 {
 		bit = 1 << b
@@ -25,7 +24,7 @@ func (n *RouteNode) findChildIdx(b byte, arena []RouteNode) *RouteNode {
 		if mask&bit == 0 {
 			return nil
 		}
-		idx = uint32(bits.OnesCount64(mask & (bit - 1)))
+		idx = uint16(bits.OnesCount64(mask & (bit - 1)))
 	} else {
 		bit = 1 << (b - 64)
 		mask = n.maskHi
@@ -33,7 +32,7 @@ func (n *RouteNode) findChildIdx(b byte, arena []RouteNode) *RouteNode {
 			return nil
 		}
 		// We add all set bits from the Low mask to skip over those children
-		idx = uint32(bits.OnesCount64(n.maskLo) + bits.OnesCount64(mask&(bit-1)))
+		idx = uint16(bits.OnesCount64(n.maskLo) + bits.OnesCount64(mask&(bit-1)))
 	}
 
 	// Direct slice access via the Arena.

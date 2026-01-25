@@ -5,52 +5,53 @@ import (
 	"sync/atomic"
 )
 
-type RahRouter struct {
-	mu      sync.Mutex   // Protects the Builder during 'Add' calls
-	builder *BuilderNode // The flexible tree for modifications
-	arena   atomic.Value // The ultra-fast static arena for 'Lookup' behind atomic value
+type RahStringRouter struct {
+	mu      sync.Mutex         // Protects the Builder during 'Add' calls
+	builder *BuilderStringNode // The flexible tree for modifications
+	arena   atomic.Value       // The ultra-fast static arena for 'Lookup'
 }
 
-func New() *RahRouter {
-	router := &RahRouter{
-		builder: NewBuilder(), // Starts with an empty BuilderNode
+func NewStringRouter() *RahStringRouter {
+	router := &RahStringRouter{
+		builder: NewStringBuilder(), // Starts with an empty BuilderNode
 	}
-	router.arena.Store([]RouteNode{})
+	router.arena.Store([]RouteStringNode{})
 	return router
 }
 
 // Add inserts a new route. This is the "Writer" path.
-func (r *RahRouter) Add(path string, apiId uint32) {
+func (r *RahStringRouter) Add(path string, apiName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// 1. Add to the flexible builder tree
-	r.builder.Add(path, apiId)
+	r.builder.Add(path, apiName)
 
 	// 2. Re-bake the arena and swap it atomically
+	// This happens in ~2ms for 2,000+ APIs
 	r.arena.Store(r.builder.BakeToArena())
 }
 
 // Lookup finds the API name. This is the "Reader" path.
 // It uses NO LOCKS and is incredibly fast.
-func (r *RahRouter) Lookup(path string) uint32 {
+func (r *RahStringRouter) Lookup(path string) string {
 	// We capture the slice header locally to ensure we stay on
 	// one version of the arena for the duration of the lookup.
-	currentArena := r.arena.Load().([]RouteNode)
+	currentArena := r.arena.Load().([]RouteStringNode)
 
 	if len(currentArena) == 0 {
-		return 0
+		return ""
 	}
 
 	curr := &currentArena[0]
-	var lastMatchedAPI uint32
+	var lastMatchedAPI string
 
 	for {
 		pLen := len(curr.prefix)
 		if len(path) >= pLen && path[:pLen] == curr.prefix {
-			if curr.apiId != 0 {
+			if curr.apiName != "" {
 				if len(path) == pLen || path[pLen] == '/' {
-					lastMatchedAPI = curr.apiId
+					lastMatchedAPI = curr.apiName
 				}
 			}
 
@@ -72,7 +73,7 @@ func (r *RahRouter) Lookup(path string) uint32 {
 }
 
 // AddMany adds multiple routes and bakes the arena ONLY ONCE at the end.
-func (r *RahRouter) AddMany(routes map[string]uint32) {
+func (r *RahStringRouter) AddMany(routes map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

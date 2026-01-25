@@ -5,28 +5,28 @@ import (
 )
 
 // BuilderNode is the "flexible" node used for Add/Split logic
-type BuilderNode struct {
+type BuilderNodeWoutPadding struct {
 	prefix   string
 	apiId    uint32
-	children map[byte]*BuilderNode
+	children map[byte]*BuilderNodeWoutPadding
 }
 
-func NewBuilder() *BuilderNode {
-	return &BuilderNode{children: make(map[byte]*BuilderNode)}
+func NewBuilderWoutPadding() *BuilderNodeWoutPadding {
+	return &BuilderNodeWoutPadding{children: make(map[byte]*BuilderNodeWoutPadding)}
 }
 
 // BakeToArena transforms the Builder tree into the high-performance slice.
-func (bn *BuilderNode) BakeToArena() []RouteNode {
-	var nodes []RouteNode
+func (bn *BuilderNodeWoutPadding) BakeToArena() []RouteNodeWoutPatdding {
+	var nodes []RouteNodeWoutPatdding
 
 	// Use BFS to keep siblings together for Cache Locality
 	type task struct {
-		temp *BuilderNode
+		temp *BuilderNodeWoutPadding
 		idx  int
 	}
 
 	queue := []task{{bn, 0}}
-	nodes = append(nodes, RouteNode{prefix: bn.prefix, apiId: bn.apiId})
+	nodes = append(nodes, RouteNodeWoutPatdding{prefix: bn.prefix, apiId: bn.apiId})
 
 	for len(queue) > 0 {
 		curr := queue[0]
@@ -60,7 +60,7 @@ func (bn *BuilderNode) BakeToArena() []RouteNode {
 			// Add child to Arena
 			childBuilder := curr.temp.children[b]
 			childArenaIdx := len(nodes)
-			nodes = append(nodes, RouteNode{
+			nodes = append(nodes, RouteNodeWoutPatdding{
 				prefix: childBuilder.prefix,
 				apiId:  childBuilder.apiId,
 			})
@@ -72,7 +72,7 @@ func (bn *BuilderNode) BakeToArena() []RouteNode {
 	return nodes
 }
 
-func (bn *BuilderNode) Add(path string, apiName uint32) {
+func (bn *BuilderNodeWoutPadding) Add(path string, apiName uint32) {
 	// If the current node is empty (root initialization)
 	if bn.prefix == "" && len(bn.children) == 0 {
 		bn.prefix = path
@@ -89,7 +89,7 @@ func (bn *BuilderNode) Add(path string, apiName uint32) {
 	// Case 1: The prefix needs to be split
 	if i < len(bn.prefix) {
 		// Create a new child containing the old suffix
-		oldSuffix := &BuilderNode{
+		oldSuffix := &BuilderNodeWoutPadding{
 			prefix:   bn.prefix[i:],
 			apiId:    bn.apiId,
 			children: bn.children,
@@ -97,7 +97,7 @@ func (bn *BuilderNode) Add(path string, apiName uint32) {
 		// Reset current node to the common prefix
 		bn.prefix = bn.prefix[:i]
 		bn.apiId = 0
-		bn.children = make(map[byte]*BuilderNode)
+		bn.children = make(map[byte]*BuilderNodeWoutPadding)
 		bn.children[oldSuffix.prefix[0]] = oldSuffix
 	}
 
@@ -107,10 +107,10 @@ func (bn *BuilderNode) Add(path string, apiName uint32) {
 		if child, exists := bn.children[remainingPath[0]]; exists {
 			child.Add(remainingPath, apiName)
 		} else {
-			bn.children[remainingPath[0]] = &BuilderNode{
+			bn.children[remainingPath[0]] = &BuilderNodeWoutPadding{
 				prefix:   remainingPath,
 				apiId:    apiName,
-				children: make(map[byte]*BuilderNode),
+				children: make(map[byte]*BuilderNodeWoutPadding),
 			}
 		}
 	} else {
