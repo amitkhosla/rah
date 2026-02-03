@@ -1,14 +1,17 @@
 package router
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 type RahRouter struct {
-	mu      sync.Mutex   // Protects the Builder during 'Add' calls
-	builder *BuilderNode // The flexible tree for modifications
-	arena   atomic.Value // The ultra-fast static arena for 'Lookup' behind atomic value
+	mu          sync.Mutex   // Protects the Builder during 'Add' calls
+	builder     *BuilderNode // The flexible tree for modifications
+	arena       atomic.Value // Stores []RouteNode
+	prefixTable atomic.Value // Stores []byte
 }
 
 func New() *RahRouter {
@@ -24,50 +27,59 @@ func (r *RahRouter) Add(path string, apiId uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 1. Add to the flexible builder tree
 	r.builder.Add(path, apiId)
 
-	// 2. Re-bake the arena and swap it atomically
-	r.arena.Store(r.builder.BakeToArena())
+	// Bake both parts
+	nodes, table := r.builder.BakeToArena()
+
+	// Atomic store both
+	r.arena.Store(nodes)
+	r.prefixTable.Store(table)
 }
 
 // Lookup finds the API name. This is the "Reader" path.
 // It uses NO LOCKS and is incredibly fast.
 func (r *RahRouter) Lookup(path string) uint32 {
-	// We capture the slice header locally to ensure we stay on
-	// one version of the arena for the duration of the lookup.
 	currentArena := r.arena.Load().([]RouteNode)
-
+	table := r.prefixTable.Load().([]byte)
 	if len(currentArena) == 0 {
 		return 0
 	}
 
+	input := unsafe.Slice(unsafe.StringData(path), len(path))
 	curr := &currentArena[0]
-	var lastMatchedAPI uint32
+	var longestMatch uint32
 
 	for {
-		pLen := len(curr.prefix)
-		if len(path) >= pLen && path[:pLen] == curr.prefix {
-			if curr.apiId != 0 {
-				if len(path) == pLen || path[pLen] == '/' {
-					lastMatchedAPI = curr.apiId
-				}
-			}
+		prefix := table[curr.prefixOff : curr.prefixOff+uint32(curr.prefixLen)]
 
-			path = path[pLen:]
-			if len(path) == 0 {
-				return lastMatchedAPI
-			}
-
-			// Branchless Popcount Jump
-			next := curr.findChildIdx(path[0], currentArena)
-			if next == nil {
-				return lastMatchedAPI
-			}
-			curr = next
-			continue
+		// 1. Structural Match: Does the input start with this fragment?
+		if len(input) < len(prefix) || !bytes.Equal(input[:len(prefix)], prefix) {
+			return longestMatch
 		}
-		return lastMatchedAPI
+
+		// Advance the pointer
+		input = input[len(prefix):]
+
+		// 2. Boundary Check: Only update longestMatch if this node is an API
+		// AND we are at a segment boundary (next char is '/' or end of string).
+		if curr.apiId != 0 {
+			if len(input) == 0 || input[0] == '/' {
+				longestMatch = curr.apiId
+			}
+		}
+
+		// 3. Exact match exit
+		if len(input) == 0 {
+			return curr.apiId
+		}
+
+		// 4. Try to find a child for the next character
+		next := curr.findChildIdx(input[0], currentArena)
+		if next == nil {
+			return longestMatch
+		}
+		curr = next
 	}
 }
 
@@ -80,6 +92,9 @@ func (r *RahRouter) AddMany(routes map[string]uint32) {
 		r.builder.Add(path, name)
 	}
 
-	// Single bake for all 2,000 routes
-	r.arena.Store(r.builder.BakeToArena())
+	nodes, table := r.builder.BakeToArena()
+
+	// Store both atomically
+	r.arena.Store(nodes)
+	r.prefixTable.Store(table)
 }

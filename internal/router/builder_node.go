@@ -16,18 +16,25 @@ func NewBuilder() *BuilderNode {
 }
 
 // BakeToArena transforms the Builder tree into the high-performance slice.
-func (bn *BuilderNode) BakeToArena() []RouteNode {
+func (bn *BuilderNode) BakeToArena() ([]RouteNode, []byte) {
 	var nodes []RouteNode
+	var table []byte // The new PrefixTable
 
-	// Use BFS to keep siblings together for Cache Locality
 	type task struct {
 		temp *BuilderNode
 		idx  int
 	}
 
-	queue := []task{{bn, 0}}
-	nodes = append(nodes, RouteNode{prefix: bn.prefix, apiId: bn.apiId})
+	// Root node setup
+	rootPrefix := []byte(bn.prefix)
+	table = append(table, rootPrefix...)
+	nodes = append(nodes, RouteNode{
+		prefixOff: 0,
+		prefixLen: uint16(len(rootPrefix)),
+		apiId:     bn.apiId,
+	})
 
+	queue := []task{{bn, 0}}
 	for len(queue) > 0 {
 		curr := queue[0]
 		queue = queue[1:]
@@ -36,40 +43,41 @@ func (bn *BuilderNode) BakeToArena() []RouteNode {
 			continue
 		}
 
-		// 1. Group all children
-		childStartIdx := uint32(len(nodes))
-		nodes[curr.idx].childIdx = childStartIdx
+		nodes[curr.idx].childIdx = uint32(len(nodes))
 		nodes[curr.idx].numChildren = uint16(len(curr.temp.children))
-
-		// 2. Sort keys to ensure Popcount order matches Slice order
 		keys := make([]byte, 0, len(curr.temp.children))
-		for b := range curr.temp.children {
-			keys = append(keys, b)
+		for key := range curr.temp.children {
+			keys = append(keys, key)
 		}
-		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 
-		// 3. Populate BakedNode metadata
+		// Sort keys... (existing logic)
+		sort.Slice(keys, func(k1, k2 int) bool { return keys[k1] < keys[k2] })
+
 		for _, b := range keys {
-			// Set Bitmask
+			// 1. Set the bit in the parent's mask FIRST
 			if b < 64 {
 				nodes[curr.idx].maskLo |= (1 << b)
 			} else {
 				nodes[curr.idx].maskHi |= (1 << (b - 64))
 			}
 
-			// Add child to Arena
-			childBuilder := curr.temp.children[b]
-			childArenaIdx := len(nodes)
+			// 2. Add the child to the Arena and Table
+			child := curr.temp.children[b]
+			off := uint32(len(table))
+			pBytes := []byte(child.prefix)
+			table = append(table, pBytes...)
+
 			nodes = append(nodes, RouteNode{
-				prefix: childBuilder.prefix,
-				apiId:  childBuilder.apiId,
+				prefixOff: off,
+				prefixLen: uint16(len(pBytes)),
+				apiId:     child.apiId,
 			})
 
-			// Queue child for its own children processing
-			queue = append(queue, task{childBuilder, childArenaIdx})
+			// 3. Queue the child for BFS processing
+			queue = append(queue, task{child, len(nodes) - 1})
 		}
 	}
-	return nodes
+	return nodes, table
 }
 
 func (bn *BuilderNode) Add(path string, apiName uint32) {

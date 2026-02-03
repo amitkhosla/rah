@@ -91,6 +91,38 @@ func TestGemRouter_Functional(t *testing.T) {
 	}
 }
 
+// TestFunctional verifies that adding routes that share prefixes works correctly.
+func TestGemRouterFewEntries_Functional(t *testing.T) {
+	r := New()
+
+	routes := map[string]uint32{
+		"/v1/common":     uint32(1),
+		"/v1/scheduling": uint32(2),
+	}
+
+	for path, name := range routes {
+		r.Add(path, name)
+	}
+
+	// Verify each route
+	for path, expected := range routes {
+		res := r.Lookup(path)
+		if res != expected {
+			t.Errorf("Path %s: expected %d, got %d", path, expected, res)
+		}
+	}
+
+	// Verify that a partial match prefix doesn't return a child's name
+	// "/v1/commons/xy" is a sub-path of "/v1/commons", so it should return "COMMONS"
+	if res := r.Lookup("/v1/commons"); res != uint32(0) {
+		t.Errorf("Why COMMONS comming for /v1/commons, got %d", res)
+	}
+
+	if res := r.Lookup("/v1/commons/xy"); res != uint32(0) {
+		t.Errorf("Why COMMONS comming for /v1/commons/xy, got %d", res)
+	}
+}
+
 // TestScale ensures performance and correctness with 1000 routes.
 /*func TestGemRouter_1000Routes(t *testing.T) {
 	r := New()
