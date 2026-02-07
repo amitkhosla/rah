@@ -63,9 +63,9 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 
 	fm.Pool.New = func() any {
 		return &rctx.Context{
-			ByteSlots:   make([][]byte, cfg.MaxBytes),
-			IntSlots:    make([]int64, cfg.MaxInts),
-			BoolSlots:   make([]bool, cfg.MaxBools),
+			ByteSlots:   make([][]byte, cfg.MaxBytesSlots),
+			IntSlots:    make([]int64, cfg.MaxIntsSlots),
+			BoolSlots:   make([]bool, cfg.MaxBoolsSlots),
 			MutationLog: make([]rctx.HeaderMutation, 0, 16),
 		}
 	}

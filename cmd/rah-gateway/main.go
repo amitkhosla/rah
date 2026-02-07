@@ -19,8 +19,8 @@ func main() {
 
 	// 1. Initial Configuration
 	cfg := config.GlobalLayout{
-		MaxBytes: 32,
-		MaxInts:  16,
+		MaxBytesSlots: 32,
+		MaxIntsSlots:  16,
 		DefaultLimits: config.ResourceLimit{
 			MaxBodySize: 1024 * 1024, // 1MB
 		},

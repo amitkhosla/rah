@@ -7,8 +7,9 @@ type ResourceLimit struct {
 }
 
 type GlobalLayout struct {
-	MaxBytes      int
-	MaxInts       int
-	MaxBools      int
+	MaxBytesSlots int
+	MaxIntsSlots  int
+	MaxBoolsSlots int
+	MaxHeapBytes  int64
 	DefaultLimits ResourceLimit
 }
