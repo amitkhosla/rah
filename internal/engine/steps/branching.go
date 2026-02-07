@@ -1,10 +1,12 @@
 package steps
 
-import "rah/internal/engine"
+import (
+	"rah/internal/rctx"
+)
 
 // TenantSwitch handles multi-option paths.
-func TenantSwitch(ctx *engine.RequestContext) int16 {
-	tenantType := ctx.Slots[0].(string) // Retrieve from optimized slot
+func TenantSwitch(ctx *rctx.Context) int16 {
+	tenantType := string(ctx.ByteSlots[0]) // Retrieve from optimized slot
 
 	switch tenantType {
 	case "GOLD":
@@ -17,8 +19,8 @@ func TenantSwitch(ctx *engine.RequestContext) int16 {
 }
 
 // IfElseAuth handles a simple true/false branch.
-func IfElseAuth(ctx *engine.RequestContext) int16 {
-	isAuthenticated := ctx.Slots[1].(bool)
+func IfElseAuth(ctx *rctx.Context) int16 {
+	isAuthenticated := ctx.BoolSlots[1]
 
 	if isAuthenticated {
 		return 1 // Continue to next step

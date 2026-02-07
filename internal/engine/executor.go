@@ -11,8 +11,14 @@ type Instruction struct {
 // Run is the hot-path loop that navigates the instruction array.
 func Run(plan []Instruction, ctx *rctx.Context) {
 	pc := 0
-	for pc < len(plan) {
+	planLen := len(plan)
+	for pc < planLen {
 		offset := plan[pc].Action(ctx)
+
+		if offset == StopPlan {
+			break
+		}
+
 		pc += int(offset)
 	}
 }
