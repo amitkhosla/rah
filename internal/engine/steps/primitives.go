@@ -1,7 +1,6 @@
 package steps
 
 import (
-	//	"bytes"
 	"io"
 	"net/http"
 	"rah/internal/engine"
@@ -10,10 +9,10 @@ import (
 )
 
 type HttpCallConfig struct {
-	Method     string // GET, POST, etc.
-	URL        string // The destination endpoint
-	TargetSlot int    // The specific Slot index where the result will be stored
-	Timeout    int    // (Optional) Max time to wait in milliseconds
+	Method     string
+	URL        string
+	TargetSlot int
+	Timeout    int
 }
 
 var client = &http.Client{
@@ -22,174 +21,171 @@ var client = &http.Client{
 	},
 }
 
+// ProxyStep: High-performance streaming proxy
 func ProxyStep(targetUrl string) engine.Instruction {
 	return engine.Instruction{
 		Name: "Proxy",
 		Action: func(ctx *rctx.Context) int16 {
-			// Build the new request using ONLY internal rctx data
-			req, _ := http.NewRequest(string(ctx.Request.Method), targetUrl, ctx.GetBodyReader())
+			req, _ := http.NewRequest(ctx.MethodString(), targetUrl, ctx.GetBodyReader())
 
-			// Re-inject the internal headers
-			for _, h := range ctx.Request.Headers {
-				req.Header.Add(string(h.Key), string(h.Value))
+			// 1. Re-inject Pass-through headers from original request
+			req.Header = ctx.Request.Header
+
+			// 2. Apply Mutations (Overrides) from our internal log
+			for i := 0; i < ctx.MutationCount; i++ {
+				m := ctx.MutationLog[i]
+				req.Header.Set(string(m.Key), string(m.Value))
 			}
 
 			resp, err := client.Do(req)
 			if err != nil {
-				return 99
+				ctx.ResponseStatus = 502
+				return engine.StopPlan
+			}
+			defer resp.Body.Close()
+
+			// 3. Sync response back to context
+			ctx.ResponseStatus = resp.StatusCode
+			for k, v := range resp.Header {
+				ctx.SetResponseHeader([]byte(k), []byte(v[0]))
 			}
 
-			// Vacuum response headers back into our internal rctx.Response.Headers
-			ctx.Response.StatusCode = resp.StatusCode
-			for k, values := range resp.Header {
-				for _, v := range values {
-					ctx.Response.AddHeader(k, v)
-				}
-			}
+			// 4. Stream body directly to client
+			ctx.FinalizeHeaders()
+			io.Copy(ctx.GetWriter(), resp.Body)
 
-			ctx.Response.Stream = resp.Body
-			return 99
+			return engine.StopPlan
 		},
 	}
 }
 
-// HttpCallStep: Used for side-cars (Auth/Discovery)
+// HttpCallStep: Side-car calls (e.g., Auth)
 func HttpCallStep(method string, url string, resultSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "HttpCall",
 		Action: func(ctx *rctx.Context) int16 {
-			// FIX: Using ctx.GetBodyReader() instead of wrapping Stream
-			req, err := http.NewRequest(method, url, ctx.GetBodyReader())
+			req, err := http.NewRequest(method, url, nil)
 			if err != nil {
-				return 99
+				return engine.StopPlan
 			}
 
 			resp, err := client.Do(req)
 			if err != nil {
-				return 99
+				return engine.StopPlan
 			}
 			defer resp.Body.Close()
 
 			body, _ := io.ReadAll(resp.Body)
-			ctx.Slots[resultSlot] = body
+			ctx.ByteSlots[resultSlot] = body
 			return 1
 		},
 	}
 }
-func ConditionStep(predicate func(ctx *rctx.Context) bool, onSuccess, onFail int16) engine.Instruction {
-	return engine.Instruction{
-		Name: "Branch",
-		Action: func(ctx *rctx.Context) int16 {
-			if predicate(ctx) {
-				return onSuccess // Jump to the instruction index for "Then"
-			}
-			return onFail // Jump to the instruction index for "Else"
-		},
-	}
-}
+
+// DynamicProxyStep: Discovered URL proxying
 func DynamicProxyStep(urlSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "DynamicProxy",
 		Action: func(ctx *rctx.Context) int16 {
-			// Get the URL we discovered in a previous step (like from Consul or Etcd)
-			targetUrl, _ := ctx.Slots[urlSlot].(string)
-
-			// 1. Create Request from Internal Headers/Body
-			req, _ := http.NewRequest(string(ctx.Request.Method), targetUrl, ctx.GetBodyReader())
-			for _, h := range ctx.Request.Headers {
-				req.Header.Add(string(h.Key), string(h.Value))
+			targetUrl := string(ctx.ByteSlots[urlSlot])
+			if targetUrl == "" {
+				ctx.ResponseStatus = 404
+				return engine.StopPlan
 			}
 
-			// 2. Execute
+			// Reuse the ProxyStep logic internally or duplicate for specific needs
+			req, _ := http.NewRequest(ctx.MethodString(), targetUrl, ctx.GetBodyReader())
+			req.Header = ctx.Request.Header
+
 			resp, err := client.Do(req)
 			if err != nil {
-				return 99
+				ctx.ResponseStatus = 502
+				return engine.StopPlan
+			}
+			defer resp.Body.Close()
+
+			ctx.ResponseStatus = resp.StatusCode
+			for k, v := range resp.Header {
+				ctx.SetResponseHeader([]byte(k), []byte(v[0]))
 			}
 
-			// 3. Populate Response Buffer for Entry Layer
-			ctx.Response.StatusCode = resp.StatusCode
-			ctx.Response.Stream = resp.Body // Streaming back to client
-
-			// Vacuum headers...
-			return 99
+			ctx.FinalizeHeaders()
+			io.Copy(ctx.GetWriter(), resp.Body)
+			return engine.StopPlan
 		},
 	}
 }
+
+// AsyncHttpCall: Fan-out pattern
 func AsyncHttpCall(calls []HttpCallConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "AsyncMultiCall",
 		Action: func(ctx *rctx.Context) int16 {
 			var wg sync.WaitGroup
-
-			for _, config := range calls {
+			for _, conf := range calls {
 				wg.Add(1)
-				go func(conf HttpCallConfig) {
+				go func(c HttpCallConfig) {
 					defer wg.Done()
-
-					// Create request from internal rctx data
-					req, _ := http.NewRequest(conf.Method, conf.URL, nil)
-
-					// Execute
+					req, _ := http.NewRequest(c.Method, c.URL, nil)
 					resp, err := client.Do(req)
 					if err != nil {
 						return
 					}
 					defer resp.Body.Close()
-
-					// Materialize result into the designated slot
 					body, _ := io.ReadAll(resp.Body)
-					ctx.Slots[conf.TargetSlot] = body
-				}(config)
+					// Note: ByteSlots access in goroutines needs caution
+					// but is safe if slots are unique per config
+					ctx.ByteSlots[c.TargetSlot] = body
+				}(conf)
 			}
-
 			wg.Wait()
-			return 1 // Move to the next layer (Processing/Merging)
+			return 1
 		},
 	}
 }
 
-func MergeStep(targetSlot int) engine.Instruction {
+// MergeStep: Aggregator pattern
+func MergeStep(slotA, slotB int) engine.Instruction {
 	return engine.Instruction{
 		Name: "MergeData",
 		Action: func(ctx *rctx.Context) int16 {
-			dataA := ctx.Slots[1].([]byte)
-			dataB := ctx.Slots[2].([]byte)
+			dataA := ctx.ByteSlots[slotA]
+			dataB := ctx.ByteSlots[slotB]
 
-			// Perform your "Next Layer" logic - e.g., JSON merging
-			combined := append(dataA, dataB...)
+			// Simple merge logic
+			combined := make([]byte, len(dataA)+len(dataB))
+			copy(combined, dataA)
+			copy(combined[len(dataA):], dataB)
 
-			// Set this as the final response body
-			ctx.Response.Body = combined
-			ctx.Response.StatusCode = 200
+			ctx.ResponseBuffer = combined
+			ctx.IsBuffered = true
+			ctx.ResponseStatus = 200
 			return 1
 		},
 	}
 }
 
-// PrimitiveExtractHeader pulls a value from the internal Request.Headers slice
-func PrimitiveExtractHeader(headerKey string, targetSlot int) engine.Instruction {
-	return engine.Instruction{
-		Name: "ExtractHeader",
-		Action: func(ctx *rctx.Context) int16 {
-			// Find the header in our agnostic internal slice
-			for _, h := range ctx.Request.Headers {
-				if string(h.Key) == headerKey {
-					ctx.Slots[targetSlot] = string(h.Value)
-					return 1
-				}
-			}
-			return 1
-		},
-	}
-}
-
-// PrimitiveAddResponseHeader modifies the internal ResponseBuffer
+// PrimitiveAddResponseHeader: Direct header manipulation
 func PrimitiveAddResponseHeader(key, value string) engine.Instruction {
 	return engine.Instruction{
 		Name: "AddResponseHeader",
 		Action: func(ctx *rctx.Context) int16 {
-			ctx.Response.AddHeader(key, value)
+			ctx.SetResponseHeader([]byte(key), []byte(value))
 			return 1
+		},
+	}
+}
+
+func PrimitiveExtractHeader(headerKey string, targetSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "ExtractHeader",
+		Action: func(ctx *rctx.Context) int16 {
+			// Access original request headers without allocation
+			val := ctx.Request.Header.Get(headerKey)
+			if val != "" {
+				ctx.ByteSlots[targetSlot] = []byte(val)
+			}
+			return 1 // Move to next instruction
 		},
 	}
 }

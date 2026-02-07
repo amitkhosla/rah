@@ -1,7 +1,9 @@
 package rctx
 
 import (
+	"bytes"
 	"io"
+	"net/http"
 	"unsafe"
 )
 
@@ -10,6 +12,7 @@ import (
 type ResponseWriter interface {
 	Write([]byte) (int, error)
 	WriteHeader(statusCode int)
+	Header() http.Header
 }
 
 // HeaderMutation tracks changes for the upstream proxy without string allocations.
@@ -31,10 +34,12 @@ type Context struct {
 	Match RouteMatch
 
 	// Metadata (Zero-allocation snapshots)
-	Method         []byte
-	Path           []byte
+	Method        []byte
+	Path          []byte
+	RemainingPath []byte
+
 	RawQuery       []byte
-	metadataBuffer [512]byte
+	metadataBuffer [1024]byte
 	overflowBuffer []byte
 
 	// Typed Slots (The Logic Arena)
@@ -48,15 +53,30 @@ type Context struct {
 
 	// Request Body & Buffering
 	MaxBodySize   int64
+	Request       *http.Request
 	RequestBody   io.ReadCloser
 	RequestBuffer []byte // Populated only if IsBuffered = true
+	ScratchBuffer []byte // Physical RAM for Merges/Small Temp Objects
+	scratchIdx    int    // Cursor for ScratchBuffer
 	IsBuffered    bool   // Flag to toggle between Streaming and Transformation modes
 
 	// Response Handling
-	writer         ResponseWriter
-	ResponseStatus int
-	ResponseBuffer []byte // Collects data if IsBuffered = true
-	headerSent     bool
+	Writer          ResponseWriter
+	ResponseStatus  int
+	ResponseBuffer  []byte // Collects data if IsBuffered = true
+	headerSent      bool
+	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
+	ResHeaderCount  int
+	// ... existing fields ...
+
+	// MEMORY BUFFER REQUIREMENTS:
+	// 1. BorrowedChunks: A slice to track 4KB chunks leased from the Global Bank.
+	// 2. CurrentWriteChunk: A pointer to the active chunk for ns-level writes.
+	// 3. ShardID: Assigned at start to ensure we return memory to the same CPU shard.
+
+	// BorrowedChunks [][]byte
+	// CurrentWriteChunk []byte
+	// ShardID int
 }
 
 // Write is the universal entry point for all instructions.
@@ -70,18 +90,18 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 
 	// Flavor 1: Direct Streaming
 	if !ctx.headerSent {
-		ctx.writer.WriteHeader(ctx.ResponseStatus)
+		ctx.Writer.WriteHeader(ctx.ResponseStatus)
 		ctx.headerSent = true
 	}
-	return ctx.writer.Write(p)
+	return ctx.Writer.Write(p)
 }
 
 // Finalize handles the "Last Mile" of the response.
 // If data was buffered, it flushes it to the wire in one go.
 func (ctx *Context) Finalize() {
 	if ctx.IsBuffered && !ctx.headerSent {
-		ctx.writer.WriteHeader(ctx.ResponseStatus)
-		ctx.writer.Write(ctx.ResponseBuffer)
+		ctx.Writer.WriteHeader(ctx.ResponseStatus)
+		ctx.Writer.Write(ctx.ResponseBuffer)
 		ctx.headerSent = true
 	}
 }
@@ -89,7 +109,10 @@ func (ctx *Context) Finalize() {
 // Reset clears the context for reuse in the sync.Pool.
 // We pass the concrete writer here for the new request.
 func (ctx *Context) Reset(w ResponseWriter) {
-	ctx.writer = w
+	ctx.Writer = w
+	ctx.Request = nil
+	ctx.ResHeaderCount = 0
+	ctx.ResponseStatus = 0
 	ctx.ApiId = 0
 	ctx.MutationCount = 0
 	ctx.Match.Plan = nil
@@ -123,10 +146,11 @@ func (ctx *Context) Reset(w ResponseWriter) {
 
 	ctx.Method = nil
 	ctx.Path = nil
+	ctx.RemainingPath = nil
 	ctx.RawQuery = nil
 
 	for i := range ctx.ByteSlots {
-		ctx.ByteSlots[i] = ctx.ByteSlots[i][:0]
+		ctx.ByteSlots[i] = nil
 	}
 	for i := range ctx.IntSlots {
 		ctx.IntSlots[i] = 0
@@ -134,6 +158,14 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	for i := range ctx.BoolSlots {
 		ctx.BoolSlots[i] = false
 	}
+	ctx.scratchIdx = 0
+	// Optional: reset the slice length to 0 to be consistent with others
+	ctx.ScratchBuffer = ctx.ScratchBuffer[:0]
+	// MEMORY CLEANUP LOGIC:
+	// 1. Loop through BorrowedChunks and return each to the Global Memory Bank.
+	// 2. MUST happen before the Context returns to the sync.Pool to unblock
+	//    other waiting requests immediately.
+	// 3. Set BorrowedChunks to nil/empty without deallocating backing array
 }
 
 func (ctx *Context) SnapshotMetadata(method, path, query string) {
@@ -167,4 +199,43 @@ func (ctx *Context) SnapshotMetadata(method, path, query string) {
 // MethodString converts the method byte slice back to a string for standard lib compatibility.
 func (ctx *Context) MethodString() string {
 	return unsafe.String(unsafe.SliceData(ctx.Method), len(ctx.Method))
+}
+
+func (ctx *Context) GetBodyReader() io.Reader {
+	if ctx.IsBuffered {
+		return bytes.NewReader(ctx.RequestBuffer)
+	}
+	return ctx.RequestBody // Or ctx.Request.Body
+}
+
+func (ctx *Context) SetResponseHeader(key []byte, value []byte) {
+	if ctx.ResHeaderCount < len(ctx.ResponseHeaders) {
+		ctx.ResponseHeaders[ctx.ResHeaderCount] = HeaderMutation{
+			Key:   key,
+			Value: value,
+			Op:    0, // Set
+		}
+		ctx.ResHeaderCount++
+	}
+}
+
+// GetWriter returns the underlying http.ResponseWriter
+func (ctx *Context) GetWriter() http.ResponseWriter {
+	return ctx.Writer // Assuming your ResponseWriter interface wraps the standard one
+}
+
+// FinalizeHeaders sends only the status and headers, allowing for a streaming body
+func (ctx *Context) FinalizeHeaders() {
+	if ctx.headerSent {
+		return
+	}
+
+	h := ctx.Writer.Header()
+	for i := 0; i < ctx.ResHeaderCount; i++ {
+		m := ctx.ResponseHeaders[i]
+		h.Set(string(m.Key), string(m.Value))
+	}
+
+	ctx.Writer.WriteHeader(ctx.ResponseStatus)
+	ctx.headerSent = true
 }

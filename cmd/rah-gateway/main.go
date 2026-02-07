@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"rah/internal/api"
 	"rah/internal/config"
+	"rah/internal/control"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"rah/internal/router"
 )
 
 func main() {
-	port := flag.Int("port", 8080, "Port to start Rah Gateway")
+	port := flag.Int("port", 8080, "Gateway Port")
+	mPort := flag.Int("mport", 8081, "Management Port")
 	flag.Parse()
 
 	// 1. Initial Configuration
@@ -27,79 +28,101 @@ func main() {
 
 	// 2. Component Initialization
 	r := router.New()
-	fm := engine.NewFlowManager(1000, cfg)
+	fm := engine.NewFlowManager(12000, cfg)
 
 	// 3. Register Headers and Setup APIs
 	// This maps "Authorization" header to ByteSlots[0] globally
 	fm.HeaderRegistry.RegisterHeader("Authorization")
-
-	setupRoutes(r, fm)
+	compiler := control.NewCompiler(fm)
+	setupRoutes(r, fm, compiler)
 
 	// 4. The Unified Hot-Path Handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// A. Router Lookup (Returns uint32)
-		apiId := r.Lookup(req.URL.Path)
-		if apiId == 0 {
-			http.NotFound(w, req)
-			return
-		}
+	go func() {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// A. Router Lookup (Returns uint32)
+			apiId := r.Lookup(req.URL.Path)
+			if apiId == 0 {
+				http.NotFound(w, req)
+				return
+			}
 
-		// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
-		ctx := fm.Pool.Get().(*rctx.Context)
-		ctx.Reset(w)
-		defer fm.Pool.Put(ctx)
+			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
+			ctx := fm.Pool.Get().(*rctx.Context)
+			ctx.Reset(w)
+			defer fm.Pool.Put(ctx)
 
-		ctx.ApiId = apiId
+			ctx.ApiId = apiId
 
-		// C. Delegate Execution to FlowManager
-		fm.ProcessRequest(ctx, req)
+			ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
 
-		// D. Finalize: Flush buffered data or commit status code
-		ctx.Finalize()
-	})
+			// C. Delegate Execution to FlowManager
+			fm.ProcessRequest(ctx, req)
 
-	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Rah Gateway listening on %s\n", addr)
-	log.Fatal(http.ListenAndServe(addr, handler))
+			// D. Finalize: Flush buffered data or commit status code
+			ctx.Finalize()
+		})
+
+		addr := fmt.Sprintf(":%d", *port)
+		log.Printf("Rah Gateway listening on %s\n", addr)
+		log.Fatal(http.ListenAndServe(addr, handler))
+	}()
+
+	registry := control.NewNameRegistry()
+	ms := &control.ManagementServer{
+		FlowManager: fm,
+		Compiler:    compiler,
+		Registry:    registry,
+	}
+
+	//Control Plane (Management)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
+	log.Printf("Management API running on %d", *mPort)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }
 
-func setupRoutes(r *router.RahRouter, fm *engine.FlowManager) {
-	// API: Public Hello
-	p1 := &engine.Plan{
-		Instructions: []engine.Instruction{
-			{Name: "Hello", Action: func(ctx *rctx.Context) int16 {
+func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.Compiler) {
+	state := fm.State.Load()
+	state.Router = r
+
+	// --- API 1: Public Hello ---
+	p1Instructions := []engine.Instruction{
+		{
+			Name: "HelloStep",
+			Action: func(ctx *rctx.Context) int16 { // Fixed signature
 				ctx.Write([]byte("Welcome to Rah Gateway"))
 				return 1
-			}},
+			},
 		},
 	}
-	fm.Definitions[1] = api.BakeDefinition(1, "/v1/hello", p1)
-	r.Add("/v1/hello", 1)
 
-	// API: Secure User Data with Path Param
-	// Route: /v1/user/:id/profile
-	p2 := &engine.Plan{
-		Instructions: []engine.Instruction{
-			{Name: "AuthCheck", Action: func(ctx *rctx.Context) int16 {
-				// Slot 0 was registered to "Authorization" in main()
-				if len(ctx.ByteSlots[0]) == 0 {
-					ctx.ResponseStatus = 401
-					ctx.Write([]byte("Unauthorized"))
-					return 99 // Stop plan
-				}
-				return 1
-			}},
-			{Name: "ShowUser", Action: func(ctx *rctx.Context) int16 {
-				// BakeDefinition calculates that :id is Slot 0
-				// (Because it is the first param in the path)
-				userId := ctx.ByteSlots[0]
+	def1 := engine.BakeDefinition(1, "/v1/hello")
+	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true)
+
+	state.Definitions[1] = def1
+	state.Router.Add(def1.BaseRawPath, 1)
+
+	// --- API 2: Secure User Data with Path Params ---
+	p2Instructions := []engine.Instruction{
+		{
+			Name: "ShowProfile",
+			Action: func(ctx *rctx.Context) int16 { // Fixed signature
+				// The compiler maps the first path param '{id}' to a slot.
+				// If you used compiler.BakeSubRouter, check which slot it assigned.
+				// Usually, path params start from slot 10 in your Compiler setup.
+				userId := ctx.ByteSlots[10]
 				ctx.Write([]byte("User Profile for ID: "))
 				ctx.Write(userId)
 				return 1
-			}},
+			},
 		},
 	}
-	// Note: We use the prefix for the router, but full path for baking offsets
-	fm.Definitions[2] = api.BakeDefinition(2, "/v1/user/:id/profile", p2)
-	r.Add("/v1/user", 2)
+
+	// Base path is /v1/user
+	def2 := engine.BakeDefinition(2, "/v1/user")
+	// Sub-path contains the dynamic segment {id}
+	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true)
+
+	state.Definitions[2] = def2
+	state.Router.Add(def2.BaseRawPath, 2)
 }

@@ -5,39 +5,87 @@ import (
 	"net/http"
 	"rah/internal/engine"
 	"rah/internal/router"
-	"strconv"
+	"strings"
 )
 
 type ManagementServer struct {
-	Router      *router.RahRouter
 	FlowManager *engine.FlowManager
 	Compiler    *Compiler
+	Registry    *NameRegistry
 }
 
-func (s *ManagementServer) RegisterAPIHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Request) {
+	var req UnifiedSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
 		return
 	}
 
-	var cfg ApiConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
+	oldState := s.FlowManager.State.Load()
+
+	// 1. Clone Library & Definitions
+	newLibrary := make(map[string][]engine.Instruction)
+	for k, v := range oldState.FlowLibrary {
+		newLibrary[k] = v
+	}
+	newDefs := make([]*engine.ApiDefinition, len(oldState.Definitions))
+	copy(newDefs, oldState.Definitions)
+
+	// 2. Update Flows
+	for _, f := range req.Flows {
+		if f.Action == "delete" {
+			delete(newLibrary, f.Name)
+		} else {
+			newLibrary[f.Name] = s.Compiler.Compile(ApiConfig{Flow: f.Instructions})
+		}
 	}
 
-	// 1. Convert string ID to uint32 for our internal engine
-	id, _ := strconv.ParseUint(cfg.ApiID, 10, 32)
-	apiId := uint32(id)
+	// 3. Update APIs
+	routerChanged := false
+	for _, a := range req.Apis {
+		id := s.Registry.GetOrAssignId(a.Name)
+		s.Compiler.ResetLocalScope()
+		if a.Action == "delete" {
+			if newDefs[id] != nil {
+				newDefs[id] = nil
+				routerChanged = true
+			}
+		} else {
+			if instructions, exists := newLibrary[a.FlowName]; exists {
+				// Normalize path: Remove trailing slash to make it optional during lookup
+				cleanPath := strings.TrimSuffix(a.Path, "/")
 
-	// 2. Compile JSON steps into executable instructions
-	// Note: You'll want to extend your Compiler to handle fragments too!
-	plan := s.Compiler.Compile(cfg.Flow)
+				def := engine.BakeDefinition(id, cleanPath)
+				s.Compiler.BakeSubRouter(def, cleanPath, "ANY", instructions, true)
 
-	// 3. Update the Data Plane (Atomic Updates)
-	s.FlowManager.Plans[apiId] = plan // Direct index write is safe if size is pre-allocated
-	s.Router.Add(cfg.Path, apiId)     // Re-bakes the radix tree and swaps atomically
+				for i := range def.MethodRoots {
+					def.MethodRoots[i] = 0
+				}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("API Registered Successfully"))
+				newDefs[id] = def
+				routerChanged = true
+			}
+		}
+	}
+
+	// 4. Atomic Swap (Only rebuild router if paths changed)
+	var finalRouter *router.RahRouter
+	if routerChanged {
+		finalRouter = router.New()
+		for _, d := range newDefs {
+			if d != nil {
+				finalRouter.Add(d.BaseRawPath, d.Id)
+			}
+		}
+	} else {
+		finalRouter = oldState.Router
+	}
+
+	s.FlowManager.SetState(&engine.EngineState{
+		Router:      finalRouter,
+		Definitions: newDefs,
+		FlowLibrary: newLibrary,
+	})
+
+	w.WriteHeader(200)
 }

@@ -2,12 +2,13 @@ package steps
 
 import (
 	"rah/internal/engine"
+	"rah/internal/rctx"
 	"sync"
 )
 
 // CreateParallelStep wraps multiple sub-flows into concurrent goroutines.
-func CreateParallelStep(reg *engine.FlowRegistry, flowNames []string) func(*engine.RequestContext) int16 {
-	return func(ctx *engine.RequestContext) int16 {
+func CreateParallelStep(reg *engine.FlowRegistry, flowNames []string) func(*rctx.Context) int16 {
+	return func(ctx *rctx.Context) int16 {
 		var wg sync.WaitGroup
 		wg.Add(len(flowNames))
 
@@ -24,9 +25,9 @@ func CreateParallelStep(reg *engine.FlowRegistry, flowNames []string) func(*engi
 }
 
 // CreateSwitchStep implements a jump table based on a slot value.
-func CreateSwitchStep(slotIdx int, jumpTable map[any]int16) func(*engine.RequestContext) int16 {
-	return func(ctx *engine.RequestContext) int16 {
-		val := ctx.Slots[slotIdx]
+func CreateSwitchStep(slotIdx int, jumpTable map[any]int16) func(*rctx.Context) int16 {
+	return func(ctx *rctx.Context) int16 {
+		val := ctx.IntSlots[slotIdx]
 		if offset, ok := jumpTable[val]; ok {
 			return offset
 		}
