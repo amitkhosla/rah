@@ -70,38 +70,58 @@ func (s *Slab) Grow() {
 	s.Cursor = 0
 }
 
-func (s *Slab) Push(tenantID uint32, data []byte) (uint8, uint8, uint32) {
+// Push now stores the key for collision validation [cite: 2, 5]
+func (s *Slab) Push(tenantID uint16, key string, data []byte) (uint8, uint8, uint32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	seg := s.Segments[s.CurrentSegID]
 	offset := s.Cursor
+	keyLen := uint16(len(key))
 	dataLen := uint32(len(data))
 	expiry := uint32(time.Now().Unix()) + s.TTLSeconds
 
-	// --- 12-BYTE FAIL-PROOF HEADER ---
-	// [0]: Magic, [1]: Ver(4b), [2]: Checksum, [3]: Flags
-	// [4-7]: TenantID, [8-11]: Expiry
+	// HEADER: [Magic:1][Ver:1][KeyLen:2][Tenant:2][Expiry:4][DataLen:4] = 14 bytes
 	seg.Data[offset] = MagicByte
 	seg.Data[offset+1] = seg.Version & 0xF
-	seg.Data[offset+2] = MagicByte ^ (seg.Version & 0xF) ^ uint8(tenantID)
-	seg.Data[offset+3] = 0
+	binary.LittleEndian.PutUint16(seg.Data[offset+2:], keyLen)
+	binary.LittleEndian.PutUint16(seg.Data[offset+4:], tenantID)
+	binary.LittleEndian.PutUint32(seg.Data[offset+6:], expiry)
+	binary.LittleEndian.PutUint32(seg.Data[offset+10:], dataLen)
 
-	binary.LittleEndian.PutUint32(seg.Data[offset+4:], tenantID)
-	binary.LittleEndian.PutUint32(seg.Data[offset+8:], expiry)
+	// Write Key (for collision check) and Data
+	copy(seg.Data[offset+14:], []byte(key))
+	copy(seg.Data[offset+14+uint32(keyLen):], data)
 
-	if s.IsTiny {
-		// TINY PATH: Fixed 24B slot. 10B Header used, 14B for Data.
-		copy(seg.Data[offset+10:], data)
-		s.Cursor += 24
-	} else {
-		// STANDARD PATH: Header(12) + Data
-		copy(seg.Data[offset+12:], data)
-
-		// 8-byte alignment for 64-bit CPU speed
-		total := 12 + dataLen
-		padding := (8 - (total % 8)) % 8
-		s.Cursor += (total + padding)
-	}
+	s.Cursor += (14 + uint32(keyLen) + dataLen)
 	return s.CurrentSegID, seg.Version, offset
+}
+
+// Get performs the "Triple Validation": Version, Tenant, and Actual Key [cite: 346, 347, 348]
+func (s *Slab) Get(ptr SmartPointer, key string, expectedTenant uint16) ([]byte, bool) {
+	_, _, ver, segID, _, offset := Unpack(ptr)
+	seg := s.Segments[segID]
+
+	// 1. Version & Magic Check
+	if seg.Data[offset] != MagicByte || (seg.Data[offset+1]&0xF) != ver {
+		return nil, false
+	}
+
+	// 2. Metadata & Expiry Check
+	keyLen := binary.LittleEndian.Uint16(seg.Data[offset+2:])
+	storedTenant := binary.LittleEndian.Uint16(seg.Data[offset+4:])
+	expiry := binary.LittleEndian.Uint32(seg.Data[offset+6:])
+	dataLen := binary.LittleEndian.Uint32(seg.Data[offset+10:])
+
+	if storedTenant != expectedTenant || uint32(time.Now().Unix()) > expiry {
+		return nil, false
+	}
+
+	// 3. Key Match (Collision Protection)
+	storedKey := string(seg.Data[offset+14 : offset+14+uint32(keyLen)])
+	if storedKey != key {
+		return nil, false
+	}
+
+	return seg.Data[offset+14+uint32(keyLen) : offset+14+uint32(keyLen)+dataLen], true
 }

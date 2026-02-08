@@ -1,10 +1,13 @@
 package control
 
 import (
+	"encoding/json"
 	"io"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
+	"rah/internal/registry"
+	"time"
 )
 
 type Compiler struct {
@@ -112,6 +115,89 @@ func (c *Compiler) mapStepToInstructions(step StepConfig, fragments map[string][
 			},
 		}}
 
+	case "cache_lookup":
+		dataSlot := c.getSlot(step.As) // e.g., "user_data" -> 12
+		//boolSlot := c.getBoolSlot(step.Status) // e.g., "is_cached" -> 3
+
+		// We capture SlabMgr from c.fm at Bake time
+		slabMgr := c.fm.SlabMgr
+
+		return []engine.Instruction{{
+			Name: "Cache:Get:" + step.As,
+			Action: func(ctx *rctx.Context) int16 {
+				// Triple Validation: Version, Tenant, and Key match
+				if data, found := slabMgr.Get(ctx.TenantID, ctx.Path); found {
+					ctx.ByteSlots[dataSlot] = data
+					//ctx.BoolSlots[boolSlot] = true
+					return 1
+				}
+				// Cache Miss: Reset slot and set status to false
+				ctx.ByteSlots[dataSlot] = nil
+				//ctx.BoolSlots[boolSlot] = false
+				return 1
+			},
+		}}
+
+	case "cache_store":
+		dataSlot := c.getSlot(step.As)
+		ttl := step.TTL
+		slabMgr := c.fm.SlabMgr
+
+		return []engine.Instruction{{
+			Name: "Cache:Put:" + step.As,
+			Action: func(ctx *rctx.Context) int16 {
+				data := ctx.ByteSlots[dataSlot]
+				if len(data) > 0 {
+					slabMgr.Put(ctx.TenantID, ctx.Path, data, ttl)
+				}
+				return 1
+			},
+		}}
+
+	case "get_from_registry":
+		// The key in the registry (e.g., "service-mock" or "api-key")
+		key := step.Key
+		// The slot to store the result in (e.g., "target_url")
+		slot := c.getSlot(step.As)
+
+		return []engine.Instruction{{
+			Name: "Registry:Get:" + key,
+			Action: func(ctx *rctx.Context) int16 {
+				// 1. Get the current active Matrix snapshot
+				reg := registry.State.Active.Load()
+
+				// 2. Resolve the Key to a Column ID (kID)
+				kID, found := registry.GetKeyID(reg, key)
+				if !found {
+					return 1 // Key doesn't exist in registry, skip
+				}
+
+				// 3. Matrix lookup: (TenantRow * Stride) + Column
+				vID := reg.Matrix[(uint32(ctx.TenantID)*reg.Stride)+uint32(kID)]
+				if vID != 0 {
+					// 4. Place the bytes from the ValuePool into the slot
+					ctx.ByteSlots[slot] = reg.ValuePool[vID]
+				}
+				return 1
+			},
+		}}
+	case "add_timestamp":
+		return []engine.Instruction{{
+			Name: "Transform:AddTS",
+			Action: func(ctx *rctx.Context) int16 {
+				if len(ctx.ResponseBuffer) == 0 {
+					return 1
+				}
+				// Simple JSON injection for the mock requirement
+				var data map[string]any
+				if err := json.Unmarshal(ctx.ResponseBuffer, &data); err == nil {
+					data["gateway_ts"] = time.Now().UnixMilli()
+					ctx.ResponseBuffer, _ = json.Marshal(data)
+				}
+				return 1
+			},
+		}}
+
 	case "call_upstream":
 		url := step.URL
 		return []engine.Instruction{{
@@ -186,6 +272,69 @@ func (c *Compiler) BakeReadBody(step Step) engine.Instruction {
 				ctx.ResponseStatus = 502
 				return engine.StopPlan
 			}
+			return 1
+		},
+	}
+}
+
+// Instruction: Resolve Host to TenantID
+func (c *Compiler) ResolveTenant() engine.Instruction {
+	return engine.Instruction{
+		Name: "Registry:Resolve",
+		Action: func(ctx *rctx.Context) int16 {
+			reg := registry.State.Active.Load()
+			// Use the pre-built Radix lookup on the Host header
+			tID, found := registry.GetTenantID(reg, ctx.Request.Host)
+			if !found || tID == 0 {
+				return -1
+			} // 403 Forbidden
+			ctx.TenantID = tID
+			return 1
+		},
+	}
+}
+
+// Instruction: Load URL into Slot 5 (The Proxy Slot)
+func (c *Compiler) LoadUpstream(serviceName string) engine.Instruction {
+	key := "url:" + serviceName
+	return engine.Instruction{
+		Name: "Registry:LoadURL:" + serviceName,
+		Action: func(ctx *rctx.Context) int16 {
+			reg := registry.State.Active.Load()
+			kID, found := registry.GetKeyID(reg, key)
+			if !found {
+				return 1
+			}
+
+			vID := reg.Matrix[(uint32(ctx.TenantID)*reg.Stride)+uint32(kID)]
+			if vID != 0 {
+				ctx.ByteSlots[5] = reg.ValuePool[vID]
+			}
+			return 1
+		},
+	}
+}
+
+// Instruction: Setup Dynamic Alias (Runtime Discovery)
+func (c *Compiler) DiscoverAlias(headerName string, mgr *registry.RegistryManager) engine.Instruction {
+	return engine.Instruction{
+		Name: "Registry:Discover",
+		Action: func(ctx *rctx.Context) int16 {
+			// 1. Get the value from the header (e.g., a session-based hostname)
+			val := ctx.Request.Header.Get(headerName)
+			if val == "" {
+				return 1
+			}
+
+			// 2. SAFETY CHECK: Only discover if we have a valid tenant identified
+			if ctx.TenantID == 0 {
+				return 1
+			}
+
+			// 3. Call the MANAGER (mgr), not the Registry State (reg).
+			// Note: This triggers a Mutex Lock internally in the Manager.
+			mgr.AddAlias(ctx.Request.Host, val)
+
 			return 1
 		},
 	}

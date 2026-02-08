@@ -20,7 +20,6 @@ const (
 	MagicByte = 0xAA // Sentinel to detect memory corruption
 )
 
-// PackPointer encodes coordinates into a 64-bit space.
 func PackPointer(tag, slabID, ver, segID uint8, dLen, offset uint32) SmartPointer {
 	return SmartPointer((uint64(tag&0x3) << 62) |
 		(uint64(slabID&0x3F) << 56) |
@@ -30,8 +29,6 @@ func PackPointer(tag, slabID, ver, segID uint8, dLen, offset uint32) SmartPointe
 		(uint64(offset & 0xFFFFFF)))
 }
 
-// Unpack decodes the pointer. Since we have 28 bits for offset,
-// we don't need multipliers (like x4 or x16) anymore.
 func Unpack(ptr SmartPointer) (tag, slabID, ver, segID uint8, dLen, offset uint32) {
 	val := uint64(ptr)
 	tag = uint8(val >> 62)
@@ -41,4 +38,8 @@ func Unpack(ptr SmartPointer) (tag, slabID, ver, segID uint8, dLen, offset uint3
 	dLen = uint32((val >> 24) & 0xFFFFFF)
 	offset = uint32(val & 0xFFFFFF)
 	return
+}
+
+func GetSlabID(ptr SmartPointer) uint8 {
+	return uint8((uint64(ptr) >> 56) & 0x3F)
 }

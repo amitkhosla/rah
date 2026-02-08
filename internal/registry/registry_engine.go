@@ -11,20 +11,20 @@ func GetValue(alias string, key string) ([]byte, bool) {
 	}
 
 	// 1. Resolve TenantID from Alias (e.g., "pepsi-uuid" -> 5)
-	tID, found := walkRadix(reg.Identity, reg.StringPool, alias)
+	tID, found := findIdFromNodes(reg.Identity, reg.StringPool, alias)
 	if !found {
 		return nil, false
 	}
 
 	// 2. Resolve KeyID from Key Name (e.g., "service-url" -> 10)
-	kID, found := walkRadix(reg.Properties, reg.StringPool, key)
+	kID, found := findIdFromNodes(reg.Properties, reg.StringPool, key)
 	if !found {
 		return nil, false
 	}
 
 	// 3. Matrix Jump: O(1) coordinate lookup
 	// Index = (Row * Width) + Column
-	matrixIdx := (tID * reg.Stride) + kID
+	matrixIdx := (uint32(tID) * reg.Stride) + uint32(kID)
 	if matrixIdx >= uint32(len(reg.Matrix)) {
 		return nil, false
 	}
@@ -38,8 +38,17 @@ func GetValue(alias string, key string) ([]byte, bool) {
 	return reg.ValuePool[vID], true
 }
 
-// walkRadix performs a pointer-free, iterative search through the node arena.
-func walkRadix(nodes []RegistryNode, pool []byte, input string) (uint32, bool) {
+func GetTenantID(reg *TenantRegistry, alias string) (uint16, bool) {
+	return findIdFromNodes(reg.Identity, reg.StringPool, alias)
+}
+
+// 2. GetKeyID: Specialized for Property searches
+func GetKeyID(reg *TenantRegistry, key string) (uint16, bool) {
+	return findIdFromNodes(reg.Properties, reg.StringPool, key)
+}
+
+// findIdFromNodes performs a pointer-free, iterative search through the node arena.
+func findIdFromNodes(nodes []RegistryNode, pool []byte, input string) (uint16, bool) {
 	if len(nodes) == 0 {
 		return 0, false
 	}
