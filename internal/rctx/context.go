@@ -67,6 +67,8 @@ type Context struct {
 	headerSent      bool
 	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
 	ResHeaderCount  int
+	TenantID        uint16
+
 	// ... existing fields ...
 
 	// MEMORY BUFFER REQUIREMENTS:

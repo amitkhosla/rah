@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/rctx"
 	"rah/internal/router" // Added import
@@ -38,6 +39,7 @@ type FlowManager struct {
 	HeaderRegistry *HeaderRegistry
 	Pool           sync.Pool
 	Config         config.GlobalLayout
+	SlabMgr        *cache.CacheManager
 	Strategy       ExecutionStrategy // Pre-determined at startup
 	// Bank *MemoryBank
 }
