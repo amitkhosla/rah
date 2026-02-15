@@ -156,10 +156,6 @@ func (s *FixedWindowStep) Execute(ctx *rctx.Context) int16 {
 	if clock == nil {
 		return 1
 	}
-	if len(s.Store.Arena) == 0 {
-		ctx.ResponseStatus = 500
-		return -1
-	}
 
 	// Get pre-calculated ID
 	var bucketID uint32
@@ -192,14 +188,6 @@ type TokenBucketStep struct {
 
 func (s *TokenBucketStep) Execute(ctx *rctx.Context) int16 {
 	clock := CurrentClock.Load()
-	if clock == nil {
-		return 1
-	}
-	if len(s.Store.Arena) == 0 {
-		ctx.ResponseStatus = 500
-		return -1
-	}
-
 	idx := s.calculateIndex(ctx, 0) // Token bucket doesn't need bucket IDs
 
 	if !s.Store.TokenBucket(idx, s.Rate, s.Burst, uint32(clock.UnixSec)) {
@@ -237,10 +225,6 @@ func (s *RemoteRateLimitStep) Execute(ctx *rctx.Context) int16 {
 
 // We will use a helper to extract the TenantID from a known slot (usually slot 0)
 func (s *FixedWindowStep) calculateIndex(ctx *rctx.Context, bucketID uint32) uint32 {
-	if len(s.Store.Arena) == 0 {
-		return 0
-	}
-
 	// Assuming TenantID is an integer in slot 0 or derived from string
 	// If your context has a specific GetTenantID() method, use that.
 	tenantID := uint32(0) // Default or ctx.GetTenantID()
@@ -250,10 +234,6 @@ func (s *FixedWindowStep) calculateIndex(ctx *rctx.Context, bucketID uint32) uin
 }
 
 func (s *TokenBucketStep) calculateIndex(ctx *rctx.Context, bucketID uint32) uint32 {
-	if len(s.Store.Arena) == 0 {
-		return 0
-	}
-
 	// Logic for Token Bucket index
 	tenantID := uint32(0)
 	h := tenantID ^ uint32(s.Rule)
