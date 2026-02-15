@@ -5,17 +5,38 @@ import (
 	"strings"
 )
 
-func (c *Compiler) BakeSubRouter(def *engine.ApiDefinition, path string, method string, plan []engine.Instruction, isStrict bool) uint32 {
+/*
+BakeSubRouter builds radix tree entries for a specific path + method.
+
+ANY handling:
+- Compile-time expansion into all methods.
+- No runtime special handling.
+
+Duplicate path+method results in panic.
+*/
+
+func (c *Compiler) BakeSubRouter(
+	def *engine.ApiDefinition,
+	path string,
+	method string,
+	plan []engine.Instruction,
+	isStrict bool,
+) uint32 {
+
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	if path == "" || path == "/" {
 		segments = []string{""}
 	}
 
-	// Register the endpoint in the API Definition
-	def.Endpoints = append(def.Endpoints, engine.Endpoint{Plan: plan})
+	methodIdx := engine.MethodStringToIdx(method)
+	isAny := method == "ANY"
+
+	def.Endpoints = append(def.Endpoints, engine.Endpoint{
+		Id:   uint32(len(def.Endpoints)),
+		Plan: plan,
+	})
 	epIdx := uint32(len(def.Endpoints) - 1)
 
-	// Every SubArena starts with a root node at index 0
 	if len(def.SubArena) == 0 {
 		def.SubArena = append(def.SubArena, engine.SubRouteNode{})
 	}
@@ -25,89 +46,140 @@ func (c *Compiler) BakeSubRouter(def *engine.ApiDefinition, path string, method 
 	for i, seg := range segments {
 		isLast := i == len(segments)-1
 
-		// Identify Parameter: e.g., "{project}"
 		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+
 			paramName := seg[1 : len(seg)-1]
-			slot := c.getSlot(paramName) // Dynamic slot allocation (No more hardcoding)
+			slot := c.getSlot("path." + paramName)
 
 			newNode := engine.SubRouteNode{
-				PrefixLen:   uint16(len(seg)),
-				IsTerminal:  isLast,
-				IsStrict:    isStrict,
-				EndpointIdx: epIdx,
+				PrefixLen: uint16(len(seg)),
 			}
 
 			def.SubArena = append(def.SubArena, newNode)
 			newIdx := uint32(len(def.SubArena) - 1)
 
-			// Set the Fallback Marker on the current node
 			def.SubArena[currIdx].HasParamChild = true
 			def.SubArena[currIdx].ParamChildIdx = newIdx
 			def.SubArena[currIdx].ParamSlot = uint8(slot)
 
 			currIdx = newIdx
+
+			if isLast {
+				registerTerminal(def, currIdx, epIdx, methodIdx, isAny, isStrict)
+			}
+
 		} else {
-			// Static segment
-			currIdx = compileStaticSegment(def, currIdx, seg, isLast, epIdx, isStrict)
+
+			currIdx = compileStaticSegment(
+				def,
+				currIdx,
+				seg,
+				isLast,
+				epIdx,
+				methodIdx,
+				isAny,
+				isStrict,
+			)
 		}
 	}
 
-	return 0 // The root is always 0 for the SubArena
+	return 0
 }
 
-// compileStaticSegment builds a static branch in the SubArena.
-func compileStaticSegment(def *engine.ApiDefinition, parentIdx uint32, seg string, isLast bool, epIdx uint32, isStrict bool) uint32 {
+/*
+registerTerminal marks terminal node for one or all methods.
+*/
+func registerTerminal(
+	def *engine.ApiDefinition,
+	nodeIdx uint32,
+	epIdx uint32,
+	methodIdx int,
+	isAny bool,
+	isStrict bool,
+) {
+
+	node := &def.SubArena[nodeIdx]
+
+	if isAny {
+		for m := 0; m < 5; m++ {
+			if node.AllowedMethods&(1<<m) != 0 {
+				panic("Duplicate route definition")
+			}
+			node.AllowedMethods |= 1 << m
+			node.StrictMethods |= boolToMask(isStrict, m)
+			node.EndpointIdx[m] = epIdx
+		}
+		return
+	}
+
+	if node.AllowedMethods&(1<<methodIdx) != 0 {
+		panic("Duplicate route definition")
+	}
+
+	node.AllowedMethods |= 1 << methodIdx
+	node.StrictMethods |= boolToMask(isStrict, methodIdx)
+	node.EndpointIdx[methodIdx] = epIdx
+}
+
+/*
+compileStaticSegment builds or reuses static branch.
+*/
+func compileStaticSegment(
+	def *engine.ApiDefinition,
+	parentIdx uint32,
+	seg string,
+	isLast bool,
+	epIdx uint32,
+	methodIdx int,
+	isAny bool,
+	isStrict bool,
+) uint32 {
+
 	if seg == "" {
-		// Handle trailing slash or empty segment by marking parent as terminal
-		def.SubArena[parentIdx].IsTerminal = true
-		def.SubArena[parentIdx].IsStrict = isStrict
-		def.SubArena[parentIdx].EndpointIdx = epIdx
+		if isLast {
+			registerTerminal(def, parentIdx, epIdx, methodIdx, isAny, isStrict)
+		}
 		return parentIdx
 	}
 
 	char := seg[0]
 
-	// 1. Check if child already exists
 	existingIdx := def.SubArena[parentIdx].FindChildIdx(char, def.SubArena)
 	if existingIdx != 0 {
-		// If it exists, we just move to it (or update if it's the terminal segment)
 		if isLast {
-			def.SubArena[existingIdx].IsTerminal = true
-			def.SubArena[existingIdx].IsStrict = isStrict
-			def.SubArena[existingIdx].EndpointIdx = epIdx
+			registerTerminal(def, existingIdx, epIdx, methodIdx, isAny, isStrict)
 		}
 		return existingIdx
 	}
 
-	// 2. Create New Node
 	newNode := engine.SubRouteNode{
-		PrefixLen:   uint16(len(seg)),
-		IsTerminal:  isLast,
-		IsStrict:    isStrict,
-		EndpointIdx: epIdx,
+		PrefixLen: uint16(len(seg)),
 	}
 
 	def.SubArena = append(def.SubArena, newNode)
 	newIdx := uint32(len(def.SubArena) - 1)
 
-	// 3. Update Parent's Bitmask
 	parent := &def.SubArena[parentIdx]
-	isHi := uint64(char >> 6)
-	bit := uint64(1) << (char & 63)
-
-	if isHi == 0 {
-		parent.MaskLo |= bit
+	if char < 64 {
+		parent.MaskLo |= 1 << char
 	} else {
-		parent.MaskHi |= bit
+		parent.MaskHi |= 1 << (char - 64)
 	}
-
-	// Note: In a true succinct Radix tree, childIdx points to the START of a block.
-	// Since we are appending one by one during Bake, we are simplifying the
-	// indexing for the SubArena to keep it manageable.
 	if parent.ChildIdx == 0 {
 		parent.ChildIdx = newIdx
 	}
 	parent.NumChildren++
 
+	if isLast {
+		registerTerminal(def, newIdx, epIdx, methodIdx, isAny, isStrict)
+	}
+
 	return newIdx
+}
+
+func boolToMask(val bool, idx int) uint8 {
+	if val {
+		return 1 << idx
+	}
+	return 0
 }

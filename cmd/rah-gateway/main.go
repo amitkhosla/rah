@@ -89,9 +89,11 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	p1Instructions := []engine.Instruction{
 		{
 			Name: "HelloStep",
-			Action: func(ctx *rctx.Context) int16 { // Fixed signature
+			// ADDED: *engine.ExecutionState parameter
+			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 				ctx.Write([]byte("Welcome to Rah Gateway"))
-				return 1
+				// Return PC + 1 to move to the next instruction
+				return s.PC + 1
 			},
 		},
 	}
@@ -106,14 +108,14 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	p2Instructions := []engine.Instruction{
 		{
 			Name: "ShowProfile",
-			Action: func(ctx *rctx.Context) int16 { // Fixed signature
-				// The compiler maps the first path param '{id}' to a slot.
-				// If you used compiler.BakeSubRouter, check which slot it assigned.
-				// Usually, path params start from slot 10 in your Compiler setup.
+			// ADDED: *engine.ExecutionState parameter
+			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+				// In your compiler setup, you assigned nextSlot starting at 10.
+				// Ensure the parameter extraction actually maps to this slot.
 				userId := ctx.ByteSlots[10]
 				ctx.Write([]byte("User Profile for ID: "))
 				ctx.Write(userId)
-				return 1
+				return s.PC + 1
 			},
 		},
 	}
