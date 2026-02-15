@@ -1,31 +1,47 @@
 package control
 
-// StepConfig represents a single step in the JSON flow
+// StepConfig defines a single atomic instruction in a flow.
 type StepConfig struct {
-	Action    string `json:"action"`
-	Key       string `json:"key,omitempty"` // For extract_header
-	As        string `json:"as,omitempty"`  // For variable naming
-	Status    bool   `json:"status,false"`
-	URL       string `json:"url,omitempty"`     // For http_call
-	Method    string `json:"method,omitempty"`  // For http_call
-	SaveAs    string `json:"save_as,omitempty"` // For http_call output
-	Condition string `json:"if,omitempty"`      // For logic branching
-	Then      string `json:"then,omitempty"`    // Fragment name
-	Else      string `json:"else,omitempty"`    // Fragment name
-	Target    string `json:"target,omitempty"`  // For proxy
-	Value     string `json:"value,omitempty"`   // For static writes
-	Path      string `json:"path,omitempty"`    // For JSON path (e.g., user.id)
-	From      string `json:"from,omitempty"`    // Source slot name for JSON extract
-	TTL       uint32 `json:"ttl,omitempty"`     // TTL
+	Action string `json:"action"` // if, http_call, registry_lookup, foreach, call, etc.
+
+	// Variables & Extraction
+	Key string `json:"key,omitempty"` // Header/Query key name
+	As  string `json:"as,omitempty"`  // The semantic name (Compiler maps this to a Slot ID)
+
+	FlowName string `json:"flow_name,omitempty"`
+
+	// HTTP / Proxy Logic
+	URL            string            `json:"url,omitempty"`             // Static URL
+	UrlVar         string            `json:"url_var,omitempty"`         // Slot name for dynamic/fallback URLs
+	Method         string            `json:"method,omitempty"`          // GET, POST, etc.
+	Timeout        uint32            `json:"timeout,omitempty"`         // In milliseconds
+	RetryCondition string            `json:"retry_condition,omitempty"` // e.g., "res.status >= 500"
+	MaxRetries     int               `json:"max_retries,omitempty"`
+	KeyIdentifier  string            `json:"key_identifier,omitempty"`
+	Input          map[string]string `json:"input,omitempty"`
+
+	// Logic & Branching
+	Condition string            `json:"condition,omitempty"` // String logic like "(header.Auth == 'y') && status"
+	Then      string            `json:"then,omitempty"`      // Subflow name to jump to if true
+	Else      string            `json:"else,omitempty"`      // Subflow name to jump to if false
+	Cases     map[string]string `json:"cases,omitempty"`     // For "switch" actions
+	Do        []StepConfig      `json:"do,omitempty"`        //For foreach/retry
+	Source    string            `json:"source,omitempty"`    //For looping
+
+	// Registry & Storage
+	Scope  string `json:"scope,omitempty"` // "tenant", "global", or "cache"
+	Value  string `json:"value,omitempty"` // Static value to set
+	Path   string `json:"path,omitempty"`  // JSONPath or URL Path segment index
+	TTL    uint32 `json:"ttl,omitempty"`
+	OnMiss string `json:"on_miss,omitempty"` // Flow to call if Registry/Cache misses
 }
 
-// ApiConfig is the top-level structure for the JSON input
+// ApiConfig maps a URL path to a specific execution plan.
 type ApiConfig struct {
-	ApiID     string                  `json:"api_id"`
-	Path      string                  `json:"path"`
-	Fragments map[string][]StepConfig `json:"fragments"`
-	FlowID    string                  `json:"flow_id"`
-	Flow      []StepConfig            `json:"flow"`
+	ApiID      string `json:"api_id"`
+	Path       string `json:"path"`
+	FlowName   string `json:"flow_name"` // The entry fragment
+	EntryPoint int16  `json:"-"`         // The Absolute ID in GlobalTable (calculated at Bake)
 }
 
 type FlowUpdate struct {

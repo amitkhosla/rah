@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"io"
-	"math"
 	"net/http"
 	"rah/internal/cache"
 	"rah/internal/config"
@@ -18,8 +17,6 @@ import (
 // 1. Use a sharded channel (chan []byte) to store 4KB slices.
 // 2. Sharding should be based on runtime.NumCPU() to prevent lock contention.
 // 3. Initial allocation happens ONCE at startup.
-
-const StopPlan int16 = math.MaxInt16
 
 type ExecutionStrategy int
 
@@ -101,21 +98,10 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	fm.Extract(ctx, req)
 
 	// 4. Plan Execution
-	fm.executePlan(ctx, endpoint.Plan)
+	Execute(ctx, endpoint.Plan, 0)
 	// MEMORY ASSIGNMENT:
 	// Before processing, assign a ShardID to the context to minimize
 	// cross-CPU cache bouncing during memory retrieval.
-}
-
-func (fm *FlowManager) executePlan(ctx *rctx.Context, plan []Instruction) {
-	pc := 0
-	for pc < len(plan) {
-		offset := plan[pc].Action(ctx)
-		if offset == StopPlan {
-			break
-		}
-		pc += int(offset)
-	}
 }
 
 func (fm *FlowManager) Extract(ctx *rctx.Context, req *http.Request) {
@@ -137,72 +123,6 @@ func (fm *FlowManager) SetState(newState *EngineState) {
 	fm.State.Store(newState)
 }
 
-// resolveSubPath handles Stage 2: Sub-Arena traversal and Param extraction.
-func (fm *FlowManager) resolveSubPath(ctx *rctx.Context, def *ApiDefinition) *Endpoint {
-	mIdx := MethodToIdx(ctx.Method)
-	rootIdx := def.MethodRoots[mIdx]
-
-	if len(def.SubArena) == 0 {
-		ctx.ResponseStatus = 405
-		return nil
-	}
-
-	// Calculate Relative Path
-	baseLen := len(def.BaseRawPath)
-	relPath := ctx.Path[baseLen:]
-
-	// FIX: Optional trailing slash handling
-	// If the request is exactly "/base/" and base is "/base", treat as empty relPath
-	if len(relPath) == 1 && relPath[0] == '/' {
-		relPath = relPath[:0]
-	}
-
-	currIdx := rootIdx
-	strPos := 0
-
-	// Traversal Loop
-	for strPos < len(relPath) {
-		if relPath[strPos] == '/' {
-			strPos++
-			if strPos >= len(relPath) {
-				break
-			}
-		}
-
-		char := relPath[strPos]
-		curr := &def.SubArena[currIdx]
-
-		// A. Static Segment Match
-		nextIdx := curr.FindChildIdx(char, def.SubArena)
-		if nextIdx != 0 {
-			currIdx = nextIdx
-			strPos += int(def.SubArena[nextIdx].PrefixLen)
-			continue
-		}
-
-		// B. Dynamic Path Parameter Fallback
-		if curr.HasParamChild {
-			start := strPos
-			for strPos < len(relPath) && relPath[strPos] != '/' {
-				strPos++
-			}
-			ctx.ByteSlots[curr.ParamSlot] = relPath[start:strPos]
-			currIdx = curr.ParamChildIdx
-			continue
-		}
-
-		ctx.ResponseStatus = 404
-		return nil
-	}
-
-	finalNode := &def.SubArena[currIdx]
-	if !finalNode.IsTerminal {
-		ctx.ResponseStatus = 404
-		return nil
-	}
-
-	return &def.Endpoints[finalNode.EndpointIdx]
-}
 func (fm *FlowManager) ReadBodyToBuffer(ctx *rctx.Context) error {
 	// 1. Reset the buffer to 0 length but keep capacity
 	ctx.RequestBuffer = ctx.RequestBuffer[:0]
@@ -264,4 +184,113 @@ func (fm *FlowManager) ExecuteMultiWrite(ctx *rctx.Context, writers []io.Writer)
 		}
 	}
 	return nil
+}
+
+/*
+resolveSubPath performs Stage 2 routing inside an ApiDefinition.
+
+Architecture Overview:
+
+Stage 1:
+- RahRouter resolves base path → ApiDefinition.
+
+Stage 2:
+- SubArena radix traversal resolves:
+  - Static segments (priority)
+  - Dynamic path params (fallback)
+  - HTTP method differentiation
+  - Strict vs non-strict trailing slash
+
+Performance Characteristics:
+- Lock-free
+- No heap allocations
+- Zero-copy path param extraction
+- O(path length) traversal
+
+Behavior:
+- Returns 404 if path does not match.
+- Returns 405 if method unsupported.
+- Returns endpoint execution plan if matched.
+*/
+/*
+resolveSubPath performs Stage 2 routing.
+
+Behavior:
+- 404 if path not found.
+- 405 if path found but method not allowed.
+- Strict slash enforced per method.
+*/
+
+func (fm *FlowManager) resolveSubPath(
+	ctx *rctx.Context,
+	def *ApiDefinition,
+) *Endpoint {
+
+	if len(def.SubArena) == 0 {
+		ctx.ResponseStatus = 404
+		return nil
+	}
+
+	mIdx := MethodToIdx(ctx.Method)
+
+	currIdx := uint32(0)
+
+	baseLen := len(def.BaseRawPath)
+	relPath := ctx.Path[baseLen:]
+
+	strPos := 0
+	if len(relPath) > 0 && relPath[0] == '/' {
+		strPos = 1
+	}
+
+	pathLen := len(relPath)
+
+	for strPos < pathLen {
+
+		char := relPath[strPos]
+		curr := &def.SubArena[currIdx]
+
+		nextIdx := curr.FindChildIdx(char, def.SubArena)
+		if nextIdx != 0 {
+			currIdx = nextIdx
+			strPos += int(def.SubArena[nextIdx].PrefixLen)
+			if strPos < pathLen && relPath[strPos] == '/' {
+				strPos++
+			}
+			continue
+		}
+
+		if curr.HasParamChild {
+			start := strPos
+			for strPos < pathLen && relPath[strPos] != '/' {
+				strPos++
+			}
+			slot := curr.ParamSlot
+			ctx.ByteSlots[slot] = relPath[start:strPos]
+			currIdx = curr.ParamChildIdx
+			if strPos < pathLen && relPath[strPos] == '/' {
+				strPos++
+			}
+			continue
+		}
+
+		ctx.ResponseStatus = 404
+		return nil
+	}
+
+	node := &def.SubArena[currIdx]
+
+	if node.AllowedMethods&(1<<mIdx) == 0 {
+		ctx.ResponseStatus = 405
+		return nil
+	}
+
+	if node.StrictMethods&(1<<mIdx) != 0 {
+		if len(relPath) > 0 && relPath[len(relPath)-1] == '/' {
+			ctx.ResponseStatus = 404
+			return nil
+		}
+	}
+
+	return &def.Endpoints[node.EndpointIdx[mIdx]]
 }

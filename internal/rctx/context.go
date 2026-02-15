@@ -22,11 +22,19 @@ type HeaderMutation struct {
 	Op    uint8 // 0: Set, 1: Remove
 }
 
-// RouteMatch holds the result of the Radix Tree lookup.
+// internal/rctx/context.go
+
+type ParamOffset struct {
+	Start uint32
+	End   uint32
+}
+
 type RouteMatch struct {
-	Plan         any // Cast to *engine.Plan in the engine package
-	ParamCount   int
-	ParamIndices [10]int // Pairs of [start, end] offsets into ctx.Path
+	Plan       any
+	ParamCount int
+	// We limit to 10 params per API. This is a hard-coded architectural limit
+	// that ensures the struct size remains constant and cache-friendly.
+	Params [10]ParamOffset
 }
 
 type Context struct {
@@ -240,4 +248,39 @@ func (ctx *Context) FinalizeHeaders() {
 
 	ctx.Writer.WriteHeader(ctx.ResponseStatus)
 	ctx.headerSent = true
+}
+
+// Add these to internal/rctx/context.go
+
+// GetCollection abstracts fetching arrays of data for loops
+func (ctx *Context) GetCollection(key string) [][]byte {
+	switch key {
+	case "cookies":
+		// Zero-alloc cookie extraction logic
+		return [][]byte{} // Implementation here
+	case "headers":
+		// Return all values for a specific header
+		return [][]byte{}
+	default:
+		return nil
+	}
+}
+
+func (ctx *Context) SetSlot(idx int, val []byte) {
+	if idx < len(ctx.ByteSlots) {
+		ctx.ByteSlots[idx] = val
+	}
+}
+
+func (ctx *Context) SetInt(idx int, val int64) {
+	if idx < len(ctx.IntSlots) {
+		ctx.IntSlots[idx] = val
+	}
+}
+
+func (ctx *Context) GetInt(idx int) int64 {
+	if idx < len(ctx.IntSlots) {
+		return ctx.IntSlots[idx]
+	}
+	return 0
 }

@@ -72,7 +72,7 @@ func (r *FlowRegistry) Call(name string, ctx *rctx.Context) int16 {
 		return fn(ctx)
 	}
 	if plan, ok := r.dynamicFlows[name]; ok {
-		Run(plan, ctx)
+		Execute(ctx, plan, 0)
 	}
 	return 1
 }
