@@ -7,18 +7,25 @@ import (
 	"unsafe"
 )
 
+type routerSnapshot struct {
+	arena []RouteNode
+	table []byte
+}
+
 type RahRouter struct {
-	mu          sync.Mutex   // Protects the Builder during 'Add' calls
-	builder     *BuilderNode // The flexible tree for modifications
-	arena       atomic.Value // Stores []RouteNode
-	prefixTable atomic.Value // Stores []byte
+	mu       sync.Mutex   // Protects the Builder during 'Add' calls
+	builder  *BuilderNode // The flexible tree for modifications
+	snapshot atomic.Value // Stores routerSnapshot
 }
 
 func New() *RahRouter {
 	router := &RahRouter{
 		builder: NewBuilder(), // Starts with an empty BuilderNode
 	}
-	router.arena.Store([]RouteNode{})
+	router.snapshot.Store(routerSnapshot{
+		arena: []RouteNode{},
+		table: []byte{},
+	})
 	return router
 }
 
@@ -32,16 +39,16 @@ func (r *RahRouter) Add(path string, apiId uint32) {
 	// Bake both parts
 	nodes, table := r.builder.BakeToArena()
 
-	// Atomic store both
-	r.arena.Store(nodes)
-	r.prefixTable.Store(table)
+	// Atomic store as a single immutable snapshot
+	r.snapshot.Store(routerSnapshot{arena: nodes, table: table})
 }
 
 // Lookup finds the API name. This is the "Reader" path.
 // It uses NO LOCKS and is incredibly fast.
 func (r *RahRouter) Lookup(path string) uint32 {
-	currentArena := r.arena.Load().([]RouteNode)
-	table := r.prefixTable.Load().([]byte)
+	snap := r.snapshot.Load().(routerSnapshot)
+	currentArena := snap.arena
+	table := snap.table
 	if len(currentArena) == 0 {
 		return 0
 	}
@@ -94,7 +101,6 @@ func (r *RahRouter) AddMany(routes map[string]uint32) {
 
 	nodes, table := r.builder.BakeToArena()
 
-	// Store both atomically
-	r.arena.Store(nodes)
-	r.prefixTable.Store(table)
+	// Atomic store as a single immutable snapshot
+	r.snapshot.Store(routerSnapshot{arena: nodes, table: table})
 }

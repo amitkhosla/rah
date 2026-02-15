@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestGemRouter_EmptyLookup(t *testing.T) {
+	r := New()
+	if got := r.Lookup("/v1/any"); got != 0 {
+		t.Fatalf("expected 0 for empty router lookup, got %d", got)
+	}
+}
+
 // TestSubpathMatching ensures that basepaths correctly "claim" sub-paths
 // unless a more specific route exists.
 func TestGemRouter_SubpathMatching(t *testing.T) {
