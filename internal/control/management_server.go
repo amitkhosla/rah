@@ -91,7 +91,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 
 			// Map the entry point of the Shared Flow to the Radix Tree root for this API
 			// 'ANY' implies this flow handles all HTTP methods unless sub-routed
-			s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true)
+			s.Compiler.BakeSubRouter(def, cleanPath, "ANY", instructions, true)
 
 			// Grow newDefs if the Registry assigned an ID outside current bounds
 			if int(id) >= len(newDefs) {
