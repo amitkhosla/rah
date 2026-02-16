@@ -133,7 +133,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			Name:   "LOOP_GATE",
 			Action: steps.LoopGate(step.Source, valSlot, iterSlot, gateID+1, exitID),
 		}
-		
+
 	case "call":
 		// Resolved at compile time via FragmentMap
 		if targetID, ok := c.FragmentMap[step.FlowName]; ok {
