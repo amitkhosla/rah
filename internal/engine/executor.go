@@ -12,7 +12,7 @@ const StopPlan int16 = -1
 type ExecutionState struct {
 	// LinkStack stores absolute IDs for function-call returns.
 	// Index 0 might be the return for Fragment A, Index 1 for Fragment B, etc.
-	LinkStack [4]int16
+	LinkStack [16]int16
 	// StackPtr tracks our current depth in the LinkStack.
 	StackPtr  int8
 	PC        int16
