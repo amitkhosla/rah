@@ -198,14 +198,16 @@ func (cm *CacheManager) Put(
 
 	region := cm.regions[classID][tierID]
 
-	offset, generation, oldFP, ok := region.Write(tenantID, fingerprint, value)
+	offset, generation, oldFP, hasOld, ok := region.Write(tenantID, fingerprint, value)
 	if !ok {
 		return 0, false
 	}
 
-	// Remove overwritten expired entry from index
-	if oldFP != nil {
-		cm.index.Delete(*oldFP)
+	// Remove overwritten expired entry from index and accounting.
+	// We decrement counters only if old fingerprint was still indexed.
+	if hasOld && cm.index.Delete(oldFP.fingerprint) {
+		oldEntrySize := uint64(32 + oldFP.valueLen)
+		cm.subUsage(oldFP.tenantID, oldEntrySize)
 	}
 
 	ptr := PackPointer(TagSlabRAM, uint8(classID), uint8(tierID), generation, offset)
@@ -220,6 +222,19 @@ func (cm *CacheManager) Put(
 	cm.globalUsed.Add(entrySize)
 
 	return ptr, true
+}
+
+func subtractUint64(v *atomic.Uint64, delta uint64) {
+	if delta == 0 {
+		return
+	}
+
+	v.Add(^uint64(delta - 1))
+}
+
+func (cm *CacheManager) subUsage(tenantID uint16, entrySize uint64) {
+	subtractUint64(&cm.getTenantCounter(tenantID).used, entrySize)
+	subtractUint64(&cm.globalUsed, entrySize)
 }
 
 /*

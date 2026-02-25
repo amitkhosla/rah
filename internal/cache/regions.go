@@ -18,6 +18,12 @@ type Region struct {
 	mu sync.Mutex
 }
 
+type overwrittenEntry struct {
+	fingerprint [16]byte
+	tenantID    uint16
+	valueLen    uint32
+}
+
 func NewRegion(size uint64, ttl uint32) *Region {
 	return &Region{
 		memory:     make([]byte, size),
@@ -33,7 +39,8 @@ func (r *Region) Write(
 ) (
 	offset uint64,
 	generation uint32,
-	overwritten *[16]byte,
+	overwritten overwrittenEntry,
+	hasOverwritten bool,
 	ok bool,
 ) {
 
@@ -44,7 +51,7 @@ func (r *Region) Write(
 	totalSize := headerSize + uint64(len(value))
 
 	if totalSize > r.capacity {
-		return 0, 0, nil, false
+		return 0, 0, overwritten, false, false
 	}
 
 	now := uint32(time.Now().Unix())
@@ -61,12 +68,19 @@ func (r *Region) Write(
 
 	// If slot is occupied and not expired → cannot overwrite
 	if existing.Expiry > now {
-		return 0, 0, nil, false
+		return 0, 0, overwritten, false, false
 	}
 
-	// If expired and fingerprint non-zero → mark for index deletion
+	// Non-zero expiry means this slot had a previous entry; at this point it is
+	// already expired (existing.Expiry <= now), so return old metadata for
+	// index/accounting cleanup in CacheManager.
 	if existing.Expiry != 0 {
-		overwritten = &existing.Fingerprint
+		overwritten = overwrittenEntry{
+			fingerprint: existing.Fingerprint,
+			tenantID:    existing.TenantID,
+			valueLen:    existing.ValueLen,
+		}
+		hasOverwritten = true
 	}
 
 	header := EntryHeader{
@@ -82,7 +96,7 @@ func (r *Region) Write(
 
 	r.writePos += totalSize
 
-	return offset, r.generation, overwritten, true
+	return offset, r.generation, overwritten, hasOverwritten, true
 }
 
 func (r *Region) Read(
