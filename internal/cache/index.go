@@ -150,7 +150,7 @@ func lower64(fp [16]byte) uint64 {
 	return binary.LittleEndian.Uint64(fp[:8])
 }
 
-func (idx *LookupIndex) Delete(fp [16]byte) {
+func (idx *LookupIndex) Delete(fp [16]byte) bool {
 
 	sig := lower64(fp)
 	shard := idx.shards[sig&(ShardCount-1)]
@@ -170,11 +170,13 @@ func (idx *LookupIndex) Delete(fp [16]byte) {
 			t.data[pos+1] = 0
 			shard.count--
 			shard.tombstones++
-			return
+			return true
 		}
 
 		if t.data[pos] == Empty {
-			return
+			return false
 		}
 	}
+
+	return false
 }
