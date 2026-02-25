@@ -1,7 +1,7 @@
 package cache
 
 import (
-	"hash/fnv"
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 )
@@ -37,43 +37,48 @@ type LookupIndex struct {
 	shards [ShardCount]*Shard
 }
 
-// NewLookupIndex initializes a 1024-shard index.
-func NewLookupIndex() *LookupIndex {
+func NewLookupIndex(expectedEntries uint64) *LookupIndex {
 	idx := &LookupIndex{}
+
+	entriesPerShard := expectedEntries / ShardCount
+	capacity := nextPowerOfTwo(entriesPerShard * 2) // load factor safety
+
 	for i := 0; i < ShardCount; i++ {
 		t := &table{
-			data: make([]uint64, 512), // 512 uint64s = 256 slots (Signature + Pointer)
-			mask: (512 / (SlotsPerBucket * 2)) - 1,
+			data: make([]uint64, capacity*2),
+			mask: capacity - 1,
 		}
 		idx.shards[i] = &Shard{}
 		idx.shards[i].tbl.Store(t)
 	}
+
 	return idx
 }
 
 // --- PUBLIC API ---
 
-// Set associates a key with a pointer. It is thread-safe.
-func (idx *LookupIndex) Set(tenantID uint16, key string, ptr uint64) {
-	s := idx.shards[tenantID%ShardCount]
+// Set inserts fingerprint → pointer
+func (idx *LookupIndex) Set(fp [16]byte, ptr uint64) bool {
 
-	// Writers must lock to prevent multiple writers from colliding.
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sig := lower64(fp)
+	shard := idx.shards[sig&(ShardCount-1)]
 
-	sig := hashKey(key)
-	idx.setInternal(s, sig, ptr)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	return idx.setInternal(shard, sig, ptr)
 }
 
-// Get finds the pointer for a given key. It is lock-free and high-performance.
-func (idx *LookupIndex) Get(tenantID uint16, key string) (uint64, bool) {
-	sig := hashKey(key)
-	s := idx.shards[tenantID%ShardCount]
+// Get retrieves pointer by fingerprint
+func (idx *LookupIndex) Get(fp [16]byte) (uint64, bool) {
 
-	// ATOMIC LOAD: Gets a consistent snapshot of the data array and mask.
-	t := s.tbl.Load()
+	sig := lower64(fp)
+	shard := idx.shards[sig&(ShardCount-1)]
+
+	t := shard.tbl.Load()
 
 	bucketBase := (sig & t.mask) * SlotsPerBucket * 2
+
 	for i := 0; i < 16; i++ {
 		pos := (bucketBase + uint64(i*2)) % uint64(len(t.data))
 		currSig := t.data[pos]
@@ -84,7 +89,6 @@ func (idx *LookupIndex) Get(tenantID uint16, key string) (uint64, bool) {
 		if currSig == Empty {
 			return 0, false
 		}
-		// Continue if Tombstone
 	}
 	return 0, false
 }
@@ -93,82 +97,84 @@ func (idx *LookupIndex) Get(tenantID uint16, key string) (uint64, bool) {
 
 // setInternal performs the actual insertion.
 // It does NOT lock because it expects the caller (Set) to hold the shard lock.
-func (idx *LookupIndex) setInternal(s *Shard, sig uint64, ptr uint64) {
+func (idx *LookupIndex) setInternal(s *Shard, sig uint64, ptr uint64) bool {
 	t := s.tbl.Load()
 
-	// 1. Check Load Factor
-	if float64(s.count+s.tombstones) > float64(len(t.data)/2)*LoadFactor {
-		s.resize()
-		t = s.tbl.Load() // Refresh local reference after resize
-	}
-
-	// 2. Linear Probing with Tombstone Resurrection
 	bucketBase := (sig & t.mask) * SlotsPerBucket * 2
-	firstTombstone := -1
 
 	for i := 0; i < 16; i++ {
 		pos := (bucketBase + uint64(i*2)) % uint64(len(t.data))
 		currSig := t.data[pos]
 
 		if currSig == sig {
-			t.data[pos+1] = ptr // Update existing
-			return
+			t.data[pos+1] = ptr
+			return true
 		}
 
 		if currSig == Empty {
-			target := pos
-			if firstTombstone != -1 {
-				target = uint64(firstTombstone)
-				s.tombstones--
-			}
-			t.data[target] = sig
-			t.data[target+1] = ptr
+			t.data[pos] = sig
+			t.data[pos+1] = ptr
 			s.count++
+			return true
+		}
+	}
+
+	// No free slot in neighborhood
+	return false
+}
+
+// nextPowerOfTwo returns the smallest power-of-two
+// that is >= n.
+//
+// If n is already power-of-two, it returns n.
+//
+// This is required because our hash table uses
+// bitmask indexing (index = hash & (capacity-1)).
+func nextPowerOfTwo(n uint64) uint64 {
+	if n == 0 {
+		return 1
+	}
+
+	n--
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n |= n >> 32
+	n++
+
+	return n
+}
+func lower64(fp [16]byte) uint64 {
+	return binary.LittleEndian.Uint64(fp[:8])
+}
+
+func (idx *LookupIndex) Delete(fp [16]byte) {
+
+	sig := lower64(fp)
+	shard := idx.shards[sig&(ShardCount-1)]
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	t := shard.tbl.Load()
+
+	bucketBase := (sig & t.mask) * SlotsPerBucket * 2
+
+	for i := 0; i < 16; i++ {
+		pos := (bucketBase + uint64(i*2)) % uint64(len(t.data))
+
+		if t.data[pos] == sig {
+			t.data[pos] = Tombstone
+			t.data[pos+1] = 0
+			shard.count--
+			shard.tombstones++
 			return
 		}
 
-		if currSig == Tombstone && firstTombstone == -1 {
-			firstTombstone = int(pos)
+		if t.data[pos] == Empty {
+			return
 		}
 	}
-
-	// 3. Neighborhood is full. Force resize and retry.
-	// This recursion is safe because we still hold s.mu.
-	s.resize()
-	idx.setInternal(s, sig, ptr)
-}
-
-// resize doubles the capacity and removes all tombstones.
-func (s *Shard) resize() {
-	oldTbl := s.tbl.Load()
-	newSize := len(oldTbl.data) * 2
-	newData := make([]uint64, newSize)
-	newMask := uint64(newSize/(SlotsPerBucket*2)) - 1
-
-	for i := 0; i < len(oldTbl.data); i += 2 {
-		sig, ptr := oldTbl.data[i], oldTbl.data[i+1]
-		if sig == Empty || sig == Tombstone {
-			continue
-		}
-
-		// Re-hash into the new table
-		bucketIdx := (sig & newMask) * SlotsPerBucket * 2
-		for j := uint64(0); ; j++ {
-			pos := (bucketIdx + (j * 2)) % uint64(newSize)
-			if newData[pos] == Empty {
-				newData[pos], newData[pos+1] = sig, ptr
-				break
-			}
-		}
-	}
-
-	// PUBLISH: Swap the old table with the new table atomically.
-	s.tbl.Store(&table{data: newData, mask: newMask})
-	s.tombstones = 0
-}
-
-func hashKey(key string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(key))
-	return h.Sum64()
 }
