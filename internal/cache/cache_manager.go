@@ -1,85 +1,263 @@
 package cache
 
 import (
-	"rah/internal/config"
+	"errors"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
+/*
+CacheManager is a high-performance, bounded, multi-tenant in-memory cache.
+
+Design Principles:
+------------------
+1. Deterministic memory usage (preallocated regions).
+2. No dynamic slab creation.
+3. No resizing under load.
+4. Lock-free reads (index).
+5. Shard-level locking for writes only.
+6. 128-bit fingerprint for collision resistance.
+7. Per-tenant quota enforcement.
+8. Circular region per SizeClass × TTLTier.
+
+Memory Layout:
+--------------
+TotalMemory is divided across:
+    len(SizeClasses) × len(TTLTiers)
+
+Each combination gets one Region (circular buffer).
+
+Index:
+------
+Sharded open-addressed hash table.
+Lower 64 bits of fingerprint used for shard routing.
+
+Safety:
+-------
+Each entry validates:
+    - Generation
+    - Expiry
+    - TenantID
+    - 128-bit fingerprint
+*/
+
 type CacheManager struct {
-	SlabRegistry [64]*Slab
-	SlabMap      map[uint64]uint8
-	cfg          config.GlobalLayout
-	currentUsage uint64
-	nextSlabID   uint32
-	Index        *LookupIndex
-	mu           sync.RWMutex
+	// Configured at startup (immutable after init)
+	totalMemory uint64
+	sizeClasses []uint32
+	ttlTiers    []uint32
+
+	// 2D region matrix: [sizeClass][ttlTier]
+	regions [][]*Region
+
+	// Lock-free read index
+	index *LookupIndex
+
+	// Per-tenant quota configuration
+	tenantLimit uint64 // max bytes per tenant
+
+	// tenantID -> *tenantCounter
+	tenantUsage sync.Map
+
+	// Stats
+	globalUsed atomic.Uint64
 }
 
-func NewCacheManager(cfg config.GlobalLayout) *CacheManager {
-	return &CacheManager{
-		SlabMap: make(map[uint64]uint8),
-		cfg:     cfg,
-		Index:   NewLookupIndex(),
+/*
+tenantCounter tracks memory usage per tenant.
+
+Atomic ensures no race during concurrent writes.
+*/
+type tenantCounter struct {
+	used atomic.Uint64
+}
+
+/*
+NewCacheManager initializes the cache with fixed memory layout.
+
+All memory is preallocated here.
+No allocation happens during steady-state operation.
+*/
+func NewCacheManager(
+	totalMemory uint64,
+	sizeClasses []uint32,
+	ttlTiers []uint32,
+	expectedEntries uint64,
+	tenantLimit uint64,
+) (*CacheManager, error) {
+
+	if len(sizeClasses) == 0 || len(ttlTiers) == 0 {
+		return nil, errors.New("sizeClasses and ttlTiers must not be empty")
+	}
+
+	cm := &CacheManager{
+		totalMemory: totalMemory,
+		sizeClasses: sizeClasses,
+		ttlTiers:    ttlTiers,
+		index:       NewLookupIndex(expectedEntries),
+		tenantLimit: tenantLimit,
+	}
+
+	cm.allocateRegions()
+
+	return cm, nil
+}
+
+/*
+allocateRegions preallocates memory evenly across
+SizeClass × TTLTier combinations.
+
+This ensures fully bounded memory.
+*/
+func (cm *CacheManager) allocateRegions() {
+
+	classCount := len(cm.sizeClasses)
+	tierCount := len(cm.ttlTiers)
+
+	totalRegions := classCount * tierCount
+	regionMemory := cm.totalMemory / uint64(totalRegions)
+
+	cm.regions = make([][]*Region, classCount)
+
+	for i := 0; i < classCount; i++ {
+		cm.regions[i] = make([]*Region, tierCount)
+
+		for j := 0; j < tierCount; j++ {
+			cm.regions[i][j] = NewRegion(regionMemory, cm.ttlTiers[j])
+		}
 	}
 }
 
-func (sm *CacheManager) Put(tenantID uint16, keyBytes []byte, data []byte, ttl uint32) SmartPointer {
-	key := unsafe.String(unsafe.SliceData(keyBytes), len(keyBytes))
-	size := uint32(len(data))
-	isTiny := size <= 14
+/*
+selectSizeClass returns the smallest size class that can hold valueLen.
 
-	// 1. Slab Selection
-	classKey := uint64(size)<<32 | uint64(ttl)
-	if isTiny {
-		classKey = 0xFFFFFFFF | uint64(ttl)
+O(N) over small slice (usually <= 8 classes).
+*/
+func (cm *CacheManager) selectSizeClass(valueLen int) int {
+	for i, size := range cm.sizeClasses {
+		if uint32(valueLen) <= size {
+			return i
+		}
 	}
-
-	sm.mu.Lock()
-	slabID, exists := sm.SlabMap[classKey]
-	if !exists {
-		slabID = uint8(atomic.AddUint32(&sm.nextSlabID, 1) - 1)
-		sm.SlabMap[classKey] = slabID
-		// Logic to determine initial size (default to 2MB for now)
-		sm.SlabRegistry[slabID] = NewSlab(slabID, 2*1024*1024, ttl, isTiny)
-	}
-	slab := sm.SlabRegistry[slabID]
-	sm.mu.Unlock()
-
-	// 2. Physical Write
-	segID, version, offset := slab.Push(tenantID, key, data)
-
-	// 3. Fix: Cast tag to uint8 and Pack [cite: 3]
-	var tag uint8 = TagSlabRAM
-	if isTiny {
-		tag = TagTiny
-	}
-
-	ptr := PackPointer(tag, slab.ID, version, segID, size, offset)
-
-	// 4. Update Index
-	sm.Index.Set(tenantID, key, uint64(ptr))
-
-	return ptr
+	return len(cm.sizeClasses) - 1
 }
 
-func (sm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
-	keyStr := unsafe.String(unsafe.SliceData(key), len(key))
+/*
+selectTTLTier returns the smallest tier >= requested TTL.
+*/
+func (cm *CacheManager) selectTTLTier(ttl uint32) int {
+	for i, tier := range cm.ttlTiers {
+		if ttl <= tier {
+			return i
+		}
+	}
+	return len(cm.ttlTiers) - 1
+}
 
-	rawPtr, found := sm.Index.Get(tenantID, keyStr)
-	if !found {
+/*
+getTenantCounter returns (or creates) atomic usage counter for tenant.
+*/
+func (cm *CacheManager) getTenantCounter(tenantID uint16) *tenantCounter {
+	val, _ := cm.tenantUsage.LoadOrStore(tenantID, &tenantCounter{})
+	return val.(*tenantCounter)
+}
+
+/*
+Put inserts value into cache.
+
+Flow:
+1. Compute 128-bit fingerprint.
+2. Enforce tenant quota.
+3. Select size class & TTL tier.
+4. Attempt write into region.
+5. Insert pointer into index.
+
+If region is full or quota exceeded, caller may fallback to external store.
+*/
+func (cm *CacheManager) Put(
+	tenantID uint16,
+	key []byte,
+	value []byte,
+	ttl uint32,
+) (SmartPointer, bool) {
+
+	fingerprint := Hash128(tenantID, key)
+
+	entrySize := uint64(32 + len(value))
+
+	// Tenant quota check
+	counter := cm.getTenantCounter(tenantID)
+	current := counter.used.Load()
+
+	if cm.tenantLimit > 0 && current+entrySize > cm.tenantLimit {
+		return 0, false
+	}
+
+	classID := cm.selectSizeClass(len(value))
+	tierID := cm.selectTTLTier(ttl)
+
+	region := cm.regions[classID][tierID]
+
+	offset, generation, oldFP, ok := region.Write(tenantID, fingerprint, value)
+	if !ok {
+		return 0, false
+	}
+
+	// Remove overwritten expired entry from index
+	if oldFP != nil {
+		cm.index.Delete(*oldFP)
+	}
+
+	ptr := PackPointer(TagSlabRAM, uint8(classID), uint8(tierID), generation, offset)
+
+	// Insert into index
+	if !cm.index.Set(fingerprint, uint64(ptr)) {
+		return 0, false
+	}
+
+	// Update accounting
+	counter.used.Add(entrySize)
+	cm.globalUsed.Add(entrySize)
+
+	return ptr, true
+}
+
+/*
+Get retrieves value from cache.
+
+Lock-free read path:
+- Compute fingerprint.
+- Index lookup.
+- Region read validation.
+*/
+func (cm *CacheManager) Get(
+	tenantID uint16,
+	key []byte,
+) ([]byte, bool) {
+
+	fingerprint := Hash128(tenantID, key)
+
+	rawPtr, ok := cm.index.Get(fingerprint)
+	if !ok {
 		return nil, false
 	}
 
 	ptr := SmartPointer(rawPtr)
 
-	// Use the functional helper from cache_types.go
-	sID := GetSlabID(ptr)
-	slab := sm.SlabRegistry[sID]
-	if slab == nil {
+	tag, classID, tierID, generation, offset := Unpack(ptr)
+
+	if tag != TagSlabRAM {
 		return nil, false
 	}
 
-	return slab.Get(ptr, keyStr, tenantID)
+	region := cm.regions[classID][tierID]
+
+	return region.Read(offset, generation, tenantID, fingerprint)
+}
+
+/*
+Stats returns current memory usage metrics.
+*/
+func (cm *CacheManager) Stats() (globalUsed uint64) {
+	return cm.globalUsed.Load()
 }
