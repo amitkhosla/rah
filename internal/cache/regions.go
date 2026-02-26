@@ -18,6 +18,12 @@ type Region struct {
 	mu sync.Mutex
 }
 
+type overwrittenEntry struct {
+	fingerprint [16]byte
+	tenantID    uint16
+	valueLen    uint32
+}
+
 func NewRegion(size uint64, ttl uint32) *Region {
 	return &Region{
 		memory:     make([]byte, size),
@@ -30,7 +36,13 @@ func (r *Region) Write(
 	tenantID uint16,
 	fingerprint [16]byte,
 	value []byte,
-) (offset uint64, generation uint32, overwritten *[16]byte, ok bool) {
+) (
+	offset uint64,
+	generation uint32,
+	overwritten overwrittenEntry,
+	hasOverwritten bool,
+	ok bool,
+) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -39,7 +51,7 @@ func (r *Region) Write(
 	totalSize := headerSize + uint64(len(value))
 
 	if totalSize > r.capacity {
-		return 0, 0, nil, false
+		return 0, 0, overwritten, false, false
 	}
 
 	now := uint32(clock.CurrentClock.UnixCurTime)
@@ -53,11 +65,19 @@ func (r *Region) Write(
 	existing := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
 
 	if existing.Expiry > now {
-		return 0, 0, nil, false
+		return 0, 0, overwritten, false, false
 	}
 
+	// Non-zero expiry means this slot had a previous entry; at this point it is
+	// already expired (existing.Expiry <= now), so return old metadata for
+	// index/accounting cleanup in CacheManager.
 	if existing.Expiry != 0 {
-		overwritten = &existing.Fingerprint
+		overwritten = overwrittenEntry{
+			fingerprint: existing.Fingerprint,
+			tenantID:    existing.TenantID,
+			valueLen:    existing.ValueLen,
+		}
+		hasOverwritten = true
 	}
 
 	// REPLACED BLOCK: Direct pointer assignment instead of copy()
@@ -71,7 +91,7 @@ func (r *Region) Write(
 	copy(r.memory[offset+32:], value)
 
 	r.writePos += totalSize
-	return offset, r.generation, overwritten, true
+	return offset, r.generation, overwritten, hasOverwritten, true
 }
 
 func (r *Region) Read(
