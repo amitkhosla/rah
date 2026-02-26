@@ -1,24 +1,123 @@
-# Cache Index Architecture: Sharded 4-Way Buckets
+# Cache Architecture (Current Implementation)
 
-## 1. Why Sharding (1024 Shards)?
-- **CPU Parallelism**: On a 2-core machine, 1024 shards virtually eliminate Mutex contention.
-- **Memory Predictability**: Shard 0 (Global Tenant) can grow to 100MB while Shard 5 (Small Tenant) stays at 8KB.
-- **GC Safety**: We store data in `[]uint64`. Go's GC sees 1024 objects regardless of having 10 million keys.
+This document describes the **current** cache behavior implemented under `internal/cache`.
 
-## 2. Why 4-Slot Buckets?
-- **CPU Cache Lines**: A bucket of 4 slots (8 `uint64`s) is exactly 64 bytes. This matches a standard CPU Cache Line.
-- **O(1) Access**: We jump to a bucket via bitwise math and scan only 64 bytes. This is the fastest possible lookup.
+## 1) High-level design
 
-## 3. Handling Collisions (Tombstones vs. Shifting)
-### Issues Identified:
-- **Deletion Gaps**: Simply deleting a key (setting to 0) breaks the linear probe chain.
-- **OOM**: Accumulating infinite tombstones leads to memory exhaustion.
+The cache is a bounded in-memory system with:
 
-### Decisions Made:
-- **Tombstone Resurrection**: New `Put` operations actively look for tombstones and "resurrect" them, keeping the chain short.
-- **Filter-on-Resize**: When a shard reaches 70% capacity, we double the size and **drop all tombstones**. This "deep cleans" the index.
-- **Neighborhood Capping**: We limit scans to 4 buckets. If a neighborhood is full, we force a resize to maintain $O(1)$ performance.
+- **Fixed memory regions** split by `SizeClass × TTLTier`
+- **Sharded hash index** for key → smart pointer lookup
+- **Per-tenant usage accounting** + global accounting
+- **Expired-slot overwrite cleanup** to keep index/accounting consistent
 
-## 4. Default Tenant Location
-- **Decision**: The Default/Global tenant is assigned to **Shard 0**.
-- **Reason**: This maintains code symmetry. The system doesn't need "if tenant == global" branches, which keeps the CPU instruction pipeline clean.
+At startup, memory is preallocated; runtime does not create new regions.
+
+---
+
+## 2) Core components
+
+### `CacheManager`
+
+Responsibilities:
+
+- routes writes to region (`sizeClass`, `ttlTier` selection)
+- owns the lookup index
+- enforces per-tenant limit
+- tracks per-tenant/global used bytes
+- coordinates overwrite cleanup when an expired slot is reused
+
+### `Region`
+
+A circular byte arena for one `sizeClass × ttlTier` pair.
+
+Each record is:
+
+- `EntryHeader` (**32 bytes**) + `value`
+
+Header fields include expiry, value length, generation, tenant ID, fingerprint.
+
+### `LookupIndex`
+
+- 1024 shards (`ShardCount`)
+- open addressing over `[]uint64`
+- 4 slots/bucket (`SlotsPerBucket`)
+- writer operations (`Set`, `Delete`) are shard-locked
+- reads (`Get`) are lock-free against current shard table pointer
+
+---
+
+## 3) Write flow (`Put`)
+
+1. Build 128-bit fingerprint from `(tenantID, key)`.
+2. Compute `entrySize = 32 + len(value)`.
+3. Check tenant quota (`tenantLimit`).
+4. Select region by size class and ttl tier.
+5. `Region.Write(...)` attempts insert:
+   - if target slot has non-expired entry (`Expiry > now`) → fail write
+   - if slot had expired entry (`Expiry != 0`) → return old metadata (`fingerprint, tenantID, valueLen`)
+6. If old metadata exists:
+   - delete old fingerprint from index
+   - decrement usage **only if delete actually removed index entry**
+7. Insert new pointer in index.
+8. Increment tenant/global accounting for new entry.
+
+---
+
+## 4) Read flow (`Get`)
+
+1. Build fingerprint.
+2. Lookup pointer in index.
+3. Decode smart pointer `(tag, classID, tierID, generation, offset)`.
+4. Region validates generation, tenant, expiry, fingerprint.
+5. Return value bytes.
+
+---
+
+## 5) Accounting rules (current)
+
+- Insert increments by `32 + len(value)`.
+- Expired overwrite decrements old owner by `32 + oldValueLen` only if index deletion succeeded.
+- Then new entry increments current tenant/global.
+
+This prevents duplicate decrements when the old index entry was already removed.
+
+---
+
+## 6) Current data-flow diagram
+
+```mermaid
+flowchart TD
+    A[Put tenant,key,value,ttl] --> B[Hash128 fingerprint]
+    B --> C[Quota check]
+    C --> D[Select region by size/ttl]
+    D --> E[Region.Write]
+
+    E -->|slot live: Expiry > now| F[Return false]
+    E -->|slot empty/new| G[Index.Set new pointer]
+    E -->|slot expired: return old metadata| H[Index.Delete old fingerprint]
+
+    H -->|delete=true| I[Decrement old tenant/global usage]
+    H -->|delete=false| J[Skip decrement]
+
+    I --> G
+    J --> G
+
+    G --> K[Increment new tenant/global usage]
+    K --> L[Return smart pointer]
+
+    M[Get tenant,key] --> N[Hash128]
+    N --> O[Index.Get pointer]
+    O --> P[Decode smart pointer]
+    P --> Q[Region.Read validate gen/tenant/expiry/fingerprint]
+    Q --> R[Return value]
+```
+
+---
+
+## 7) Notes and limitations
+
+- Index currently uses tombstones on delete.
+- If neighborhood is saturated, `Set` can fail (no runtime resize path implemented in current code).
+- Region overwrite checks one slot at current write position; non-expired data at that position blocks write.
+
