@@ -1,8 +1,8 @@
 package cache
 
 import (
+	"rah/internal/clock"
 	"sync"
-	"time"
 	"unsafe"
 )
 
@@ -30,12 +30,7 @@ func (r *Region) Write(
 	tenantID uint16,
 	fingerprint [16]byte,
 	value []byte,
-) (
-	offset uint64,
-	generation uint32,
-	overwritten *[16]byte,
-	ok bool,
-) {
+) (offset uint64, generation uint32, overwritten *[16]byte, ok bool) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -47,41 +42,35 @@ func (r *Region) Write(
 		return 0, 0, nil, false
 	}
 
-	now := uint32(time.Now().Unix())
+	now := uint32(clock.CurrentClock.UnixCurTime)
 
-	// Wrap if needed
 	if r.writePos+totalSize > r.capacity {
 		r.writePos = 0
 		r.generation++
 	}
 
 	offset = r.writePos
-
 	existing := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
 
-	// If slot is occupied and not expired → cannot overwrite
 	if existing.Expiry > now {
 		return 0, 0, nil, false
 	}
 
-	// If expired and fingerprint non-zero → mark for index deletion
 	if existing.Expiry != 0 {
 		overwritten = &existing.Fingerprint
 	}
 
-	header := EntryHeader{
-		Expiry:      now + r.ttlSeconds,
-		ValueLen:    uint32(len(value)),
-		Generation:  r.generation,
-		TenantID:    tenantID,
-		Fingerprint: fingerprint,
-	}
+	// REPLACED BLOCK: Direct pointer assignment instead of copy()
+	h := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
+	h.Expiry = now + r.ttlSeconds
+	h.ValueLen = uint32(len(value))
+	h.Generation = r.generation
+	h.TenantID = tenantID
+	h.Fingerprint = fingerprint
 
-	copy(r.memory[offset:], unsafe.Slice((*byte)(unsafe.Pointer(&header)), 32))
 	copy(r.memory[offset+32:], value)
 
 	r.writePos += totalSize
-
 	return offset, r.generation, overwritten, true
 }
 
@@ -102,7 +91,7 @@ func (r *Region) Read(
 		return nil, false
 	}
 
-	if header.Expiry < uint32(time.Now().Unix()) {
+	if header.Expiry < uint32(clock.CurrentClock.UnixCurTime) {
 		return nil, false
 	}
 
@@ -117,5 +106,5 @@ func (r *Region) Read(
 }
 func (r *Region) canOverwrite(offset uint64) bool {
 	header := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
-	return header.Expiry <= uint32(time.Now().Unix())
+	return header.Expiry <= uint32(clock.CurrentClock.UnixCurTime)
 }

@@ -25,11 +25,11 @@ type table struct {
 
 // Shard manages a segment of the index.
 type Shard struct {
-	// mu protects writers only. Readers (Get) do not use this lock.
-	mu         sync.Mutex
-	tbl        atomic.Pointer[table]
-	count      uint32
-	tombstones uint32
+	mu         sync.Mutex            // 8 bytes
+	tbl        atomic.Pointer[table] // 8 bytes
+	count      uint32                // 4 bytes
+	tombstones uint32                // 4 bytes
+	_          [40]byte              // Padding to ensure 64-byte alignment (Cache Line)
 }
 
 // LookupIndex is the top-level concurrent hash map.

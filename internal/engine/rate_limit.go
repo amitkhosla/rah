@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"rah/internal/clock"
 	"rah/internal/rctx"
 	"sync/atomic"
 	"unsafe"
@@ -152,10 +153,7 @@ type FixedWindowStep struct {
 }
 
 func (s *FixedWindowStep) Execute(ctx *rctx.Context) int16 {
-	clock := CurrentClock.Load()
-	if clock == nil {
-		return 1
-	}
+	clock := clock.CurrentClock
 
 	// Get pre-calculated ID
 	var bucketID uint32
@@ -167,7 +165,7 @@ func (s *FixedWindowStep) Execute(ctx *rctx.Context) int16 {
 	case 3:
 		bucketID = clock.DayID
 	default:
-		bucketID = clock.UnixSec
+		bucketID = clock.ElapsedSec
 	}
 
 	idx := s.calculateIndex(ctx, bucketID)
@@ -187,10 +185,10 @@ type TokenBucketStep struct {
 }
 
 func (s *TokenBucketStep) Execute(ctx *rctx.Context) int16 {
-	clock := CurrentClock.Load()
+	clock := clock.CurrentClock
 	idx := s.calculateIndex(ctx, 0) // Token bucket doesn't need bucket IDs
 
-	if !s.Store.TokenBucket(idx, s.Rate, s.Burst, uint32(clock.UnixSec)) {
+	if !s.Store.TokenBucket(idx, s.Rate, s.Burst, uint32(clock.ElapsedSec)) {
 		ctx.ResponseStatus = 429
 		return -1
 	}
