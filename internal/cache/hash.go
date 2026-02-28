@@ -2,25 +2,18 @@ package cache
 
 import (
 	"encoding/binary"
-	"hash/fnv"
+
+	"github.com/zeebo/xxh3"
 )
 
 func Hash128(tenantID uint16, key []byte) [16]byte {
-	seed := []byte{byte(tenantID), byte(tenantID >> 8)}
 
-	h1 := fnv.New64a()
-	_, _ = h1.Write(seed)
-	_, _ = h1.Write(key)
-	lo := h1.Sum64()
-
-	h2 := fnv.New64()
-	_, _ = h2.Write(seed)
-	_, _ = h2.Write(key)
-	hi := h2.Sum64()
+	// Seed the hash with the tenantID to provide isolation
+	sum := xxh3.Hash128Seed(key, uint64(tenantID))
 
 	var out [16]byte
-	binary.LittleEndian.PutUint64(out[0:8], lo)
-	binary.LittleEndian.PutUint64(out[8:16], hi)
+	binary.LittleEndian.PutUint64(out[0:8], sum.Lo)
+	binary.LittleEndian.PutUint64(out[8:16], sum.Hi)
 
 	return out
 }
