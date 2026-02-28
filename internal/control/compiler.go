@@ -95,14 +95,11 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.linkBreaks(exitID)
 
 	case "http_call":
-		loopStartID := int16(len(c.GlobalTable))
-		urlSlot := c.getSlot(step.UrlVar)
-		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.Timeout))
-
-		if step.RetryCondition != "" {
-			exitID := int16(len(c.GlobalTable) + 1)
-			c.GlobalTable = append(c.GlobalTable, steps.RetryGate(step.RetryCondition, loopStartID, exitID))
+		urlSlot := -1
+		if step.UrlVar != "" {
+			urlSlot = c.getSlot(step.UrlVar)
 		}
+		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
 	case "registry_lookup":
 		keySlot := c.getSlot(step.KeyIdentifier)
 		metaSlot := c.getSlot(step.As)
@@ -169,9 +166,6 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 			count += 2 + len(c.simulateBake(step.Do, frags))
 		case "http_call":
 			count += 1
-			if step.RetryCondition != "" {
-				count += 1
-			}
 		default:
 			count += 1
 		}
