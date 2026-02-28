@@ -23,5 +23,5 @@ func CacheStore(ctx *rctx.Context, slabMgr *cache.CacheManager, ttl uint32) {
 	}
 
 	// Direct pass-through of []byte
-	_ = slabMgr.Put(ctx.TenantID, ctx.Path, ctx.ResponseBuffer, ttl)
+	_, _ = slabMgr.Put(ctx.TenantID, ctx.Path, ctx.ResponseBuffer, ttl)
 }
