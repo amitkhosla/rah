@@ -7,6 +7,7 @@ import (
 	"rah/internal/engine"
 	"rah/internal/router"
 	"strings"
+	"sync"
 )
 
 // ManagementServer coordinates the Control Plane. It translates high-level
@@ -16,6 +17,8 @@ type ManagementServer struct {
 	FlowManager *engine.FlowManager
 	Compiler    *Compiler
 	Registry    *NameRegistry
+	mu          sync.RWMutex
+	flowConfigs map[string][]StepConfig
 }
 
 // UnifiedSyncHandler is the primary entry point for configuration updates.
@@ -37,6 +40,13 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 	// Load the current consistent snapshot of the engine state
 	oldState := s.FlowManager.State.Load()
 
+	s.mu.RLock()
+	newFlowConfigs := make(map[string][]StepConfig, len(s.flowConfigs))
+	for k, v := range s.flowConfigs {
+		newFlowConfigs[k] = v
+	}
+	s.mu.RUnlock()
+
 	// 1. Clone Current State (Library & Definitions)
 	// We use maps and slices to prepare the new state while the old state
 	// continues to serve traffic on other CPU cores.
@@ -53,10 +63,10 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 	for _, f := range req.Flows {
 		if f.Action == "delete" {
 			delete(newLibrary, f.Name)
+			delete(newFlowConfigs, f.Name)
 			log.Printf("[Management] Deleted Flow: %s", f.Name)
 		} else {
-			// Compile raw JSON steps into flattened Instruction objects
-			// This generates Absolute Jumps and resolves Data Slots.
+			newFlowConfigs[f.Name] = f.Instructions
 			newLibrary[f.Name] = s.Compiler.Compile(f.Instructions)
 			log.Printf("[Management] Compiled Flow: %s (%d instructions)", f.Name, len(newLibrary[f.Name]))
 		}
@@ -77,11 +87,13 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 			}
 		} else {
 			// Check if the referenced flow exists in our updated library
-			instructions, exists := newLibrary[a.FlowName]
+			flowCfg, exists := newFlowConfigs[a.FlowName]
 			if !exists {
 				log.Printf("[Management] Error: API %s references missing flow %s", a.Name, a.FlowName)
 				continue
 			}
+
+			instructions := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
 
 			// Normalize path for Radix Tree lookup (trailing slash optional)
 			cleanPath := strings.TrimSuffix(a.Path, "/")
@@ -89,9 +101,9 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 			// Bake the definition: This sets up the metadata for the specific route
 			def := engine.BakeDefinition(id, cleanPath)
 
-			// Map the entry point of the Shared Flow to the Radix Tree root for this API
-			// 'ANY' implies this flow handles all HTTP methods unless sub-routed
-			s.Compiler.BakeSubRouter(def, cleanPath, "ANY", instructions, true)
+			// This stage is relative to the API's base path, so root sub-route is "/".
+			// 'ANY' implies this flow handles all HTTP methods unless sub-routed.
+			s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true)
 
 			// Grow newDefs if the Registry assigned an ID outside current bounds
 			if int(id) >= len(newDefs) {
@@ -131,6 +143,10 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 		FlowLibrary: newLibrary,
 	})
 
+	s.mu.Lock()
+	s.flowConfigs = newFlowConfigs
+	s.mu.Unlock()
+
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -143,5 +159,6 @@ func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry)
 		FlowManager: fm,
 		Compiler:    c,
 		Registry:    reg,
+		flowConfigs: make(map[string][]StepConfig),
 	}
 }
