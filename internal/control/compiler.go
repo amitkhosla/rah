@@ -5,6 +5,7 @@ import (
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
 	"regexp"
+	"strings"
 )
 
 type Compiler struct {
@@ -141,6 +142,12 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				Name:   "CALL",
 				Action: steps.CallFragment(targetID),
 			})
+		} else if fragments != nil {
+			if called, exists := fragments[step.FlowName]; exists {
+				// Fallback for per-flow compilation mode where absolute
+				// fragment IDs are not precomputed.
+				c.bakeFlow(called, fragments)
+			}
 		}
 	} // End of Switch
 }
@@ -173,21 +180,78 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 }
 
 func (c *Compiler) discoverDependencies(flow []StepConfig) []Dependency {
+	return c.discoverDependenciesWithFragments(flow, nil)
+}
+
+func (c *Compiler) discoverDependenciesWithFragments(flow []StepConfig, fragments map[string][]StepConfig) []Dependency {
 	var deps []Dependency
 	found := make(map[string]bool)
 	re := regexp.MustCompile(`(header|query|path|host)\.([a-zA-Z0-9_-]+)`)
+	visitedFlows := make(map[string]bool)
 
-	for _, step := range flow {
-		blob := step.Condition + step.KeyIdentifier + step.UrlVar + step.Source
-		matches := re.FindAllStringSubmatch(blob, -1)
-		for _, m := range matches {
-			if !found[m[0]] {
-				deps = append(deps, Dependency{Identifier: m[0], Source: m[1], Key: m[2]})
-				found[m[0]] = true
+	var walkFlow func([]StepConfig)
+	walkFlow = func(stepsToWalk []StepConfig) {
+		for _, step := range stepsToWalk {
+			blob := strings.Join([]string{step.Condition, step.KeyIdentifier, step.UrlVar, step.Source}, " ")
+			matches := re.FindAllStringSubmatch(blob, -1)
+			for _, m := range matches {
+				if !found[m[0]] {
+					deps = append(deps, Dependency{Identifier: m[0], Source: m[1], Key: m[2]})
+					found[m[0]] = true
+				}
+			}
+
+			if len(step.Do) > 0 {
+				walkFlow(step.Do)
+			}
+
+			if fragments == nil {
+				continue
+			}
+
+			for _, ref := range []string{step.FlowName, step.Then, step.Else} {
+				if ref == "" || visitedFlows[ref] {
+					continue
+				}
+				if nested, ok := fragments[ref]; ok {
+					visitedFlows[ref] = true
+					walkFlow(nested)
+				}
+			}
+
+			for _, ref := range step.Cases {
+				if ref == "" || visitedFlows[ref] {
+					continue
+				}
+				if nested, ok := fragments[ref]; ok {
+					visitedFlows[ref] = true
+					walkFlow(nested)
+				}
 			}
 		}
 	}
+
+	walkFlow(flow)
 	return deps
+}
+
+func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]StepConfig) []engine.Instruction {
+	c.GlobalTable = make([]engine.Instruction, 0)
+	c.resetSlots()
+
+	deps := c.discoverDependenciesWithFragments(flow, fragments)
+	for _, dep := range deps {
+		slot := c.getSlot(dep.Identifier)
+		switch dep.Source {
+		case "header":
+			c.GlobalTable = append(c.GlobalTable, steps.BindHeader(dep.Key, slot))
+		case "query":
+			c.GlobalTable = append(c.GlobalTable, steps.BindQuery(dep.Key, slot))
+		}
+	}
+
+	c.bakeFlow(flow, fragments)
+	return c.GlobalTable
 }
 
 // Helpers
