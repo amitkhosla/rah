@@ -8,11 +8,7 @@ import (
 	"sync"
 )
 
-var client = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConnsPerHost: 100,
-	},
-}
+var client = GetClientFromPool()
 
 func ProxyStep(targetUrl string) engine.Instruction {
 	return engine.Instruction{
