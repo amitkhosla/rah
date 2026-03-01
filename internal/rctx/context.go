@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -77,6 +78,10 @@ type Context struct {
 	ResHeaderCount  int
 	TenantID        uint16
 
+	// detachedFromPool prevents the request goroutine from returning this
+	// context to the pool when work is moved to a background goroutine.
+	detachedFromPool atomic.Bool
+
 	// ... existing fields ...
 
 	// MEMORY BUFFER REQUIREMENTS:
@@ -132,6 +137,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ResponseStatus = 200
 	ctx.headerSent = false
 	ctx.IsBuffered = false
+	ctx.detachedFromPool.Store(false)
 
 	// Clean up body streams
 	if ctx.RequestBody != nil {
@@ -176,6 +182,18 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	// 2. MUST happen before the Context returns to the sync.Pool to unblock
 	//    other waiting requests immediately.
 	// 3. Set BorrowedChunks to nil/empty without deallocating backing array
+}
+
+// MarkDetachedFromPool signals that this context is still in use by async work
+// and must not be returned to the pool by the request goroutine.
+func (ctx *Context) MarkDetachedFromPool() {
+	ctx.detachedFromPool.Store(true)
+}
+
+// ShouldReturnToPool reports whether the request goroutine can safely put this
+// context back in the pool.
+func (ctx *Context) ShouldReturnToPool() bool {
+	return !ctx.detachedFromPool.Load()
 }
 
 func (ctx *Context) SnapshotMetadata(method, path, query string) {

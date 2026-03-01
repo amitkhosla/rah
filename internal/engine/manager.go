@@ -104,6 +104,17 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	// cross-CPU cache bouncing during memory retrieval.
 }
 
+// RunInBackground detaches a context from the request lifecycle and executes
+// task in a background goroutine. The context is returned to the pool only
+// after task completes.
+func (fm *FlowManager) RunInBackground(ctx *rctx.Context, task func(*rctx.Context)) {
+	ctx.MarkDetachedFromPool()
+	go func() {
+		defer fm.Pool.Put(ctx)
+		task(ctx)
+	}()
+}
+
 func (fm *FlowManager) Extract(ctx *rctx.Context, req *http.Request) {
 	ctx.Request = req
 	ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)

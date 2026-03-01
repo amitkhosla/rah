@@ -49,7 +49,6 @@ func main() {
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
 			ctx.Reset(w)
-			defer fm.Pool.Put(ctx)
 
 			ctx.ApiId = apiId
 
@@ -60,6 +59,10 @@ func main() {
 
 			// D. Finalize: Flush buffered data or commit status code
 			ctx.Finalize()
+
+			if ctx.ShouldReturnToPool() {
+				fm.Pool.Put(ctx)
+			}
 		})
 
 		addr := fmt.Sprintf(":%d", *port)
