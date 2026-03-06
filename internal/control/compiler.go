@@ -105,6 +105,10 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		metaSlot := c.getSlot(step.As)
 		// RegistryLookup returns engine.Instruction, so append it directly
 		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot, metaSlot, step.Scope))
+	case "token_validation":
+		tokenSlot := c.getSlot(step.KeyIdentifier)
+		cfg := steps.ParseTokenValidationConfig(step.KeyIdentifier, step.Input)
+		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tokenSlot, cfg))
 
 	case "foreach":
 		iterSlot := c.nextSlot
