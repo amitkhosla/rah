@@ -295,11 +295,13 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 	return engine.Instruction{
 		Name: "HTTP_CALL",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			url := staticURL
+			rawUpstream := staticURL
 			if urlSlot >= 0 && urlSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[urlSlot]) > 0 {
-				url = string(ctx.ByteSlots[urlSlot])
+				rawUpstream = string(ctx.ByteSlots[urlSlot])
 			}
-			if url == "" {
+
+			url, err := selectUpstreamURL(rawUpstream, flowInput)
+			if err != nil {
 				ctx.ResponseStatus = 500
 				return -1
 			}
