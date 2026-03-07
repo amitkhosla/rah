@@ -29,3 +29,28 @@ func TestMarkDetachedFromPool(t *testing.T) {
 		t.Fatalf("reset should clear detached state")
 	}
 }
+
+func TestClientBytesSentStreamingAndBuffered(t *testing.T) {
+	ctx := &Context{ResponseStatus: 200}
+	ctx.Reset(noopWriter{})
+
+	if _, err := ctx.Write([]byte("abc")); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if ctx.ClientBytesSent != 3 {
+		t.Fatalf("streaming bytes = %d, want 3", ctx.ClientBytesSent)
+	}
+
+	ctx.Reset(noopWriter{})
+	ctx.IsBuffered = true
+	if _, err := ctx.Write([]byte("hello")); err != nil {
+		t.Fatalf("buffered write failed: %v", err)
+	}
+	if ctx.ClientBytesSent != 0 {
+		t.Fatalf("buffered mode should count on finalize, got %d", ctx.ClientBytesSent)
+	}
+	ctx.Finalize()
+	if ctx.ClientBytesSent != 5 {
+		t.Fatalf("buffered finalize bytes = %d, want 5", ctx.ClientBytesSent)
+	}
+}
