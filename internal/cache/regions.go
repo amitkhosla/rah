@@ -24,6 +24,10 @@ type overwrittenEntry struct {
 	valueLen    uint32
 }
 
+// entryFlagOccupied marks that the header slot contains a previously written item
+// and should participate in expiry/overwrite/accounting decisions.
+const entryFlagOccupied uint8 = 1 << 0
+
 func NewRegion(size uint64, ttl uint32) *Region {
 	return &Region{
 		memory:     make([]byte, size),
@@ -64,14 +68,14 @@ func (r *Region) Write(
 	offset = r.writePos
 	existing := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
 
-	if existing.Expiry > now {
+	if existing.Flags&entryFlagOccupied != 0 && existing.Expiry > now {
 		return 0, 0, overwritten, false, false
 	}
 
-	// Non-zero expiry means this slot had a previous entry; at this point it is
+	// Occupied flag means this slot had a previous entry; at this point it is
 	// already expired (existing.Expiry <= now), so return old metadata for
 	// index/accounting cleanup in CacheManager.
-	if existing.Expiry != 0 {
+	if existing.Flags&entryFlagOccupied != 0 {
 		overwritten = overwrittenEntry{
 			fingerprint: existing.Fingerprint,
 			tenantID:    existing.TenantID,
@@ -86,6 +90,7 @@ func (r *Region) Write(
 	h.ValueLen = uint32(len(value))
 	h.Generation = r.generation
 	h.TenantID = tenantID
+	h.Flags = entryFlagOccupied
 	h.Fingerprint = fingerprint
 
 	copy(r.memory[offset+32:], value)
