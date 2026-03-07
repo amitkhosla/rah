@@ -1,6 +1,11 @@
 package engine
 
-import "rah/internal/rctx"
+import (
+	"rah/internal/observability"
+	"rah/internal/rctx"
+	"strconv"
+	"time"
+)
 
 // StopPlan is a sentinel value. When an action returns this,
 // the execution loop terminates immediately.
@@ -44,8 +49,31 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 
 	for pc >= 0 && pc < tableLen {
 		state.PC = pc // Keep PC in sync for instructions that use it
-
-		pc = table[pc].Action(ctx, &state)
+		current := table[pc]
+		shouldMeasure := ctx.Obs != nil && (ctx.Trace != nil || ctx.Obs.InstructionTimingEnabled())
+		var started time.Time
+		if shouldMeasure {
+			started = time.Now()
+		}
+		pc = current.Action(ctx, &state)
+		var duration time.Duration
+		if shouldMeasure {
+			duration = time.Since(started)
+			ctx.Obs.RecordInstruction(current.Name, duration)
+		}
+		slot0Len := 0
+		if len(ctx.ByteSlots) > 0 {
+			slot0Len = len(ctx.ByteSlots[0])
+		}
+		if shouldMeasure && ctx.Trace != nil && ctx.Obs != nil {
+			ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
+				Name:       current.Name,
+				PC:         state.PC,
+				DurationNs: duration.Nanoseconds(),
+				Input:      []observability.KV{{K: "response_status", V: strconv.Itoa(ctx.ResponseStatus)}, {K: "slot0_len", V: strconv.Itoa(slot0Len)}},
+				Output:     []observability.KV{{K: "next_pc", V: strconv.Itoa(int(pc))}},
+			})
+		}
 
 		if pc == StopPlan {
 			break
