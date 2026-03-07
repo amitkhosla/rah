@@ -8,8 +8,11 @@ import (
 	"rah/internal/config"
 	"rah/internal/control"
 	"rah/internal/engine"
+	"rah/internal/observability"
 	"rah/internal/rctx"
 	"rah/internal/router"
+	"sync/atomic"
+	"time"
 )
 
 func main() {
@@ -29,6 +32,7 @@ func main() {
 	// 2. Component Initialization
 	r := router.New()
 	fm := engine.NewFlowManager(12000, cfg)
+	obs := observability.NewFromEnv()
 
 	// 3. Register Headers and Setup APIs
 	// This maps "Authorization" header to ByteSlots[0] globally
@@ -39,16 +43,31 @@ func main() {
 	// 4. The Unified Hot-Path Handler
 	go func() {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			var reqStart time.Time
+			if obs.ShouldTimeRequests() {
+				reqStart = time.Now()
+			}
 			// A. Router Lookup (Returns uint32)
 			apiId := r.Lookup(req.URL.Path)
 			if apiId == 0 {
 				http.NotFound(w, req)
+				if !reqStart.IsZero() {
+					obs.FinishRequest(nil, http.StatusNotFound, time.Since(reqStart), time.Since(reqStart), 0, 0, 0, 0, 0)
+				}
 				return
 			}
 
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
 			ctx.Reset(w)
+			ctx.Obs = obs
+			if !reqStart.IsZero() {
+				ctx.RequestStartNs = reqStart.UnixNano()
+			}
+			if obs.ShouldTrace() {
+				trace := obs.StartRequest(apiId, ctx.TenantID)
+				ctx.Trace = &trace
+			}
 
 			ctx.ApiId = apiId
 
@@ -59,6 +78,15 @@ func main() {
 
 			// D. Finalize: Flush buffered data or commit status code
 			ctx.Finalize()
+			if !reqStart.IsZero() {
+				total := time.Since(reqStart)
+				upstream := time.Duration(atomic.LoadInt64(&ctx.UpstreamTimeNs))
+				gateway := total - upstream
+				if gateway < 0 {
+					gateway = 0
+				}
+				obs.FinishRequest(ctx.Trace, ctx.ResponseStatus, total, gateway, upstream, int(atomic.LoadInt32(&ctx.UpstreamCalls)), ctx.ClientBytesSent, atomic.LoadInt64(&ctx.UpstreamBytesTx), atomic.LoadInt64(&ctx.UpstreamBytesRx))
+			}
 
 			if ctx.ShouldReturnToPool() {
 				fm.Pool.Put(ctx)
@@ -80,6 +108,7 @@ func main() {
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
+	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }

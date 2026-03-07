@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"rah/internal/observability"
 	"sync/atomic"
 	"unsafe"
 )
@@ -77,6 +78,14 @@ type Context struct {
 	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
 	ResHeaderCount  int
 	TenantID        uint16
+	Obs             *observability.Telemetry
+	Trace           *observability.RequestTrace
+	RequestStartNs  int64
+	UpstreamTimeNs  int64
+	UpstreamCalls   int32
+	ClientBytesSent int64
+	UpstreamBytesTx int64
+	UpstreamBytesRx int64
 
 	// detachedFromPool prevents the request goroutine from returning this
 	// context to the pool when work is moved to a background goroutine.
@@ -108,7 +117,11 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
 		ctx.headerSent = true
 	}
-	return ctx.Writer.Write(p)
+	n, err = ctx.Writer.Write(p)
+	if n > 0 {
+		ctx.ClientBytesSent += int64(n)
+	}
+	return n, err
 }
 
 // Finalize handles the "Last Mile" of the response.
@@ -116,7 +129,10 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 func (ctx *Context) Finalize() {
 	if ctx.IsBuffered && !ctx.headerSent {
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
-		ctx.Writer.Write(ctx.ResponseBuffer)
+		n, _ := ctx.Writer.Write(ctx.ResponseBuffer)
+		if n > 0 {
+			ctx.ClientBytesSent += int64(n)
+		}
 		ctx.headerSent = true
 	}
 }
@@ -138,6 +154,14 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.headerSent = false
 	ctx.IsBuffered = false
 	ctx.detachedFromPool.Store(false)
+	ctx.Trace = nil
+	ctx.Obs = nil
+	ctx.RequestStartNs = 0
+	ctx.UpstreamTimeNs = 0
+	ctx.UpstreamCalls = 0
+	ctx.ClientBytesSent = 0
+	ctx.UpstreamBytesTx = 0
+	ctx.UpstreamBytesRx = 0
 
 	// Clean up body streams
 	if ctx.RequestBody != nil {

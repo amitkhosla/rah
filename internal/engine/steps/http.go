@@ -2,11 +2,15 @@ package steps
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"rah/internal/clock"
 	"rah/internal/engine"
+	"rah/internal/observability"
 	"rah/internal/rctx"
 	"sort"
 	"strconv"
@@ -315,6 +319,10 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 			}
 
 			for attempt := 1; attempt <= attempts; attempt++ {
+				upstreamStart := time.Now()
+				event := observability.UpstreamEvent{Host: upstreamHost, Attempt: attempt}
+				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
+
 				reqCtx := context.Background()
 				cancel := func() {}
 				if timeout > 0 {
@@ -328,9 +336,67 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					return -1
 				}
 
+				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+					DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+					DNSDone: func(httptrace.DNSDoneInfo) {
+						if !dnsStart.IsZero() {
+							event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
+						}
+					},
+					ConnectStart: func(_, _ string) { connectStart = time.Now() },
+					ConnectDone: func(_, _ string, _ error) {
+						if !connectStart.IsZero() {
+							event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
+						}
+					},
+					TLSHandshakeStart: func() { tlsStart = time.Now() },
+					TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+						if !tlsStart.IsZero() {
+							event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
+						}
+					},
+					GotConn: func(info httptrace.GotConnInfo) {
+						event.ConnReused = info.Reused
+						event.ConnIdle = info.WasIdle
+					},
+					WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
+					GotFirstResponseByte: func() {
+						firstByteStart = time.Now()
+						if !wroteReqStart.IsZero() {
+							event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
+						}
+					},
+				}))
+
+				reqBytesSent := int64(0)
+				if req.ContentLength > 0 {
+					reqBytesSent = req.ContentLength
+				}
+
 				resp, err := bundle.Client.Do(req)
 				cancel()
+				totalUpstream := time.Since(upstreamStart)
+				event.TotalNs = totalUpstream.Nanoseconds()
+				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
+					event.TTFBNs = firstByteStart.Sub(upstreamStart).Nanoseconds()
+				}
+
+				atomic.AddInt64(&ctx.UpstreamTimeNs, int64(totalUpstream))
+				atomic.AddInt64(&ctx.UpstreamBytesTx, reqBytesSent)
+				atomic.AddInt32(&ctx.UpstreamCalls, 1)
+
 				if err != nil {
+					event.BytesSent = reqBytesSent
+					event.Err = err.Error()
+					if ctx.Obs != nil {
+						ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, 0)
+					}
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+					}
+					if ctx.Obs != nil {
+						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+					}
 					if attempt < attempts && (retryCondition == "" || strings.Contains(retryCondition, "status") || strings.Contains(retryCondition, "timeout")) && shouldRetryError(err) {
 						time.Sleep(backoffDelay(attempt, bundle.Cfg, upstreamHost))
 						continue
@@ -338,8 +404,34 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					ctx.ResponseStatus = 502
 					return -1
 				}
+
+				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+				event.BytesSent = reqBytesSent
+				event.BytesReceived = respBytes
+				atomic.AddInt64(&ctx.UpstreamBytesRx, respBytes)
+
+				if ctx.Obs != nil {
+					ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, respBytes)
+				}
+
+				if copyErr != nil {
+					event.Err = copyErr.Error()
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+					}
+					if ctx.Obs != nil {
+						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+					}
+					ctx.ResponseStatus = 502
+					return -1
+				}
+
 				ctx.ResponseStatus = resp.StatusCode
+				event.Status = resp.StatusCode
+				if ctx.Trace != nil && ctx.Obs != nil {
+					ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+				}
 
 				if attempt < attempts && (retryCondition == "" || strings.Contains(retryCondition, "status")) && isRetryableStatus(resp.StatusCode, bundle.Cfg) {
 					time.Sleep(backoffDelay(attempt, bundle.Cfg, upstreamHost))
