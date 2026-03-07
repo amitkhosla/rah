@@ -1,0 +1,139 @@
+package config
+
+import (
+	"fmt"
+	"sort"
+)
+
+// StoreKind identifies the backend technology selected by customer.
+type StoreKind string
+
+const (
+	StoreDisk       StoreKind = "disk"
+	StoreRedis      StoreKind = "redis"
+	StoreMongoDB    StoreKind = "mongodb"
+	StoreDragonFly  StoreKind = "dragonfly"
+	StorePostgreSQL StoreKind = "postgresql"
+	StoreCassandra  StoreKind = "cassandra"
+)
+
+var supportedStoreKinds = map[StoreKind]struct{}{
+	StoreDisk:       {},
+	StoreRedis:      {},
+	StoreMongoDB:    {},
+	StoreDragonFly:  {},
+	StorePostgreSQL: {},
+	StoreCassandra:  {},
+}
+
+// DataDomain identifies logical data categories in gateway.
+type DataDomain string
+
+const (
+	DomainAPIDefinitions DataDomain = "api_definitions"
+	DomainFlows          DataDomain = "flows"
+	DomainTenantRegistry DataDomain = "tenant_data"
+	DomainCache          DataDomain = "cache"
+	DomainRateLimit      DataDomain = "rate_limit"
+	DomainCustomerData   DataDomain = "customer_data"
+	DomainRegistryStore  DataDomain = "tenant_data"
+	DomainInstances      DataDomain = "instances"
+)
+
+var requiredDomains = []DataDomain{
+	DomainAPIDefinitions,
+	DomainFlows,
+	DomainTenantRegistry,
+	DomainCache,
+}
+
+// StoreConnection captures generic connection details across all backend kinds.
+type StoreConnection struct {
+	Address  string            `json:"address,omitempty"`  // host:port, URI, or DSN endpoint
+	Path     string            `json:"path,omitempty"`     // local path for disk-based stores
+	Database string            `json:"database,omitempty"` // logical DB/keyspace name
+	Username string            `json:"username,omitempty"`
+	Password string            `json:"password,omitempty"`
+	Params   map[string]string `json:"params,omitempty"` // backend-specific options
+}
+
+// StoreConfig defines a single named backend instance.
+type StoreConfig struct {
+	Name       string          `json:"name"`
+	Kind       StoreKind       `json:"kind"`
+	Enabled    bool            `json:"enabled"`
+	Connection StoreConnection `json:"connection"`
+}
+
+// DataStoreConfig wires logical data domains to concrete store instances.
+type DataStoreConfig struct {
+	Stores   map[string]StoreConfig `json:"stores"`
+	Bindings map[DataDomain]string  `json:"bindings"`
+}
+
+func ErrDomainNotConfigured(domain DataDomain) error {
+	return fmt.Errorf("domain %q is not configured", domain)
+}
+
+// Validate checks that every required domain resolves to an enabled and supported store.
+func (c DataStoreConfig) Validate() error {
+	if len(c.Stores) == 0 {
+		return fmt.Errorf("at least one data store must be configured")
+	}
+
+	for name, cfg := range c.Stores {
+		if cfg.Name == "" {
+			cfg.Name = name
+		}
+		if cfg.Name != name {
+			return fmt.Errorf("store key %q must match store name %q", name, cfg.Name)
+		}
+		if _, ok := supportedStoreKinds[cfg.Kind]; !ok {
+			return fmt.Errorf("store %q has unsupported kind %q", name, cfg.Kind)
+		}
+	}
+
+	for _, domain := range requiredDomains {
+		if _, ok := c.Bindings[domain]; !ok {
+			return fmt.Errorf("required binding %q is missing", domain)
+		}
+	}
+
+	for domain, storeName := range c.Bindings {
+		cfg, ok := c.Stores[storeName]
+		if !ok {
+			return fmt.Errorf("binding %q references unknown store %q", domain, storeName)
+		}
+		if !cfg.Enabled {
+			return fmt.Errorf("binding %q references disabled store %q", domain, storeName)
+		}
+	}
+
+	return nil
+}
+
+// ResolveStore returns the selected store for a logical domain.
+func (c DataStoreConfig) ResolveStore(domain DataDomain) (StoreConfig, error) {
+	name, ok := c.Bindings[domain]
+	if !ok {
+		return StoreConfig{}, fmt.Errorf("binding for %q not configured", domain)
+	}
+	cfg, ok := c.Stores[name]
+	if !ok {
+		return StoreConfig{}, fmt.Errorf("store %q for %q not found", name, domain)
+	}
+	if !cfg.Enabled {
+		return StoreConfig{}, fmt.Errorf("store %q for %q is disabled", name, domain)
+	}
+	return cfg, nil
+}
+
+// SupportedStoreKinds returns all supported store types sorted for stable logs/APIs.
+func SupportedStoreKinds() []StoreKind {
+	kinds := make([]StoreKind, 0, len(supportedStoreKinds))
+	for kind := range supportedStoreKinds {
+		kinds = append(kinds, kind)
+	}
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+	return kinds
+}

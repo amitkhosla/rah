@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"rah/internal/config"
 	"rah/internal/control"
+	"rah/internal/datastore"
 	"rah/internal/engine"
 	"rah/internal/observability"
 	"rah/internal/rctx"
@@ -27,6 +31,72 @@ func main() {
 		DefaultLimits: config.ResourceLimit{
 			MaxBodySize: 1024 * 1024, // 1MB
 		},
+	}
+
+	dataStores := config.DataStoreConfig{
+		Stores: map[string]config.StoreConfig{
+			"local_disk": {
+				Name:    "local_disk",
+				Kind:    config.StoreDisk,
+				Enabled: true,
+				Connection: config.StoreConnection{
+					Path: "/var/lib/rah",
+				},
+			},
+		},
+		Bindings: map[config.DataDomain]string{
+			config.DomainAPIDefinitions: "local_disk",
+			config.DomainFlows:          "local_disk",
+			config.DomainTenantRegistry: "local_disk",
+			config.DomainCache:          "local_disk",
+			config.DomainRateLimit:      "local_disk",
+			config.DomainCustomerData:   "local_disk",
+			config.DomainInstances:      "local_disk",
+		},
+	}
+
+	dataStoreMgr, err := control.NewDataStoreManager(dataStores)
+	if err != nil {
+		log.Fatalf("invalid data store config: %v", err)
+	}
+
+	bootstrapCtx := context.Background()
+
+	if dataStoreMgr.IsConfigured(config.DomainAPIDefinitions) {
+		apisSnapshot, err := dataStoreMgr.ReadAPIDefinitionsSnapshot(bootstrapCtx)
+		if err != nil {
+			log.Printf("failed to read api_definitions snapshot: %v", err)
+		} else {
+			log.Printf("api_definitions snapshot loaded: %d", len(apisSnapshot))
+		}
+	}
+
+	if dataStoreMgr.IsConfigured(config.DomainFlows) {
+		flowsSnapshot, err := dataStoreMgr.ReadFlowsSnapshot(bootstrapCtx)
+		if err != nil {
+			log.Printf("failed to read flows snapshot: %v", err)
+		} else {
+			log.Printf("flows snapshot loaded: %d", len(flowsSnapshot))
+		}
+	}
+
+	if dataStoreMgr.IsConfigured(config.DomainRegistryStore) {
+		registrySnapshot, err := dataStoreMgr.ReadRegistryStoreSnapshot(bootstrapCtx, datastore.Tenant("bootstrap"))
+		if err != nil {
+			log.Printf("failed to read registrystore snapshot: %v", err)
+		} else {
+			log.Printf("registrystore bootstrap records loaded: %d", len(registrySnapshot))
+		}
+	}
+
+	if dataStoreMgr.IsConfigured(config.DomainInstances) {
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "rah-unknown"
+		}
+		if err := dataStoreMgr.RegisterInstance(bootstrapCtx, hostname, []byte("online")); err != nil {
+			log.Printf("failed to register instance: %v", err)
+		}
 	}
 
 	// 2. Component Initialization
@@ -105,10 +175,15 @@ func main() {
 		Registry:    registry,
 	}
 
+	if err := bootstrapControlPlaneFromDataStore(bootstrapCtx, dataStoreMgr, ms); err != nil {
+		log.Printf("failed control-plane bootstrap from datastore: %v", err)
+	}
+
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
+	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }
@@ -159,4 +234,55 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 
 	state.Definitions[2] = def2
 	state.Router.Add(def2.BaseRawPath, 2)
+}
+
+func bootstrapControlPlaneFromDataStore(ctx context.Context, dsm *control.DataStoreManager, ms *control.ManagementServer) error {
+	flowsSnapshot, err := dsm.ReadFlowsSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	apisSnapshot, err := dsm.ReadAPIDefinitionsSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(flowsSnapshot) == 0 && len(apisSnapshot) == 0 {
+		return nil
+	}
+
+	req := control.UnifiedSyncRequest{SyncUUID: "bootstrap"}
+
+	for name, raw := range flowsSnapshot {
+		var steps []control.StepConfig
+		if err := json.Unmarshal(raw, &steps); err != nil {
+			continue
+		}
+		req.Flows = append(req.Flows, control.FlowUpdate{
+			Name:         name,
+			Instructions: steps,
+			Action:       "upsert",
+		})
+	}
+
+	for name, raw := range apisSnapshot {
+		var api control.ApiConfig
+		if err := json.Unmarshal(raw, &api); err != nil {
+			continue
+		}
+		if api.ApiID == "" {
+			api.ApiID = name
+		}
+		req.Apis = append(req.Apis, control.ApiUpdate{
+			Name:     api.ApiID,
+			Path:     api.Path,
+			FlowName: api.FlowName,
+			Action:   "upsert",
+		})
+	}
+
+	if len(req.Flows) == 0 && len(req.Apis) == 0 {
+		return nil
+	}
+
+	return ms.ApplyUnifiedSync(req)
 }
