@@ -37,7 +37,19 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Load the current consistent snapshot of the engine state
+	if err := s.ApplyUnifiedSync(req); err != nil {
+		log.Printf("[Management] sync failed: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// ApplyUnifiedSync applies a sync payload to the active engine state.
+func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	oldState := s.FlowManager.State.Load()
 
 	s.mu.RLock()
@@ -148,9 +160,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 	s.mu.Unlock()
 
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+	return nil
 }
 
 // NewManagementServer initializes the server with the required compiler and manager.
