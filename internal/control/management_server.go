@@ -1,9 +1,12 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/router"
 	"strings"
@@ -19,11 +22,89 @@ type ManagementServer struct {
 	Registry    *NameRegistry
 	mu          sync.RWMutex
 	flowConfigs map[string][]StepConfig
+	apiConfigs  map[string]ApiUpdate // api name → last upserted config
+
+	// dataStore is optional. When set, every upsert/delete is persisted so the
+	// gateway can restore its state on restart. Leave nil (or use SetDataStore)
+	// when a central orchestrator owns persistence and RAH only reads on boot.
+	dataStore *DataStoreManager
+}
+
+// NewManagementServer initializes the server with the required compiler and manager.
+func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry) *ManagementServer {
+	return &ManagementServer{
+		FlowManager: fm,
+		Compiler:    c,
+		Registry:    reg,
+		flowConfigs: make(map[string][]StepConfig),
+		apiConfigs:  make(map[string]ApiUpdate),
+	}
+}
+
+// Bootstrap reads flows and APIs persisted in dsm and applies them via
+// ApplyUnifiedSync. Call this before SetDataStore so the bootstrap reads
+// do not trigger redundant writes back to the store.
+func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager) error {
+	flowsSnapshot, err := dsm.ReadFlowsSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap: read flows: %w", err)
+	}
+	apisSnapshot, err := dsm.ReadAPIDefinitionsSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap: read apis: %w", err)
+	}
+
+	if len(flowsSnapshot) == 0 && len(apisSnapshot) == 0 {
+		return nil
+	}
+
+	req := UnifiedSyncRequest{SyncUUID: "bootstrap"}
+
+	for name, raw := range flowsSnapshot {
+		var steps []StepConfig
+		if err := json.Unmarshal(raw, &steps); err != nil {
+			log.Printf("[Bootstrap] Skipping unparseable flow %q: %v", name, err)
+			continue
+		}
+		req.Flows = append(req.Flows, FlowUpdate{Name: name, Instructions: steps, Action: "upsert"})
+	}
+
+	for name, raw := range apisSnapshot {
+		var api ApiConfig
+		if err := json.Unmarshal(raw, &api); err != nil {
+			log.Printf("[Bootstrap] Skipping unparseable api %q: %v", name, err)
+			continue
+		}
+		if api.ApiID == "" {
+			api.ApiID = name
+		}
+		req.Apis = append(req.Apis, ApiUpdate{
+			Name:     api.ApiID,
+			Path:     api.Path,
+			FlowName: api.FlowName,
+			Action:   "upsert",
+		})
+	}
+
+	if len(req.Flows) == 0 && len(req.Apis) == 0 {
+		return nil
+	}
+
+	if err := s.ApplyUnifiedSync(req); err != nil {
+		return fmt.Errorf("bootstrap: apply sync: %w", err)
+	}
+	log.Printf("[Bootstrap] Loaded %d flow(s) and %d api(s)", len(req.Flows), len(req.Apis))
+	return nil
+}
+
+// SetDataStore enables write-through persistence. If the relevant domains
+// (DomainFlows, DomainAPIDefinitions) are not bound in the store config,
+// persistence calls are silently skipped.
+func (s *ManagementServer) SetDataStore(dsm *DataStoreManager) {
+	s.dataStore = dsm
 }
 
 // UnifiedSyncHandler is the primary entry point for configuration updates.
-// It follows a "Copy-on-Write" pattern to ensure that the Data Plane (engine)
-// is never in an inconsistent state during updates.
 func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -57,38 +138,54 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	for k, v := range s.flowConfigs {
 		newFlowConfigs[k] = v
 	}
+	newApiConfigs := make(map[string]ApiUpdate, len(s.apiConfigs))
+	for k, v := range s.apiConfigs {
+		newApiConfigs[k] = v
+	}
 	s.mu.RUnlock()
 
 	// 1. Clone Current State (Library & Definitions)
-	// We use maps and slices to prepare the new state while the old state
-	// continues to serve traffic on other CPU cores.
 	newLibrary := make(map[string][]engine.Instruction)
 	for k, v := range oldState.FlowLibrary {
 		newLibrary[k] = v
 	}
-
 	newDefs := make([]*engine.ApiDefinition, len(oldState.Definitions))
 	copy(newDefs, oldState.Definitions)
 
+	// Track changes for persistence after the atomic swap.
+	type persistOp struct {
+		kind    string // "flow_upsert", "flow_delete", "api_upsert", "api_delete"
+		name    string
+		payload []byte // nil for deletes
+	}
+	var pendingPersist []persistOp
+
 	// 2. Update Shared Flows (The Instruction Library)
-	// We compile Shared Flows first so that APIs can reference them immediately.
+	var deletedFlows []string
 	for _, f := range req.Flows {
 		if f.Action == "delete" {
 			delete(newLibrary, f.Name)
 			delete(newFlowConfigs, f.Name)
+			deletedFlows = append(deletedFlows, f.Name)
 			log.Printf("[Management] Deleted Flow: %s", f.Name)
+			pendingPersist = append(pendingPersist, persistOp{kind: "flow_delete", name: f.Name})
 		} else {
+			compiled, err := s.Compiler.Compile(f.Instructions)
+			if err != nil {
+				return fmt.Errorf("flow %q: %w", f.Name, err)
+			}
 			newFlowConfigs[f.Name] = f.Instructions
-			newLibrary[f.Name] = s.Compiler.Compile(f.Instructions)
+			newLibrary[f.Name] = compiled
 			log.Printf("[Management] Compiled Flow: %s (%d instructions)", f.Name, len(newLibrary[f.Name]))
+			if data, err := json.Marshal(f.Instructions); err == nil {
+				pendingPersist = append(pendingPersist, persistOp{kind: "flow_upsert", name: f.Name, payload: data})
+			}
 		}
 	}
 
 	// 3. Update API Routing & Linking
-	// Here we link logical paths to the instructions compiled in step 2.
 	routerChanged := false
 	for _, a := range req.Apis {
-		// Ensure the API has a unique, stable ID across reloads
 		id := s.Registry.GetOrAssignId(a.Name)
 		s.Compiler.ResetLocalScope()
 
@@ -97,48 +194,59 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				newDefs[id] = nil
 				routerChanged = true
 			}
+			delete(newApiConfigs, a.Name)
+			pendingPersist = append(pendingPersist, persistOp{kind: "api_delete", name: a.Name})
 		} else {
-			// Check if the referenced flow exists in our updated library
 			flowCfg, exists := newFlowConfigs[a.FlowName]
 			if !exists {
 				log.Printf("[Management] Error: API %s references missing flow %s", a.Name, a.FlowName)
 				continue
 			}
 
-			instructions := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
+			instructions, err := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
+			if err != nil {
+				log.Printf("[Management] Error compiling API %s: %v", a.Name, err)
+				continue
+			}
 
-			// Normalize path for Radix Tree lookup (trailing slash optional)
 			cleanPath := strings.TrimSuffix(a.Path, "/")
-
-			// Bake the definition: This sets up the metadata for the specific route
 			def := engine.BakeDefinition(id, cleanPath)
-
-			// This stage is relative to the API's base path, so root sub-route is "/".
-			// 'ANY' implies this flow handles all HTTP methods unless sub-routed.
 			s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true)
 
-			// Grow newDefs if the Registry assigned an ID outside current bounds
 			if int(id) >= len(newDefs) {
 				expanded := make([]*engine.ApiDefinition, id+1)
 				copy(expanded, newDefs)
 				newDefs = expanded
 			}
-
 			newDefs[id] = def
+			newApiConfigs[a.Name] = a
 			routerChanged = true
 			log.Printf("[Management] Linked API %s -> Flow %s", cleanPath, a.FlowName)
+
+			apiCfg := ApiConfig{ApiID: a.Name, Path: a.Path, FlowName: a.FlowName}
+			if data, err := json.Marshal(apiCfg); err == nil {
+				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
+			}
 		}
 	}
 
-	// 4. Atomic Router Rebuild
-	// If paths were added or removed, we must rebuild the high-performance
-	// Radix Tree. If only logic changed, we reuse the old tree.
+	// 4. Flow reference safety: a flow may only be deleted if no remaining API uses it.
+	// We check against newApiConfigs (which already reflects API deletions in this request),
+	// so deleting both an API and its flow in a single sync payload is allowed.
+	for _, flowName := range deletedFlows {
+		for apiName, apiCfg := range newApiConfigs {
+			if apiCfg.FlowName == flowName {
+				return fmt.Errorf("cannot delete flow %q: still referenced by API %q — delete the API first", flowName, apiName)
+			}
+		}
+	}
+
+	// 5. Atomic Router Rebuild
 	var finalRouter *router.RahRouter
 	if routerChanged {
 		finalRouter = router.New()
 		for _, d := range newDefs {
 			if d != nil {
-				// Add absolute path to the Radix Tree
 				finalRouter.Add(d.BaseRawPath, d.Id)
 			}
 		}
@@ -146,9 +254,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		finalRouter = oldState.Router
 	}
 
-	// 5. The Atomic Swap
-	// This single pointer update switches the entire gateway logic.
-	// Zero-allocation, zero-downtime.
+	// 6. Atomic Swap — live traffic sees new state immediately after this line.
 	s.FlowManager.SetState(&engine.EngineState{
 		Router:      finalRouter,
 		Definitions: newDefs,
@@ -157,18 +263,63 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	s.mu.Lock()
 	s.flowConfigs = newFlowConfigs
+	s.apiConfigs = newApiConfigs
 	s.mu.Unlock()
+
+	// 7. Persist changes to datastore (optional, best-effort).
+	// Runs after the atomic swap so routing is never blocked by I/O.
+	// Errors are logged but do not roll back the in-memory state — the
+	// central orchestrator is the source of truth if a datastore is shared.
+	if s.dataStore != nil && len(pendingPersist) > 0 {
+		ctx := context.Background()
+		for _, op := range pendingPersist {
+			var err error
+			switch op.kind {
+			case "flow_upsert":
+				if s.dataStore.IsConfigured(config.DomainFlows) {
+					err = s.dataStore.PutGlobal(ctx, config.DomainFlows, op.name, op.payload)
+				}
+			case "flow_delete":
+				if s.dataStore.IsConfigured(config.DomainFlows) {
+					err = s.dataStore.DeleteGlobal(ctx, config.DomainFlows, op.name)
+				}
+			case "api_upsert":
+				if s.dataStore.IsConfigured(config.DomainAPIDefinitions) {
+					err = s.dataStore.PutGlobal(ctx, config.DomainAPIDefinitions, op.name, op.payload)
+				}
+			case "api_delete":
+				if s.dataStore.IsConfigured(config.DomainAPIDefinitions) {
+					err = s.dataStore.DeleteGlobal(ctx, config.DomainAPIDefinitions, op.name)
+				}
+			}
+			if err != nil {
+				log.Printf("[Management] Failed to persist %s %q: %v", op.kind, op.name, err)
+			}
+		}
+	}
 
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
 	return nil
 }
 
-// NewManagementServer initializes the server with the required compiler and manager.
-func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry) *ManagementServer {
-	return &ManagementServer{
-		FlowManager: fm,
-		Compiler:    c,
-		Registry:    reg,
-		flowConfigs: make(map[string][]StepConfig),
+// GetAllApisHandler returns all registered flows and APIs in the same shape
+// as the UnifiedSyncRequest used to create them.
+func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
+	s.mu.RLock()
+	flows := make([]FlowUpdate, 0, len(s.flowConfigs))
+	for name, steps := range s.flowConfigs {
+		flows = append(flows, FlowUpdate{Name: name, Instructions: steps, Action: "upsert"})
+	}
+	apis := make([]ApiUpdate, 0, len(s.apiConfigs))
+	for _, a := range s.apiConfigs {
+		apis = append(apis, a)
+	}
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(UnifiedSyncRequest{Flows: flows, Apis: apis})
 }

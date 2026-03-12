@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"rah/internal/clock"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -58,7 +58,7 @@ func (r *Region) Write(
 		return 0, 0, overwritten, false, false
 	}
 
-	now := uint32(clock.CurrentClock.UnixCurTime)
+	now := uint32(time.Now().Unix())
 
 	if r.writePos+totalSize > r.capacity {
 		r.writePos = 0
@@ -116,7 +116,7 @@ func (r *Region) Read(
 		return nil, false
 	}
 
-	if header.Expiry < uint32(clock.CurrentClock.UnixCurTime) {
+	if header.Expiry < uint32(time.Now().Unix()) {
 		return nil, false
 	}
 
@@ -131,5 +131,5 @@ func (r *Region) Read(
 }
 func (r *Region) canOverwrite(offset uint64) bool {
 	header := (*EntryHeader)(unsafe.Pointer(&r.memory[offset]))
-	return header.Expiry <= uint32(clock.CurrentClock.UnixCurTime)
+	return header.Expiry <= uint32(time.Now().Unix())
 }

@@ -58,6 +58,8 @@ type RequestSummary struct {
 	TraceID               uint64 `json:"trace_id"`
 	ApiID                 uint32 `json:"api_id"`
 	TenantID              uint16 `json:"tenant_id"`
+	Method                string `json:"method"`
+	Path                  string `json:"path"`
 	Status                int    `json:"status"`
 	DurationNs            int64  `json:"duration_ns"`
 	GatewayDurationNs     int64  `json:"gateway_duration_ns"`
@@ -83,6 +85,7 @@ type UpstreamEvent struct {
 	Seq               uint32 `json:"seq"`
 	Attempt           int    `json:"attempt"`
 	Host              string `json:"host"`
+	URL               string `json:"url"`
 	Status            int    `json:"status"`
 	Err               string `json:"err,omitempty"`
 	ConnReused        bool   `json:"conn_reused"`
@@ -263,9 +266,15 @@ func (t *Telemetry) exportWorker() {
 
 func (t *Telemetry) upstreamWorker() {
 	for u := range t.upstreamCh {
-		if t.infoLog.Load() {
-			log.Printf("[obs.upstream] api=%d tenant=%d seq=%d attempt=%d host=%s status=%d err=%q conn_ns=%d tls_ns=%d ttfb_ns=%d total_ns=%d bytes_tx=%d bytes_rx=%d", u.ApiID, u.TenantID, u.Event.Seq, u.Event.Attempt, u.Event.Host, u.Event.Status, u.Event.Err, u.Event.ConnectDurationNs, u.Event.TLSDurationNs, u.Event.TTFBNs, u.Event.TotalNs, u.Event.BytesSent, u.Event.BytesReceived)
-		}
+		log.Printf("[upstream] api=%d tenant=%d call=%d attempt=%d url=%s status=%d connect_ms=%.3f ttfb_ms=%.3f total_ms=%.3f bytes_tx=%d bytes_rx=%d err=%q",
+			u.ApiID, u.TenantID, u.Event.Seq, u.Event.Attempt,
+			u.Event.URL, u.Event.Status,
+			float64(u.Event.ConnectDurationNs)/1e6,
+			float64(u.Event.TTFBNs)/1e6,
+			float64(u.Event.TotalNs)/1e6,
+			u.Event.BytesSent, u.Event.BytesReceived,
+			u.Event.Err,
+		)
 	}
 }
 
@@ -342,10 +351,10 @@ func (t *Telemetry) ShouldTrace() bool {
 	return uint32(time.Now().UnixNano()%10000) < r
 }
 
-func (t *Telemetry) StartRequest(apiID uint32, tenantID uint16) RequestTrace {
+func (t *Telemetry) StartRequest(apiID uint32, tenantID uint16, method, path string) RequestTrace {
 	id := t.traceID.Add(1)
 	now := time.Now().UnixNano()
-	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, TenantID: tenantID, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
+	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
 }
 
 func (t *Telemetry) QueueMetric(point MetricPoint) {
