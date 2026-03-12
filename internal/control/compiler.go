@@ -1,10 +1,12 @@
 package control
 
 import (
+	"fmt"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -28,12 +30,14 @@ func NewCompiler(fm *engine.FlowManager) *Compiler {
 }
 
 // BakeAll flattens Fragments and APIs into a single Instruction Table.
-func (c *Compiler) BakeAll(cfg GatewayConfig) {
+func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 	// 1. Map Fragments (Subflows)
 	for name, flow := range cfg.Flows {
 		c.FragmentMap[name] = int16(len(c.GlobalTable))
 		c.resetSlots()
-		c.bakeFlow(flow, cfg.Flows)
+		if err := c.bakeFlow(flow, cfg.Flows); err != nil {
+			return fmt.Errorf("flow %q: %w", name, err)
+		}
 		c.GlobalTable = append(c.GlobalTable, c.newReturnStep())
 	}
 
@@ -50,20 +54,24 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) {
 			c.GlobalTable = append(c.GlobalTable, steps.BindInput(dep.Source, dep.Key, slot))
 		}
 
-		c.bakeFlow(cfg.Flows[api.FlowName], cfg.Flows)
+		if err := c.bakeFlow(cfg.Flows[api.FlowName], cfg.Flows); err != nil {
+			return fmt.Errorf("api %q: %w", api.FlowName, err)
+		}
 		c.GlobalTable = append(c.GlobalTable, c.newStopStep())
 	}
+	return nil
 }
 
-func (c *Compiler) bakeFlow(flow []StepConfig, fragments map[string][]StepConfig) {
+func (c *Compiler) bakeFlow(flow []StepConfig, fragments map[string][]StepConfig) error {
 	for _, step := range flow {
-		c.compileStep(step, fragments)
+		if err := c.compileStep(step, fragments); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfig) {
-	// currentID := int16(len(c.GlobalTable)) // (Unused but kept if needed)
-
+func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfig) error {
 	switch step.Action {
 	case "if":
 		thenBlock := c.simulateBake(fragments[step.Then], fragments)
@@ -75,9 +83,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		postElseID := elseStartID + int16(len(elseBlock))
 
 		c.GlobalTable = append(c.GlobalTable, steps.NewComplexLogicGate(step.Condition, thenStartID, elseStartID, c.slotMap))
-		c.bakeFlow(fragments[step.Then], fragments)
+		if err := c.bakeFlow(fragments[step.Then], fragments); err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, c.newInternalJump(postElseID))
-		c.bakeFlow(fragments[step.Else], fragments)
+		if err := c.bakeFlow(fragments[step.Else], fragments); err != nil {
+			return err
+		}
 
 	case "switch":
 		slot := c.getSlot(step.As)
@@ -87,7 +99,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 		for val, fragName := range step.Cases {
 			jumpTable[val] = int16(len(c.GlobalTable))
-			c.bakeFlow(fragments[fragName], fragments)
+			if err := c.bakeFlow(fragments[fragName], fragments); err != nil {
+				return err
+			}
 			c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "BREAK"})
 		}
 		exitID := int16(len(c.GlobalTable))
@@ -100,11 +114,12 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			urlSlot = c.getSlot(step.UrlVar)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
+
 	case "registry_lookup":
 		keySlot := c.getSlot(step.KeyIdentifier)
 		metaSlot := c.getSlot(step.As)
-		// RegistryLookup returns engine.Instruction, so append it directly
 		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot, metaSlot, step.Scope))
+
 	case "token_validation":
 		tokenSlot := c.getSlot(step.KeyIdentifier)
 		cfg := steps.ParseTokenValidationConfig(step.KeyIdentifier, step.Input)
@@ -118,18 +133,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		gateID := int16(len(c.GlobalTable))
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "LOOP_GATE_PLACEHOLDER"})
 
-		// 1. Recursive compilation with fragment context
 		for _, subStep := range step.Do {
-			c.compileStep(subStep, fragments)
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
 		}
 
-		// 2. Append the Repeat Instruction
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name:   "LOOP_REPEAT",
 			Action: steps.LoopRepeat(gateID, iterSlot),
 		})
 
-		// 3. Back-fill the Entry Gate
 		exitID := int16(len(c.GlobalTable))
 		c.GlobalTable[gateID] = engine.Instruction{
 			Name:   "LOOP_GATE",
@@ -137,7 +151,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 
 	case "call":
-		// Resolved at compile time via FragmentMap
 		if targetID, ok := c.FragmentMap[step.FlowName]; ok {
 			c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 				Name:   "CALL",
@@ -145,12 +158,98 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			})
 		} else if fragments != nil {
 			if called, exists := fragments[step.FlowName]; exists {
-				// Fallback for per-flow compilation mode where absolute
-				// fragment IDs are not precomputed.
-				c.bakeFlow(called, fragments)
+				if err := c.bakeFlow(called, fragments); err != nil {
+					return err
+				}
 			}
 		}
-	} // End of Switch
+
+	case "concat":
+		slotA := c.getSlot(step.KeyIdentifier)
+		slotB := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.ConcatStep(slotA, slotB, result, step.Value))
+
+	case "to_lower":
+		src := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.ToLowerStep(src, result))
+
+	case "to_upper":
+		src := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.ToUpperStep(src, result))
+
+	case "substring":
+		src := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		start := 0
+		length := -1
+		if v, ok := step.Input["start"]; ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				start = n
+			}
+		}
+		if v, ok := step.Input["length"]; ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				length = n
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SubstringStep(src, result, start, length))
+
+	case "to_int":
+		src := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.ToIntStep(src, result))
+
+	case "add":
+		slotA := c.getSlot(step.KeyIdentifier)
+		slotB := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.AddStep(slotA, slotB, result))
+
+	case "sub":
+		slotA := c.getSlot(step.KeyIdentifier)
+		slotB := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.SubStep(slotA, slotB, result))
+
+	case "mul":
+		slotA := c.getSlot(step.KeyIdentifier)
+		slotB := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.MulStep(slotA, slotB, result))
+
+	case "div":
+		slotA := c.getSlot(step.KeyIdentifier)
+		slotB := c.getSlot(step.Source)
+		result := c.getSlot(step.As)
+		c.GlobalTable = append(c.GlobalTable, steps.DivStep(slotA, slotB, result))
+
+	case "set_response_header":
+		src := c.getSlot(step.Source)
+		c.GlobalTable = append(c.GlobalTable, steps.SetResponseHeaderFromSlot(step.Key, src))
+
+	case "echo_request":
+		c.GlobalTable = append(c.GlobalTable, steps.EchoRequestStep())
+
+	case "set_response_body":
+		src := c.getSlot(step.Source)
+		c.GlobalTable = append(c.GlobalTable, steps.SetResponseBodyStep(src))
+
+	case "set_response_status":
+		code := 200
+		if step.Value != "" {
+			if n, err := strconv.Atoi(step.Value); err == nil {
+				code = n
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetResponseStatusStep(code))
+
+	default:
+		return fmt.Errorf("unknown step action %q", step.Action)
+	}
+	return nil
 }
 
 // simulateBake calculates the number of instructions a flow would generate
@@ -233,7 +332,7 @@ func (c *Compiler) discoverDependenciesWithFragments(flow []StepConfig, fragment
 	return deps
 }
 
-func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]StepConfig) []engine.Instruction {
+func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]StepConfig) ([]engine.Instruction, error) {
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
 
@@ -248,8 +347,10 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 		}
 	}
 
-	c.bakeFlow(flow, fragments)
-	return c.GlobalTable
+	if err := c.bakeFlow(flow, fragments); err != nil {
+		return nil, err
+	}
+	return c.GlobalTable, nil
 }
 
 // Helpers
@@ -298,11 +399,13 @@ type Dependency struct {
 	Identifier, Source, Key string
 }
 
-func (c *Compiler) Compile(flow []StepConfig) []engine.Instruction {
-	c.GlobalTable = make([]engine.Instruction, 0) // Reset for fresh build
+func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
+	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
-	c.bakeFlow(flow, nil)
-	return c.GlobalTable
+	if err := c.bakeFlow(flow, nil); err != nil {
+		return nil, err
+	}
+	return c.GlobalTable, nil
 }
 
 func (c *Compiler) ResetLocalScope() {
@@ -311,18 +414,14 @@ func (c *Compiler) ResetLocalScope() {
 
 // internal/control/compiler.go
 
-func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) int16 {
-	// 1. The actual entry point is the current end of the GlobalTable
+func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (int16, error) {
 	entryPoint := int16(len(c.GlobalTable))
 
-	// 2. Dependency Discovery
 	sharedFlow := fragments[api.FlowName]
 	deps := c.discoverDependencies(sharedFlow)
 
-	// 3. Bake Index-Specific Bindings
-	// These are unique to THIS API's path/config
 	for i, dep := range deps {
-		slot := c.getSlot(dep.Identifier) // Identifier like "path.userId"
+		slot := c.getSlot(dep.Identifier)
 
 		var instr engine.Instruction
 		switch dep.Source {
@@ -336,10 +435,8 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) int
 		c.GlobalTable = append(c.GlobalTable, instr)
 	}
 
-	// 4. Final Jump to the Shared Flow
-	// This allows the 2,000 APIs to reuse the same logic block
 	sharedFlowStartID := c.FragmentMap[api.FlowName]
 	c.GlobalTable = append(c.GlobalTable, c.newInternalJump(sharedFlowStartID))
 
-	return entryPoint
+	return entryPoint, nil
 }

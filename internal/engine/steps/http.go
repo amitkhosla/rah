@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"rah/internal/clock"
 	"rah/internal/engine"
 	"rah/internal/observability"
 	"rah/internal/rctx"
@@ -284,7 +283,8 @@ func backoffDelay(attempt int, cfg httpClientConfig, upstreamHost string) time.D
 		}
 	}
 	if cfg.RetryJitter > 0 {
-		seed := uint64(clock.CurrentClock.UnixCurTime) ^ uint64(clock.CurrentClock.ElapsedSec)<<16 ^ uint64(attempt*131) ^ uint64(len(upstreamHost))
+		now := time.Now()
+		seed := uint64(now.UnixNano()) ^ uint64(now.Unix())<<16 ^ uint64(attempt*131) ^ uint64(len(upstreamHost))
 		d += time.Duration(seed % uint64(cfg.RetryJitter))
 	}
 	return d
@@ -322,7 +322,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 
 			for attempt := 1; attempt <= attempts; attempt++ {
 				upstreamStart := time.Now()
-				event := observability.UpstreamEvent{Host: upstreamHost, Attempt: attempt}
+				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
 				reqCtx := context.Background()

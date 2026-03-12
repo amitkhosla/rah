@@ -11,9 +11,12 @@ func TestCompileExecutableAddsTokenValidationInstruction(t *testing.T) {
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
 	compiler := NewCompiler(fm)
 
-	plan := compiler.CompileExecutable([]StepConfig{
+	plan, err := compiler.CompileExecutable([]StepConfig{
 		{Action: "token_validation", KeyIdentifier: "header.Authorization", Input: map[string]string{"jwt.jwks_url": "https://issuer/.well-known/jwks.json"}},
 	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
 
 	if len(plan) != 2 {
 		t.Fatalf("expected 2 instructions (bind + validation), got %d", len(plan))

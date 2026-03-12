@@ -6,8 +6,13 @@ import (
 	"net/http"
 	"rah/internal/observability"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
+
+// nanotime returns the current time in nanoseconds.
+// Kept as a thin wrapper so it can be swapped in tests.
+func nanotime() int64 { return time.Now().UnixNano() }
 
 // ResponseWriter abstracts the network socket. This allows the Context
 // to remain decoupled from net/http and supports easier unit testing.
@@ -78,9 +83,11 @@ type Context struct {
 	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
 	ResHeaderCount  int
 	TenantID        uint16
+	TenantKey       string // human-readable tenant identifier (set by registry_lookup)
 	Obs             *observability.Telemetry
 	Trace           *observability.RequestTrace
 	RequestStartNs  int64
+	FirstByteSentNs int64 // when first byte was written to client — used for TTFB
 	UpstreamTimeNs  int64
 	UpstreamCalls   int32
 	ClientBytesSent int64
@@ -103,6 +110,20 @@ type Context struct {
 	// ShardID int
 }
 
+// flushResponseHeaders copies any headers set via SetResponseHeader to the
+// underlying http.ResponseWriter. Must be called before WriteHeader — after
+// WriteHeader is called, header changes have no effect in net/http.
+func (ctx *Context) flushResponseHeaders() {
+	if ctx.ResHeaderCount == 0 {
+		return
+	}
+	h := ctx.Writer.Header()
+	for i := 0; i < ctx.ResHeaderCount; i++ {
+		m := ctx.ResponseHeaders[i]
+		h.Set(string(m.Key), string(m.Value))
+	}
+}
+
 // Write is the universal entry point for all instructions.
 // It handles the "Write Once" constraint and switches behavior based on IsBuffered.
 func (ctx *Context) Write(p []byte) (n int, err error) {
@@ -114,6 +135,10 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 
 	// Flavor 1: Direct Streaming
 	if !ctx.headerSent {
+		if ctx.FirstByteSentNs == 0 {
+			ctx.FirstByteSentNs = nanotime()
+		}
+		ctx.flushResponseHeaders()
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
 		ctx.headerSent = true
 	}
@@ -128,6 +153,10 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 // If data was buffered, it flushes it to the wire in one go.
 func (ctx *Context) Finalize() {
 	if ctx.IsBuffered && !ctx.headerSent {
+		if ctx.FirstByteSentNs == 0 {
+			ctx.FirstByteSentNs = nanotime()
+		}
+		ctx.flushResponseHeaders()
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
 		n, _ := ctx.Writer.Write(ctx.ResponseBuffer)
 		if n > 0 {
@@ -157,6 +186,8 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Trace = nil
 	ctx.Obs = nil
 	ctx.RequestStartNs = 0
+	ctx.FirstByteSentNs = 0
+	ctx.TenantKey = ""
 	ctx.UpstreamTimeNs = 0
 	ctx.UpstreamCalls = 0
 	ctx.ClientBytesSent = 0

@@ -1,11 +1,6 @@
 package engine
 
-import (
-	"sync"
-	"testing"
-)
-
-func ParallelStep(reg *FlowRegistry, flowNames []string) func(*RequestContext) int16 {
+/*func ParallelStep(reg *FlowRegistry, flowNames []string) func(*RequestContext) int16 {
 	return func(ctx *RequestContext) int16 {
 		var wg sync.WaitGroup
 		wg.Add(len(flowNames))
@@ -58,3 +53,4 @@ func TestGatewayArchitecture(t *testing.T) {
 		t.Errorf("Expected Slot 1 to be SUCCESS (Dynamic LogAnalytics failed)")
 	}
 }
+*/

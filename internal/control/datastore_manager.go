@@ -198,6 +198,10 @@ func (m *DataStoreManager) GetGlobal(ctx context.Context, domain config.DataDoma
 	return m.Get(ctx, domain, GlobalTenant, key)
 }
 
+func (m *DataStoreManager) DeleteGlobal(ctx context.Context, domain config.DataDomain, key string) error {
+	return m.Delete(ctx, domain, GlobalTenant, key)
+}
+
 func (m *DataStoreManager) ListGlobalKeys(ctx context.Context, domain config.DataDomain, prefix string) ([]string, error) {
 	return m.ListKeys(ctx, domain, GlobalTenant, prefix)
 }

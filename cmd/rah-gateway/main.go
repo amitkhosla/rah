@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -100,12 +99,17 @@ func main() {
 	}
 
 	// 2. Component Initialization
+	// registry is created before the goroutine so the handler closure never
+	// captures a nil pointer. Names are populated at sync time via
+	// ApplyUnifiedSync → registry.GetOrAssignId, and resolved post-response via
+	// registry.GetNameByID with no hot-path cost.
 	r := router.New()
 	fm := engine.NewFlowManager(12000, cfg)
 	obs := observability.NewFromEnv()
+	accessLog := observability.NewAccessLogger(8192)
+	registry := control.NewNameRegistry()
 
 	// 3. Register Headers and Setup APIs
-	// This maps "Authorization" header to ByteSlots[0] globally
 	fm.HeaderRegistry.RegisterHeader("Authorization")
 	compiler := control.NewCompiler(fm)
 	setupRoutes(r, fm, compiler)
@@ -113,50 +117,85 @@ func main() {
 	// 4. The Unified Hot-Path Handler
 	go func() {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			var reqStart time.Time
-			if obs.ShouldTimeRequests() {
-				reqStart = time.Now()
-			}
-			// A. Router Lookup (Returns uint32)
-			apiId := r.Lookup(req.URL.Path)
+			// Always capture start time — needed for access log regardless of obs config.
+			reqStart := time.Now()
+
+			// A. Router Lookup — load current atomic state so dynamically
+			// registered APIs (via /sync) are always visible.
+			currentState := fm.State.Load()
+			apiId := currentState.Router.Lookup(req.URL.Path)
 			if apiId == 0 {
 				http.NotFound(w, req)
-				if !reqStart.IsZero() {
-					obs.FinishRequest(nil, http.StatusNotFound, time.Since(reqStart), time.Since(reqStart), 0, 0, 0, 0, 0)
-				}
+				// No API name or tenant for 404 — pass empty/zero values.
+				accessLog.Snapshot(
+					"", 0, "", 0,
+					req.Method, req.URL.Path,
+					http.StatusNotFound,
+					time.Since(reqStart).Nanoseconds(), 0, 0, 0,
+					req.ContentLength, 0,
+					req,
+				)
 				return
 			}
 
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
-			ctx.Reset(w)
+			ctx.Reset(w) // set Writer before any processing — new pool contexts have Writer=nil
+
 			ctx.Obs = obs
-			if !reqStart.IsZero() {
-				ctx.RequestStartNs = reqStart.UnixNano()
-			}
+			ctx.RequestStartNs = reqStart.UnixNano()
+
 			if obs.ShouldTrace() {
-				trace := obs.StartRequest(apiId, ctx.TenantID)
+				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
 				ctx.Trace = &trace
 			}
 
 			ctx.ApiId = apiId
-
 			ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
 
 			// C. Delegate Execution to FlowManager
 			fm.ProcessRequest(ctx, req)
 
-			// D. Finalize: Flush buffered data or commit status code
+			// D. Finalize: flush buffered response — client receives data here.
 			ctx.Finalize()
-			if !reqStart.IsZero() {
-				total := time.Since(reqStart)
-				upstream := time.Duration(atomic.LoadInt64(&ctx.UpstreamTimeNs))
-				gateway := total - upstream
-				if gateway < 0 {
-					gateway = 0
-				}
-				obs.FinishRequest(ctx.Trace, ctx.ResponseStatus, total, gateway, upstream, int(atomic.LoadInt32(&ctx.UpstreamCalls)), ctx.ClientBytesSent, atomic.LoadInt64(&ctx.UpstreamBytesTx), atomic.LoadInt64(&ctx.UpstreamBytesRx))
+
+			// E. Post-response: snapshot for async access log and observability.
+			// Client has already received the response — none of this adds latency.
+			// req remains valid until this goroutine returns, so req.Header reads
+			// in Snapshot() are safe.
+			total := time.Since(reqStart)
+			upstreamNs := atomic.LoadInt64(&ctx.UpstreamTimeNs)
+			upstream := time.Duration(upstreamNs)
+			gateway := total - upstream
+			if gateway < 0 {
+				gateway = 0
 			}
+
+			ttfbNs := ctx.FirstByteSentNs - ctx.RequestStartNs
+			if ttfbNs < 0 {
+				ttfbNs = 0
+			}
+
+			// API name: resolved from registry (populated at sync time).
+			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
+			accessLog.Snapshot(
+				registry.GetNameByID(ctx.ApiId),
+				ctx.ApiId,
+				ctx.TenantKey,
+				ctx.TenantID,
+				req.Method, req.URL.Path,
+				ctx.ResponseStatus,
+				total.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
+				req.ContentLength, ctx.ClientBytesSent,
+				req,
+			)
+
+			obs.FinishRequest(ctx.Trace, ctx.ResponseStatus, total, gateway, upstream,
+				int(atomic.LoadInt32(&ctx.UpstreamCalls)),
+				ctx.ClientBytesSent,
+				atomic.LoadInt64(&ctx.UpstreamBytesTx),
+				atomic.LoadInt64(&ctx.UpstreamBytesRx),
+			)
 
 			if ctx.ShouldReturnToPool() {
 				fm.Pool.Put(ctx)
@@ -168,22 +207,24 @@ func main() {
 		log.Fatal(http.ListenAndServe(addr, handler))
 	}()
 
-	registry := control.NewNameRegistry()
-	ms := &control.ManagementServer{
-		FlowManager: fm,
-		Compiler:    compiler,
-		Registry:    registry,
-	}
-
-	if err := bootstrapControlPlaneFromDataStore(bootstrapCtx, dataStoreMgr, ms); err != nil {
+	ms := control.NewManagementServer(fm, compiler, registry)
+	// Bootstrap BEFORE SetDataStore so the bootstrap reads do not trigger
+	// redundant writes back to the store.
+	if err := ms.Bootstrap(bootstrapCtx, dataStoreMgr); err != nil {
 		log.Printf("failed control-plane bootstrap from datastore: %v", err)
 	}
+	// Optional: enable write-through persistence for subsequent upserts/deletes.
+	// Remove this line when a central orchestrator owns persistence and RAH only
+	// reads on boot.
+	ms.SetDataStore(dataStoreMgr)
 
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
+	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
+	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }
@@ -196,10 +237,8 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	p1Instructions := []engine.Instruction{
 		{
 			Name: "HelloStep",
-			// ADDED: *engine.ExecutionState parameter
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 				ctx.Write([]byte("Welcome to Rah Gateway"))
-				// Return PC + 1 to move to the next instruction
 				return s.PC + 1
 			},
 		},
@@ -215,10 +254,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	p2Instructions := []engine.Instruction{
 		{
 			Name: "ShowProfile",
-			// ADDED: *engine.ExecutionState parameter
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				// In your compiler setup, you assigned nextSlot starting at 10.
-				// Ensure the parameter extraction actually maps to this slot.
 				userId := ctx.ByteSlots[10]
 				ctx.Write([]byte("User Profile for ID: "))
 				ctx.Write(userId)
@@ -227,62 +263,9 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 		},
 	}
 
-	// Base path is /v1/user
 	def2 := engine.BakeDefinition(2, "/v1/user")
-	// Sub-path contains the dynamic segment {id}
 	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true)
 
 	state.Definitions[2] = def2
 	state.Router.Add(def2.BaseRawPath, 2)
-}
-
-func bootstrapControlPlaneFromDataStore(ctx context.Context, dsm *control.DataStoreManager, ms *control.ManagementServer) error {
-	flowsSnapshot, err := dsm.ReadFlowsSnapshot(ctx)
-	if err != nil {
-		return err
-	}
-	apisSnapshot, err := dsm.ReadAPIDefinitionsSnapshot(ctx)
-	if err != nil {
-		return err
-	}
-
-	if len(flowsSnapshot) == 0 && len(apisSnapshot) == 0 {
-		return nil
-	}
-
-	req := control.UnifiedSyncRequest{SyncUUID: "bootstrap"}
-
-	for name, raw := range flowsSnapshot {
-		var steps []control.StepConfig
-		if err := json.Unmarshal(raw, &steps); err != nil {
-			continue
-		}
-		req.Flows = append(req.Flows, control.FlowUpdate{
-			Name:         name,
-			Instructions: steps,
-			Action:       "upsert",
-		})
-	}
-
-	for name, raw := range apisSnapshot {
-		var api control.ApiConfig
-		if err := json.Unmarshal(raw, &api); err != nil {
-			continue
-		}
-		if api.ApiID == "" {
-			api.ApiID = name
-		}
-		req.Apis = append(req.Apis, control.ApiUpdate{
-			Name:     api.ApiID,
-			Path:     api.Path,
-			FlowName: api.FlowName,
-			Action:   "upsert",
-		})
-	}
-
-	if len(req.Flows) == 0 && len(req.Apis) == 0 {
-		return nil
-	}
-
-	return ms.ApplyUnifiedSync(req)
 }

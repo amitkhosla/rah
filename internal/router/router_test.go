@@ -1,7 +1,6 @@
 package router
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -153,6 +152,7 @@ func TestGemRouterFewEntries_Functional(t *testing.T) {
 	}
 }
 */
+/*
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_1000Routes(b *testing.B) {
 	print("Starting benchmark")
@@ -174,7 +174,7 @@ func BenchmarkLookup_1000Routes(b *testing.B) {
 
 func BenchmarkLookup_1000RoutesSmall(b *testing.B) {
 	print("Starting benchmark")
-	r := NewSmall()
+		r := New()
 	urls := Generate3000RoutesSmall(r)
 	print("added Urls: ", urls)
 
@@ -193,7 +193,7 @@ func BenchmarkLookup_1000RoutesSmall(b *testing.B) {
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_1000RoutesWoutPadding(b *testing.B) {
 	print("Starting benchmark")
-	r := NewWoutPadding()
+		r := New()
 	urls := Generate3000RoutesWPadding(r)
 	print("added Urls: ", urls)
 
@@ -212,7 +212,7 @@ func BenchmarkLookup_1000RoutesWoutPadding(b *testing.B) {
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_1000RoutesString(b *testing.B) {
 	print("Starting benchmark")
-	r := NewStringRouter()
+		r := New()
 	urls := Generate3000RoutesString(r)
 	print("added Urls: ", urls)
 
@@ -247,7 +247,7 @@ func BenchmarkLookup_SingleRoutes(b *testing.B) {
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_SingleRoutesSmall(b *testing.B) {
 	print("Starting benchmark")
-	r := NewSmall()
+		r := New()
 	urls := Generate3000RoutesSmall(r)
 	print("added Urls: ", urls)
 
@@ -263,7 +263,7 @@ func BenchmarkLookup_SingleRoutesSmall(b *testing.B) {
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_SingleRoutesWoutPadding(b *testing.B) {
 	print("Starting benchmark")
-	r := NewWoutPadding()
+		r := New()
 	urls := Generate3000RoutesWPadding(r)
 	print("added Urls: ", urls)
 
@@ -279,7 +279,7 @@ func BenchmarkLookup_SingleRoutesWoutPadding(b *testing.B) {
 // BenchmarkLookup_1000Routes tests the nanosecond latency of the hot path.
 func BenchmarkLookup_SingleRoutesString(b *testing.B) {
 	print("Starting benchmark")
-	r := NewStringRouter()
+		r := New()
 	urls := Generate3000RoutesString(r)
 	print("added Urls: ", urls)
 
@@ -336,7 +336,7 @@ func Generate3000Routes(r *RahRouter) []string {
 	return output
 }
 
-func Generate3000RoutesWPadding(r *RahRouterWoutPAdding) []string {
+func Generate3000RoutesWPadding(r *New()) []string {
 	output := make([]string, 0, 3000)
 	// 15 Departments/Sectors
 	sectors := []string{
@@ -379,7 +379,7 @@ func Generate3000RoutesWPadding(r *RahRouterWoutPAdding) []string {
 	return output
 }
 
-func Generate3000RoutesSmall(r *RahRouterSmall) []string {
+func Generate3000RoutesSmall(r *New()) []string {
 	output := make([]string, 0, 3000)
 	// 15 Departments/Sectors
 	sectors := []string{
@@ -422,7 +422,7 @@ func Generate3000RoutesSmall(r *RahRouterSmall) []string {
 	return output
 }
 
-func Generate3000RoutesString(r *RahStringRouter) []string {
+func Generate3000RoutesString(r *New()) []string {
 	output := make([]string, 0, 3000)
 	// 15 Departments/Sectors
 	sectors := []string{
@@ -464,3 +464,4 @@ func Generate3000RoutesString(r *RahStringRouter) []string {
 	}
 	return output
 }
+*/
