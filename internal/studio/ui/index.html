@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>RAH Studio</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#111a2d;--text:#ecf0f9;--muted:#93a1bf;--accent:#57b5ff}
+    body{margin:0;font-family:Inter,system-ui;background:var(--bg);color:var(--text)}
+    .top{display:flex;gap:8px;padding:10px;border-bottom:1px solid #2a3a63;position:sticky;top:0;background:#0d1628}
+    .tab{padding:8px 12px;border:1px solid #38568c;border-radius:8px;background:#13223f;color:#fff;cursor:pointer}
+    .tab.active{background:var(--accent);color:#031427;font-weight:700}
+    .theme{margin-left:auto;display:flex;gap:6px;align-items:center}
+    .wrap{padding:12px}
+    .section{display:none;grid-template-columns:320px 1fr;gap:12px}
+    .section.active{display:grid}
+    .panel{background:var(--panel);border:1px solid #22355d;border-radius:12px;overflow:hidden}
+    .h{padding:12px;border-bottom:1px solid #2a3a63}.b{padding:12px}
+    .list{display:grid;gap:8px;max-height:70vh;overflow:auto}
+    .blk{background:#1d2c4a;border:1px solid #38558f;border-radius:10px;padding:10px;cursor:grab}
+    .canvas{border:2px dashed #355589;border-radius:12px;min-height:440px;padding:10px}
+    .step{background:#1a2b48;border:1px solid #3a5f96;border-radius:8px;padding:8px;margin-bottom:8px}
+    .btn{width:100%;padding:9px;border-radius:8px;border:0;margin-top:7px;background:var(--accent);color:#031427;font-weight:700}
+    .mut{background:#27406b;color:#fff}.hint{font-size:12px;color:var(--muted);white-space:pre-wrap}
+    input,textarea,select{width:100%;padding:8px;border-radius:8px;border:1px solid #38568c;background:#0f1b31;color:#fff}
+    textarea{min-height:90px}
+  </style>
+</head>
+<body>
+<div class="top">
+  <button class="tab active" data-tab="flows">Flow Designer</button>
+  <button class="tab" data-tab="apis">API Definition</button>
+  <button class="tab" data-tab="deploy">Deploy / Releases</button>
+  <button class="tab" data-tab="settings">UI Settings</button>
+  <div class="theme">
+    <label style="font-size:12px;color:#93a1bf">Accent</label>
+    <input id="accent" value="#57b5ff" style="width:90px"/>
+  </div>
+</div>
+<div class="wrap">
+  <section id="tab-flows" class="section active">
+    <div class="panel"><div class="h"><b>Instruction Palette</b></div><div class="b"><input id="cat" placeholder="filter category"/><div id="palette" class="list" style="margin-top:8px"></div></div></div>
+    <div class="panel"><div class="h"><b>Flow Designer</b></div><div class="b"><input id="flowName" placeholder="flow name"/><div id="canvas" class="canvas" style="margin-top:8px"></div><button class="btn mut" id="clearFlow">Clear</button><textarea id="preview" readonly></textarea></div></div>
+  </section>
+
+  <section id="tab-apis" class="section">
+    <div class="panel"><div class="h"><b>OpenAPI Import (JSON or YAML)</b></div><div class="b"><textarea id="openapiSpec" placeholder="Paste OpenAPI spec here"></textarea><button class="btn" id="importSpec">Import APIs</button><div id="importStatus" class="hint"></div></div></div>
+    <div class="panel"><div class="h"><b>API Definitions linked to Flow</b></div><div class="b"><input id="apiName" placeholder="api name"/><input id="apiPath" placeholder="api path" style="margin-top:6px"/><input id="apiMethod" placeholder="method" style="margin-top:6px"/><button class="btn" id="addApi">Add API</button><div id="apiList" class="hint" style="margin-top:10px"></div></div></div>
+  </section>
+
+  <section id="tab-deploy" class="section">
+    <div class="panel"><div class="h"><b>Targets</b></div><div class="b"><div id="targets" class="hint"></div><input id="levels" placeholder="levels csv: dev,stage,prod"/><input id="targetNames" placeholder="target names csv (optional)" style="margin-top:6px"/></div></div>
+    <div class="panel"><div class="h"><b>Release + Deploy</b></div><div class="b"><input id="releaseId" placeholder="release id (optional, auto)"/><input id="instructionSetVersion" placeholder="instruction set version" style="margin-top:6px"/><textarea id="apiVersions" placeholder='api versions JSON e.g. {"orders":"v2"}'></textarea><button class="btn" id="releaseDeployBtn">Create Release + Deploy</button><select id="existingRelease"></select><button class="btn mut" id="deployExistingBtn">Deploy Existing Release</button><button class="btn mut" id="refresh">Refresh status</button><div id="status" class="hint"></div><div id="history" class="hint" style="margin-top:10px"></div><div id="releases" class="hint" style="margin-top:10px"></div></div></div>
+  </section>
+
+  <section id="tab-settings" class="section">
+    <div class="panel"><div class="h"><b>UI Customization</b></div><div class="b"><label class="hint">Density</label><select id="density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select><label class="hint" style="margin-top:8px;display:block">Font Scale</label><select id="fontScale"><option value="1">Default</option><option value="0.92">Small</option><option value="1.08">Large</option></select><button class="btn" id="applyUi">Apply</button></div></div>
+    <div class="panel"><div class="h"><b>Notes</b></div><div class="b"><div class="hint">Sections separate concerns: Flows, APIs, Deployments/Releases. OpenAPI import supports JSON and YAML.</div></div></div>
+  </section>
+</div>
+
+<script>
+const st={blocks:[],steps:[],apis:[]};
+const csv=id=>(document.getElementById(id).value||'').split(',').map(x=>x.trim()).filter(Boolean);
+function switchTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));document.querySelectorAll('.section').forEach(s=>s.classList.toggle('active',s.id==='tab-'+name));}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+
+function rp(){const f=document.getElementById('flowName').value||'new_flow';document.getElementById('preview').value=JSON.stringify({name:f,instructions:st.steps,action:'upsert'},null,2)}
+function rpal(){const f=(document.getElementById('cat').value||'').toLowerCase();const p=document.getElementById('palette');p.innerHTML='';st.blocks.filter(b=>!f||b.category.toLowerCase().includes(f)).forEach(b=>{const e=document.createElement('div');e.className='blk';e.draggable=true;e.dataset.block=JSON.stringify(b);e.innerHTML='<b>'+b.title+'</b><div class="hint">'+b.category+' · '+b.capability+'</div>';e.addEventListener('dragstart',x=>x.dataTransfer.setData('application/json',e.dataset.block));p.appendChild(e);});}
+function rcan(){const c=document.getElementById('canvas');c.innerHTML=st.steps.length?'':'<span class="hint">Drop steps here</span>';st.steps.forEach((s,i)=>{const d=document.createElement('div');d.className='step';d.innerHTML='<b>'+(i+1)+'. '+s.action+'</b>';Object.keys(s).filter(k=>k!=='action').forEach(k=>{const inp=document.createElement('input');inp.value=s[k];inp.placeholder=k;inp.oninput=e=>{s[k]=e.target.value;rp()};d.appendChild(inp)});const rm=document.createElement('button');rm.className='btn mut';rm.textContent='Remove';rm.onclick=()=>{st.steps.splice(i,1);rcan();rp()};d.appendChild(rm);c.appendChild(d)});rp()}
+function dnd(){const c=document.getElementById('canvas');c.addEventListener('dragover',e=>e.preventDefault());c.addEventListener('drop',e=>{e.preventDefault();const raw=e.dataTransfer.getData('application/json');if(!raw)return;const b=JSON.parse(raw);st.steps.push({action:b.type,...b.defaults});rcan();})}
+
+function renderApis(){document.getElementById('apiList').textContent=st.apis.map(a=>`${a.name} ${a.method} ${a.path} -> ${(document.getElementById('flowName').value||'new_flow')}`).join('\n');}
+document.getElementById('addApi').onclick=()=>{const name=document.getElementById('apiName').value.trim();const path=document.getElementById('apiPath').value.trim();const method=(document.getElementById('apiMethod').value||'POST').toUpperCase();if(!name||!path){return;}st.apis.push({name,path,method});renderApis();};
+
+async function importSpec(){const spec=document.getElementById('openapiSpec').value;const res=await fetch('/api/openapi/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({spec})});const txt=await res.text();if(!res.ok){document.getElementById('importStatus').textContent=txt;return;}const data=JSON.parse(txt);document.getElementById('importStatus').textContent=`Imported ${data.apis.length} APIs from ${data.source}`;data.apis.forEach(a=>st.apis.push({name:a.name,path:a.path,method:a.method}));renderApis();switchTab('apis');}
+document.getElementById('importSpec').onclick=importSpec;
+
+async function loadSchema(){const d=await (await fetch('/api/schema')).json();st.blocks=d.blocks||[];rpal()}
+async function loadTargets(){const d=await (await fetch('/api/targets')).json();document.getElementById('targets').textContent='Targets:\n'+(d.targets||[]).map(t=>'- '+t.name+' ['+t.level+'] => '+t.urls.join(', ')).join('\n');document.getElementById('history').textContent='Recent deploys:\n'+(d.history||[]).slice(0,5).map(h=>(h.at.t||h.at)+' '+h.release_id+' => '+(h.results||[]).map(r=>r.target+':'+(r.status||r.error)).join(' | ')).join('\n');const rel=(d.releases||[]);document.getElementById('releases').textContent='Releases:\n'+rel.slice(0,20).map(r=>r.release_id+' | instr='+r.instruction_set_version+' | apis='+Object.keys(r.api_versions||{}).length).join('\n');const sel=document.getElementById('existingRelease');sel.innerHTML='';rel.forEach(r=>{const o=document.createElement('option');o.value=r.release_id;o.textContent=r.release_id;sel.appendChild(o);});}
+function parseApiVersions(){try{const t=(document.getElementById('apiVersions').value||'').trim();return t?JSON.parse(t):{};}catch(e){throw new Error('apiVersions must be valid JSON')} }
+async function releaseAndDeploy(){if(st.apis.length===0){document.getElementById('status').textContent='Add APIs first in API section';return;}const flowName=document.getElementById('flowName').value.trim();if(!flowName){document.getElementById('status').textContent='flow name required';return;}let apiVersions={};try{apiVersions=parseApiVersions()}catch(e){document.getElementById('status').textContent=e.message;return}const payload={sync_uuid:'ui-'+Date.now(),flows:[{name:flowName,instructions:st.steps,action:'upsert'}],apis:st.apis.map(a=>({name:a.name,path:a.path,flow_name:flowName,action:'upsert'})]} ;const body={release_id:document.getElementById('releaseId').value.trim(),instruction_set_version:document.getElementById('instructionSetVersion').value.trim(),api_versions:apiVersions,levels:csv('levels'),target_names:csv('targetNames'),payload};const res=await fetch('/api/deploy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});document.getElementById('status').textContent=await res.text();await loadTargets();switchTab('deploy');}
+async function deployExisting(){const rid=document.getElementById('existingRelease').value||document.getElementById('releaseId').value.trim();if(!rid){document.getElementById('status').textContent='choose a release id';return}const body={release_id:rid,levels:csv('levels'),target_names:csv('targetNames')};const res=await fetch('/api/deploy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});document.getElementById('status').textContent=await res.text();await loadTargets();}
+
+document.getElementById('releaseDeployBtn').onclick=releaseAndDeploy;document.getElementById('deployExistingBtn').onclick=deployExisting;document.getElementById('refresh').onclick=loadTargets;
+
+document.getElementById('cat').oninput=rpal;document.getElementById('clearFlow').onclick=()=>{st.steps=[];rcan()};
+
+document.getElementById('applyUi').onclick=()=>{const accent=document.getElementById('accent').value||'#57b5ff';document.documentElement.style.setProperty('--accent',accent);const density=document.getElementById('density').value;const fontScale=document.getElementById('fontScale').value;document.body.style.fontSize=(16*parseFloat(fontScale))+'px';document.querySelectorAll('.b').forEach(el=>el.style.padding=density==='compact'?'8px':'12px');};
+
+dnd();rcan();loadSchema();loadTargets();
+</script>
+</body>
+</html>
