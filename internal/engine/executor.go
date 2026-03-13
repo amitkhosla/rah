@@ -22,6 +22,12 @@ type ExecutionState struct {
 	StackPtr  int8
 	PC        int16
 	IsStopped bool
+
+	// SlotOverflow is the DataStore-backed overflow store for slot values that
+	// exceed arena capacity or slot indices beyond in-memory limits.
+	// Nil when no overflow store is configured — the common case.
+	// Set by FlowManager before Execute; propagated to sub-flows via FlowRegistry.
+	SlotOverflow rctx.SlotOverflowStore
 }
 
 // InstructionFunc represents the logic of a single instruction.
@@ -40,12 +46,13 @@ type Instruction struct {
 
 // Execute runs a compiled instruction table using absolute jumps.
 // It assumes each Instruction.Action returns the ABSOLUTE next PC.
-func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
+// store may be nil; it is set on ExecutionState so instructions can access it.
+func Execute(ctx *rctx.Context, table []Instruction, startID int16, store rctx.SlotOverflowStore) {
 	pc := startID
 	tableLen := int16(len(table))
 
 	// ExecutionState lives on stack (no GC pressure)
-	var state ExecutionState
+	state := ExecutionState{SlotOverflow: store}
 
 	for pc >= 0 && pc < tableLen {
 		state.PC = pc // Keep PC in sync for instructions that use it
