@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,15 +17,8 @@ import (
 	"time"
 )
 
-//go:embed ui/index.html
+//go:embed ui/dist
 var uiFS embed.FS
-
-var defaultUI []byte
-
-func init() {
-	b, _ := uiFS.ReadFile("ui/index.html")
-	defaultUI = b
-}
 
 type ServerConfig struct {
 	Targets   []Target `json:"targets"`
@@ -161,7 +155,6 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.pageHandler)
 	mux.HandleFunc("/api/schema", s.schemaHandler)
 	mux.HandleFunc("/api/suggestions", s.suggestionsHandler)
 	mux.HandleFunc("/api/targets", s.targetsHandler)
@@ -169,7 +162,42 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/openapi/import", s.importOpenAPIHandler)
 	mux.HandleFunc("/api/getAllApis", s.getAllApisProxy)
 	mux.HandleFunc("/api/sync", s.syncProxy)
+
+	// Serve the React SPA from the embedded ui/dist directory.
+	// Any path that doesn't match a real file falls back to index.html
+	// so that the browser can handle it (no server-side routing needed).
+	sub, _ := fs.Sub(uiFS, "ui/dist")
+	mux.Handle("/", newSPAHandler(http.FS(sub)))
 	return mux
+}
+
+// spaHandler serves static files from fsys, falling back to index.html for
+// any path that does not correspond to a real file (SPA client-side routing).
+type spaHandler struct{ fsys http.FileSystem }
+
+func newSPAHandler(fsys http.FileSystem) http.Handler { return &spaHandler{fsys: fsys} }
+
+func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Attempt to open the requested path as a real file.
+	if r.URL.Path != "/" {
+		f, err := h.fsys.Open(r.URL.Path)
+		if err == nil {
+			f.Close()
+			http.FileServer(h.fsys).ServeHTTP(w, r)
+			return
+		}
+	}
+	// Fall back to index.html (SPA entry point).
+	f, err := h.fsys.Open("index.html")
+	if err != nil {
+		http.Error(w,
+			"UI not built. Run: cd internal/studio/ui && npm install && npm run build",
+			http.StatusServiceUnavailable)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.Copy(w, f)
 }
 
 func defaultBlocks() []PaletteBlock {
@@ -181,11 +209,6 @@ func defaultBlocks() []PaletteBlock {
 		{Type: "proxy", Title: "Proxy", Description: "Forward request to upstream", Category: "integration", Capability: "upstream-proxy", Defaults: map[string]string{"to": "var.target_url"}},
 		{Type: "mcp_call", Title: "MCP Call", Description: "Call MCP or virtual MCP capability", Category: "ai", Capability: "mcp", Defaults: map[string]string{"provider": "virtual-mcp", "tool": "catalog.search", "as": "mcp_result"}},
 	}
-}
-
-func (s *Server) pageHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(defaultUI)
 }
 
 func (s *Server) schemaHandler(w http.ResponseWriter, _ *http.Request) {
