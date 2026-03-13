@@ -198,7 +198,9 @@ func main() {
 			)
 
 			if ctx.ShouldReturnToPool() {
-				fm.Pool.Put(ctx)
+				// ReturnContext releases borrowed arena blocks and slot extensions
+				// back to their pools before returning the context itself.
+				fm.ReturnContext(ctx)
 			}
 		})
 
@@ -223,6 +225,19 @@ func main() {
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
+	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
+		// Reports cumulative overflow counts since process start.
+		// Non-zero ArenaOverflows or SlotOverflows indicates default arena/slot
+		// sizing needs tuning (increase rctx.ArenaBlockSize or BaseByteSlots).
+		fmt.Fprintf(w,
+			`{"arena_overflows":%d,"slot_overflows":%d,"arena_block_size":%d,"base_byte_slots":%d,"max_extra_arenas":%d}`,
+			fm.Metrics.ArenaOverflows.Load(),
+			fm.Metrics.SlotOverflows.Load(),
+			rctx.ArenaBlockSize,
+			rctx.BaseByteSlots,
+			rctx.MaxExtraArenas,
+		)
+	})
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
 	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
 	log.Printf("Management API running on %d", *mPort)
