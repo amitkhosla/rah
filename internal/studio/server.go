@@ -149,6 +149,12 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		if strings.TrimSpace(targets[i].Name) == "" || strings.TrimSpace(targets[i].Level) == "" || len(targets[i].URLs) == 0 {
 			return nil, errors.New("invalid target config")
 		}
+		for _, raw := range targets[i].URLs {
+			u, err := url.Parse(strings.TrimSpace(raw))
+			if err != nil || u == nil || u.Scheme == "" || u.Host == "" {
+				return nil, errors.New("invalid target url: " + raw)
+			}
+		}
 	}
 	return &Server{managementBaseURL: parsed, httpClient: http.DefaultClient, targets: targets, store: releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath)}, nil
 }
@@ -296,9 +302,13 @@ func parseOpenAPISpec(spec string) ([]ImportedAPI, string, error) {
 func parseOpenAPIYAML(spec string) ([]ImportedAPI, error) {
 	lines := strings.Split(spec, "\n")
 	inPaths := false
+	pathsIndent := -1
+	pathIndent := -1
+	methodIndent := -1
 	currentPath := ""
 	currentMethod := ""
 	apis := make([]ImportedAPI, 0)
+
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
 		trim := strings.TrimSpace(line)
@@ -306,34 +316,51 @@ func parseOpenAPIYAML(spec string) ([]ImportedAPI, error) {
 			continue
 		}
 		indent := len(line) - len(strings.TrimLeft(line, " "))
+
 		if strings.HasPrefix(trim, "paths:") {
 			inPaths = true
+			pathsIndent = indent
 			continue
 		}
 		if !inPaths {
 			continue
 		}
-		if indent == 2 && strings.HasPrefix(trim, "/") && strings.HasSuffix(trim, ":") {
-			currentPath = strings.TrimSuffix(trim, ":")
-			currentMethod = ""
-			continue
+		if indent <= pathsIndent {
+			// exited paths block
+			break
+		}
+
+		if strings.HasPrefix(trim, "/") && strings.HasSuffix(trim, ":") {
+			if pathIndent == -1 {
+				pathIndent = indent
+			}
+			if indent == pathIndent {
+				currentPath = strings.TrimSuffix(trim, ":")
+				currentMethod = ""
+				continue
+			}
 		}
 		if currentPath == "" {
 			continue
 		}
-		if indent == 4 && strings.HasSuffix(trim, ":") {
+
+		if strings.HasSuffix(trim, ":") {
 			m := strings.ToUpper(strings.TrimSuffix(trim, ":"))
 			switch m {
 			case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead, http.MethodOptions:
-				currentMethod = m
-				name := strings.ToLower(m) + "_" + strings.ReplaceAll(strings.Trim(currentPath, "/"), "/", "_")
-				apis = append(apis, ImportedAPI{Name: name, Path: currentPath, Method: m})
-			default:
-				currentMethod = ""
+				if methodIndent == -1 {
+					methodIndent = indent
+				}
+				if indent == methodIndent {
+					currentMethod = m
+					name := strings.ToLower(m) + "_" + strings.ReplaceAll(strings.Trim(currentPath, "/"), "/", "_")
+					apis = append(apis, ImportedAPI{Name: name, Path: currentPath, Method: m})
+					continue
+				}
 			}
-			continue
 		}
-		if currentMethod != "" && indent >= 6 && strings.HasPrefix(trim, "operationId:") {
+
+		if currentMethod != "" && strings.HasPrefix(trim, "operationId:") {
 			op := strings.TrimSpace(strings.TrimPrefix(trim, "operationId:"))
 			op = strings.Trim(op, "\"'")
 			if op != "" && len(apis) > 0 {
@@ -341,6 +368,7 @@ func parseOpenAPIYAML(spec string) ([]ImportedAPI, error) {
 			}
 		}
 	}
+
 	if len(apis) == 0 {
 		return nil, errors.New("openapi yaml paths not found")
 	}
@@ -378,22 +406,25 @@ func (s *Server) deployHandler(w http.ResponseWriter, r *http.Request) {
 	results := make([]DeployResult, 0)
 	for _, t := range selected {
 		for _, raw := range t.URLs {
-			u, _ := url.Parse(strings.TrimRight(raw, "/"))
-			u.Path = "/sync"
-			hReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, u.String(), bytes.NewReader(rec.Payload))
+			targetURL, err := buildTargetURL(raw, "/sync", "")
 			if err != nil {
-				results = append(results, DeployResult{Target: t.Name, URL: u.String(), ReleaseID: rec.ReleaseID, Error: err.Error()})
+				results = append(results, DeployResult{Target: t.Name, URL: raw, ReleaseID: rec.ReleaseID, Error: err.Error()})
+				continue
+			}
+			hReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(rec.Payload))
+			if err != nil {
+				results = append(results, DeployResult{Target: t.Name, URL: targetURL, ReleaseID: rec.ReleaseID, Error: err.Error()})
 				continue
 			}
 			hReq.Header.Set("Content-Type", "application/json")
 			resp, err := s.httpClient.Do(hReq)
 			if err != nil {
-				results = append(results, DeployResult{Target: t.Name, URL: u.String(), ReleaseID: rec.ReleaseID, Error: err.Error()})
+				results = append(results, DeployResult{Target: t.Name, URL: targetURL, ReleaseID: rec.ReleaseID, Error: err.Error()})
 				continue
 			}
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			results = append(results, DeployResult{Target: t.Name, URL: u.String(), ReleaseID: rec.ReleaseID, Status: resp.StatusCode})
+			results = append(results, DeployResult{Target: t.Name, URL: targetURL, ReleaseID: rec.ReleaseID, Status: resp.StatusCode})
 		}
 	}
 	s.historyMu.Lock()
@@ -453,6 +484,29 @@ func (s *Server) selectTargets(levels, names []string) []Target {
 	return out
 }
 
+func buildTargetURL(baseRaw, endpointPath, rawQuery string) (string, error) {
+	baseURL, err := url.Parse(strings.TrimSpace(baseRaw))
+	if err != nil || baseURL == nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return "", errors.New("invalid target url")
+	}
+	joined := *baseURL
+	joined.Path = joinURLPath(baseURL.Path, endpointPath)
+	joined.RawQuery = rawQuery
+	return joined.String(), nil
+}
+
+func joinURLPath(basePath, endpointPath string) string {
+	if basePath == "" || basePath == "/" {
+		if strings.HasPrefix(endpointPath, "/") {
+			return endpointPath
+		}
+		return "/" + endpointPath
+	}
+	b := strings.TrimRight(basePath, "/")
+	e := strings.TrimLeft(endpointPath, "/")
+	return b + "/" + e
+}
+
 func (s *Server) getAllApisProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyToDefault(w, r, http.MethodGet, "/getAllApis")
 }
@@ -474,10 +528,12 @@ func (s *Server) proxyToDefault(w http.ResponseWriter, r *http.Request, method, 
 		http.Error(w, "no default management endpoint", http.StatusBadGateway)
 		return
 	}
-	target, _ := url.Parse(strings.TrimRight(base, "/"))
-	target.Path = path
-	target.RawQuery = r.URL.RawQuery
-	req, err := http.NewRequestWithContext(r.Context(), method, target.String(), r.Body)
+	targetURL, err := buildTargetURL(base, path, r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, "invalid management endpoint", http.StatusBadGateway)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, r.Body)
 	if err != nil {
 		http.Error(w, "Failed to build proxy request", http.StatusInternalServerError)
 		return

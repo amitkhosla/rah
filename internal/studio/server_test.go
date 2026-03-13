@@ -107,3 +107,66 @@ func TestDeployResponseContainsReleaseID(t *testing.T) {
 		t.Fatalf("release_id missing")
 	}
 }
+
+func TestOpenAPIImportYAMLFlexibleIndentation(t *testing.T) {
+	s, _ := NewServer("http://127.0.0.1:8081", ServerConfig{})
+	yamlSpec := "openapi: 3.0.0\npaths:\n    /alpha:\n      get:\n        operationId: getAlpha\n"
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/openapi/import", strings.NewReader(`{"spec":`+strconv.Quote(yamlSpec)+`}`)))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "getAlpha") {
+		t.Fatalf("yaml import with flexible indentation failed: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNewServerRejectsMalformedTargetURL(t *testing.T) {
+	_, err := NewServer("", ServerConfig{Targets: []Target{{Name: "bad", Level: "dev", URLs: []string{":"}}}})
+	if err == nil {
+		t.Fatalf("expected malformed target URL error")
+	}
+}
+
+func TestDeployPreservesTargetPathPrefix(t *testing.T) {
+	seenPath := ""
+	mgmt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mgmt.Close()
+
+	baseWithPrefix := mgmt.URL + "/gw"
+	s, err := NewServer("", ServerConfig{Targets: []Target{{Name: "gw", Level: "dev", URLs: []string{baseWithPrefix}}}})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/deploy", strings.NewReader(`{"levels":["dev"],"payload":{"sync_uuid":"abc"}}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("deploy failed: %d %s", rr.Code, rr.Body.String())
+	}
+	if seenPath != "/gw/sync" {
+		t.Fatalf("expected /gw/sync path, got %s", seenPath)
+	}
+}
+
+func TestProxyPreservesPathPrefix(t *testing.T) {
+	seenPath := ""
+	mgmt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"apis":[]}`))
+	}))
+	defer mgmt.Close()
+
+	s, err := NewServer(mgmt.URL+"/gw", ServerConfig{})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/getAllApis", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("proxy failed: %d", rr.Code)
+	}
+	if seenPath != "/gw/getAllApis" {
+		t.Fatalf("expected /gw/getAllApis path, got %s", seenPath)
+	}
+}
