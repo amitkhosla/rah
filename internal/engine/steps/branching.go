@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 )
@@ -48,18 +49,53 @@ func BindHeader(key string, slot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "BIND_HEADER",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ByteSlots[slot] = []byte(ctx.Request.Header.Get(key))
+			val := ctx.Request.Header.Get(key)
+			if len(val) > 0 {
+				s := ctx.Alloc(len(val))
+				copy(s, val)
+				ctx.ByteSlots[slot] = s
+			} else {
+				ctx.ByteSlots[slot] = nil
+			}
 			return state.PC + 1
 		},
 	}
 }
 
 func BindQuery(key string, slot int) engine.Instruction {
+	keyBytes := []byte(key) // captured once at instruction creation, not per-request
 	return engine.Instruction{
 		Name: "BIND_QUERY",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ByteSlots[slot] = []byte(ctx.Request.URL.Query().Get(key))
+			val := scanQuery(ctx.RawQuery, keyBytes)
+			if len(val) > 0 {
+				s := ctx.Alloc(len(val))
+				copy(s, val)
+				ctx.ByteSlots[slot] = s
+			} else {
+				ctx.ByteSlots[slot] = nil
+			}
 			return state.PC + 1
 		},
 	}
+}
+
+// scanQuery finds the raw value for key in a query string like "a=1&b=2&c=3".
+// Returns a slice directly into the raw query bytes — zero allocation.
+// No URL-decoding is applied; values are raw as received from the wire.
+func scanQuery(query, key []byte) []byte {
+	for len(query) > 0 {
+		var pair []byte
+		if i := bytes.IndexByte(query, '&'); i >= 0 {
+			pair, query = query[:i], query[i+1:]
+		} else {
+			pair, query = query, nil
+		}
+		if j := bytes.IndexByte(pair, '='); j >= 0 {
+			if bytes.Equal(pair[:j], key) {
+				return pair[j+1:]
+			}
+		}
+	}
+	return nil
 }
