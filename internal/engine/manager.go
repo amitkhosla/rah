@@ -31,6 +31,14 @@ type EngineState struct {
 	FlowLibrary map[string][]Instruction
 }
 
+// OverflowMetrics counts how often requests exceeded the inline arena or
+// base slot capacity. Non-zero rates signal that default sizing needs tuning.
+// Exposed via /debug/observability.
+type OverflowMetrics struct {
+	ArenaOverflows atomic.Int64 // extra arenaBlock borrowed from pool
+	SlotOverflows  atomic.Int64 // slotExtBlock borrowed from pool
+}
+
 type FlowManager struct {
 	State          atomic.Pointer[EngineState] // The core change
 	HeaderRegistry *HeaderRegistry
@@ -38,6 +46,7 @@ type FlowManager struct {
 	Config         config.GlobalLayout
 	SlabMgr        *cache.CacheManager
 	Strategy       ExecutionStrategy // Pre-determined at startup
+	Metrics        OverflowMetrics
 	// Bank *MemoryBank
 }
 
@@ -61,13 +70,16 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 	fm.State.Store(initialState)
 
 	fm.Pool.New = func() any {
-		return &rctx.Context{
-			ByteSlots:       make([][]byte, cfg.MaxBytesSlots),
-			IntSlots:        make([]int64, cfg.MaxIntsSlots),
-			BoolSlots:       make([]bool, cfg.MaxBoolsSlots),
+		ctx := &rctx.Context{
+			// MutationLog and ResponseHeaders are one-time pool allocations
+			// (not per-request) — acceptable make() here.
 			MutationLog:     make([]rctx.HeaderMutation, 0, 16),
 			ResponseHeaders: make([]rctx.HeaderMutation, 32),
 		}
+		// Wire ByteSlots/IntSlots/BoolSlots to inline base arrays and
+		// initialise arena — zero heap allocations for slot infrastructure.
+		ctx.InitSlots()
+		return ctx
 	}
 	return fm
 }
@@ -105,13 +117,27 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	// cross-CPU cache bouncing during memory retrieval.
 }
 
+// ReturnContext releases any pool-borrowed arena blocks or slot extensions,
+// records overflow metrics, then returns the context to the pool.
+// Must be called instead of Pool.Put directly.
+func (fm *FlowManager) ReturnContext(ctx *rctx.Context) {
+	if ctx.ArenaOverflowed {
+		fm.Metrics.ArenaOverflows.Add(1)
+	}
+	if ctx.SlotOverflowed {
+		fm.Metrics.SlotOverflows.Add(1)
+	}
+	ctx.ReleaseOverflow()
+	fm.Pool.Put(ctx)
+}
+
 // RunInBackground detaches a context from the request lifecycle and executes
 // task in a background goroutine. The context is returned to the pool only
 // after task completes.
 func (fm *FlowManager) RunInBackground(ctx *rctx.Context, task func(*rctx.Context)) {
 	ctx.MarkDetachedFromPool()
 	go func() {
-		defer fm.Pool.Put(ctx)
+		defer fm.ReturnContext(ctx)
 		task(ctx)
 	}()
 }
@@ -122,7 +148,10 @@ func (fm *FlowManager) Extract(ctx *rctx.Context, req *http.Request) {
 	lookup := fm.HeaderRegistry.Current.Load().Map
 	for key, values := range req.Header {
 		if slotIdx, ok := lookup[key]; ok {
-			ctx.ByteSlots[slotIdx] = []byte(values[0])
+			val := values[0]
+			s := ctx.Alloc(len(val))
+			copy(s, val)
+			ctx.ByteSlots[slotIdx] = s
 		}
 	}
 	ctx.RequestBody = req.Body

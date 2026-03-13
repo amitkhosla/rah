@@ -98,16 +98,38 @@ type Context struct {
 	// context to the pool when work is moved to a background goroutine.
 	detachedFromPool atomic.Bool
 
-	// ... existing fields ...
+	// ── Arena allocator ──────────────────────────────────────────────────────
+	// active points to the current arena block being written into.
+	// Starts as &primary; advances to extra[n] when primary fills.
+	active *arenaBlock
 
-	// MEMORY BUFFER REQUIREMENTS:
-	// 1. BorrowedChunks: A slice to track 4KB chunks leased from the Global Bank.
-	// 2. CurrentWriteChunk: A pointer to the active chunk for ns-level writes.
-	// 3. ShardID: Assigned at start to ensure we return memory to the same CPU shard.
+	// extraN is the number of pool-borrowed overflow arena blocks in use.
+	extraN int32
 
-	// BorrowedChunks [][]byte
-	// CurrentWriteChunk []byte
-	// ShardID int
+	// Overflow metrics — read by FlowManager.ReturnContext before Pool.Put.
+	// True if any extra arena block or slot extension was needed this request.
+	ArenaOverflowed bool
+	SlotOverflowed  bool
+
+	// slotExt is borrowed from slotExtPool when byte-slot count exceeds
+	// BaseByteSlots. Nil for the vast majority of requests.
+	slotExt *slotExtBlock
+
+	// extra holds up to MaxExtraArenas pool-borrowed 4KB blocks.
+	// GC sees these as pointer fields but they are nil until overflow occurs.
+	extra [MaxExtraArenas]*arenaBlock
+
+	// ── Inline slot headers (no heap allocation) ─────────────────────────────
+	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
+	// arrays. No make() required; GC correctly scans the typed []byte elements.
+	// Declared last so they do not displace hot scalar fields from cache lines.
+	byteSlotBase [BaseByteSlots][]byte
+	intSlotBase  [BaseIntSlots]int64
+	boolSlotBase [BaseBoolSlots]bool
+
+	// primary is the inline 4KB arena for slot data. Raw bytes only — no Go
+	// pointers — so GC never scans its contents. Declared last (largest field).
+	primary arenaBlock
 }
 
 // flushResponseHeaders copies any headers set via SetResponseHeader to the
@@ -166,13 +188,110 @@ func (ctx *Context) Finalize() {
 	}
 }
 
+// InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers
+// to the inline base arrays and initialises the arena. Called once from
+// Pool.New — no heap allocation, no make().
+func (ctx *Context) InitSlots() {
+	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
+	ctx.IntSlots = ctx.intSlotBase[:BaseIntSlots]
+	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
+	ctx.active = &ctx.primary
+}
+
+// Alloc carves n bytes from the arena without any heap allocation in the
+// common case. Falls back to pool-borrowed extra blocks when the primary
+// fills, then to make() only if all extra blocks are also exhausted (rare).
+//
+// The returned slice is valid until ReleaseOverflow is called.
+func (ctx *Context) Alloc(n int) []byte {
+	b := ctx.active
+	end := int(b.used) + n
+	if end <= ArenaBlockSize {
+		s := b.buf[b.used:end:end]
+		b.used = int32(end)
+		return s
+	}
+
+	// Primary arena full — borrow next block from pool.
+	if ctx.extraN < MaxExtraArenas {
+		nb := arenaPool.Get().(*arenaBlock)
+		nb.used = 0
+		ctx.extra[ctx.extraN] = nb
+		ctx.extraN++
+		ctx.active = nb
+		ctx.ArenaOverflowed = true
+		if n <= ArenaBlockSize {
+			s := nb.buf[0:n:n]
+			nb.used = int32(n)
+			return s
+		}
+	}
+
+	// All extra arenas exhausted or value larger than one block.
+	// TODO: route to DataStore (disk / GCS) for true spill-to-storage.
+	// For now fall back to heap so execution is never blocked.
+	ctx.ArenaOverflowed = true
+	return make([]byte, n)
+}
+
+// GrowByteSlots borrows a slotExtBlock from the pool, copies the existing
+// base slot headers into it, and re-points ByteSlots at the larger backing
+// array. Instruction code using ctx.ByteSlots[i] requires no changes.
+// Called by the compiler/executor when a flow needs more than BaseByteSlots.
+func (ctx *Context) GrowByteSlots(needed int) {
+	if needed <= len(ctx.ByteSlots) {
+		return // already large enough
+	}
+	if ctx.slotExt == nil {
+		ctx.slotExt = slotExtPool.Get().(*slotExtBlock)
+		copy(ctx.slotExt.slots[:], ctx.byteSlotBase[:])
+		ctx.SlotOverflowed = true
+	}
+	if needed <= ExtByteSlots {
+		ctx.ByteSlots = ctx.slotExt.slots[:needed]
+	}
+	// Beyond ExtByteSlots: grow the extension slice via append (heap, very rare).
+	// TODO: chain a second slotExtBlock from pool instead.
+}
+
+// ReleaseOverflow returns all pool-borrowed arena blocks and the slot
+// extension (if any) back to their respective pools. Must be called before
+// Pool.Put so that borrowed resources are available to other requests
+// immediately rather than sitting idle inside the pool context.
+func (ctx *Context) ReleaseOverflow() {
+	for i := int32(0); i < ctx.extraN; i++ {
+		ctx.extra[i].used = 0
+		arenaPool.Put(ctx.extra[i])
+		ctx.extra[i] = nil
+	}
+	ctx.extraN = 0
+	ctx.active = &ctx.primary
+
+	if ctx.slotExt != nil {
+		// Zero slot-ext before returning so the next borrower gets a clean block.
+		for i := range ctx.slotExt.slots {
+			ctx.slotExt.slots[i] = nil
+		}
+		for i := range ctx.slotExt.ints {
+			ctx.slotExt.ints[i] = 0
+		}
+		for i := range ctx.slotExt.bools {
+			ctx.slotExt.bools[i] = false
+		}
+		slotExtPool.Put(ctx.slotExt)
+		ctx.slotExt = nil
+		ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
+	}
+}
+
 // Reset clears the context for reuse in the sync.Pool.
 // We pass the concrete writer here for the new request.
+// ReleaseOverflow must have been called before Pool.Put (done by
+// FlowManager.ReturnContext) so Reset only needs to reset the primary arena.
 func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Writer = w
 	ctx.Request = nil
 	ctx.ResHeaderCount = 0
-	ctx.ResponseStatus = 0
 	ctx.ApiId = 0
 	ctx.MutationCount = 0
 	ctx.Match.Plan = nil
@@ -193,6 +312,12 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ClientBytesSent = 0
 	ctx.UpstreamBytesTx = 0
 	ctx.UpstreamBytesRx = 0
+	ctx.ArenaOverflowed = false
+	ctx.SlotOverflowed = false
+
+	// Reset primary arena — one integer write, all slot data is implicitly gone.
+	ctx.primary.used = 0
+	ctx.active = &ctx.primary
 
 	// Clean up body streams
 	if ctx.RequestBody != nil {
@@ -220,23 +345,23 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.RemainingPath = nil
 	ctx.RawQuery = nil
 
-	for i := range ctx.ByteSlots {
-		ctx.ByteSlots[i] = nil
+	// Nil inline slot bases — arena memory is already logically freed above.
+	for i := range ctx.byteSlotBase {
+		ctx.byteSlotBase[i] = nil
 	}
-	for i := range ctx.IntSlots {
-		ctx.IntSlots[i] = 0
+	for i := range ctx.intSlotBase {
+		ctx.intSlotBase[i] = 0
 	}
-	for i := range ctx.BoolSlots {
-		ctx.BoolSlots[i] = false
+	for i := range ctx.boolSlotBase {
+		ctx.boolSlotBase[i] = false
 	}
+	// Re-point public slice headers at the (now-zeroed) inline bases.
+	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
+	ctx.IntSlots = ctx.intSlotBase[:BaseIntSlots]
+	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
+
 	ctx.scratchIdx = 0
-	// Optional: reset the slice length to 0 to be consistent with others
 	ctx.ScratchBuffer = ctx.ScratchBuffer[:0]
-	// MEMORY CLEANUP LOGIC:
-	// 1. Loop through BorrowedChunks and return each to the Global Memory Bank.
-	// 2. MUST happen before the Context returns to the sync.Pool to unblock
-	//    other waiting requests immediately.
-	// 3. Set BorrowedChunks to nil/empty without deallocating backing array
 }
 
 // MarkDetachedFromPool signals that this context is still in use by async work
