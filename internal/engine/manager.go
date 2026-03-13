@@ -47,6 +47,13 @@ type FlowManager struct {
 	SlabMgr        *cache.CacheManager
 	Strategy       ExecutionStrategy // Pre-determined at startup
 	Metrics        OverflowMetrics
+	// reqCounter issues monotonically increasing IDs to each request so
+	// DataStore keys are unique across concurrent requests.
+	reqCounter atomic.Uint64
+	// SlotOverflowStore is the optional DataStore-backed tier for slot values
+	// that exceed arena capacity or slot indices beyond ExtByteSlots.
+	// Nil in the common case — no overflow store configured.
+	SlotOverflowStore rctx.SlotOverflowStore
 	// Bank *MemoryBank
 }
 
@@ -107,25 +114,31 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 		return
 	}
 
-	// 3. Metadata Extraction
+	// 3. Assign a unique request ID for DataStore key scoping.
+	ctx.ReqID = fm.reqCounter.Add(1)
+
+	// 4. Metadata Extraction
 	fm.Extract(ctx, req)
 
-	// 4. Plan Execution
-	Execute(ctx, endpoint.Plan, 0)
-	// MEMORY ASSIGNMENT:
-	// Before processing, assign a ShardID to the context to minimize
-	// cross-CPU cache bouncing during memory retrieval.
+	// 5. Plan Execution
+	Execute(ctx, endpoint.Plan, 0, fm.SlotOverflowStore)
 }
 
-// ReturnContext releases any pool-borrowed arena blocks or slot extensions,
-// records overflow metrics, then returns the context to the pool.
-// Must be called instead of Pool.Put directly.
+// ReturnContext records overflow metrics, deletes any ephemeral DataStore keys
+// written during this request, releases pool-borrowed overflow resources, then
+// returns the context to the pool. Must be called instead of Pool.Put directly.
 func (fm *FlowManager) ReturnContext(ctx *rctx.Context) {
 	if ctx.ArenaOverflowed {
 		fm.Metrics.ArenaOverflows.Add(1)
 	}
 	if ctx.SlotOverflowed {
 		fm.Metrics.SlotOverflows.Add(1)
+	}
+	// Clean up any slot values that were spilled to the DataStore this request.
+	if fm.SlotOverflowStore != nil {
+		for _, key := range ctx.TakeSlotOverflowKeys() {
+			_ = fm.SlotOverflowStore.SlotDelete(key)
+		}
 	}
 	ctx.ReleaseOverflow()
 	fm.Pool.Put(ctx)

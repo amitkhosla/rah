@@ -119,6 +119,20 @@ type Context struct {
 	// GC sees these as pointer fields but they are nil until overflow occurs.
 	extra [MaxExtraArenas]*arenaBlock
 
+	// ── SlotOverflowStore tracking ────────────────────────────────────────────
+	// ReqID is assigned by FlowManager per request. It scopes DataStore keys
+	// so concurrent requests never collide on the same store key.
+	ReqID uint64
+
+	// slotDataSeq increments each time a value is spilled to the store,
+	// making data-overflow keys unique within a request.
+	slotDataSeq uint32
+
+	// slotOverflowKeys accumulates DataStore keys written this request.
+	// FlowManager.ReturnContext iterates these to delete them before Pool.Put.
+	// Allocated lazily — nil for requests that never overflow.
+	slotOverflowKeys []string
+
 	// ── Inline slot headers (no heap allocation) ─────────────────────────────
 	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
 	// arrays. No make() required; GC correctly scans the typed []byte elements.
@@ -186,6 +200,72 @@ func (ctx *Context) Finalize() {
 		}
 		ctx.headerSent = true
 	}
+}
+
+// ── SlotOverflowStore helpers ─────────────────────────────────────────────────
+// These methods let the engine layer query and update slot state without the
+// Context knowing anything about the backing store itself.
+
+// IsSlotInStore reports whether ByteSlots[i] holds a store-reference sentinel
+// rather than inline arena data. The engine layer calls this before reads.
+func (ctx *Context) IsSlotInStore(i int) bool {
+	if i < 0 || i >= len(ctx.ByteSlots) {
+		return false
+	}
+	return IsSlotOverflowRef(ctx.ByteSlots[i])
+}
+
+// SlotStoreKey decodes and returns the DataStore key from a sentinel slot.
+// Call only when IsSlotInStore returns true.
+func (ctx *Context) SlotStoreKey(i int) string {
+	return DecodeSlotOverflowKey(ctx.ByteSlots[i])
+}
+
+// IsSlotIndexOverflow reports whether slot index i exceeds the in-memory
+// ByteSlots capacity. The engine layer stores/retrieves such slots via DataStore.
+func (ctx *Context) IsSlotIndexOverflow(i int) bool {
+	return i >= len(ctx.ByteSlots)
+}
+
+// NextSlotDataKey builds a unique DataStore key for a value-overflow spill
+// and advances the per-request sequence counter.
+func (ctx *Context) NextSlotDataKey() string {
+	key := BuildSlotDataKey(ctx.ReqID, ctx.slotDataSeq)
+	ctx.slotDataSeq++
+	return key
+}
+
+// SlotIndexStoreKey returns the deterministic DataStore key for a slot-index
+// overflow. No counter needed — key is stable across reads and writes.
+func (ctx *Context) SlotIndexStoreKey(i int) string {
+	return BuildSlotIndexKey(ctx.ReqID, i)
+}
+
+// EncodeSlotRef encodes key as a store-reference sentinel and carves the
+// tiny result from the arena (a few dozen bytes, never triggers overflow).
+func (ctx *Context) EncodeSlotRef(key string) []byte {
+	n := 2 + len(key)
+	s := ctx.Alloc(n)
+	s[0] = slotOverflowSentinel[0]
+	s[1] = slotOverflowSentinel[1]
+	copy(s[2:], key)
+	return s
+}
+
+// TrackSlotKey records a DataStore key written during this request so that
+// FlowManager.ReturnContext can delete it at request end.
+func (ctx *Context) TrackSlotKey(key string) {
+	ctx.slotOverflowKeys = append(ctx.slotOverflowKeys, key)
+}
+
+// TakeSlotOverflowKeys returns the accumulated DataStore keys and resets the
+// internal list. Called by FlowManager.ReturnContext before Pool.Put.
+func (ctx *Context) TakeSlotOverflowKeys() []string {
+	keys := ctx.slotOverflowKeys
+	if len(ctx.slotOverflowKeys) > 0 {
+		ctx.slotOverflowKeys = ctx.slotOverflowKeys[:0]
+	}
+	return keys
 }
 
 // InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers
@@ -314,6 +394,9 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.UpstreamBytesRx = 0
 	ctx.ArenaOverflowed = false
 	ctx.SlotOverflowed = false
+	ctx.ReqID = 0
+	ctx.slotDataSeq = 0
+	// slotOverflowKeys already cleared by TakeSlotOverflowKeys in ReturnContext.
 
 	// Reset primary arena — one integer write, all slot data is implicitly gone.
 	ctx.primary.used = 0

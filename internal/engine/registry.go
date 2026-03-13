@@ -49,6 +49,9 @@ type FlowRegistry struct {
 	staticFlows map[string]func(ctx *rctx.Context) int16
 	// Instruction arrays for runtime flexibility
 	dynamicFlows map[string][]Instruction
+	// SlotOverflow is propagated from FlowManager so sub-flow calls (including
+	// parallel goroutines via CreateParallelStep) inherit the same store.
+	SlotOverflow rctx.SlotOverflowStore
 }
 
 func NewRegistry() *FlowRegistry {
@@ -67,12 +70,14 @@ func (r *FlowRegistry) RegisterDynamic(name string, plan []Instruction) {
 }
 
 // Call executes the shared flow and returns 1 to move to the next parent step.
+// SlotOverflow is propagated so sub-flows (including parallel goroutines) have
+// access to the same overflow store as the parent request.
 func (r *FlowRegistry) Call(name string, ctx *rctx.Context) int16 {
 	if fn, ok := r.staticFlows[name]; ok {
 		return fn(ctx)
 	}
 	if plan, ok := r.dynamicFlows[name]; ok {
-		Execute(ctx, plan, 0)
+		Execute(ctx, plan, 0, r.SlotOverflow)
 	}
 	return 1
 }
