@@ -1,8 +1,8 @@
 //go:build !race
 
-package icache_test
+package cache_test
 
-// TestVsAll benchmarks icache.CacheManager (InlineIndex) against
+// TestVsAll benchmarks cache.CacheManager (InlineIndex) against
 // cache.CacheManager (LookupIndex) and popular Go cache libraries under
 // identical workload conditions.
 //
@@ -34,8 +34,8 @@ import (
 	ristretto "github.com/dgraph-io/ristretto/v2"
 	gocache "github.com/patrickmn/go-cache"
 
-	cache_v1 "rah/internal/cache_v1"
-	"rah/internal/icache"
+	lookup_v1 "rah/internal/cache/archive/lookup_v1"
+	"rah/internal/cache"
 )
 
 // ── workload constants ────────────────────────────────────────────────────────
@@ -95,8 +95,8 @@ func init() {
 			bvStrKeys[tid][i] = string(b)
 
 			// Fingerprints for LookupIndex tests
-			bvSmallFPs[tid][i] = cache_v1.Hash128(uint16(tid+1), bvSmallKeys[tid][i])
-			bvBigFPs[tid][i] = cache_v1.Hash128(uint16(tid+1), bvBigKeys[tid][i])
+			bvSmallFPs[tid][i] = lookup_v1.Hash128(uint16(tid+1), bvSmallKeys[tid][i])
+			bvBigFPs[tid][i] = lookup_v1.Hash128(uint16(tid+1), bvBigKeys[tid][i])
 		}
 	}
 }
@@ -309,13 +309,13 @@ func TestVsAll(t *testing.T) {
 
 	t.Log("Preparing Section 1: small keys (3-byte binary, tinyIdx lane)...")
 
-	// 1a. icache.CacheManager with InlineIndex
-	var icm1 *icache.CacheManager
-	icm1Res := runBV("icache.CacheManager (InlineIndex, small keys)",
+	// 1a. cache.CacheManager with InlineIndex
+	var icm1 *cache.CacheManager
+	icm1Res := runBV("cache.CacheManager (InlineIndex, small keys)",
 		func() {
-			icm1, _ = icache.NewCacheManager(
+			icm1, _ = cache.NewCacheManager(
 				bvHardMaxMB<<20, []uint32{256}, []uint32{10},
-				bvTotalKeys, 0, icache.NoopBackend,
+				bvTotalKeys, 0, cache.NoopBackend,
 			)
 			for tid := 0; tid < bvNumTenants; tid++ {
 				for i := 0; i < bvKeysPerTenant; i++ {
@@ -328,13 +328,13 @@ func TestVsAll(t *testing.T) {
 	)
 	icm1.Stop()
 
-	// 1b. cache_v1.CacheManager with LookupIndex
-	var cm1 *cache_v1.CacheManager
-	cm1Res := runBV("cache_v1.CacheManager (LookupIndex, small keys)",
+	// 1b. lookup_v1.CacheManager with LookupIndex
+	var cm1 *lookup_v1.CacheManager
+	cm1Res := runBV("lookup_v1.CacheManager (LookupIndex, small keys)",
 		func() {
-			cm1, _ = cache_v1.NewCacheManager(
+			cm1, _ = lookup_v1.NewCacheManager(
 				bvHardMaxMB<<20, []uint32{256}, []uint32{10},
-				bvTotalKeys, 0, cache_v1.NoopBackend,
+				bvTotalKeys, 0, lookup_v1.NoopBackend,
 			)
 			for tid := 0; tid < bvNumTenants; tid++ {
 				for i := 0; i < bvKeysPerTenant; i++ {
@@ -397,13 +397,13 @@ func TestVsAll(t *testing.T) {
 
 	t.Log("Preparing Section 2: big keys (20-byte binary, hashIdx lane)...")
 
-	// 2a. icache.CacheManager with InlineIndex
-	var icm2 *icache.CacheManager
-	icm2Res := runBV("icache.CacheManager (InlineIndex, big keys)",
+	// 2a. cache.CacheManager with InlineIndex
+	var icm2 *cache.CacheManager
+	icm2Res := runBV("cache.CacheManager (InlineIndex, big keys)",
 		func() {
-			icm2, _ = icache.NewCacheManager(
+			icm2, _ = cache.NewCacheManager(
 				bvHardMaxMB<<20, []uint32{256}, []uint32{10},
-				bvTotalKeys, 0, icache.NoopBackend,
+				bvTotalKeys, 0, cache.NoopBackend,
 			)
 			for tid := 0; tid < bvNumTenants; tid++ {
 				for i := 0; i < bvKeysPerTenant; i++ {
@@ -416,13 +416,13 @@ func TestVsAll(t *testing.T) {
 	)
 	icm2.Stop()
 
-	// 2b. cache_v1.CacheManager with LookupIndex
-	var cm2 *cache_v1.CacheManager
-	cm2Res := runBV("cache_v1.CacheManager (LookupIndex, big keys)",
+	// 2b. lookup_v1.CacheManager with LookupIndex
+	var cm2 *lookup_v1.CacheManager
+	cm2Res := runBV("lookup_v1.CacheManager (LookupIndex, big keys)",
 		func() {
-			cm2, _ = cache_v1.NewCacheManager(
+			cm2, _ = lookup_v1.NewCacheManager(
 				bvHardMaxMB<<20, []uint32{256}, []uint32{10},
-				bvTotalKeys, 0, cache_v1.NoopBackend,
+				bvTotalKeys, 0, lookup_v1.NoopBackend,
 			)
 			for tid := 0; tid < bvNumTenants; tid++ {
 				for i := 0; i < bvKeysPerTenant; i++ {
@@ -574,7 +574,7 @@ func TestVsAll(t *testing.T) {
 		bvTotalKeys/1000)
 
 	// Re-populate a fresh InlineIndex to measure node count
-	probe := icache.NewInlineIndex(0)
+	probe := cache.NewInlineIndex(0)
 	for tid := 0; tid < bvNumTenants; tid++ {
 		for i := 0; i < bvKeysPerTenant; i++ {
 			// Use raw small-key tags (routing bits only — tinyIdx path)

@@ -1,4 +1,4 @@
-package cache_v1
+package lookup
 
 import "unsafe"
 
@@ -100,7 +100,7 @@ const (
 	xPtrShardMask = uint64(0xFF) << xPtrShardBit
 	xPtrTagMask   = (uint64(1) << xPtrShardBit) - 1
 
-	xPtrLaneTiny = uint64(0)               // lane bit = 0 for tinyIdx
+	xPtrLaneTiny = uint64(0)                // lane bit = 0 for tinyIdx
 	xPtrLaneHash = uint64(1) << xPtrLaneBit // lane bit = 1 for hashIdx
 )
 

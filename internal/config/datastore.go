@@ -53,28 +53,36 @@ var requiredDomains = []DataDomain{
 	DomainCache,
 }
 
-// StoreConnection captures generic connection details across all backend kinds.
+// StoreConnection captures connection details across all backend kinds.
+// Redis/Dragonfly-specific fields (Topology, SentinelMaster, ClusterAddrs, PoolSize)
+// are ignored by all other store implementations.
 type StoreConnection struct {
-	Address  string            `json:"address,omitempty"`  // host:port, URI, or DSN endpoint
-	Path     string            `json:"path,omitempty"`     // local path for disk-based stores
-	Database string            `json:"database,omitempty"` // logical DB/keyspace name
-	Username string            `json:"username,omitempty"`
-	Password string            `json:"password,omitempty"`
-	Params   map[string]string `json:"params,omitempty"` // backend-specific options
+	Address  string            `json:"address,omitempty"  yaml:"address,omitempty"`  // host:port, URI, or DSN endpoint
+	Path     string            `json:"path,omitempty"     yaml:"path,omitempty"`     // local path for disk-based stores
+	Database string            `json:"database,omitempty" yaml:"database,omitempty"` // logical DB/keyspace name or index
+	Username string            `json:"username,omitempty" yaml:"username,omitempty"`
+	Password string            `json:"password,omitempty" yaml:"password,omitempty"`
+	Params   map[string]string `json:"params,omitempty"   yaml:"params,omitempty"` // backend-specific overflow options
+
+	// Redis / Dragonfly topology
+	Topology       string   `json:"topology,omitempty"        yaml:"topology,omitempty"`         // single (default) | sentinel | cluster
+	SentinelMaster string   `json:"sentinel_master,omitempty" yaml:"sentinel_master,omitempty"`  // required for sentinel topology
+	ClusterAddrs   []string `json:"cluster_addrs,omitempty"   yaml:"cluster_addrs,omitempty"`   // seed nodes for cluster/sentinel
+	PoolSize       int      `json:"pool_size,omitempty"       yaml:"pool_size,omitempty"`        // connection pool size (default 32)
 }
 
 // StoreConfig defines a single named backend instance.
 type StoreConfig struct {
-	Name       string          `json:"name"`
-	Kind       StoreKind       `json:"kind"`
-	Enabled    bool            `json:"enabled"`
-	Connection StoreConnection `json:"connection"`
+	Name       string          `json:"name"       yaml:"name"`
+	Kind       StoreKind       `json:"kind"       yaml:"kind"`
+	Enabled    bool            `json:"enabled"    yaml:"enabled"`
+	Connection StoreConnection `json:"connection" yaml:"connection"`
 }
 
 // DataStoreConfig wires logical data domains to concrete store instances.
 type DataStoreConfig struct {
-	Stores   map[string]StoreConfig `json:"stores"`
-	Bindings map[DataDomain]string  `json:"bindings"`
+	Stores   map[string]StoreConfig `json:"stores"   yaml:"stores"`
+	Bindings map[DataDomain]string  `json:"bindings" yaml:"bindings"`
 }
 
 func ErrDomainNotConfigured(domain DataDomain) error {

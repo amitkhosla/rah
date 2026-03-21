@@ -1,4 +1,4 @@
-package cache
+package lookup
 
 import (
 	"encoding/binary"
@@ -6,14 +6,18 @@ import (
 	"sync"
 )
 
-// Two independently seeded hash functions used by Hash128 (public API / tests).
+// Two independently seeded hash functions.
+// A key cannot simultaneously collide in both dimensions with probability
+// better than 2^-64, so a false positive at the index level is caught by
+// the full 128-bit check in region.Read() (header.Fingerprint comparison).
 var (
 	routingSeed     = maphash.MakeSeed() // H1: shard + bucket selection
-	fingerprintSeed = maphash.MakeSeed() // H2: for Hash128 callers
+	fingerprintSeed = maphash.MakeSeed() // H2: stored in EntryHeader for region-level verification
 )
 
 // hasherPair holds two reusable maphash.Hash instances (one per seed).
-// Used by Hash128 (public, two-call path) and kept for compatibility.
+// Seeded once at pool creation; Reset() restores to post-SetSeed state without
+// re-invoking SetSeed, saving ~20ns per Hash128 call on the LongKey path.
 type hasherPair struct {
 	r maphash.Hash // routing    (seed = routingSeed)
 	f maphash.Hash // fingerprint (seed = fingerprintSeed)
@@ -25,15 +29,6 @@ var hasherPool = sync.Pool{
 		p.r.SetSeed(routingSeed)
 		p.f.SetSeed(fingerprintSeed)
 		return p
-	},
-}
-
-// routingPool holds single-hasher instances for the fast single-pass path.
-var routingPool = sync.Pool{
-	New: func() any {
-		h := new(maphash.Hash)
-		h.SetSeed(routingSeed)
-		return h
 	},
 }
 
@@ -105,43 +100,41 @@ func makeTagTiny(tenantID uint16, key []byte) uint64 {
 	return tag
 }
 
-// hashH1Only computes H1 for routing using a single maphash call.
-func hashH1Only(tenantID uint16, key []byte) uint64 {
-	h := routingPool.Get().(*maphash.Hash)
-	var t [2]byte
-	binary.LittleEndian.PutUint16(t[:], tenantID)
-	h.Reset()
-	_, _ = h.Write(t[:])
-	_, _ = h.Write(key)
-	h1 := h.Sum64()
-	routingPool.Put(h)
-	return h1
+// makeTagHash builds the hashIdx tag from a 128-bit fingerprint.
+// Uses H2 (fp[8:16]) as the identity: H1 was already consumed for routing
+// and H2 stored in EntryHeader.KeyMid provides the per-entry identity check.
+func makeTagHash(fp [16]byte) uint64 {
+	h2 := binary.LittleEndian.Uint64(fp[8:16])
+	if h2 == iEmpty {
+		h2 = 1
+	}
+	if h2 == iTombstone {
+		h2 ^= 1
+	}
+	return h2
 }
 
-// hashLaneBig16 produces a 16-bit sampling fingerprint from real key bytes.
-// Samples 5 structural positions: first, n/4, n/2, 3n/4, last.
-// Mixes tenantID so cross-tenant keys with identical bytes still differ.
-// Used as H2 filter bits in tag[63:48] — independent from maphash H1.
-func hashLaneBig16(tID uint16, key []byte) uint16 {
-	ln := len(key)
-	if ln == 0 {
-		r := tID
-		if r == 0 {
-			r = 1
-		}
-		return r
+// makeTagHashH2 builds the hashIdx tag from a 128-bit fingerprint, packing
+// the upper 16 bits of H2 into bits 48-63 of the tag so InlineIndex's
+// h2ForTag extracts real fingerprint bytes instead of routing bits.
+//
+// Layout:
+//
+//	[47: 0] lower 48 bits of H1 (routing bits for trie traversal)
+//	[63:48] upper 16 bits of H2 (fingerprint bytes for H2 filter)
+func makeTagHashH2(fp [16]byte) uint64 {
+	h1 := binary.LittleEndian.Uint64(fp[0:8])
+	h2 := binary.LittleEndian.Uint64(fp[8:16])
+	h2word16 := uint16(h2 >> 48)
+	if h2word16 == 0 {
+		h2word16 = 1
 	}
-	mid := ln >> 1
-	q1 := ln >> 2
-	q3 := (ln * 3) >> 2
-	h := uint32(key[0]) | uint32(key[ln-1])<<8
-	h ^= uint32(key[mid]&0x0F) << 4
-	h ^= uint32(key[q1]&0x07) << 9
-	h ^= uint32(key[q3]&0x07) << 13
-	h ^= uint32(tID)
-	r := uint16(h ^ (h >> 16))
-	if r == 0 {
-		r = 1
+	tag := (h1 & 0x0000FFFFFFFFFFFF) | (uint64(h2word16) << 48)
+	if tag == iEmpty {
+		tag |= 1 << 48
 	}
-	return r
+	if tag == iTombstone {
+		tag ^= 1 << 48
+	}
+	return tag
 }

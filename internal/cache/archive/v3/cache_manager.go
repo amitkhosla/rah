@@ -1,4 +1,4 @@
-package icache
+package v3
 
 import (
 	"errors"
@@ -10,56 +10,32 @@ import (
 /*
 CacheManager is a high-performance, bounded, multi-tenant in-memory cache.
 
-Design:
-  - Two index lanes:
-    tinyIdx  — lossless tag for keys ≤ 6 bytes (exact match, no hash).
-    hashIdx  — H2-based tag for keys > 6 bytes (or 6B with high bytes).
-  - Single region matrix [SizeClass][TTLTier]: fixed-stride circular slabs.
-    Both lanes share the same regions; lane routing happens at Put/Get time.
-  - EntryHeader.XSlotPtrB: 6-byte back-pointer written after every Put so the
-    single cleaner goroutine can tombstone stale index entries.
-  - Lock-free reads; shard-level mutex for writes.
-  - Per-tenant quota enforcement via atomic counters.
-  - Optional CacheBackend (default: disk) for persistence and overflow.
-    Writes go to backend BEFORE acquiring any in-memory lock.
-    Reads check in-memory first; on miss, fall through to backend.
-
-Difference from cache.CacheManager:
-  - Uses InlineIndex (inline-slot trie) instead of LookupIndex (separate-pool trie).
-  - No COW node-slice overhead: node writes are O(1) memory.
-  - Shallower cache-miss paths: inline slots on CL1 of each node.
-  - hashIdx uses makeTagHashH2 to embed fingerprint bytes into tag bits 48–63,
-    enabling the 16-bit H2 filter to use real fingerprint data.
+icache3 differences from icache2:
+  - EntryHeader is 24 bytes: KeyFP [3]byte replaces single KeyMid uint8.
+  - InlineIndex nodes carry klenWord and tenantWord for triple-mask pre-filtering.
+  - GetTag takes (tag, keyLen, tenantID) — filters to candidate slots via three masks.
+  - SetTagGetPtr takes (tag, val, lane, keyLen, tenantID) — maintains klenWord/tenantWord.
+  - Region.Write/Read use [3]byte keyFP sampled from key[(n/2)+1%n], [(n/4)+1%n], [(3n/4)+1%n].
 */
 
 type CacheManager struct {
-	// Immutable after init.
 	totalMemory uint64
 	sizeClasses []uint32
 	ttlTiers    []uint32
 
-	// 2-D region matrix [sizeClass][ttlTier].
-	regions [][]*Region
-
-	// Per-region cleaner scan cursors [sizeClass][ttlTier].
+	regions    [][]*Region
 	cleanSlots [][]uint64
 
-	// Two independent inline-slot trie indices.
-	tinyIdx *InlineIndex // keys ≤ 6 bytes (lossless tag)
-	hashIdx *InlineIndex // keys > 6 bytes, or 6B with high bytes (H2 tag)
+	tinyIdx *InlineIndex
+	hashIdx *InlineIndex
 
-	// Per-tenant quota.
 	tenantLimit uint64
-	tenantUsage sync.Map // tenantID uint16 → *tenantCounter
+	tenantUsage sync.Map
 
-	// Global usage in bytes.
 	globalUsed atomic.Uint64
 
-	// Persistent / overflow backend. Never nil: defaults to diskBackend.
-	// Writes happen before in-memory locks are acquired.
 	backend CacheBackend
 
-	// Cleaner lifecycle.
 	cleanerStop chan struct{}
 }
 
@@ -68,15 +44,6 @@ type tenantCounter struct {
 }
 
 // NewCacheManager initialises the cache with a fixed memory layout.
-// All region memory is pre-allocated here; no allocation during steady state.
-//
-// backend is the persistent/overflow store. Pass nil to use the default disk
-// backend at DefaultDiskCachePath ("./icache"). Pass a custom CacheBackend to
-// use Redis, Dragonfly, or any other implementation.
-//
-// Two background goroutines are started:
-//   - in-memory cleaner: tombstones expired slab index entries (50ms idle sleep)
-//   - backend sweeper:   deletes expired backend entries (runs every 5 minutes)
 func NewCacheManager(
 	totalMemory uint64,
 	sizeClasses []uint32,
@@ -113,8 +80,6 @@ func NewCacheManager(
 	return cm, nil
 }
 
-// Stop signals both background goroutines to exit and closes the backend.
-// Call once on shutdown.
 func (cm *CacheManager) Stop() {
 	close(cm.cleanerStop)
 	cm.backend.Close()
@@ -142,8 +107,6 @@ func (cm *CacheManager) allocateRegions() {
 
 const backendSweepInterval = 5 * time.Minute
 
-// backendSweepLoop runs every 5 minutes and deletes expired entries from the
-// persistent backend.
 func (cm *CacheManager) backendSweepLoop() {
 	for {
 		select {
@@ -157,11 +120,8 @@ func (cm *CacheManager) backendSweepLoop() {
 
 // ── cleaner ──────────────────────────────────────────────────────────────────
 
-const cleanerBatchSize = 256 // slots examined per region per sweep pass
+const cleanerBatchSize = 256
 
-// cleanerLoop is the single background goroutine that expires index entries
-// whose slab slots have TTL-lapsed but have not yet been evicted by the
-// circular buffer write path.
 func (cm *CacheManager) cleanerLoop() {
 	for {
 		select {
@@ -190,10 +150,6 @@ func (cm *CacheManager) cleanerLoop() {
 	}
 }
 
-// sweepBatch scans up to cleanerBatchSize slots in region [ci][ti] starting at
-// cleanSlots[ci][ti]. For each slot whose TTL has lapsed it attempts to
-// tombstone the index entry via the EntryHeader.XSlotPtrB back-pointer.
-// Returns the number of entries tombstoned.
 func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 	r := cm.regions[ci][ti]
 	if r.count == 0 {
@@ -209,19 +165,16 @@ func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 
 		h := headerAt(r.buf, physOff)
 
-		// Skip unwritten slots (Expiry==0) and live entries.
 		if h.Expiry == 0 || h.Expiry >= now {
 			continue
 		}
 
 		sp := xSlotPtrFrom6(h.XSlotPtrB)
 		if uint64(sp) == 0 {
-			// XSlotPtrB not yet populated (edge case: Put was interrupted).
 			continue
 		}
 
 		gen2b := h.Gen & 0x3
-		// Reconstruct the tag from the xSlotPtr routing bits.
 		tag := sp.tagBits()
 		var idx *InlineIndex
 		if sp.laneBit() == 0 {
@@ -241,9 +194,6 @@ func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 
 // ── lane helpers ─────────────────────────────────────────────────────────────
 
-// isHashLane reports whether key must use hashIdx.
-// Returns true for keys > 6 bytes, or 6-byte keys with any byte ≥ 128
-// (which cannot be losslessly packed into a 6×7-bit tiny tag).
 func isHashLane(key []byte) bool {
 	if len(key) > 6 {
 		return true
@@ -258,13 +208,19 @@ func isHashLane(key []byte) bool {
 	return false
 }
 
-// middleByte returns key[len/2], stored in EntryHeader.KeyMid for hashIdx
-// entries as an extra identity check at read time.
-func middleByte(key []byte) uint8 {
-	if len(key) == 0 {
-		return 0
+// makeKeyFP computes the 3-byte slab fingerprint from key adjacent positions.
+// Samples key[(n/2)+1%n], key[(n/4)+1%n], key[(3n/4)+1%n].
+// Only called for hashLane keys (len > 6), so indices are always valid.
+func makeKeyFP(key []byte) [3]byte {
+	ln := len(key)
+	mid := ln >> 1
+	q1 := ln >> 2
+	q3 := (ln * 3) >> 2
+	return [3]byte{
+		key[(mid+1)%ln],
+		key[(q1+1)%ln],
+		key[(q3+1)%ln],
 	}
-	return key[len(key)/2]
 }
 
 // ── index and region routing ──────────────────────────────────────────────────
@@ -294,15 +250,6 @@ func (cm *CacheManager) getTenantCounter(tenantID uint16) *tenantCounter {
 
 // ── Put ───────────────────────────────────────────────────────────────────────
 
-// Put inserts value into the cache.
-//
-//  1. Enforce tenant quota.
-//  2. Write to backend BEFORE acquiring any in-memory lock (slow I/O first).
-//  3. Route to lane (tinyIdx vs hashIdx) by key length / byte range.
-//  4. Write into slab region (circular, evicts oldest/expired slot).
-//  5. Insert SmartPointer into the index; capture xSlotPtr.
-//  6. Write xSlotPtr back into EntryHeader for the cleaner.
-//  7. Update accounting; decrement counters for any evicted entry.
 func (cm *CacheManager) Put(
 	tenantID uint16,
 	key []byte,
@@ -316,48 +263,51 @@ func (cm *CacheManager) Put(
 		return 0, false
 	}
 
-	// Write to backend first — before any in-memory lock is acquired.
 	now := uint32(time.Now().Unix())
 	expiry := now + ttl
 	if ttl == 0 {
 		expiry = now
 	}
-	_ = cm.backend.Set(tenantID, key, value, expiry) // best-effort; don't fail Put on backend error
+	_ = cm.backend.Set(tenantID, key, value, expiry)
 
 	classID := cm.selectSizeClass(len(value))
 	tierID := cm.selectTTLTier(ttl)
 	region := cm.regions[classID][tierID]
 
 	hashLane := isHashLane(key)
-	keyMid := uint8(0)
+	keyFP := [3]byte{}
 	if hashLane {
-		keyMid = middleByte(key)
+		keyFP = makeKeyFP(key)
 	}
 
-	physOff, gen, old, hasOld, ok := region.Write(tenantID, keyMid, value, ttl)
+	physOff, gen, old, hasOld, ok := region.Write(tenantID, keyFP, value, ttl)
 	if !ok {
 		return 0, false
 	}
 
-	// Eviction accounting: slot was occupied by a different (now-evicted) entry.
 	if hasOld {
 		cm.subUsage(old.tenantID, uint64(EntryHeaderSize+old.valueLen))
 	}
 
 	ptr := PackSlabVal(gen&0x3, ExpTrunc(expiry), uint8(classID), uint8(tierID), physOff)
 
-	// Insert into index and capture the back-pointer for the cleaner.
 	var sp xSlotPtr
 	if hashLane {
-		fp := Hash128(tenantID, key)
-		tag := makeTagHashH2(fp) // use H2-enriched tag for better filter discrimination
-		sp = cm.hashIdx.SetTagGetPtr(tag, ptr, xPtrLaneHash)
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		sp = cm.hashIdx.SetTagGetPtr(tag, ptr, xPtrLaneHash, uint16(len(key)), tenantID)
 	} else {
 		tag := makeTagTiny(tenantID, key)
-		sp = cm.tinyIdx.SetTagGetPtr(tag, ptr, xPtrLaneTiny)
+		sp = cm.tinyIdx.SetTagGetPtr(tag, ptr, xPtrLaneTiny, 0, 0)
 	}
 
-	// Write xSlotPtr back into the slab entry so the cleaner can navigate here.
 	if sp != 0 {
 		region.UpdateXSlotPtr(physOff, sp)
 	}
@@ -381,21 +331,24 @@ func (cm *CacheManager) subUsage(tenantID uint16, entrySize uint64) {
 
 // ── Get ───────────────────────────────────────────────────────────────────────
 
-// Get retrieves a value from the cache.
-//
-//  1. In-memory path (lock-free): index lookup → slab read.
-//  2. On miss: fall through to backend (disk / Redis).
-//  3. On backend hit: warm the in-memory slab for future reads.
 func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 	hashLane := isHashLane(key)
 
 	var rawVal uint64
 	var found bool
 	if hashLane {
-		fp := Hash128(tenantID, key)
-		rawVal, found = cm.hashIdx.GetTag(makeTagHashH2(fp))
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		rawVal, found = cm.hashIdx.GetTag(tag, uint16(len(key)), tenantID)
 	} else {
-		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
+		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key), 0, 0)
 	}
 
 	if found {
@@ -403,24 +356,22 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 		if typ == xValTypeSlabRAM {
 			classID, tierID, physOff := UnpackSlab(rawVal)
 			if int(classID) < len(cm.regions) && int(tierID) < len(cm.regions[classID]) {
-				keyMid := uint8(0)
+				keyFP := [3]byte{}
 				if hashLane {
-					keyMid = middleByte(key)
+					keyFP = makeKeyFP(key)
 				}
-				if val, ok := cm.regions[classID][tierID].Read(physOff, gen2b, expTrunc, keyMid); ok {
+				if val, ok := cm.regions[classID][tierID].Read(physOff, gen2b, expTrunc, keyFP); ok {
 					return val, true
 				}
 			}
 		}
 	}
 
-	// In-memory miss: check backend. No lock held during I/O.
 	val, expiry, ok := cm.backend.Get(tenantID, key)
 	if !ok {
 		return nil, false
 	}
 
-	// Warm the in-memory slab. TTL derived from remaining lifetime.
 	now := uint32(time.Now().Unix())
 	var ttl uint32
 	if expiry > now {
@@ -439,8 +390,16 @@ func (cm *CacheManager) Stats() uint64 {
 // deleteKey removes the index entry for (tenantID, key). Used in tests.
 func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 	if isHashLane(key) {
-		fp := Hash128(tenantID, key)
-		return cm.hashIdx.DeleteTag(makeTagHashH2(fp))
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		return cm.hashIdx.DeleteTag(tag)
 	}
 	return cm.tinyIdx.DeleteTag(makeTagTiny(tenantID, key))
 }

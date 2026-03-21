@@ -1,6 +1,6 @@
 //go:build !race
 
-package icache_test
+package cache_test
 
 // TestRealisticScale models a production API gateway with 20 000 tenants.
 //
@@ -49,8 +49,10 @@ import (
 	ristretto "github.com/dgraph-io/ristretto/v2"
 	gocache "github.com/patrickmn/go-cache"
 
-	cache_v1 "rah/internal/cache_v1"
-	"rah/internal/icache"
+	lookup_v1 "rah/internal/cache/archive/lookup_v1"
+	"rah/internal/cache"
+	archivev1 "rah/internal/cache/archive/v1"
+	archivev3 "rah/internal/cache/archive/v3"
 )
 
 // ── tenant model ──────────────────────────────────────────────────────────────
@@ -67,18 +69,74 @@ const (
 	rsTierCKeys  = 1            // keys per cold tenant
 	rsTotalKeys  = rsTierA*rsTierAKeys + rsTierB*rsTierBKeys + rsTierC*rsTierCKeys
 	rsTTL        = uint32(60)   // 60s TTL
-	rsValueSize  = 128          // 128 B value (typical JSON response fragment)
-	rsReadRatio  = 10           // 1 write every rsReadRatio ops
+	rsReadRatio  = 50           // 1 write every rsReadRatio ops (realistic gateway: ~2% writes)
 	rsRunSecs    = 8            // hot-loop duration
+
+	// Mixed key lengths (realistic API gateway distribution):
+	//   30% tiny  (4 B)  → tinyIdx lane, lossless tag, NO hash — fastest path
+	//   50% short (16 B) → hashLane, ~16 ns Hash128
+	//   20% long  (48 B) → hashLane, ~32 ns Hash128
+	rsFracTiny  = 30  // % of keys that are tiny (≤6B, tinyIdx lane)
+	rsFracShort = 50  // % of keys that are short hashLane
+	// rsFracLong = 20  // remainder
+
+	// Mixed value sizes matching key tiers:
+	//   tiny keys  → 64 B values  (flags, counters, short tokens)
+	//   short keys → 512 B values (API responses, session data)
+	//   long keys  → 2048 B values (large JSON payloads, config blobs)
+	rsTinyValSize  = 64
+	rsShortValSize = 512
+	rsLongValSize  = 2048
+
+	// rsValueSize is the representative size used for Sections 1 & 2
+	// (growth curve and depth analysis use a single-size workload for clarity).
+	rsValueSize = rsShortValSize
+
+	rsEntryHeaderSize = 16 // mirrors cache.EntryHeaderSize
+
+	// Per-class strides (align8(header + value)).
+	rsTinyStride  = (rsEntryHeaderSize + rsTinyValSize + 7) &^ 7   // 80 B
+	rsShortStride = (rsEntryHeaderSize + rsShortValSize + 7) &^ 7  // 528 B
+	rsLongStride  = (rsEntryHeaderSize + rsLongValSize + 7) &^ 7   // 2064 B
+
+	// rsStride for Sections 1 & 2 (single size class = short).
+	rsStride = rsShortStride
+
+	// Per-class entry counts (for slab sizing).
+	rsTinyCount  = rsTotalKeys * rsFracTiny / 100
+	rsShortCount = rsTotalKeys * rsFracShort / 100
+	rsLongCount  = rsTotalKeys - rsTinyCount - rsShortCount
 )
 
-// rsTenant describes one simulated tenant's pre-computed keys.
-type rsTenant struct {
-	id   uint16
-	keys [][]byte
+// rsEntry is a pre-built key+value pair for one cache entry.
+type rsEntry struct {
+	key []byte
+	val []byte // unique copy per entry (mirrors what a real cache stores)
 }
 
-// rsTenants builds the full 20K-tenant population with realistic key distributions.
+// rsTenant describes one simulated tenant's pre-computed entries.
+type rsTenant struct {
+	id      uint16
+	entries []rsEntry
+}
+
+// keyClass returns the key length and value size for key index j.
+// Distribution: 30% tiny (4B/64B), 50% short (16B/512B), 20% long (48B/2048B).
+func keyClass(j int) (keyLen, valSize int) {
+	r := j % 100
+	switch {
+	case r < rsFracTiny:
+		return 4, rsTinyValSize
+	case r < rsFracTiny+rsFracShort:
+		return 16, rsShortValSize
+	default:
+		return 48, rsLongValSize
+	}
+}
+
+// rsTenants builds the full 20K-tenant population with realistic distributions.
+// Keys are mixed size (tiny/short/long). Each entry carries its own value copy
+// so memory measurements reflect actual cache ownership semantics.
 func rsTenants() []rsTenant {
 	tenants := make([]rsTenant, rsNumTenants)
 	for i := range tenants {
@@ -92,19 +150,49 @@ func rsTenants() []rsTenant {
 		default:
 			nKeys = rsTierCKeys
 		}
-		keys := make([][]byte, nKeys)
-		for j := range keys {
-			k := make([]byte, 12)
+		entries := make([]rsEntry, nKeys)
+		for j := range entries {
+			kLen, vSize := keyClass(j)
+			k := make([]byte, kLen)
+			// Embed tenantID in bytes 0-1 (all key sizes ≥ 4).
 			binary.LittleEndian.PutUint16(k[0:2], tid)
-			binary.LittleEndian.PutUint32(k[2:6], uint32(j))
-			binary.LittleEndian.PutUint32(k[6:10], uint32(i*1000+j))
-			k[10] = byte(i >> 8)
-			k[11] = byte(j >> 8)
-			keys[j] = k
+			// Fill remaining bytes to uniquely identify (tenant, j).
+			// Use only byte-level writes to avoid slice-length panics.
+			switch kLen {
+			case 4: // tiny: [tid(2)] [j_lo, j_hi]
+				k[2] = byte(j)
+				k[3] = byte(j >> 8)
+			case 16: // short: [tid(2)] [j(4)] [salt(4)] [i_hi, j_hi, pad(4)]
+				binary.LittleEndian.PutUint32(k[2:6], uint32(j))
+				binary.LittleEndian.PutUint32(k[6:10], uint32(i*1000+j))
+				k[10] = byte(i >> 8)
+				k[11] = byte(j >> 8)
+				// k[12:16] stays zero (padding)
+			default: // long (48): [tid(2)] [j(4)] [salt(4)] [i_hi,j_hi] [i(4)] [j(4)] [zeros...]
+				binary.LittleEndian.PutUint32(k[2:6], uint32(j))
+				binary.LittleEndian.PutUint32(k[6:10], uint32(i*1000+j))
+				k[10] = byte(i >> 8)
+				k[11] = byte(j >> 8)
+				binary.LittleEndian.PutUint32(k[12:16], uint32(i))
+				binary.LittleEndian.PutUint32(k[16:20], uint32(j))
+				// k[20:48] stays zero (padding distinguishes from shorter keys)
+			}
+			// Unique value per entry — each backend stores its own copy.
+			v := make([]byte, vSize)
+			v[0] = byte(tid)
+			v[1] = byte(j)
+			entries[j] = rsEntry{k, v}
 		}
-		tenants[i] = rsTenant{tid, keys}
+		tenants[i] = rsTenant{tid, entries}
 	}
 	return tenants
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // ── memory helpers ────────────────────────────────────────────────────────────
@@ -129,7 +217,7 @@ type rsGrowthPoint struct {
 	syncMapPerE float64
 }
 
-func rsMemGrowthCurve(t *testing.T, tenants []rsTenant, val []byte) {
+func rsMemGrowthCurve(t *testing.T, tenants []rsTenant) {
 	t.Log("")
 	t.Log("── Section 1: Memory growth curve (local vs global) ──")
 	t.Logf("%-10s  %10s  %8s  %10s  %8s  %10s  %8s",
@@ -139,12 +227,15 @@ func rsMemGrowthCurve(t *testing.T, tenants []rsTenant, val []byte) {
 	// Checkpoints (cumulative entry counts).
 	checkpoints := []int{1_000, 5_000, 20_000, 50_000, 100_000, 150_000, rsTotalKeys}
 
-	// Flatten all (tenant, key) pairs in insertion order.
-	type pair struct{ tid uint16; key []byte }
+	// Flatten all (tenant, entry) pairs in insertion order.
+	type pair struct {
+		tid   uint16
+		entry rsEntry
+	}
 	all := make([]pair, 0, rsTotalKeys)
 	for _, tn := range tenants {
-		for _, k := range tn.keys {
-			all = append(all, pair{tn.id, k})
+		for _, e := range tn.entries {
+			all = append(all, pair{tn.id, e})
 		}
 	}
 
@@ -153,9 +244,9 @@ func rsMemGrowthCurve(t *testing.T, tenants []rsTenant, val []byte) {
 	rng.Shuffle(len(all), func(i, j int) { all[i], all[j] = all[j], all[i] })
 
 	// Allocate all three structures outside GC measurement.
-	cm, _ := icache.NewCacheManager(
+	cm, _ := cache.NewCacheManager(
 		512<<20, []uint32{uint32(rsValueSize)}, []uint32{rsTTL},
-		uint64(rsTotalKeys), 0, icache.NoopBackend,
+		uint64(rsTotalKeys), 0, cache.NoopBackend,
 	)
 	type mapEntry struct{ val []byte }
 	mapStore := make(map[string]mapEntry, 1024)
@@ -166,15 +257,15 @@ func rsMemGrowthCurve(t *testing.T, tenants []rsTenant, val []byte) {
 	ci := 0 // checkpoint index
 
 	for n, p := range all {
-		// Insert into all three.
-		cm.Put(p.tid, p.key, val, rsTTL)
+		// Insert into all three using per-entry value.
+		cm.Put(p.tid, p.entry.key, p.entry.val, rsTTL)
 
-		sk := string(p.key)
+		sk := string(p.entry.key)
 		mapMu.Lock()
-		mapStore[sk] = mapEntry{val}
+		mapStore[sk] = mapEntry{p.entry.val}
 		mapMu.Unlock()
 
-		smStore.Store(sk, val)
+		smStore.Store(sk, p.entry.val)
 
 		entries := n + 1
 
@@ -211,7 +302,7 @@ func rsMemGrowthCurve(t *testing.T, tenants []rsTenant, val []byte) {
 
 // ── Section 2: shard utilisation ─────────────────────────────────────────────
 
-func rsShardDepth(t *testing.T, tenants []rsTenant, val []byte) {
+func rsShardDepth(t *testing.T, tenants []rsTenant) {
 	t.Log("")
 	t.Log("── Section 2: Shard depth distribution after full populate ──")
 	t.Logf("  Total tenants: %d  |  Total entries: %d", rsNumTenants, rsTotalKeys)
@@ -223,9 +314,10 @@ func rsShardDepth(t *testing.T, tenants []rsTenant, val []byte) {
 		rsTierC, rsTierCKeys, rsTierC*rsTierCKeys)
 
 	// Build InlineIndex directly (no slab) to isolate index memory.
-	idx := icache.NewInlineIndex(0) // 256 shards
+	idx := cache.NewInlineIndex(0) // 256 shards
 	for _, tn := range tenants {
-		for ki, k := range tn.keys {
+		for ki, e := range tn.entries {
+			k := e.key
 			// Build uint64 tag: mix tenant + key index.
 			var buf [8]byte
 			binary.LittleEndian.PutUint16(buf[0:2], tn.id)
@@ -316,10 +408,10 @@ type rsBackend interface {
 	Name() string
 }
 
-// rsCacheManager wraps icache.CacheManager.
-type rsCacheManager struct{ cm *icache.CacheManager }
+// rsCacheManager wraps cache.CacheManager.
+type rsCacheManager struct{ cm *cache.CacheManager }
 
-func (b *rsCacheManager) Name() string { return "icache.CacheManager (InlineIndex)" }
+func (b *rsCacheManager) Name() string { return "cache.CacheManager (InlineIndex + real-byte H2)" }
 func (b *rsCacheManager) Get(tid int, key []byte) {
 	b.cm.Get(uint16(tid), key)
 }
@@ -356,10 +448,24 @@ func (b *rsMutexMap) Put(tid int, key []byte, val []byte) {
 	b.mu.Unlock()
 }
 
-// rsLookupCache wraps cache_v1.CacheManager (LookupIndex, original implementation).
-type rsLookupCache struct{ cm *cache_v1.CacheManager }
+// rsIcacheV1 wraps archive/v1.CacheManager (InlineIndex + maphash H2, generation 1).
+type rsIcacheV1 struct{ cm *archivev1.CacheManager }
 
-func (b *rsLookupCache) Name() string { return "cache_v1.CacheManager (LookupIndex)" }
+func (b *rsIcacheV1) Name() string { return "icache/archive/v1 (InlineIndex, gen1 maphash H2)" }
+func (b *rsIcacheV1) Get(tid int, key []byte) { b.cm.Get(uint16(tid), key) }
+func (b *rsIcacheV1) Put(tid int, key []byte, val []byte) { b.cm.Put(uint16(tid), key, val, rsTTL) }
+
+// rsIcacheV3 wraps archive/v3.CacheManager (InlineIndex + klenWord/tenantWord + KeyFP).
+type rsIcacheV3 struct{ cm *archivev3.CacheManager }
+
+func (b *rsIcacheV3) Name() string { return "icache/archive/v3 (klenWord + KeyFP)" }
+func (b *rsIcacheV3) Get(tid int, key []byte) { b.cm.Get(uint16(tid), key) }
+func (b *rsIcacheV3) Put(tid int, key []byte, val []byte) { b.cm.Put(uint16(tid), key, val, rsTTL) }
+
+// rsLookupCache wraps lookup_v1.CacheManager (LookupIndex, original implementation).
+type rsLookupCache struct{ cm *lookup_v1.CacheManager }
+
+func (b *rsLookupCache) Name() string { return "lookup_v1.CacheManager (LookupIndex)" }
 func (b *rsLookupCache) Get(tid int, key []byte) {
 	b.cm.Get(uint16(tid), key)
 }
@@ -401,16 +507,16 @@ func (b *rsGoCache) Put(tid int, key []byte, val []byte) {
 	b.gc.Set(string(key), val, time.Duration(rsTTL)*time.Second)
 }
 
-func rsThroughput(t *testing.T, tenants []rsTenant, val []byte, b rsBackend) {
+func rsThroughput(t *testing.T, tenants []rsTenant, b rsBackend) {
 	// Measure heap before populate.
 	runtime.GC()
 	var msBefore runtime.MemStats
 	runtime.ReadMemStats(&msBefore)
 
-	// Populate all entries.
+	// Populate all entries using per-entry values.
 	for _, tn := range tenants {
-		for _, k := range tn.keys {
-			b.Put(int(tn.id), k, val)
+		for _, entry := range tn.entries {
+			b.Put(int(tn.id), entry.key, entry.val)
 		}
 	}
 
@@ -441,11 +547,11 @@ func rsThroughput(t *testing.T, tenants []rsTenant, val []byte, b rsBackend) {
 				default:
 				}
 				tn := &tenants[rng.Intn(len(tenants))]
-				key := tn.keys[rng.Intn(len(tn.keys))]
+				entry := tn.entries[rng.Intn(len(tn.entries))]
 				if i%rsReadRatio == 0 {
-					b.Put(int(tn.id), key, val)
+					b.Put(int(tn.id), entry.key, entry.val)
 				} else {
-					b.Get(int(tn.id), key)
+					b.Get(int(tn.id), entry.key)
 				}
 				counters[g].Add(1)
 				i++
@@ -474,31 +580,68 @@ func rsThroughput(t *testing.T, tenants []rsTenant, val []byte, b rsBackend) {
 		b.Name(), tps/1e6, heapDeltaMB, heapTotalMB, heapObjs/1000, gcDelta)
 }
 
-func rsSteadyState(t *testing.T, tenants []rsTenant, val []byte) {
-	const memBudget = 512 << 20 // 512 MB slab for bounded caches
+func rsSteadyState(t *testing.T, tenants []rsTenant) {
+	// rsSlab is auto-sized to the workload (data + 25% headroom).
+	// Computed at runtime from the three size classes.
+	rsSlab := uint64(rsTinyCount)*uint64(rsTinyStride)*5/4 +
+		uint64(rsShortCount)*uint64(rsShortStride)*5/4 +
+		uint64(rsLongCount)*uint64(rsLongStride)*5/4
+
+	slabMB := float64(rsSlab) / (1 << 20)
+	slabCap := rsSlab / uint64(rsStride) // slots available in the slab (short-stride reference)
+	utilPct := float64(rsTotalKeys) / float64(slabCap) * 100
 
 	t.Log("")
-	t.Log("── Section 3: Steady-state throughput (20K tenants, 10:1 read:write) ──")
+	t.Log("── Section 3: Steady-state throughput (20K tenants, 50:1 read:write) ──")
+	t.Logf("  Slab budget: %.0f MB  |  Capacity: %d slots  |  Loaded: %d (%.0f%% utilisation)",
+		slabMB, slabCap, rsTotalKeys, utilPct)
+	t.Logf("  (To cache 1M entries at %dB values set slab = %.0f MB)",
+		rsValueSize, float64(1_000_000*uint64(rsStride))/(1<<20))
+	t.Log("")
 	t.Logf("  %-48s  %8s  %7s  %7s  %12s  %s",
 		"implementation", "avg TPS", "ownMB", "totMB", "heap objs", "GC")
 	t.Logf("  %-48s  %8s  %7s  %7s  %12s  %s",
 		"────────────────────────────────────────────────",
 		"────────", "───────", "───────", "────────────", "────")
 
-	// 1. icache.CacheManager — InlineIndex + H2 filter + slab TTL
-	cm, _ := icache.NewCacheManager(
-		memBudget, []uint32{uint32(rsValueSize)}, []uint32{rsTTL},
-		uint64(rsTotalKeys), 0, icache.NoopBackend,
+	// 1. cache.CacheManager — main (InlineIndex + real-byte H2, hashLaneBig16)
+	cm, _ := cache.NewCacheManager(
+		rsSlab,
+		[]uint32{rsTinyValSize, rsShortValSize, rsLongValSize},
+		[]uint32{rsTTL},
+		uint64(rsTotalKeys), 0, cache.NoopBackend,
 	)
-	rsThroughput(t, tenants, val, &rsCacheManager{cm})
+	rsThroughput(t, tenants, &rsCacheManager{cm})
 	cm.Stop()
 
-	// 2. cache_v1.CacheManager — LookupIndex (original implementation)
-	cm1, _ := cache_v1.NewCacheManager(
-		memBudget, []uint32{uint32(rsValueSize)}, []uint32{rsTTL},
-		uint64(rsTotalKeys), 0, cache_v1.NoopBackend,
+	// 2. archive/v1 — InlineIndex + maphash H2 (generation 1)
+	cmv1, _ := archivev1.NewCacheManager(
+		rsSlab,
+		[]uint32{rsTinyValSize, rsShortValSize, rsLongValSize},
+		[]uint32{rsTTL},
+		uint64(rsTotalKeys), 0, archivev1.NoopBackend,
 	)
-	rsThroughput(t, tenants, val, &rsLookupCache{cm1})
+	rsThroughput(t, tenants, &rsIcacheV1{cmv1})
+	cmv1.Stop()
+
+	// 3. archive/v3 — InlineIndex + klenWord + tenantWord + KeyFP
+	cmv3, _ := archivev3.NewCacheManager(
+		rsSlab,
+		[]uint32{rsTinyValSize, rsShortValSize, rsLongValSize},
+		[]uint32{rsTTL},
+		uint64(rsTotalKeys), 0, archivev3.NoopBackend,
+	)
+	rsThroughput(t, tenants, &rsIcacheV3{cmv3})
+	cmv3.Stop()
+
+	// 2. lookup_v1.CacheManager — LookupIndex (original implementation)
+	cm1, _ := lookup_v1.NewCacheManager(
+		rsSlab,
+		[]uint32{rsTinyValSize, rsShortValSize, rsLongValSize},
+		[]uint32{rsTTL},
+		uint64(rsTotalKeys), 0, lookup_v1.NoopBackend,
+	)
+	rsThroughput(t, tenants, &rsLookupCache{cm1})
 	cm1.Stop()
 
 	// 3. bigcache v3 — ring-buffer slab, global TTL, no per-tenant quota
@@ -507,64 +650,68 @@ func rsSteadyState(t *testing.T, tenants []rsTenant, val []byte) {
 		LifeWindow:         time.Duration(rsTTL) * time.Second,
 		CleanWindow:        0,
 		MaxEntriesInWindow: rsTotalKeys,
-		MaxEntrySize:       rsValueSize + 32,
+		MaxEntrySize:       rsLongValSize + 32,
 		HardMaxCacheSize:   0, // no hard cap (bigcache manages internally)
 		Verbose:            false,
 	})
 	if bcErr != nil {
 		t.Logf("  %-48s  SKIP: %v", "bigcache v3 (ring-buffer, global TTL)", bcErr)
 	} else {
-		rsThroughput(t, tenants, val, &rsBigCache{bc})
+		rsThroughput(t, tenants, &rsBigCache{bc})
 		_ = bc.Close()
 	}
 
 	// 4. ristretto v2 — TinyLFU admission filter, async Set, per-item TTL
 	rc, rcErr := ristretto.NewCache(&ristretto.Config[string, []byte]{
 		NumCounters: int64(rsTotalKeys) * 10,
-		MaxCost:     memBudget,
+		MaxCost:     int64(rsSlab),
 		BufferItems: 64,
 		Metrics:     false,
 	})
 	if rcErr != nil {
 		t.Logf("  %-48s  SKIP: %v", "ristretto v2 (TinyLFU, async Set)", rcErr)
 	} else {
-		rsThroughput(t, tenants, val, &rsRistretto{rc})
+		rsThroughput(t, tenants, &rsRistretto{rc})
 		rc.Close()
 	}
 
 	// 5. go-cache — map+mutex, per-item TTL, GC-collected entries
 	gcache := gocache.New(time.Duration(rsTTL)*time.Second, 0) // 0 = no background janitor
-	rsThroughput(t, tenants, val, &rsGoCache{gcache})
+	rsThroughput(t, tenants, &rsGoCache{gcache})
 
 	// 6. sync.Map — lock-free read map, no TTL, no memory bound
-	rsThroughput(t, tenants, val, &rsSyncMap{})
+	rsThroughput(t, tenants, &rsSyncMap{})
 
 	// 7. map+RWMutex — baseline; global writer lock
-	rsThroughput(t, tenants, val, &rsMutexMap{m: make(map[string][]byte, rsTotalKeys)})
+	rsThroughput(t, tenants, &rsMutexMap{m: make(map[string][]byte, rsTotalKeys)})
 }
 
 // ── main test ─────────────────────────────────────────────────────────────────
 
 func TestRealisticScale(t *testing.T) {
-	val := make([]byte, rsValueSize)
-	for i := range val {
-		val[i] = byte(i & 0xFF)
-	}
 	tenants := rsTenants()
 
+	// Compute rsSlab for the summary header (same formula as rsSteadyState).
+	rsSlab := uint64(rsTinyCount)*uint64(rsTinyStride)*5/4 +
+		uint64(rsShortCount)*uint64(rsShortStride)*5/4 +
+		uint64(rsLongCount)*uint64(rsLongStride)*5/4
+
 	t.Logf("")
-	t.Logf("=== Realistic Scale: %d tenants | %d total entries | %dB values | TTL=%ds ===",
+	t.Logf("=== Realistic Scale: %d tenants | %d entries | %dB values | TTL=%ds ===",
 		rsNumTenants, rsTotalKeys, rsValueSize, rsTTL)
-	t.Logf("  Tier-A  %5d tenants × %5d keys  (hot, 1%% of tenants, 50%% of data)",
+	t.Logf("  Slab stride: %dB/entry  |  Auto-sized slab: %.0f MB  |  Capacity: %d entries  |  Load: %.0f%%",
+		rsStride, float64(rsSlab)/(1<<20), rsSlab/uint64(rsStride),
+		float64(rsTotalKeys)/(float64(rsSlab/uint64(rsStride)))*100)
+	t.Logf("  Tier-A  %5d tenants × %5d keys  (hot,  1%% of tenants, 50%% of data)",
 		rsTierA, rsTierAKeys)
-	t.Logf("  Tier-B  %5d tenants × %5d keys  (warm, 9%% of tenants, 45%% of data)",
+	t.Logf("  Tier-B  %5d tenants × %5d keys  (warm,  9%% of tenants, 45%% of data)",
 		rsTierB, rsTierBKeys)
-	t.Logf("  Tier-C  %5d tenants × %5d key   (cold, 90%% of tenants, 5%% of data)",
+	t.Logf("  Tier-C  %5d tenants × %5d key   (cold, 90%% of tenants,  5%% of data)",
 		rsTierC, rsTierCKeys)
 
-	rsMemGrowthCurve(t, tenants, val)
-	rsShardDepth(t, tenants, val)
-	rsSteadyState(t, tenants, val)
+	rsMemGrowthCurve(t, tenants)
+	rsShardDepth(t, tenants)
+	rsSteadyState(t, tenants)
 
 	t.Log("")
 	t.Log("=== Summary ===")

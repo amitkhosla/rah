@@ -41,7 +41,7 @@ import (
 	ristretto "github.com/dgraph-io/ristretto/v2"
 	gocache "github.com/patrickmn/go-cache"
 
-	cache_v1 "rah/internal/cache_v1"
+	cache_v1 "rah/internal/cache/archive/lookup_v1"
 )
 
 // ── workload constants ────────────────────────────────────────────────────────

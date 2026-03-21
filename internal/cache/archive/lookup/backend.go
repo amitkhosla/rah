@@ -1,4 +1,4 @@
-package icache
+package lookup
 
 // CacheBackend is a TTL-aware persistent store used as the spill/warm-up layer
 // behind the in-memory slab.

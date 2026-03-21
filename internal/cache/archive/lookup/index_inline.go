@@ -1,10 +1,7 @@
 /*
-Package icache2 implements a concurrent trie index where every trie node
+Package icache implements a concurrent trie index where every trie node
 carries inline key-value slots, replacing the LookupIndex from the cache
 package with an InlineIndex that stores entries directly in nodes.
-
-icache2 differs from icache in one way: the H2 filter bits in hashIdx tags
-use hashLaneBig16 (real key bytes) instead of maphash-derived H2 bits.
 
 Design — "inline-slot trie":
 
@@ -30,12 +27,12 @@ Swiss-style H2 filter (h2word — 16-bit groups):
 
 	Using 16-bit groups instead of 8-bit groups avoids the false-positive rate
 	explosion that occurs when the upper 8 bits of different tags collide.
-	For hashIdx tags, bits 48-63 carry real fingerprint bytes (see hashLaneBig16).
+	For hashIdx tags, bits 48-63 carry real fingerprint bytes (see makeTagHashH2).
 
 	On Get, h2word is loaded from CL2 (already fetched for children routing).
 	If no 16-bit group matches the query H2, the slot scan (CL1) is skipped.
 */
-package cache
+package lookup
 
 import (
 	"fmt"
@@ -97,8 +94,7 @@ type iSlot struct {
 //	forced to ≥1 for live entries; 0 means empty/tombstone.
 //
 //	Using 16-bit groups provides better discrimination than 8-bit groups,
-//	especially for hashIdx where bits 48–63 carry real fingerprint bytes
-//	from hashLaneBig16.
+//	especially for hashIdx where bits 48–63 carry real fingerprint bytes.
 type iNode struct {
 	// Cache line 1: inline key-value slots.
 	slots [iSlots]iSlot // 4 × 16 B = 64 B
@@ -113,7 +109,7 @@ type iNode struct {
 // h2ForTag derives the H2 uint16 for a tag using the upper 16 bits (bits 48–63).
 // Forced to ≥1 so that 0 remains an unambiguous "empty" sentinel in h2word.
 // For hashIdx, the caller packs real fingerprint bytes into bits 48–63 via
-// hashLaneBig16, so this function extracts them without extra mixing.
+// makeTagHashH2, so this function extracts them without extra mixing.
 // For tinyIdx, the upper bits vary enough to serve as good discriminators.
 func h2ForTag(tag uint64) uint16 {
 	h := uint16(tag >> 48)
@@ -278,7 +274,7 @@ func NewInlineIndex(shardBits uint) *InlineIndex {
 	}
 	if shardBits > iMaxShardBits {
 		panic(fmt.Sprintf(
-			"icache2: NewInlineIndex: shardBits %d exceeds maximum %d",
+			"cache: NewInlineIndex: shardBits %d exceeds maximum %d",
 			shardBits, iMaxShardBits,
 		))
 	}
@@ -721,60 +717,3 @@ func (idx *InlineIndex) TotalNodes() int {
 
 // NumShards returns the number of shards.
 func (idx *InlineIndex) NumShards() int { return len(idx.shards) }
-
-// LevelStats holds per-depth statistics for PerLevelStats.
-type LevelStats struct {
-	Depth   int
-	Nodes   int
-	Entries int
-	Slots   int // = Nodes * iSlots
-}
-
-// PerLevelStats walks every shard and aggregates node/entry counts by trie depth.
-// Depth 0 = root nodes (one per shard), depth 1 = their children, etc.
-func (idx *InlineIndex) PerLevelStats() []LevelStats {
-	byDepth := make(map[int]*LevelStats)
-	for s := range idx.shards {
-		sh := &idx.shards[s]
-		sh.mu.Lock()
-		idx.perLevelNode(sh.root, 0, byDepth)
-		sh.mu.Unlock()
-	}
-	// Collect and sort.
-	maxDepth := 0
-	for d := range byDepth {
-		if d > maxDepth {
-			maxDepth = d
-		}
-	}
-	out := make([]LevelStats, 0, maxDepth+1)
-	for d := 0; d <= maxDepth; d++ {
-		if l, ok := byDepth[d]; ok {
-			out = append(out, *l)
-		}
-	}
-	return out
-}
-
-func (idx *InlineIndex) perLevelNode(nodeIdx uint32, depth int, acc map[int]*LevelStats) {
-	if nodeIdx == iNullChild {
-		return
-	}
-	l := acc[depth]
-	if l == nil {
-		l = &LevelStats{Depth: depth}
-		acc[depth] = l
-	}
-	l.Nodes++
-	l.Slots += iSlots
-	node := idx.pool.node(nodeIdx)
-	for i := range node.slots {
-		t := node.slots[i].tag.Load()
-		if t != iEmpty && t != iTombstone {
-			l.Entries++
-		}
-	}
-	for b := range node.children {
-		idx.perLevelNode(atomic.LoadUint32(&node.children[b]), depth+1, acc)
-	}
-}
