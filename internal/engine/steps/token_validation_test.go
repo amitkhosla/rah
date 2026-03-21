@@ -93,9 +93,9 @@ func TestTokenValidationAcceptsValidRS256JWTFromJWKS(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{
 		"jwt.jwks_url": jwksServer.URL,
 		"jwt.issuer":   issuer,
 		"jwt.audience": audience,
@@ -146,9 +146,9 @@ func TestTokenValidationRejectsInvalidSignature(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_url": jwksServer.URL}))
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_url": jwksServer.URL}))
 
 	next := instr.Action(ctx, &engine.ExecutionState{PC: 5})
 	if next != engine.StopPlan {
@@ -193,9 +193,9 @@ func TestTokenValidationAllowsSkippingAudienceValidation(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{
 		"jwt.jwks_uri": jwksServer.URL,
 		"jwt.audience": "required-audience",
 		"jwt.validate": "signature,exp",
@@ -235,9 +235,9 @@ func TestTokenValidationUsesExternalJWTCacheProvider(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_uri": "https://issuer.example/jwks"}))
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_uri": "https://issuer.example/jwks"}))
 	next := instr.Action(ctx, &engine.ExecutionState{PC: 2})
 	if next != 3 {
 		t.Fatalf("expected cache-backed validation success, got %d", next)
@@ -273,9 +273,9 @@ func TestTokenValidationResolvesJWKSURIFromReference(t *testing.T) {
 
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_ref": "tenant/default/oidc"}))
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_ref": "tenant/default/oidc"}))
 	next := instr.Action(ctx, &engine.ExecutionState{PC: 7})
 	if next != 8 {
 		t.Fatalf("expected resolver-backed validation success, got %d", next)
@@ -315,7 +315,7 @@ func TestTokenValidationSupportsDifferentJWKSPerRequest(t *testing.T) {
 	}})
 	defer SetJWKSURIResolver(nil)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_ref": "tenant/provider"}))
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{"jwt.jwks_ref": "tenant/provider"}))
 
 	run := func(priv *rsa.PrivateKey, issuer string, pc int16) int16 {
 		token := signJWT(t, priv, "kid-1", map[string]any{"exp": time.Now().Add(2 * time.Minute).Unix()})
@@ -329,7 +329,7 @@ func TestTokenValidationSupportsDifferentJWKSPerRequest(t *testing.T) {
 
 		ctx.Reset(resp)
 		ctx.Request = req
-		ctx.ByteSlots[10] = []byte("Bearer " + token)
+		ctx.ByteSlots[0] = []byte("Bearer " + token)
 		return instr.Action(ctx, &engine.ExecutionState{PC: pc})
 	}
 
@@ -387,7 +387,7 @@ func TestTokenValidationReadsTokenDirectlyFromHeaderSource(t *testing.T) {
 	ctx.Reset(resp)
 	ctx.Request = req
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{
 		"token.source": "header",
 		"token.key":    "X-Access-Token",
 		"jwt.jwks_uri": jwksServer.URL,
@@ -425,9 +425,9 @@ func TestTokenValidationRejectsWhenRequiredScopeMissing(t *testing.T) {
 	defer fm.Pool.Put(ctx)
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)
-	ctx.ByteSlots[10] = []byte("Bearer " + token)
+	ctx.ByteSlots[0] = []byte("Bearer " + token)
 
-	instr := TokenValidation(10, ParseTokenValidationConfig("header.Authorization", map[string]string{
+	instr := TokenValidation(0, ParseTokenValidationConfig("header.Authorization", map[string]string{
 		"jwt.jwks_uri":        jwksServer.URL,
 		"jwt.required_scopes": "read:users,write:users",
 	}))

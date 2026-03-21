@@ -34,14 +34,28 @@ type StepConfig struct {
 	Path   string `json:"path,omitempty"`  // JSONPath or URL Path segment index
 	TTL    uint32 `json:"ttl,omitempty"`
 	OnMiss string `json:"on_miss,omitempty"` // Flow to call if Registry/Cache misses
+
+	// TX ID / Correlation
+	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
+}
+
+// EndpointConfig defines per-endpoint overrides within an API definition.
+type EndpointConfig struct {
+	Path          string `json:"path"`
+	Method        string `json:"method,omitempty"`      // empty = ANY
+	RateLimitName string `json:"rate_limit,omitempty"`
 }
 
 // ApiConfig maps a URL path to a specific execution plan.
 type ApiConfig struct {
-	ApiID      string `json:"api_id"`
-	Path       string `json:"path"`
-	FlowName   string `json:"flow_name"` // The entry fragment
-	EntryPoint int16  `json:"-"`         // The Absolute ID in GlobalTable (calculated at Bake)
+	ApiID           string           `json:"api_id"`
+	Path            string           `json:"path"`
+	Method          string           `json:"method,omitempty"`      // HTTP method; empty = all methods
+	FlowName        string           `json:"flow_name"`             // The entry fragment
+	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
+	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name (e.g. "premium", "global")
+	EntryPoint      int16            `json:"-"`                     // Absolute ID in GlobalTable (calculated at Bake)
+	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
 }
 
 type FlowUpdate struct {
@@ -51,10 +65,14 @@ type FlowUpdate struct {
 }
 
 type ApiUpdate struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	FlowName string `json:"flow_name"` // Reference to a Flow name
-	Action   string `json:"action"`    // "upsert" or "delete"
+	Name            string           `json:"name"`
+	Path            string           `json:"path"`
+	Method          string           `json:"method,omitempty"`      // HTTP method; empty = all methods
+	FlowName        string           `json:"flow_name"`             // Reference to a Flow name
+	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
+	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name
+	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
+	Action          string           `json:"action"`                // "upsert" or "delete"
 }
 
 type UnifiedSyncRequest struct {

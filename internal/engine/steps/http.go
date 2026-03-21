@@ -383,9 +383,9 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					event.TTFBNs = firstByteStart.Sub(upstreamStart).Nanoseconds()
 				}
 
-				atomic.AddInt64(&ctx.UpstreamTimeNs, int64(totalUpstream))
-				atomic.AddInt64(&ctx.UpstreamBytesTx, reqBytesSent)
-				atomic.AddInt32(&ctx.UpstreamCalls, 1)
+				atomic.AddInt64(&ctx.Timing.UpstreamTimeNs, int64(totalUpstream))
+				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, reqBytesSent)
+				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
 					event.BytesSent = reqBytesSent
@@ -411,7 +411,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				resp.Body.Close()
 				event.BytesSent = reqBytesSent
 				event.BytesReceived = respBytes
-				atomic.AddInt64(&ctx.UpstreamBytesRx, respBytes)
+				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, respBytes)
 
 				if ctx.Obs != nil {
 					ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, respBytes)

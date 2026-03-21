@@ -13,10 +13,32 @@ import (
 	"rah/internal/engine"
 	"rah/internal/observability"
 	"rah/internal/rctx"
+	tenantregistry "rah/internal/registry"
 	"rah/internal/router"
 	"sync/atomic"
 	"time"
 )
+
+// domainScopedKV adapts DataStoreManager to the RegistryStoreBackend interface,
+// pre-scoped to a single storage domain. Serialisation lives in TenantRegistryStore;
+// this adapter only bridges the domain parameter.
+type domainScopedKV struct {
+	mgr    *control.DataStoreManager
+	domain config.DataDomain
+}
+
+func (d *domainScopedKV) Put(ctx context.Context, key string, value []byte) error {
+	return d.mgr.PutGlobal(ctx, d.domain, key, value)
+}
+func (d *domainScopedKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	return d.mgr.GetGlobal(ctx, d.domain, key)
+}
+func (d *domainScopedKV) Delete(ctx context.Context, key string) error {
+	return d.mgr.DeleteGlobal(ctx, d.domain, key)
+}
+func (d *domainScopedKV) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	return d.mgr.ListGlobalKeys(ctx, d.domain, prefix)
+}
 
 func main() {
 	port := flag.Int("port", 8080, "Gateway Port")
@@ -79,7 +101,7 @@ func main() {
 		}
 	}
 
-	if dataStoreMgr.IsConfigured(config.DomainRegistryStore) {
+	if dataStoreMgr.IsConfigured(config.DomainTenantRegistry) {
 		registrySnapshot, err := dataStoreMgr.ReadRegistryStoreSnapshot(bootstrapCtx, datastore.Tenant("bootstrap"))
 		if err != nil {
 			log.Printf("failed to read registrystore snapshot: %v", err)
@@ -109,8 +131,8 @@ func main() {
 	accessLog := observability.NewAccessLogger(8192)
 	registry := control.NewNameRegistry()
 
-	// 3. Register Headers and Setup APIs
-	fm.HeaderRegistry.RegisterHeader("Authorization")
+	// 3. Setup compiler and routes
+	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	setupRoutes(r, fm, compiler)
 
@@ -143,7 +165,7 @@ func main() {
 			ctx.Reset(w) // set Writer before any processing — new pool contexts have Writer=nil
 
 			ctx.Obs = obs
-			ctx.RequestStartNs = reqStart.UnixNano()
+			ctx.Timing.StartNs = reqStart.UnixNano()
 
 			if obs.ShouldTrace() {
 				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
@@ -164,14 +186,14 @@ func main() {
 			// req remains valid until this goroutine returns, so req.Header reads
 			// in Snapshot() are safe.
 			total := time.Since(reqStart)
-			upstreamNs := atomic.LoadInt64(&ctx.UpstreamTimeNs)
+			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
 			upstream := time.Duration(upstreamNs)
 			gateway := total - upstream
 			if gateway < 0 {
 				gateway = 0
 			}
 
-			ttfbNs := ctx.FirstByteSentNs - ctx.RequestStartNs
+			ttfbNs := ctx.Timing.FirstByteSentNs - ctx.Timing.StartNs
 			if ttfbNs < 0 {
 				ttfbNs = 0
 			}
@@ -186,15 +208,15 @@ func main() {
 				req.Method, req.URL.Path,
 				ctx.ResponseStatus,
 				total.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
-				req.ContentLength, ctx.ClientBytesSent,
+				req.ContentLength, ctx.Timing.ClientBytesSent,
 				req,
 			)
 
 			obs.FinishRequest(ctx.Trace, ctx.ResponseStatus, total, gateway, upstream,
-				int(atomic.LoadInt32(&ctx.UpstreamCalls)),
-				ctx.ClientBytesSent,
-				atomic.LoadInt64(&ctx.UpstreamBytesTx),
-				atomic.LoadInt64(&ctx.UpstreamBytesRx),
+				int(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
+				ctx.Timing.ClientBytesSent,
+				atomic.LoadInt64(&ctx.Timing.UpstreamBytesTx),
+				atomic.LoadInt64(&ctx.Timing.UpstreamBytesRx),
 			)
 
 			if ctx.ShouldReturnToPool() {
@@ -209,33 +231,72 @@ func main() {
 		log.Fatal(http.ListenAndServe(addr, handler))
 	}()
 
-	ms := control.NewManagementServer(fm, compiler, registry)
+	regMgr := tenantregistry.NewRegistryManager()
+	// Wire regMgr into compiler so load_service_url / load_identifier can
+	// pre-resolve KeyIDs at bake time (avoids radix walk on every request).
+	compiler.RegMgr = regMgr
+
+	// Load default rate limit presets from config into the registry.
+	// These are named configs that can be referenced by API/endpoint definitions.
+	for _, preset := range cfg.DefaultRateLimits {
+		if preset.Name == "" {
+			continue
+		}
+		regMgr.UpsertNamedRateLimitConfig(preset.Name, tenantregistry.RateLimitConfig{
+			PerSec:      preset.RatePerSec,
+			PerMin:      preset.RatePerMin,
+			BurstFactor: preset.BurstFactor,
+		})
+	}
+
+	ts := tenantregistry.NewTenantServer(regMgr)
+
+	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping
+	// flows/APIs so that named rate limit references resolve correctly when
+	// Bootstrap bakes the instruction tables.
+	if dataStoreMgr.IsConfigured(config.DomainTenantRegistry) {
+		regStore := tenantregistry.NewTenantRegistryStore(&domainScopedKV{
+			mgr:    dataStoreMgr,
+			domain: config.DomainTenantRegistry,
+		})
+		snap, err := regStore.LoadAll(bootstrapCtx)
+		if err != nil {
+			log.Printf("[Registry] failed to load from datastore: %v", err)
+		} else {
+			regMgr.RestoreFromSnapshot(snap)
+			log.Printf("[Registry] Restored %d tenant(s) and %d rate limit config(s)",
+				len(snap.Tenants), len(snap.RateLimits))
+		}
+		// Wire AFTER restore so startup reads don't write back what was just read.
+		regMgr.SetStore(regStore)
+	}
+
+	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
 	// Bootstrap BEFORE SetDataStore so the bootstrap reads do not trigger
-	// redundant writes back to the store.
+	// redundant writes back to the store. Registry must be restored first (above)
+	// so named rate limit configs are available when Bootstrap bakes flows.
 	if err := ms.Bootstrap(bootstrapCtx, dataStoreMgr); err != nil {
 		log.Printf("failed control-plane bootstrap from datastore: %v", err)
 	}
-	// Optional: enable write-through persistence for subsequent upserts/deletes.
-	// Remove this line when a central orchestrator owns persistence and RAH only
-	// reads on boot.
 	ms.SetDataStore(dataStoreMgr)
 
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
+	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
+	ts.RegisterHandlers(mux)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
 		// Reports cumulative overflow counts since process start.
-		// Non-zero ArenaOverflows or SlotOverflows indicates default arena/slot
-		// sizing needs tuning (increase rctx.ArenaBlockSize or BaseByteSlots).
+		// Non-zero ArenaOverflows indicates ArenaInlineSize needs tuning.
 		fmt.Fprintf(w,
-			`{"arena_overflows":%d,"slot_overflows":%d,"arena_block_size":%d,"base_byte_slots":%d,"max_extra_arenas":%d}`,
+			`{"arena_overflows":%d,"arena_inline_size":%d,"arena_block_size":%d,"base_byte_slots":%d,"slot_value_threshold":%d}`,
 			fm.Metrics.ArenaOverflows.Load(),
-			fm.Metrics.SlotOverflows.Load(),
+			rctx.ArenaInlineSize,
 			rctx.ArenaBlockSize,
 			rctx.BaseByteSlots,
-			rctx.MaxExtraArenas,
+			rctx.SlotValueThreshold,
 		)
 	})
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
@@ -260,7 +321,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	}
 
 	def1 := engine.BakeDefinition(1, "/v1/hello")
-	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true)
+	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true, 0, 0)
 
 	state.Definitions[1] = def1
 	state.Router.Add(def1.BaseRawPath, 1)
@@ -270,7 +331,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 		{
 			Name: "ShowProfile",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				userId := ctx.ByteSlots[10]
+				userId := ctx.ByteSlots[0]
 				ctx.Write([]byte("User Profile for ID: "))
 				ctx.Write(userId)
 				return s.PC + 1
@@ -279,7 +340,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	}
 
 	def2 := engine.BakeDefinition(2, "/v1/user")
-	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true)
+	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true, 0, 0)
 
 	state.Definitions[2] = def2
 	state.Router.Add(def2.BaseRawPath, 2)

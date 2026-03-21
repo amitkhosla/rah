@@ -123,10 +123,10 @@ func TestDataStoreManagerRegistryStoreBootstrapRead(t *testing.T) {
 	}
 	ctx := context.Background()
 	tenant := datastore.Tenant("bootstrap")
-	if err := mgr.Put(ctx, config.DomainRegistryStore, tenant, "a", []byte("1")); err != nil {
+	if err := mgr.Put(ctx, config.DomainTenantRegistry, tenant, "a", []byte("1")); err != nil {
 		t.Fatalf("put failed: %v", err)
 	}
-	if err := mgr.Put(ctx, config.DomainRegistryStore, tenant, "b", []byte("2")); err != nil {
+	if err := mgr.Put(ctx, config.DomainTenantRegistry, tenant, "b", []byte("2")); err != nil {
 		t.Fatalf("put failed: %v", err)
 	}
 

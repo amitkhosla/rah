@@ -30,14 +30,20 @@ var supportedStoreKinds = map[StoreKind]struct{}{
 type DataDomain string
 
 const (
-	DomainAPIDefinitions DataDomain = "api_definitions"
-	DomainFlows          DataDomain = "flows"
-	DomainTenantRegistry DataDomain = "tenant_data"
-	DomainCache          DataDomain = "cache"
-	DomainRateLimit      DataDomain = "rate_limit"
-	DomainCustomerData   DataDomain = "customer_data"
-	DomainRegistryStore  DataDomain = "tenant_data"
-	DomainInstances      DataDomain = "instances"
+	// Immutable / control-plane data — typically disk or object storage
+	DomainAPIDefinitions DataDomain = "api_definitions" // compiled API + path definitions
+	DomainFlows          DataDomain = "flows"           // instruction sets (compiled flows)
+
+	// Mutable / management-plane data — typically fast KV or relational
+	DomainTenantRegistry DataDomain = "tenant_data"   // aliases, service URLs, identifiers, metadata
+	DomainRateLimit      DataDomain = "rate_limit"     // named rate limit configs + counters
+	DomainCustomerData   DataDomain = "customer_data"  // arbitrary per-tenant custom data
+
+	// Hot-path / ephemeral — typically in-memory or Redis
+	DomainCache DataDomain = "cache" // request-level response cache
+
+	// Infrastructure / operational
+	DomainInstances DataDomain = "instances" // live gateway instance registry
 )
 
 var requiredDomains = []DataDomain{

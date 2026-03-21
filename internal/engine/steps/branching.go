@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"rah/internal/engine"
 	"rah/internal/rctx"
+	"unsafe"
 )
 
 // TenantSwitch handles multi-option paths.
@@ -51,9 +52,9 @@ func BindHeader(key string, slot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			val := ctx.Request.Header.Get(key)
 			if len(val) > 0 {
-				s := ctx.Alloc(len(val))
-				copy(s, val)
-				ctx.ByteSlots[slot] = s
+				// Zero-copy reference into http.Request.Header memory.
+				// The slice is valid as long as req.Header is not modified (safe within request lifetime).
+				ctx.ByteSlots[slot] = unsafe.Slice(unsafe.StringData(val), len(val))
 			} else {
 				ctx.ByteSlots[slot] = nil
 			}

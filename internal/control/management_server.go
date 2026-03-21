@@ -9,6 +9,7 @@ import (
 	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/router"
+	registrypkg "rah/internal/registry"
 	"strings"
 	"sync"
 )
@@ -20,6 +21,7 @@ type ManagementServer struct {
 	FlowManager *engine.FlowManager
 	Compiler    *Compiler
 	Registry    *NameRegistry
+	RegMgr      *registrypkg.RegistryManager // optional; enables rate limit name resolution at bake time
 	mu          sync.RWMutex
 	flowConfigs map[string][]StepConfig
 	apiConfigs  map[string]ApiUpdate // api name → last upserted config
@@ -31,11 +33,12 @@ type ManagementServer struct {
 }
 
 // NewManagementServer initializes the server with the required compiler and manager.
-func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry) *ManagementServer {
+func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry, regMgr *registrypkg.RegistryManager) *ManagementServer {
 	return &ManagementServer{
 		FlowManager: fm,
 		Compiler:    c,
 		Registry:    reg,
+		RegMgr:      regMgr,
 		flowConfigs: make(map[string][]StepConfig),
 		apiConfigs:  make(map[string]ApiUpdate),
 	}
@@ -79,10 +82,13 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 			api.ApiID = name
 		}
 		req.Apis = append(req.Apis, ApiUpdate{
-			Name:     api.ApiID,
-			Path:     api.Path,
-			FlowName: api.FlowName,
-			Action:   "upsert",
+			Name:            api.ApiID,
+			Path:            api.Path,
+			Method:          api.Method,
+			FlowName:        api.FlowName,
+			RateLimitName:   api.RateLimitName,
+			EndpointConfigs: api.EndpointConfigs,
+			Action:          "upsert",
 		})
 	}
 
@@ -211,7 +217,36 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
-			s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true)
+
+			apiRLId := uint16(0)
+			if a.RateLimitName != "" && s.RegMgr != nil {
+				if rlid, ok := s.RegMgr.GetRateLimitConfigId(a.RateLimitName); ok {
+					apiRLId = rlid
+				}
+			}
+			if len(a.EndpointConfigs) == 0 {
+				// No sub-route config — register root for all methods.
+				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0)
+			} else {
+				for _, ec := range a.EndpointConfigs {
+					epRLId := uint16(0)
+					if ec.RateLimitName != "" && s.RegMgr != nil {
+						if rlid, ok := s.RegMgr.GetRateLimitConfigId(ec.RateLimitName); ok {
+							epRLId = rlid
+						}
+					}
+					method := ec.Method
+					if method == "" {
+						method = "ANY"
+					}
+					epPath := ec.Path
+					if epPath == "" {
+						epPath = "/"
+					}
+					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
+					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId)
+				}
+			}
 
 			if int(id) >= len(newDefs) {
 				expanded := make([]*engine.ApiDefinition, id+1)
@@ -223,7 +258,14 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			routerChanged = true
 			log.Printf("[Management] Linked API %s -> Flow %s", cleanPath, a.FlowName)
 
-			apiCfg := ApiConfig{ApiID: a.Name, Path: a.Path, FlowName: a.FlowName}
+			apiCfg := ApiConfig{
+				ApiID:           a.Name,
+				Path:            a.Path,
+				Method:          a.Method,
+				FlowName:        a.FlowName,
+				RateLimitName:   a.RateLimitName,
+				EndpointConfigs: a.EndpointConfigs,
+			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
 			}
@@ -300,6 +342,19 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
 	return nil
+}
+
+// StepsMetaHandler handles GET /meta/steps.
+// Returns the full step catalog — the single source of truth for every action
+// the compiler supports. Studio fetches this at load time to build its palette
+// dynamically; no UI code changes are needed when new steps are added.
+func (s *ManagementServer) StepsMetaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(BuildStepCatalog())
 }
 
 // GetAllApisHandler returns all registered flows and APIs in the same shape

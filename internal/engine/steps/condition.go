@@ -67,16 +67,6 @@ func RetryGate(condition string, loopStart, exitID int16) engine.Instruction {
 	}
 }
 
-// RegistryLookup links the runtime to the Tenant/Global Registry
-func RegistryLookup(keySlot, metaSlot int, scope string) engine.Instruction {
-	return engine.Instruction{
-		Name: "REG_LOOKUP",
-		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			// Logic to fetch from your RegistryManager
-			return s.PC + 1
-		},
-	}
-}
 
 /*
 import (

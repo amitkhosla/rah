@@ -86,6 +86,15 @@ func NewCounterStore(size int) *CounterStore {
 	}
 }
 
+// ResolvedLimit is the effective rate limit after all 4 resolution layers.
+// Returned by ResolveRateLimit. Fits in two CPU registers.
+type ResolvedLimit struct {
+	PerSec      uint32
+	PerMin      uint32
+	BurstFactor uint16
+	_           uint16 // pad to 12 bytes
+}
+
 // --- The 3 High-Performance Algorithms ---
 
 // 1. FixedWindow: Uses the slot as a simple uint32 counter (in the lower 32 bits).
@@ -99,6 +108,44 @@ func (cs *CounterStore) FixedWindow(idx uint32, limit uint32) bool {
 		return false
 	}
 	return true
+}
+
+// FixedWindowEpoch is a lock-free, self-resetting fixed-window counter.
+//
+// Slot layout: [epoch:32 | count:32]
+//   - epoch == currentEpoch: CAS-increment the lower 32 bits.
+//   - epoch != currentEpoch: CAS-reset to [currentEpoch | 1] (new window).
+//
+// No background goroutine required — slots self-reset on first access in a
+// new time bucket. Collisions between (tenant, config, bucket) triples are
+// benign: worst case is a marginally tighter limit for one request.
+//
+// Returns true if the request is within the limit, false if it exceeds it.
+func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32) bool {
+	for {
+		old := atomic.LoadUint64(&cs.Arena[idx])
+		storedEpoch := uint32(old >> 32)
+
+		if storedEpoch != epoch {
+			// New time window — reset slot to [epoch | 1].
+			newSlot := (uint64(epoch) << 32) | 1
+			if atomic.CompareAndSwapUint64(&cs.Arena[idx], old, newSlot) {
+				return true // first request in this window
+			}
+			continue // another goroutine won the CAS — retry
+		}
+
+		// Same window — check current count before incrementing.
+		count := uint32(old & 0xFFFFFFFF)
+		if count >= limit {
+			return false // limit already reached
+		}
+
+		if atomic.CompareAndSwapUint64(&cs.Arena[idx], old, old+1) {
+			return true
+		}
+		// CAS failed (concurrent increment) — retry
+	}
 }
 
 // 2. TokenBucket: Uses the slot as [LastUpdate(32bit) | Tokens(32bit)].

@@ -222,3 +222,120 @@ select.input { cursor: pointer; }
 .mt12 { margin-top: 12px; }
 
 label.hint { display: block; margin-top: 10px; }
+
+/* ── Step cards ─────────────────────────────────────────────────── */
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.step-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 10px;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.step-title  { flex: 1; font-size: 13px; }
+.step-remove { width: auto; padding: 2px 9px; font-size: 14px; line-height: 1; }
+.step-body   { margin-top: 10px; }
+
+/* ── Field rows ─────────────────────────────────────────────────── */
+.field-row   { margin-bottom: 10px; }
+.field-label {
+  display: block;
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 3px;
+}
+.field-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+/* ── if/else branch layout ──────────────────────────────────────── */
+.branch-row  { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.branch-cell {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-hi);
+  border-radius: 8px;
+  padding: 10px;
+}
+.branch-then        { border-left: 3px solid #4caf50; }
+.branch-else        { border-left: 3px solid #ff7043; }
+.branch-label       {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4caf50;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.branch-label-else  { color: #ff7043; }
+
+/* ── switch case rows ───────────────────────────────────────────── */
+.switch-cases-header { margin-top: 12px; margin-bottom: 4px; }
+.switch-cases        { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.switch-case-row     { display: flex; align-items: center; gap: 6px; }
+.case-match          { flex: 1; min-width: 0; }
+.case-flow           { flex: 2; min-width: 0; }
+.case-arrow          { color: var(--muted); font-size: 14px; flex-shrink: 0; }
+.case-remove         { width: auto; padding: 2px 9px; font-size: 14px; line-height: 1; }
+
+/* ── Palette section labels ─────────────────────────────────────── */
+.palette-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  padding: 4px 0 2px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+/* Saved-flow blocks get an accent left border */
+.block-saved { border-left: 3px solid var(--accent); }
+
+/* ── Source-ref chips ───────────────────────────────────────────── */
+.ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(87, 181, 255, 0.12);
+  border: 1px solid rgba(87, 181, 255, 0.35);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.ref-chip-arrow { opacity: 0.5; }
+
+/* ── Compiled-preview note ──────────────────────────────────────── */
+.expansion-note {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: rgba(87, 181, 255, 0.06);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+}

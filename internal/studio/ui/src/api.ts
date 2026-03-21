@@ -4,6 +4,13 @@ import type {
   DeployRequest,
   DeployResponse,
   OpenAPIImportResponse,
+  GatewayState,
+  TenantListResponse,
+  TenantDetail,
+  RateLimitListResponse,
+  RateLimitRecord,
+  UpsertTenantRequest,
+  UpsertRateLimitRequest,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -36,5 +43,55 @@ export function importOpenAPI(spec: string): Promise<OpenAPIImportResponse> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ spec }),
+  })
+}
+
+export function fetchGatewayApis(): Promise<GatewayState> {
+  return request<GatewayState>('/api/getAllApis')
+}
+
+// ── Tenant Management ─────────────────────────────────────────────
+
+export function listTenants(cursor = 0, limit = 100): Promise<TenantListResponse> {
+  return request<TenantListResponse>(`/api/tenants?cursor=${cursor}&limit=${limit}`)
+}
+
+export function getTenant(alias: string): Promise<TenantDetail> {
+  return request<TenantDetail>(`/api/tenants/${encodeURIComponent(alias)}`)
+}
+
+export function upsertTenant(body: UpsertTenantRequest): Promise<void> {
+  return request<void>('/api/tenants', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteTenant(alias: string): Promise<void> {
+  return request<void>(`/api/tenants/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+}
+
+export function addAlias(existingAlias: string, newAlias: string): Promise<void> {
+  return request<void>(`/api/tenants/${encodeURIComponent(existingAlias)}/aliases`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ alias: newAlias }),
+  })
+}
+
+export function listRateLimitConfigs(): Promise<RateLimitListResponse> {
+  return request<RateLimitListResponse>('/api/rate-limit-configs')
+}
+
+export function getRateLimitConfig(name: string): Promise<RateLimitRecord> {
+  return request<RateLimitRecord>(`/api/rate-limit-configs/${encodeURIComponent(name)}`)
+}
+
+export function upsertRateLimitConfig(body: UpsertRateLimitRequest): Promise<void> {
+  return request<void>('/api/rate-limit-configs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   })
 }

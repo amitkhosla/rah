@@ -3,20 +3,16 @@ package engine
 import (
 	"bytes"
 	"io"
+	"log"
 	"net/http"
 	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/rctx"
-	"rah/internal/router" // Added import
+	"rah/internal/router"
 	"runtime"
 	"sync"
-	"sync/atomic" // Added import
+	"sync/atomic" // needed for atomic.Int64 in OverflowMetrics
 )
-
-// MEMORY BANK REQUIREMENTS:
-// 1. Use a sharded channel (chan []byte) to store 4KB slices.
-// 2. Sharding should be based on runtime.NumCPU() to prevent lock contention.
-// 3. Initial allocation happens ONCE at startup.
 
 type ExecutionStrategy int
 
@@ -31,30 +27,26 @@ type EngineState struct {
 	FlowLibrary map[string][]Instruction
 }
 
-// OverflowMetrics counts how often requests exceeded the inline arena or
-// base slot capacity. Non-zero rates signal that default sizing needs tuning.
-// Exposed via /debug/observability.
+// OverflowMetrics counts how often requests exceeded the inline arena.
+// Non-zero ArenaOverflows signal that ArenaInlineSize needs tuning.
+// Exposed via /debug/arena.
 type OverflowMetrics struct {
 	ArenaOverflows atomic.Int64 // extra arenaBlock borrowed from pool
-	SlotOverflows  atomic.Int64 // slotExtBlock borrowed from pool
 }
 
 type FlowManager struct {
-	State          atomic.Pointer[EngineState] // The core change
-	HeaderRegistry *HeaderRegistry
-	Pool           sync.Pool
-	Config         config.GlobalLayout
-	SlabMgr        *cache.CacheManager
-	Strategy       ExecutionStrategy // Pre-determined at startup
-	Metrics        OverflowMetrics
-	// reqCounter issues monotonically increasing IDs to each request so
-	// DataStore keys are unique across concurrent requests.
-	reqCounter atomic.Uint64
-	// SlotOverflowStore is the optional DataStore-backed tier for slot values
-	// that exceed arena capacity or slot indices beyond ExtByteSlots.
-	// Nil in the common case — no overflow store configured.
-	SlotOverflowStore rctx.SlotOverflowStore
-	// Bank *MemoryBank
+	State   atomic.Pointer[EngineState]
+	Pool    sync.Pool
+	Config  config.GlobalLayout
+	SlabMgr *cache.CacheManager
+	Strategy ExecutionStrategy // Pre-determined at startup
+	Metrics  OverflowMetrics
+	// TxIDGen issues globally-unique transaction IDs per request.
+	// Always non-nil; one instance per gateway process.
+	TxIDGen *rctx.TxIDGenerator
+	// RateLimitStore is a 1M-slot fixed-window counter arena (8 MB).
+	// Used by the opt-in check_rate_limit step.
+	RateLimitStore *CounterStore
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
@@ -63,10 +55,12 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		strategy = StrategyParallel
 	}
 	fm := &FlowManager{
-		HeaderRegistry: NewHeaderRegistry(),
 		Config:         cfg,
 		Strategy:       strategy,
+		TxIDGen:        rctx.NewTxIDGenerator(),
+		RateLimitStore: NewCounterStore(1 << 20), // 1M slots = 8 MB
 	}
+	log.Printf("instance fingerprint: %s", fm.TxIDGen.Fingerprint())
 
 	// Initialize with an empty but valid state
 	initialState := &EngineState{
@@ -83,8 +77,8 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 			MutationLog:     make([]rctx.HeaderMutation, 0, 16),
 			ResponseHeaders: make([]rctx.HeaderMutation, 32),
 		}
-		// Wire ByteSlots/IntSlots/BoolSlots to inline base arrays and
-		// initialise arena — zero heap allocations for slot infrastructure.
+		// Wire ByteSlots/IntSlots/BoolSlots to inline base arrays.
+		// Zero heap allocations for slot infrastructure.
 		ctx.InitSlots()
 		return ctx
 	}
@@ -107,38 +101,28 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 		return
 	}
 
-	// 2. Stage 2 Routing (Extracted)
+	// 2. Stage 2 Routing
 	endpoint := fm.resolveSubPath(ctx, def)
 	if endpoint == nil {
-		// ctx.ResponseStatus is set inside resolveSubPath
 		return
 	}
 
-	// 3. Assign a unique request ID for DataStore key scoping.
-	ctx.ReqID = fm.reqCounter.Add(1)
+	// 3. Assign a globally-unique transaction ID for this request.
+	ctx.InternalTxID = fm.TxIDGen.Generate(ctx.Timing.StartNs)
 
 	// 4. Metadata Extraction
 	fm.Extract(ctx, req)
 
 	// 5. Plan Execution
-	Execute(ctx, endpoint.Plan, 0, fm.SlotOverflowStore)
+	Execute(ctx, endpoint.Plan, 0)
 }
 
-// ReturnContext records overflow metrics, deletes any ephemeral DataStore keys
-// written during this request, releases pool-borrowed overflow resources, then
-// returns the context to the pool. Must be called instead of Pool.Put directly.
+// ReturnContext records overflow metrics, releases pool-borrowed overflow
+// resources, then returns the context to the pool.
+// Must be called instead of Pool.Put directly.
 func (fm *FlowManager) ReturnContext(ctx *rctx.Context) {
 	if ctx.ArenaOverflowed {
 		fm.Metrics.ArenaOverflows.Add(1)
-	}
-	if ctx.SlotOverflowed {
-		fm.Metrics.SlotOverflows.Add(1)
-	}
-	// Clean up any slot values that were spilled to the DataStore this request.
-	if fm.SlotOverflowStore != nil {
-		for _, key := range ctx.TakeSlotOverflowKeys() {
-			_ = fm.SlotOverflowStore.SlotDelete(key)
-		}
 	}
 	ctx.ReleaseOverflow()
 	fm.Pool.Put(ctx)
@@ -158,15 +142,6 @@ func (fm *FlowManager) RunInBackground(ctx *rctx.Context, task func(*rctx.Contex
 func (fm *FlowManager) Extract(ctx *rctx.Context, req *http.Request) {
 	ctx.Request = req
 	ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
-	lookup := fm.HeaderRegistry.Current.Load().Map
-	for key, values := range req.Header {
-		if slotIdx, ok := lookup[key]; ok {
-			val := values[0]
-			s := ctx.Alloc(len(val))
-			copy(s, val)
-			ctx.ByteSlots[slotIdx] = s
-		}
-	}
 	ctx.RequestBody = req.Body
 	ctx.MaxBodySize = fm.Config.DefaultLimits.MaxBodySize
 }
@@ -178,28 +153,18 @@ func (fm *FlowManager) SetState(newState *EngineState) {
 }
 
 func (fm *FlowManager) ReadBodyToBuffer(ctx *rctx.Context) error {
-	// 1. Reset the buffer to 0 length but keep capacity
 	ctx.RequestBuffer = ctx.RequestBuffer[:0]
-
-	// 2. Use io.CopyN or ReadAll with a LimitReader
-	// This reads from the wire directly into our pre-allocated Context buffer
 	limitReader := io.LimitReader(ctx.Request.Body, int64(cap(ctx.RequestBuffer)))
-
-	// Efficiently append to the pre-allocated slice
 	buf := bytes.NewBuffer(ctx.RequestBuffer)
 	_, err := io.Copy(buf, limitReader)
 	ctx.RequestBuffer = buf.Bytes()
-
 	return err
 }
-
-// internal/engine/streaming.go
 
 // ExecuteMultiWrite handles the chunked broadcast.
 // If Strategy is Sync, it loops through writers.
 // If Strategy is Parallel, it uses goroutines for each writer.
 func (fm *FlowManager) ExecuteMultiWrite(ctx *rctx.Context, writers []io.Writer) error {
-	// We use a small chunk buffer (e.g., 32KB) to keep memory footprint low
 	chunkSize := 32 * 1024
 	if cap(ctx.ScratchBuffer) < chunkSize {
 		// fallback or handle error
@@ -218,7 +183,6 @@ func (fm *FlowManager) ExecuteMultiWrite(ctx *rctx.Context, writers []io.Writer)
 					}
 				}
 			} else {
-				// Parallel Fan-out logic using WaitGroups for larger machines
 				var wg sync.WaitGroup
 				for _, w := range writers {
 					wg.Add(1)
@@ -265,14 +229,6 @@ Behavior:
 - Returns 404 if path does not match.
 - Returns 405 if method unsupported.
 - Returns endpoint execution plan if matched.
-*/
-/*
-resolveSubPath performs Stage 2 routing.
-
-Behavior:
-- 404 if path not found.
-- 405 if path found but method not allowed.
-- Strict slash enforced per method.
 */
 
 func (fm *FlowManager) resolveSubPath(
@@ -346,5 +302,10 @@ func (fm *FlowManager) resolveSubPath(
 		}
 	}
 
-	return &def.Endpoints[node.EndpointIdx[mIdx]]
+	ep := &def.Endpoints[node.EndpointIdx[mIdx]]
+	ctx.EndpointId = ep.EndpointId
+	ctx.APIRateLimitId = ep.APIRateLimitId
+	ctx.EndpointRateLimitId = ep.EndpointRateLimitId
+	return ep
 }
+
