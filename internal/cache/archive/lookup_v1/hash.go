@@ -1,4 +1,4 @@
-package cache_v1
+package lookup_v1
 
 import (
 	"encoding/binary"

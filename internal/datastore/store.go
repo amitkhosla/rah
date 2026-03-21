@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Tenant is the globally stable tenant identifier used for persisted store keys.
@@ -20,6 +21,31 @@ type KeyValueStore interface {
 	Name() string
 	PoolStats() PoolStats
 	Close() error
+}
+
+// BatchStore is an optional interface for stores that support bulk operations
+// in a single round-trip. Callers should type-assert before use:
+//
+//	if b, ok := store.(datastore.BatchStore); ok { b.MultiGet(...) }
+type BatchStore interface {
+	MultiGet(ctx context.Context, tenant Tenant, keys []string) (map[string][]byte, error)
+	MultiPut(ctx context.Context, tenant Tenant, kvs map[string][]byte) error
+}
+
+// ExpiringStore is an optional interface for stores that support TTL on values.
+type ExpiringStore interface {
+	PutWithTTL(ctx context.Context, tenant Tenant, key string, value []byte, ttl time.Duration) error
+}
+
+// DistributedStore is an optional interface for distributed coordination
+// primitives. Implemented by Redis/Dragonfly; not available on disk/file stores.
+type DistributedStore interface {
+	// Increment atomically adds delta to the counter at key (rate limiting).
+	Increment(ctx context.Context, tenant Tenant, key string, delta int64) (int64, error)
+	// TryLock acquires a lock identified by token; returns false if already held.
+	TryLock(ctx context.Context, tenant Tenant, key, token string, ttl time.Duration) (bool, error)
+	// Unlock releases the lock only if the caller's token matches.
+	Unlock(ctx context.Context, tenant Tenant, key, token string) error
 }
 
 // BuildScopedKey enforces tenant-first key layout across all stores.

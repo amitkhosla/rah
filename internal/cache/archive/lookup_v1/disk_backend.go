@@ -1,4 +1,4 @@
-package cache
+package lookup_v1
 
 import (
 	"encoding/binary"
@@ -27,7 +27,7 @@ type diskBackend struct {
 }
 
 // DefaultDiskCachePath is used when no explicit path is provided.
-const DefaultDiskCachePath = "./icache2"
+const DefaultDiskCachePath = "./cache_v1"
 
 // NewDiskBackend creates a disk-based CacheBackend rooted at base.
 // The directory is created if it does not exist.

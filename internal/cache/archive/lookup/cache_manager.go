@@ -1,4 +1,4 @@
-package cache
+package lookup
 
 import (
 	"errors"
@@ -10,15 +10,10 @@ import (
 /*
 CacheManager is a high-performance, bounded, multi-tenant in-memory cache.
 
-icache2 differs from icache in one way: the H2 filter bits in hashIdx tags
-use hashLaneBig16 (real key bytes sampled from 5 structural positions) instead
-of maphash-derived H2 bits. This provides better discrimination for keys that
-share hash prefixes.
-
 Design:
   - Two index lanes:
     tinyIdx  — lossless tag for keys ≤ 6 bytes (exact match, no hash).
-    hashIdx  — real-byte H2 tag for keys > 6 bytes (or 6B with high bytes).
+    hashIdx  — H2-based tag for keys > 6 bytes (or 6B with high bytes).
   - Single region matrix [SizeClass][TTLTier]: fixed-stride circular slabs.
     Both lanes share the same regions; lane routing happens at Put/Get time.
   - EntryHeader.XSlotPtrB: 6-byte back-pointer written after every Put so the
@@ -29,11 +24,12 @@ Design:
     Writes go to backend BEFORE acquiring any in-memory lock.
     Reads check in-memory first; on miss, fall through to backend.
 
-Tag construction for hashIdx (icache2 change):
-  - H1 (routing): single maphash call via hashH1Only → lower 48 bits of tag.
-  - H2 (filter):  hashLaneBig16 → real key bytes → upper 16 bits of tag.
-  - Avoids the second maphash call of Hash128 for H2, while using more
-    semantically meaningful bytes than the XOR-folded H1 mix of hashTagFast.
+Difference from cache.CacheManager:
+  - Uses InlineIndex (inline-slot trie) instead of LookupIndex (separate-pool trie).
+  - No COW node-slice overhead: node writes are O(1) memory.
+  - Shallower cache-miss paths: inline slots on CL1 of each node.
+  - hashIdx uses makeTagHashH2 to embed fingerprint bytes into tag bits 48–63,
+    enabling the 16-bit H2 filter to use real fingerprint data.
 */
 
 type CacheManager struct {
@@ -75,7 +71,7 @@ type tenantCounter struct {
 // All region memory is pre-allocated here; no allocation during steady state.
 //
 // backend is the persistent/overflow store. Pass nil to use the default disk
-// backend at DefaultDiskCachePath ("./icache2"). Pass a custom CacheBackend to
+// backend at DefaultDiskCachePath ("./icache"). Pass a custom CacheBackend to
 // use Redis, Dragonfly, or any other implementation.
 //
 // Two background goroutines are started:
@@ -353,16 +349,8 @@ func (cm *CacheManager) Put(
 	// Insert into index and capture the back-pointer for the cleaner.
 	var sp xSlotPtr
 	if hashLane {
-		// icache2: use real-byte H2 from hashLaneBig16 instead of maphash H2.
-		h1 := hashH1Only(tenantID, key)
-		h2 := uint64(hashLaneBig16(tenantID, key))
-		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
-		if tag == iEmpty {
-			tag |= 1 << 48
-		}
-		if tag == iTombstone {
-			tag ^= 1 << 48
-		}
+		fp := Hash128(tenantID, key)
+		tag := makeTagHashH2(fp) // use H2-enriched tag for better filter discrimination
 		sp = cm.hashIdx.SetTagGetPtr(tag, ptr, xPtrLaneHash)
 	} else {
 		tag := makeTagTiny(tenantID, key)
@@ -404,17 +392,8 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 	var rawVal uint64
 	var found bool
 	if hashLane {
-		// icache2: use real-byte H2 from hashLaneBig16 instead of maphash H2.
-		h1 := hashH1Only(tenantID, key)
-		h2 := uint64(hashLaneBig16(tenantID, key))
-		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
-		if tag == iEmpty {
-			tag |= 1 << 48
-		}
-		if tag == iTombstone {
-			tag ^= 1 << 48
-		}
-		rawVal, found = cm.hashIdx.GetTag(tag)
+		fp := Hash128(tenantID, key)
+		rawVal, found = cm.hashIdx.GetTag(makeTagHashH2(fp))
 	} else {
 		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
 	}
@@ -460,16 +439,8 @@ func (cm *CacheManager) Stats() uint64 {
 // deleteKey removes the index entry for (tenantID, key). Used in tests.
 func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 	if isHashLane(key) {
-		h1 := hashH1Only(tenantID, key)
-		h2 := uint64(hashLaneBig16(tenantID, key))
-		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
-		if tag == iEmpty {
-			tag |= 1 << 48
-		}
-		if tag == iTombstone {
-			tag ^= 1 << 48
-		}
-		return cm.hashIdx.DeleteTag(tag)
+		fp := Hash128(tenantID, key)
+		return cm.hashIdx.DeleteTag(makeTagHashH2(fp))
 	}
 	return cm.tinyIdx.DeleteTag(makeTagTiny(tenantID, key))
 }

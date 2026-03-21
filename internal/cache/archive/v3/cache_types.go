@@ -1,4 +1,4 @@
-package icache
+package v3
 
 import "unsafe"
 
@@ -132,33 +132,36 @@ func packXTagRef(laneBit47 uint64, shard uint8, tagLower39 uint64) xSlotPtr {
 
 // ── EntryHeader ───────────────────────────────────────────────────────────────
 //
-// Fixed 16-byte prefix of every slab slot.
-// Immediately followed by value bytes (zero-padded to SizeClass boundary).
+// Fixed 24-byte prefix of every slab slot.
 //
 //	Offset  Size  Field
 //	     0     4  Expiry    — unix32, authoritative TTL
-//	     4     1  Gen       — 8-bit region generation (circular-buffer wrap counter)
-//	     5     1  KeyMid    — key[len/2]; 0x00 for Lane 1 (full key verified by tag)
-//	     6     2  TenantID  — for accounting on slot eviction
-//	     8     2  ValueLen  — actual bytes used within the slot (≤ SizeClass)
-//	    10     6  XSlotPtrB — little-endian xSlotPtr back-pointer (cleaner; Phase 2)
+//	     4     2  TenantID  — for accounting and explicit re-verification
+//	     6     2  ValueLen  — actual bytes used within the slot (≤ SizeClass)
+//	     8     6  XSlotPtrB — little-endian xSlotPtr back-pointer (cleaner)
+//	    14     1  Gen       — 8-bit region generation (circular-buffer wrap counter)
+//	    15     1  _         — spare
+//	    16     3  KeyFP     — key[(n/2)+1%n], key[(n/4)+1%n], key[(3n/4)+1%n]
+//	    17     5  _         — padding to 24 bytes
 //
-// Total: 16 bytes, 4-byte naturally aligned.
+// Total: 24 bytes, 8-byte naturally aligned.
 
-const EntryHeaderSize = 16
+const EntryHeaderSize = 24
 
 type EntryHeader struct {
 	Expiry    uint32
-	Gen       uint8
-	KeyMid    uint8
 	TenantID  uint16
 	ValueLen  uint16
 	XSlotPtrB [6]byte
+	Gen       uint8
+	_spare    uint8
+	KeyFP     [3]byte
+	_pad      [5]byte
 }
 
 // headerAt casts buf[physOff] to *EntryHeader via unsafe.
 // Safe when buf is Go-heap-allocated (guaranteed ≥8-byte aligned) and
-// physOff is a multiple of 8 (guaranteed by stride = align8(16 + SizeClass)).
+// physOff is a multiple of 8 (guaranteed by stride = align8(24 + SizeClass)).
 func headerAt(buf []byte, physOff uint64) *EntryHeader {
 	return (*EntryHeader)(unsafe.Pointer(&buf[physOff]))
 }

@@ -43,40 +43,26 @@ func (d *domainScopedKV) ListKeys(ctx context.Context, prefix string) ([]string,
 func main() {
 	port := flag.Int("port", 8080, "Gateway Port")
 	mPort := flag.Int("mport", 8081, "Management Port")
+	configPath := flag.String("config", "", "Path to gateway config file (.json or .yaml)")
 	flag.Parse()
 
-	// 1. Initial Configuration
-	cfg := config.GlobalLayout{
-		MaxBytesSlots: 32,
-		MaxIntsSlots:  16,
-		DefaultLimits: config.ResourceLimit{
-			MaxBodySize: 1024 * 1024, // 1MB
-		},
+	// 1. Load Configuration
+	var cfgMgr *config.Manager
+	if *configPath != "" {
+		var err error
+		cfgMgr, err = config.Load(*configPath)
+		if err != nil {
+			log.Fatalf("failed to load config: %v", err)
+		}
+		log.Printf("config loaded from %s", *configPath)
+	} else {
+		cfgMgr = config.Default()
+		log.Printf("no config file specified (-config), using built-in defaults")
 	}
 
-	dataStores := config.DataStoreConfig{
-		Stores: map[string]config.StoreConfig{
-			"local_disk": {
-				Name:    "local_disk",
-				Kind:    config.StoreDisk,
-				Enabled: true,
-				Connection: config.StoreConnection{
-					Path: "/var/lib/rah",
-				},
-			},
-		},
-		Bindings: map[config.DataDomain]string{
-			config.DomainAPIDefinitions: "local_disk",
-			config.DomainFlows:          "local_disk",
-			config.DomainTenantRegistry: "local_disk",
-			config.DomainCache:          "local_disk",
-			config.DomainRateLimit:      "local_disk",
-			config.DomainCustomerData:   "local_disk",
-			config.DomainInstances:      "local_disk",
-		},
-	}
+	cfg := cfgMgr.Layout()
 
-	dataStoreMgr, err := control.NewDataStoreManager(dataStores)
+	dataStoreMgr, err := control.NewDataStoreManager(cfgMgr.DataStore())
 	if err != nil {
 		log.Fatalf("invalid data store config: %v", err)
 	}

@@ -1,38 +1,19 @@
 /*
-Package icache implements a concurrent trie index where every trie node
-carries inline key-value slots, replacing the LookupIndex from the cache
-package with an InlineIndex that stores entries directly in nodes.
+Package icache3 implements a concurrent trie index with three-word pre-filter
+metadata per node (h2word, klenWord, tenantWord) and a 24-byte EntryHeader
+with a 3-byte KeyFP fingerprint in the slab.
 
-Design — "inline-slot trie":
+Compared to icache2:
+  - iNode gains klenWord (packed key lengths) and tenantWord (packed tenant IDs).
+  - GetTag takes keyLen and tenantID for triple-mask candidate filtering.
+  - SetTagGetPtr takes keyLen and tenantID to maintain klenWord/tenantWord.
+  - EntryHeader is 24 bytes (KeyFP replaces single KeyMid byte).
+  - Region.Write/Read use [3]byte keyFP instead of uint8 keyMid.
 
-	Every node holds BOTH:
-	  • 4 inline slots (tag+val, 16 B each = 64 B = one cache line) that store
-	    actual index entries directly, without a separate pool.
-	  • 8 child node pointers (uint32 × 8 = 32 B, second cache line).
-
-	Lookup visits the root of the query path, scans its 4 inline slots first,
-	and only descends into a child branch when the tag is not found there.
-	Because the inline slots are on the first 64-byte cache line, a hit at the
-	root (or any shallow node) costs one cache miss and no pool indirection.
-
-	Insert navigates to the shallowest node on the query path that has a free
-	slot, and stores the entry there.  A new child is created only when the
-	current node is full AND the depth limit has not been reached.
-
-Swiss-style H2 filter (h2word — 16-bit groups):
-
-	h2word packs four 16-bit H2 values (one per inline slot) into a single
-	atomic uint64.  H2 = upper 16 bits of the slot's tag (bits 48–63), forced
-	to ≥1 for live entries; 0 means empty/tombstone.
-
-	Using 16-bit groups instead of 8-bit groups avoids the false-positive rate
-	explosion that occurs when the upper 8 bits of different tags collide.
-	For hashIdx tags, bits 48-63 carry real fingerprint bytes (see makeTagHashH2).
-
-	On Get, h2word is loaded from CL2 (already fetched for children routing).
-	If no 16-bit group matches the query H2, the slot scan (CL1) is skipped.
+Triple-mask filtering reduces false positives on slot scans: a slot is only
+visited when its H2, key length, AND tenant ID all match the query.
 */
-package icache
+package v3
 
 import (
 	"fmt"
@@ -44,37 +25,33 @@ import (
 // ── constants ─────────────────────────────────────────────────────────────────
 
 const (
-	iSlots    = 4              // inline slots per node (one cache line of tag+val)
-	iFanout   = 8              // children per node (8-way branching)
-	iBits     = 3              // tag bits consumed per trie level
+	iSlots    = 4
+	iFanout   = 8
+	iBits     = 3
 	iMask     = uint64(iFanout - 1)
-	iMaxDepth = 10             // maximum depth (10 × 3 = 30 routing bits used)
+	iMaxDepth = 10
 
-	iDefaultShardBits = 8 // default: 256 shards
+	iDefaultShardBits = 8
 	iMaxShardBits     = 20
 
-	iEmpty     = uint64(0)  // sentinel: empty slot tag
-	iTombstone = ^uint64(0) // sentinel: deleted slot tag
+	iEmpty     = uint64(0)
+	iTombstone = ^uint64(0)
 
-	iNullChild = uint32(0) // reserved: "no child" sentinel in node pool
+	iNullChild = uint32(0)
 
-	iChunkBits = 10                      // 1024 nodes per pool chunk
-	iChunkSize = 1 << iChunkBits         // nodes per chunk
+	iChunkBits = 10
+	iChunkSize = 1 << iChunkBits
 	iChunkMask = uint32(iChunkSize - 1)
 
-	// iGracePeriodNs: minimum age a detached node must have before recycling.
-	// 10 ms is conservative for Linux/macOS; safe for Windows where quantum
-	// stretching to ~15 ms is possible.
 	iGracePeriodNs = int64(10_000_000)
 )
 
 // ── node layout ───────────────────────────────────────────────────────────────
 
 // iSlot is one inline index entry.  16 bytes.
-// SC ordering: val stored before tag on write; tag read before val on read.
 type iSlot struct {
-	tag atomic.Uint64 // 8 B
-	val atomic.Uint64 // 8 B
+	tag atomic.Uint64
+	val atomic.Uint64
 }
 
 // iNode is a trie node with inline key-value slots AND child pointers.
@@ -83,34 +60,24 @@ type iSlot struct {
 //
 //	Cache line 1 (bytes   0–63): 4 inline iSlots — tag+val pairs.
 //	Cache line 2 (bytes  64–95): 8 child node indices (uint32 × 8 = 32 B).
-//	             (bytes 96–103): freedAt — unix-ns recycle timestamp.
-//	             (bytes 104–111): h2word — packed H2 metadata, two bytes per slot.
-//	             (bytes 112–127): 16 bytes padding.
-//
-// Swiss-style H2 filter (h2word):
-//
-//	h2word packs four 16-bit H2 values (one per inline slot) into a single
-//	atomic uint64.  H2 = upper 16 bits of the slot's tag (bits 48–63),
-//	forced to ≥1 for live entries; 0 means empty/tombstone.
-//
-//	Using 16-bit groups provides better discrimination than 8-bit groups,
-//	especially for hashIdx where bits 48–63 carry real fingerprint bytes.
+//	             (bytes  96–103): freedAt — unix-ns recycle timestamp.
+//	             (bytes 104–111): h2word — packed H2 uint16s per slot.
+//	             (bytes 112–119): klenWord — packed KeyLen uint16s per slot.
+//	             (bytes 120–127): tenantWord — packed TenantID uint16s per slot.
 type iNode struct {
 	// Cache line 1: inline key-value slots.
 	slots [iSlots]iSlot // 4 × 16 B = 64 B
 
-	// Cache line 2: child pointers + recycle timestamp + H2 metadata + padding.
-	children [iFanout]uint32 // 8 × 4 B = 32 B  (offset  64)
-	freedAt  int64           // 8 B              (offset  96)
-	h2word   atomic.Uint64   // 8 B              (offset 104) — packed H2 uint16s
-	_        [16]byte        // pad to 128 B     (offset 112)
+	// Cache line 2: child pointers + recycle timestamp + pre-filter metadata.
+	children   [iFanout]uint32 // 8 × 4 B = 32 B  (offset  64)
+	freedAt    int64           // 8 B              (offset  96)
+	h2word     atomic.Uint64  // 8 B              (offset 104) — packed H2 uint16s
+	klenWord   atomic.Uint64  // 8 B              (offset 112) — packed KeyLen uint16s
+	tenantWord atomic.Uint64  // 8 B              (offset 120) — packed TenantID uint16s
 }
 
 // h2ForTag derives the H2 uint16 for a tag using the upper 16 bits (bits 48–63).
 // Forced to ≥1 so that 0 remains an unambiguous "empty" sentinel in h2word.
-// For hashIdx, the caller packs real fingerprint bytes into bits 48–63 via
-// makeTagHashH2, so this function extracts them without extra mixing.
-// For tinyIdx, the upper bits vary enough to serve as good discriminators.
 func h2ForTag(tag uint64) uint16 {
 	h := uint16(tag >> 48)
 	if h == 0 {
@@ -119,47 +86,63 @@ func h2ForTag(tag uint64) uint16 {
 	return h
 }
 
-// h2Set returns a new h2word with the 16-bit group at position i (0–3) set to v,
-// leaving the other groups unchanged.
+// h2Set returns a new h2word with the 16-bit group at position i (0–3) set to v.
 func h2Set(word uint64, i int, v uint16) uint64 {
 	shift := uint(i * 16)
 	return (word &^ (0xFFFF << shift)) | (uint64(v) << shift)
 }
 
-// h2AnyMatch reports whether any 16-bit group in word equals queryH2 (which must be ≥1).
-// Uses the "has-zero-word" bit trick extended to 16-bit groups.
+// h2AnyMatch reports whether any 16-bit group in word equals queryH2.
 func h2AnyMatch(word uint64, queryH2 uint16) bool {
-	// XOR with broadcast of queryH2: matching 16-bit groups become 0x0000.
 	x := word ^ (uint64(queryH2) * 0x0001000100010001)
-	// A 16-bit group is zero iff (x - 0x0001000100010001) & ^x & 0x8000800080008000 != 0.
 	return (x-0x0001000100010001)&^x&0x8000800080008000 != 0
+}
+
+// h2MatchMask returns a 4-bit mask: bit i set if slot i's stored H2 == queryH2.
+func h2MatchMask(word uint64, queryH2 uint16) uint8 {
+	x := word ^ (uint64(queryH2) * 0x0001000100010001)
+	z := (x-0x0001000100010001) &^ x & 0x8000800080008000
+	return uint8((z>>15)&1 | (z>>30)&2 | (z>>45)&4 | (z>>60)&8)
+}
+
+// klenSet returns klenWord with the uint16 at position i (0–3) set to v.
+func klenSet(word uint64, i int, v uint16) uint64 {
+	shift := uint(i * 16)
+	return (word &^ (0xFFFF << shift)) | (uint64(v) << shift)
+}
+
+// klenMatchMask returns a 4-bit mask: bit i set if slot i's stored KeyLen == queryLen.
+func klenMatchMask(word uint64, queryLen uint16) uint8 {
+	x := word ^ (uint64(queryLen) * 0x0001000100010001)
+	z := (x-0x0001000100010001) &^ x & 0x8000800080008000
+	return uint8((z>>15)&1 | (z>>30)&2 | (z>>45)&4 | (z>>60)&8)
+}
+
+// tenantSet returns tenantWord with the uint16 at position i (0–3) set to v.
+func tenantSet(word uint64, i int, v uint16) uint64 {
+	shift := uint(i * 16)
+	return (word &^ (0xFFFF << shift)) | (uint64(v) << shift)
+}
+
+// tenantMatchMask returns a 4-bit mask: bit i set if slot i's stored TenantID == queryTenant.
+func tenantMatchMask(word uint64, queryTenant uint16) uint8 {
+	x := word ^ (uint64(queryTenant) * 0x0001000100010001)
+	z := (x-0x0001000100010001) &^ x & 0x8000800080008000
+	return uint8((z>>15)&1 | (z>>30)&2 | (z>>45)&4 | (z>>60)&8)
 }
 
 // ── node pool (chunked, stable pointers) ──────────────────────────────────────
 
-// iNodePool is a bump-allocator for iNode values using fixed-size chunks.
-//
-// Growing the pool appends a new chunk pointer without moving existing chunks,
-// so held *iNode pointers remain valid across pool growth.
-//
-// Index 0 is reserved as the "no child" sentinel; real nodes start at 1.
-//
-// Recycling: nodes detached during compaction are enqueued in a FIFO ready
-// list.  Each node carries its own freedAt timestamp.  alloc() checks the
-// front of the queue; if freedAt + iGracePeriodNs ≤ now the node is safe
-// to reuse, otherwise a fresh bump-allocation is made.
 type iChunkSlice = []*[iChunkSize]iNode
 
 type iNodePool struct {
 	mu      sync.Mutex
 	list    atomic.Pointer[iChunkSlice]
 	next    atomic.Uint32
-	ready   []uint32 // FIFO queue of detached node indices (oldest at readyHd)
-	readyHd int      // index of oldest element; compacted when > len/2
+	ready   []uint32
+	readyHd int
 }
 
-// ensure guarantees chunk backing for all indices up to maxIdx.
-// Must be called with p.mu held.
 func (p *iNodePool) ensure(maxIdx uint32) {
 	needed := int(maxIdx>>iChunkBits) + 1
 	list := p.list.Load()
@@ -180,8 +163,6 @@ func (p *iNodePool) ensure(maxIdx uint32) {
 	p.list.Store(&newList)
 }
 
-// alloc claims one node index, reusing a recycled node when its grace period
-// has expired.  Never returns 0 (reserved sentinel).
 func (p *iNodePool) alloc() uint32 {
 	p.mu.Lock()
 	if p.readyHd < len(p.ready) {
@@ -197,7 +178,6 @@ func (p *iNodePool) alloc() uint32 {
 
 	idx := p.next.Add(1) - 1
 	if idx == iNullChild {
-		// Skip the reserved sentinel.
 		idx = p.next.Add(1) - 1
 	}
 	p.mu.Lock()
@@ -206,14 +186,11 @@ func (p *iNodePool) alloc() uint32 {
 	return idx
 }
 
-// node returns a stable *iNode pointer for idx.  Lock-free.
 func (p *iNodePool) node(idx uint32) *iNode {
 	list := p.list.Load()
 	return &(*list)[idx>>iChunkBits][idx&iChunkMask]
 }
 
-// freeLater timestamps each detached node and appends them to the FIFO ready
-// queue.  Must be called AFTER releasing the shard lock.
 func (p *iNodePool) freeLater(indices []uint32) {
 	now := time.Now().UnixNano()
 	for _, idx := range indices {
@@ -221,7 +198,6 @@ func (p *iNodePool) freeLater(indices []uint32) {
 	}
 	p.mu.Lock()
 	p.ready = append(p.ready, indices...)
-	// Compact the queue backing array when the dead head exceeds half capacity.
 	if p.readyHd > len(p.ready)/2 {
 		p.ready = append(p.ready[:0], p.ready[p.readyHd:]...)
 		p.readyHd = 0
@@ -229,8 +205,7 @@ func (p *iNodePool) freeLater(indices []uint32) {
 	p.mu.Unlock()
 }
 
-// resetNode zeroes all slots, children, and h2word so a recycled node looks
-// freshly allocated to the next writer.
+// resetNode zeroes all slots, children, h2word, klenWord, and tenantWord.
 func resetNode(n *iNode) {
 	for i := range n.slots {
 		n.slots[i].val.Store(0)
@@ -239,25 +214,26 @@ func resetNode(n *iNode) {
 	for b := range n.children {
 		atomic.StoreUint32(&n.children[b], iNullChild)
 	}
-	n.h2word.Store(0) // clear all four H2 uint16 groups
+	n.h2word.Store(0)
+	n.klenWord.Store(0)
+	n.tenantWord.Store(0)
 }
 
 // ── shard ─────────────────────────────────────────────────────────────────────
 
-// iShard is one independent trie shard.
-// Padded to 64 bytes to avoid false sharing between adjacent shards.
 type iShard struct {
 	mu   sync.Mutex
-	root uint32   // index of root node in the shared pool
-	_    [56]byte // pad to 64 B
+	root uint32
+	_    [56]byte
 }
 
 // ── InlineIndex ───────────────────────────────────────────────────────────────
 
 // InlineIndex is a concurrent, multi-shard trie index with inline slots.
+// It uses three pre-filter words per node: h2word, klenWord, tenantWord.
 //
 // Reads are fully lock-free.
-// Writes (Set, Delete, Compact, DeepCompact) hold the per-shard mutex.
+// Writes hold the per-shard mutex.
 type InlineIndex struct {
 	pool      iNodePool
 	shards    []iShard
@@ -274,7 +250,7 @@ func NewInlineIndex(shardBits uint) *InlineIndex {
 	}
 	if shardBits > iMaxShardBits {
 		panic(fmt.Sprintf(
-			"icache: NewInlineIndex: shardBits %d exceeds maximum %d",
+			"icache3: NewInlineIndex: shardBits %d exceeds maximum %d",
 			shardBits, iMaxShardBits,
 		))
 	}
@@ -286,7 +262,6 @@ func NewInlineIndex(shardBits uint) *InlineIndex {
 		shardBits: shardBits,
 	}
 
-	// Reserve index 0 and pre-allocate root nodes.
 	idx.pool.next.Store(1)
 	idx.pool.mu.Lock()
 	idx.pool.ensure(uint32(numShards) + 1)
@@ -300,14 +275,10 @@ func NewInlineIndex(shardBits uint) *InlineIndex {
 
 // ── lock-free read ────────────────────────────────────────────────────────────
 
-// Get returns the stored value for tag.  Fully lock-free.
-//
-// Swiss-style H2 fast path: at each node the h2word (on CL2, already fetched
-// for child routing) is checked first.  If no 16-bit group matches the
-// query's H2, the CL1 slot scan is skipped entirely — saving one cache miss
-// per level for tags that merely pass through a node without matching any
-// inline slot.
-func (idx *InlineIndex) Get(tag uint64) (uint64, bool) {
+// GetTag returns the stored value for tag with triple-mask pre-filtering.
+// keyLen and tenantID are used to filter candidate slots before comparing tags.
+// For tinyIdx pass keyLen=0 and tenantID=0 (lossless tag — no pre-filter needed).
+func (idx *InlineIndex) GetTag(tag uint64, keyLen uint16, tenantID uint16) (uint64, bool) {
 	sh := &idx.shards[tag&idx.shardMask]
 	nodeIdx := atomic.LoadUint32(&sh.root)
 	shift := idx.shardBits
@@ -319,11 +290,25 @@ func (idx *InlineIndex) Get(tag uint64) (uint64, bool) {
 		}
 		node := idx.pool.node(nodeIdx)
 
-		// H2 filter: if no packed uint16 group equals queryH2, skip slot scan.
-		if h2AnyMatch(node.h2word.Load(), queryH2) {
-			for i := range node.slots {
-				t := node.slots[i].tag.Load()
-				if t == tag {
+		// Triple-mask pre-filter: load all three words from CL2.
+		h2mask := h2MatchMask(node.h2word.Load(), queryH2)
+		var candidates uint8
+		if keyLen == 0 && tenantID == 0 {
+			// tinyIdx path: no klen/tenant filter (lossless tag, any match is valid).
+			candidates = h2mask
+		} else {
+			klenMask := klenMatchMask(node.klenWord.Load(), keyLen)
+			tenantMask := tenantMatchMask(node.tenantWord.Load(), tenantID)
+			candidates = h2mask & klenMask & tenantMask
+		}
+
+		if candidates != 0 {
+			// Scan only candidate slots for H1 match.
+			for i := 0; i < iSlots; i++ {
+				if candidates&(1<<i) == 0 {
+					continue
+				}
+				if node.slots[i].tag.Load() == tag {
 					return node.slots[i].val.Load(), true
 				}
 			}
@@ -337,22 +322,11 @@ func (idx *InlineIndex) Get(tag uint64) (uint64, bool) {
 	return 0, false
 }
 
-// GetTag is an alias for Get (tag-based interface for CacheManager).
-func (idx *InlineIndex) GetTag(tag uint64) (uint64, bool) {
-	return idx.Get(tag)
-}
-
 // ── write helpers (caller holds shard mu) ─────────────────────────────────────
 
-// insertAt tries to write (tag, val) into node's inline slots.
-// Returns true if successful (found empty or matching slot), false if all
-// slots are occupied by different live entries.
-//
-// Write ordering for H2:
-//
-//	h2word updated BEFORE val+tag so any reader that observes the new tag
-//	already observes the matching H2 group.
-func insertAt(node *iNode, tag, val uint64) bool {
+// insertAt tries to write (tag, val, keyLen, tenantID) into node's inline slots.
+// Returns true if successful.
+func insertAt(node *iNode, tag, val uint64, keyLen uint16, tenantID uint16) bool {
 	h2 := h2ForTag(tag)
 	var tomb *iSlot
 	tombI := -1
@@ -361,11 +335,13 @@ func insertAt(node *iNode, tag, val uint64) bool {
 		t := s.tag.Load()
 		switch t {
 		case tag:
-			// Update existing entry in-place.
+			// Update existing entry in-place (val only; metadata unchanged).
 			s.val.Store(val)
 			return true
 		case iEmpty:
 			node.h2word.Store(h2Set(node.h2word.Load(), i, h2))
+			node.klenWord.Store(klenSet(node.klenWord.Load(), i, keyLen))
+			node.tenantWord.Store(tenantSet(node.tenantWord.Load(), i, tenantID))
 			s.val.Store(val)
 			s.tag.Store(tag)
 			return true
@@ -378,6 +354,8 @@ func insertAt(node *iNode, tag, val uint64) bool {
 	}
 	if tomb != nil {
 		node.h2word.Store(h2Set(node.h2word.Load(), tombI, h2))
+		node.klenWord.Store(klenSet(node.klenWord.Load(), tombI, keyLen))
+		node.tenantWord.Store(tenantSet(node.tenantWord.Load(), tombI, tenantID))
 		tomb.val.Store(val)
 		tomb.tag.Store(tag)
 		return true
@@ -386,32 +364,26 @@ func insertAt(node *iNode, tag, val uint64) bool {
 }
 
 // upsert inserts or updates (tag, val) in the shard rooted at sh.root.
-// Descends the trie, storing the entry at the shallowest available node.
-// Creates child nodes as needed; silently drops at max depth.
-func (idx *InlineIndex) upsert(sh *iShard, tag, val uint64) {
+func (idx *InlineIndex) upsert(sh *iShard, tag, val uint64, keyLen uint16, tenantID uint16) {
 	nodeIdx := sh.root
 	shift := idx.shardBits
 
 	for depth := 0; depth <= iMaxDepth; depth++ {
 		node := idx.pool.node(nodeIdx)
 
-		if insertAt(node, tag, val) {
+		if insertAt(node, tag, val, keyLen, tenantID) {
 			return
 		}
 
-		// Node is full: navigate (or create) the child for the next 3 bits.
 		branch := uint32((tag >> shift) & iMask)
 		childIdx := atomic.LoadUint32(&node.children[branch])
 		if childIdx == iNullChild {
 			if depth == iMaxDepth {
-				return // depth ceiling: silently drop
+				return
 			}
-			// Write the entry into the child node BEFORE publishing its index
-			// to the parent.  A lock-free reader that sees the child index must
-			// already find the entry there.
 			childIdx = idx.pool.alloc()
 			child := idx.pool.node(childIdx)
-			insertAt(child, tag, val) // guaranteed to succeed: child is empty
+			insertAt(child, tag, val, keyLen, tenantID)
 			atomic.StoreUint32(&node.children[branch], childIdx)
 			return
 		}
@@ -420,21 +392,21 @@ func (idx *InlineIndex) upsert(sh *iShard, tag, val uint64) {
 	}
 }
 
-// Set inserts or updates tag → val.
+// Set inserts or updates tag → val (no keyLen/tenantID metadata; use for tinyIdx).
 func (idx *InlineIndex) Set(tag, val uint64) {
 	sh := &idx.shards[tag&idx.shardMask]
 	sh.mu.Lock()
-	idx.upsert(sh, tag, val)
+	idx.upsert(sh, tag, val, 0, 0)
 	sh.mu.Unlock()
 }
 
-// SetTagGetPtr inserts tag→val and returns an xSlotPtr encoding the pre-computed
-// shard and lower 39 bits of the tag (for use by the cleaner's TryTombstone).
+// SetTagGetPtr inserts tag→val with keyLen/tenantID metadata and returns xSlotPtr.
 // lane must be xPtrLaneTiny (0) or xPtrLaneHash (1<<47).
-func (idx *InlineIndex) SetTagGetPtr(tag uint64, val uint64, lane uint64) xSlotPtr {
+// For tinyIdx pass keyLen=0, tenantID=0.
+func (idx *InlineIndex) SetTagGetPtr(tag uint64, val uint64, lane uint64, keyLen uint16, tenantID uint16) xSlotPtr {
 	sh := &idx.shards[tag&idx.shardMask]
 	sh.mu.Lock()
-	idx.upsert(sh, tag, val)
+	idx.upsert(sh, tag, val, keyLen, tenantID)
 	sh.mu.Unlock()
 	shard := uint8(tag & idx.shardMask)
 	return packXTagRef(lane, shard, tag)
@@ -448,7 +420,6 @@ func (idx *InlineIndex) Delete(tag uint64) bool {
 	found, path := idx.findPath(sh, tag)
 	var freed []uint32
 	if found {
-		// Compact upward: try to collapse the deepest parent first.
 		for len(path) >= 2 {
 			parentIdx := path[len(path)-2]
 			ok, detached := idx.tryCollapse(parentIdx)
@@ -460,8 +431,6 @@ func (idx *InlineIndex) Delete(tag uint64) bool {
 		}
 	}
 	sh.mu.Unlock()
-	// Schedule recycling AFTER lock release so grace period starts once the
-	// detach is visible to all readers.
 	if len(freed) > 0 {
 		idx.pool.freeLater(freed)
 	}
@@ -473,11 +442,8 @@ func (idx *InlineIndex) DeleteTag(tag uint64) bool {
 	return idx.Delete(tag)
 }
 
-// TryTombstone performs a fresh trie traversal using the shard and tag routing
-// bits stored in the tag parameter, then tombstones the slot whose val still
-// references physOff/gen2b.
-//
-// Returns true when the tombstone is placed.
+// TryTombstone performs a fresh trie traversal and tombstones the slot whose
+// val still references physOff/gen2b.
 func (idx *InlineIndex) TryTombstone(tag uint64, physOff uint64, gen2b uint8) bool {
 	sh := &idx.shards[tag&idx.shardMask]
 	sh.mu.Lock()
@@ -502,6 +468,8 @@ func (idx *InlineIndex) TryTombstone(tag uint64, physOff uint64, gen2b uint8) bo
 				continue
 			}
 			node.h2word.Store(h2Set(node.h2word.Load(), i, 0))
+			node.klenWord.Store(klenSet(node.klenWord.Load(), i, 0))
+			node.tenantWord.Store(tenantSet(node.tenantWord.Load(), i, 0))
 			s.val.Store(0)
 			s.tag.Store(iTombstone)
 			return true
@@ -529,8 +497,9 @@ func (idx *InlineIndex) findPath(sh *iShard, tag uint64) (bool, []uint32) {
 		for i := range node.slots {
 			s := &node.slots[i]
 			if s.tag.Load() == tag {
-				// Clear H2 group BEFORE writing the tombstone.
 				node.h2word.Store(h2Set(node.h2word.Load(), i, 0))
+				node.klenWord.Store(klenSet(node.klenWord.Load(), i, 0))
+				node.tenantWord.Store(tenantSet(node.tenantWord.Load(), i, 0))
 				s.val.Store(0)
 				s.tag.Store(iTombstone)
 				return true, path
@@ -545,13 +514,16 @@ func (idx *InlineIndex) findPath(sh *iShard, tag uint64) (bool, []uint32) {
 }
 
 // tryCollapse checks whether ALL children of parentIdx together have ≤ iSlots
-// live entries.  If so, pulls those entries into the parent's inline slots,
-// detaches all children, and returns (true, detachedIndices).
+// live entries. If so, pulls them into the parent's inline slots.
 func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 	parent := idx.pool.node(parentIdx)
 
-	// Collect live entries from all children.
-	type entry struct{ tag, val uint64 }
+	type entry struct {
+		tag      uint64
+		val      uint64
+		keyLen   uint16
+		tenantID uint16
+	}
 	var childLive [iSlots]entry
 	childLiveN := 0
 
@@ -561,7 +533,6 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 			continue
 		}
 		child := idx.pool.node(childIdx)
-		// If the child itself has grandchildren, refuse to collapse.
 		for b2 := range child.children {
 			if atomic.LoadUint32(&child.children[b2]) != iNullChild {
 				return false, nil
@@ -573,14 +544,18 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 				continue
 			}
 			if childLiveN >= iSlots {
-				return false, nil // too many entries
+				return false, nil
 			}
-			childLive[childLiveN] = entry{t, child.slots[i].val.Load()}
+			// Read keyLen and tenantID from child's metadata words.
+			kw := child.klenWord.Load()
+			tw := child.tenantWord.Load()
+			kLen := uint16((kw >> uint(i*16)) & 0xFFFF)
+			tID := uint16((tw >> uint(i*16)) & 0xFFFF)
+			childLive[childLiveN] = entry{t, child.slots[i].val.Load(), kLen, tID}
 			childLiveN++
 		}
 	}
 
-	// Count free slots in parent.
 	freeSlots := 0
 	for i := range parent.slots {
 		t := parent.slots[i].tag.Load()
@@ -592,7 +567,6 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 		return false, nil
 	}
 
-	// Write child entries into parent's free slots.
 	wi := 0
 	for i := range parent.slots {
 		if wi >= childLiveN {
@@ -603,13 +577,14 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 		if t == iEmpty || t == iTombstone {
 			h2 := h2ForTag(childLive[wi].tag)
 			parent.h2word.Store(h2Set(parent.h2word.Load(), i, h2))
+			parent.klenWord.Store(klenSet(parent.klenWord.Load(), i, childLive[wi].keyLen))
+			parent.tenantWord.Store(tenantSet(parent.tenantWord.Load(), i, childLive[wi].tenantID))
 			s.val.Store(childLive[wi].val)
 			s.tag.Store(childLive[wi].tag)
 			wi++
 		}
 	}
 
-	// Detach all children atomically; collect their indices for recycling.
 	var detached []uint32
 	for b := range parent.children {
 		childIdx := atomic.LoadUint32(&parent.children[b])
@@ -623,7 +598,6 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 
 // ── compaction ────────────────────────────────────────────────────────────────
 
-// CompactAll performs a shallow collapse on every shard.
 func (idx *InlineIndex) CompactAll() {
 	for s := range idx.shards {
 		sh := &idx.shards[s]
@@ -636,7 +610,6 @@ func (idx *InlineIndex) CompactAll() {
 	}
 }
 
-// DeepCompactAll recursively compacts every shard from leaves to root.
 func (idx *InlineIndex) DeepCompactAll() {
 	for s := range idx.shards {
 		sh := &idx.shards[s]
@@ -657,7 +630,6 @@ func (idx *InlineIndex) compactNode(nodeIdx uint32) []uint32 {
 	return freed
 }
 
-// deepCompactNode post-order traversal: compact children before parent.
 func (idx *InlineIndex) deepCompactNode(nodeIdx uint32) []uint32 {
 	if nodeIdx == iNullChild {
 		return nil
@@ -676,7 +648,6 @@ func (idx *InlineIndex) deepCompactNode(nodeIdx uint32) []uint32 {
 
 // ── stats ─────────────────────────────────────────────────────────────────────
 
-// Stats returns live-entry count and node count for the given shard index.
 func (idx *InlineIndex) Stats(shardIdx int) (entries, nodes int) {
 	sh := &idx.shards[shardIdx]
 	sh.mu.Lock()
@@ -702,9 +673,8 @@ func (idx *InlineIndex) statsNode(nodeIdx uint32, entries, nodes *int) {
 	}
 }
 
-// TotalNodes returns the number of live nodes in the pool.
 func (idx *InlineIndex) TotalNodes() int {
-	bumped := int(idx.pool.next.Load()) - 1 // subtract reserved index-0
+	bumped := int(idx.pool.next.Load()) - 1
 	idx.pool.mu.Lock()
 	inQueue := len(idx.pool.ready) - idx.pool.readyHd
 	idx.pool.mu.Unlock()
@@ -715,7 +685,6 @@ func (idx *InlineIndex) TotalNodes() int {
 	return n
 }
 
-// NumShards returns the number of shards.
 func (idx *InlineIndex) NumShards() int { return len(idx.shards) }
 
 // LevelStats holds per-depth statistics for PerLevelStats.
@@ -723,11 +692,9 @@ type LevelStats struct {
 	Depth   int
 	Nodes   int
 	Entries int
-	Slots   int // = Nodes * iSlots
+	Slots   int
 }
 
-// PerLevelStats walks every shard and aggregates node/entry counts by trie depth.
-// Depth 0 = root nodes (one per shard), depth 1 = their children, etc.
 func (idx *InlineIndex) PerLevelStats() []LevelStats {
 	byDepth := make(map[int]*LevelStats)
 	for s := range idx.shards {
@@ -736,7 +703,6 @@ func (idx *InlineIndex) PerLevelStats() []LevelStats {
 		idx.perLevelNode(sh.root, 0, byDepth)
 		sh.mu.Unlock()
 	}
-	// Collect and sort.
 	maxDepth := 0
 	for d := range byDepth {
 		if d > maxDepth {

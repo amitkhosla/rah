@@ -1,328 +1,338 @@
-# Cache Package
+# cache — Zero-GC Inline-Index Cache
 
-## Purpose
-Implements a **zero-GC slab cache** with deterministic memory usage, multi-tenant quotas, and a fully lock-free read path. Preallocates all memory at startup. Routes keys through two independent index lanes based on key length, uses a fixed-stride circular slab per (SizeClass × TTLTier) cell, and runs a single background cleaner goroutine that uses slab-embedded back-pointers to tombstone expired index entries without hash recomputation.
+## Overview
 
----
+`cache` is RAH's purpose-built, zero-GC, multi-tenant in-memory cache (`internal/cache`). It was designed from scratch to serve as the hot-path cache layer for an API gateway with **20,000+ tenants**, **<5µs request latency**, and **zero GC pauses** at steady state.
 
-## Files
-
-| File | Purpose |
-|------|---------|
-| `cache_manager.go` | `CacheManager`: dual-lane routing, Put/Get, eviction accounting, single cleaner goroutine |
-| `cache_types.go` | `SmartPointer` val encoding, `EntryHeader`, `xSlotPtr` back-pointer type |
-| `regions.go` | `Region`: fixed-stride circular slab, `Write` / `Read` / `UpdateXSlotPtr` |
-| `hash.go` | `Hash128`: 128-bit fingerprint via two independent maphash seeds |
-| `index.go` | `LookupIndex`: 8-way COW trie + shared slot pool, tag helpers, `TryTombstone` |
-| `*_test.go` | Unit, concurrency, and benchmark tests |
+This document covers the design journey — from the first prototype through three generations of the inline-index design — and benchmarks all four in-house implementations against leading third-party Go caches.
 
 ---
 
-## Two-Lane Architecture
+## The Problem We Were Solving
 
-Keys are routed to one of two independent `LookupIndex` instances:
+An API gateway cache must satisfy constraints that standard Go caches cannot:
 
-```
-key ≤ 6 bytes AND all bytes < 128  →  tinyIdx   (lossless tag, no hash)
-otherwise                           →  hashIdx   (H2 tag, 128-bit fp)
-```
+| Constraint | Why it matters |
+|---|---|
+| **Zero GC pauses** | A GC stop-the-world of even 1ms blows the <5µs latency target |
+| **Multi-tenant isolation** | 20,000 tenants; one tenant's write must not evict another's entry |
+| **Bounded memory** | Pre-allocated slab; no surprise heap growth under traffic spikes |
+| **Lock-free reads** | Hot-path Get must not contend with concurrent Puts |
+| **Per-entry TTL** | API responses expire at different rates; global TTL is unusable |
+| **Tenant quota enforcement** | Each tenant gets a capped share; atomic accounting only |
 
-**Why two lanes?** For short keys the tag itself can carry the full (tenantID, key) losslessly. This means:
-- Read validation is exact at the index level — no slab fingerprint check needed for Lane 1.
-- The 128-bit fingerprint is only computed for keys that need it (Lane 2).
-- The cleaner can route to the right index by reading the `lane` bit in `xSlotPtr`.
-
-### Lane 1 — tinyIdx (keys ≤ 6 bytes, all bytes < 128)
-
-Tag encoding (64 bits):
-```
-≤5B:  bit63=0 | keyLen(3b)[62:60] | tenantID(16b)[59:44] | key_exact(40b)[43:4] | spare[3:0]
- 6B:  bit63=1 | tenantID(16b)[62:47] | key_7bit(42b)[46:5]  | spare[4:0]
-```
-- Bytes stored LSB-first; 6-byte keys use 7-bit strip (valid because all bytes < 128 guaranteed).
-- Sanitised against `xEmpty`/`xTombstone` sentinels by flipping spare bit 2.
-- At read time the tag match in the index IS the full key+tenant identity check — no slab fingerprint needed.
-
-### Lane 2 — hashIdx (keys > 6 bytes, or 6B with any byte ≥ 128)
-
-```
-fp = Hash128(tenantID, key)   →  [16]byte
-H1 = fp[0:8]   — routing only (consumed by trie traversal, never stored)
-H2 = fp[8:16]  — identity (stored as tag in hashIdx xSlot)
-```
-Tag = H2, sanitised against sentinels. `EntryHeader.KeyMid = key[len/2]` is an additional identity byte validated at read time.
+None of bigcache, ristretto, go-cache, sync.Map, or map+RWMutex satisfy all of these simultaneously.
 
 ---
 
-## xSlot val Encoding (SmartPointer)
+## Architecture: Two-Layer Design
 
-Every index xSlot stores a 64-bit `SmartPointer` (= `uint64`) in its `val` field:
+The cache uses a two-layer architecture shared across all generations:
 
 ```
-[63:62] Gen      — 2-bit wrap generation (fast pre-check; EntryHeader.Gen authoritative)
-[61:50] ExpTrunc — 12-bit truncated expiry: (unix_sec >> 5) & 0xFFF  (32s granularity, ~36h range)
-[49:48] Type     — 00=SlabRAM  01=KeyIsValue  10=EmptyValue  11=reserved
-
-SlabRAM payload [47:0]:
-  [47:46] SizeClass (2b)
-  [45:44] TierID    (2b)
-  [43: 0] Offset    (44b) — byte offset in region (up to 16TB)
-
-KeyIsValue / EmptyValue payload [47:0]:
-  [47:16] Expiry_unix32 (32b) — full TTL; authoritative since there is no slab
-  [15: 0] spare
+┌─────────────────────────────────────────────────────┐
+│  InlineIndex (trie)                                 │
+│  Two lanes:                                         │
+│    tinyIdx — lossless tag for keys ≤ 6 bytes        │
+│    hashIdx — H1+H2 tag for keys > 6 bytes           │
+│  256 independent shards (lock-free reads per shard) │
+└────────────────────┬────────────────────────────────┘
+                     │  SmartPointer (64-bit)
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│  Region Matrix [SizeClass][TTLTier]                 │
+│  Pre-allocated circular slabs, stride-addressed     │
+│  EntryHeader + value bytes, zero GC                 │
+└─────────────────────────────────────────────────────┘
 ```
 
-**Pre-checks**: `Gen & 0x3` and `ExpTrunc` are checked before touching the slab — fast miss for recycled or expired entries with zero cache-line loads.
+### InlineIndex — iNode Layout
 
----
+Every trie node is exactly **128 bytes (2 cache lines)**:
 
-## EntryHeader (16 bytes)
+```
+Cache Line 1 (bytes 0–63):
+  [slot0: tag(8B) + val(8B)]  [slot1: tag(8B) + val(8B)]
+  [slot2: tag(8B) + val(8B)]  [slot3: tag(8B) + val(8B)]
+  ↑ 4 inline entries stored DIRECTLY in the node (no pool)
 
-Fixed prefix of every slab slot, immediately followed by value bytes zero-padded to SizeClass:
+Cache Line 2 (bytes 64–127):
+  [children[0..7]: uint32 × 8 = 32B]  ← 8 child pointers (8-way branching)
+  [freedAt:  int64  = 8B]             ← recycle timestamp
+  [h2word:   uint64 = 8B]             ← Swiss-style H2 pre-filter (4 × uint16)
+  [padding:  16B]                     ← unused in main; used in archive/v3 for klenWord+tenantWord
+```
 
+**Key property**: a cache hit at depth 0 costs exactly **2 cache line loads** — one for CL1 (slots) and one for CL2 (children + h2word) — with no pointer indirection to a separate entry pool.
+
+### Slab Region — EntryHeader
+
+Every slab slot starts with a fixed-size header, immediately followed by value bytes:
+
+**cache (main)** (16-byte header):
 ```
 Offset  Size  Field
-     0     4  Expiry    — unix32, authoritative TTL
-     4     1  Gen       — 8-bit generation (circular buffer wrap counter)
-     5     1  KeyMid    — key[len/2]; 0x00 for Lane 1 (identity already in tag)
-     6     2  TenantID  — for eviction accounting when slot is overwritten
-     8     2  ValueLen  — actual value bytes written (≤ SizeClass)
-    10     6  XSlotPtrB — 6-byte little-endian xSlotPtr back-pointer (cleaner)
+     0     4  Expiry    — authoritative unix32 TTL
+     4     1  Gen       — circular-buffer wrap generation
+     5     1  KeyMid    — key[len/2] for identity pre-check
+     6     2  TenantID  — for eviction accounting
+     8     2  ValueLen  — actual bytes used in slot
+    10     6  XSlotPtrB — back-pointer to owning index slot (for cleaner)
 ```
 
-Total: **16 bytes**, naturally 4-byte aligned. `unsafe.Pointer` cast safe when stride is 8-byte aligned.
+**archive/v3** (24-byte header, stronger verification):
+```
+Offset  Size  Field
+     0     4  Expiry    — authoritative unix32 TTL
+     4     2  TenantID  — explicit re-verification at read time
+     6     2  ValueLen
+     8     6  XSlotPtrB — back-pointer
+    14     1  Gen
+    15     1  (spare)
+    16     3  KeyFP     — key[(n/2)+1%n], key[(n/4)+1%n], key[(3n/4)+1%n]
+    19     5  (padding)
+```
 
-### Read Validation Sequence (lock-free)
+### SmartPointer — 64-bit slot value
 
-| Step | Source | Check | Miss condition |
-|------|--------|-------|----------------|
-| 1 | val.ExpTrunc | Fast pre-check (no slab load) | `expTrunc < (now>>5)&0xFFF` |
-| 2 | header.Gen & 0x3 | Slot recycled? | ≠ val.Gen |
-| 3 | header.Expiry | Authoritative TTL | `< now` |
-| 4 | header.KeyMid | Key identity (Lane 2 only) | ≠ `key[len/2]` |
+The index stores a 64-bit `SmartPointer` encoding:
+```
+[63:62] Gen      — 2-bit wrap generation (fast pre-check)
+[61:50] ExpTrunc — 12-bit truncated expiry (32s granularity, ~36h range)
+[49:48] Type     — 00=SlabRAM  01=KeyIsValue  10=EmptyValue
+[47: 0] Payload  — SizeClass(2b) | TierID(2b) | SlabOffset(44b)
+```
 
-Steps 2–4 require loading the header cache line. Step 1 avoids that load for obviously expired entries.
+This encodes the full slab address in a single atomic word — no pointer dereference needed to locate the value.
 
 ---
 
-## xSlotPtr — Slab-to-Index Back-Pointer
+## The Journey: Four Generations
 
-A 6-byte (48-bit) value stored in every `EntryHeader.XSlotPtrB`. Encodes the exact trie position of the owning xSlot so the cleaner can navigate directly without recomputing hashes.
+### Generation 0 — archive/lookup (LookupIndex)
 
-```
-Bit layout (lower 48 bits):
-  [47:40] shard    — 8b  which of ≤256 shards
-  [39:36] depth    — 4b  trie depth at write time (0–10)
-  [35: 6] path     — 30b 3b per trie level, MSB-first (level 0 in bits[35:33])
-  [ 5: 4] slot     — 2b  xSlot index within the 4-slot partition
-  [    3] lane     — 1b  0=tinyIdx, 1=hashIdx
-  [ 2: 0] spare
-```
+The first production cache used a **LookupIndex**: a separate trie with entries stored in a pool of `lNode` structs, connected via pointers. Every cache hit required:
+1. Index lookup → pointer to pool node
+2. Pool node dereference → SmartPointer
+3. Slab read
 
-**Staleness**: if a split or collapse moves the entry after the xSlotPtr was written, `TryTombstone` detects the stale path via `navigateToSlotStart` returning `(0, false)` and skips the slot. The entry will expire naturally on next read.
+This required an extra pointer indirection and a pool allocation on every Put, adding ~18 bytes/entry of pool overhead.
 
-**Lifecycle**:
-1. `region.Write(...)` writes value bytes and zeroes `XSlotPtrB`.
-2. `idx.SetTagGetPtr(tag, val, lane)` returns the xSlotPtr encoding the exact slot used.
-3. `region.UpdateXSlotPtr(physOff, sp)` stores the 6 bytes in the header.
-4. Cleaner reads `XSlotPtrB`, calls `TryTombstone`.
+**Memory**: +45MB own index memory for 398K entries
+**Throughput**: 8.8M/s
+**Location**: `internal/cache/archive/lookup/`
 
 ---
 
-## Region — Fixed-Stride Circular Slab
+### Generation 1 — archive/v1 (InlineIndex, baseline)
 
+Replaced the separate entry pool with **inline slots directly in each trie node**. Each iNode stores 4 entries in its first cache line — no pool, no pointer indirection on hit.
+
+**Swiss-style H2 filter** (`h2word`): a single `atomic.Uint64` in CL2 packs four 16-bit H2 values. On Get, one atomic load + a SWAR bit trick checks all 4 slots simultaneously:
+
+```go
+// SWAR: checks 4 × 16-bit groups in parallel for zero
+x := word ^ (uint64(queryH2) * 0x0001000100010001)
+return (x-0x0001000100010001)&^x&0x8000800080008000 != 0
 ```
-Region {
-    buf       []byte         — contiguous pre-allocated buffer
-    count     uint64         — total slots = len(buf) / stride
-    stride    uint32         — align8(EntryHeaderSize + SizeClass), fixed per region
-    ttlSeconds uint32
-    writeSlot uint64         — monotonic slot counter (protected by mu)
-    mu        sync.Mutex     — serialises writes; reads are lock-free
+
+If no H2 match → CL1 (the slot scan) is skipped entirely.
+
+**H2 source**: derived from `Hash128` (two `maphash` calls) — upper 16 bits of the fingerprint hash. H1 and H2 are independent (different seeds), giving strong collision resistance but costing ~23ns for a 12-byte key.
+
+**Memory**: +27MB own index memory for 398K entries (40% less than archive/lookup)
+**Throughput**: 8.5M/s
+**Location**: `internal/cache/archive/v1/`
+
+---
+
+### Generation 2 — cache (main, real-byte H2, single maphash)
+
+Two improvements over archive/v1, now promoted to the canonical `internal/cache` package:
+
+**1. `hashH1Only` — single maphash for routing**
+H1 (routing hash) now uses a single `maphash` call from `routingPool` instead of `Hash128`'s two-call path. Saves ~9ns per hashLane Get/Put.
+
+**2. `hashLaneBig16` — real-byte H2, fully independent from H1**
+H2 is no longer derived from H1 via XOR-folding. Instead it samples 5 structural positions of the real key:
+
+```go
+func hashLaneBig16(tID uint16, key []byte) uint16 {
+    // samples: key[0], key[n/4], key[n/2], key[3n/4], key[n-1]
+    // mixes in tenantID so cross-tenant keys always differ
+    // result packed into tag[63:48]
 }
 ```
 
-**Stride** = `align8(16 + SizeClass)` e.g. SizeClass=64 → stride=80B.
+This provides:
+- **Full independence** from H1 (different algorithm, not a derivation)
+- **Real key entropy** — the 16 bits reflect actual key byte differences
+- **Cross-tenant safety** — tenantID mixed in prevents collisions between tenants with identical keys
+- **Zero extra maphash calls** — pure arithmetic, ~2ns
 
-**Write path**: `writeSlot` advances monotonically. Physical slot = `writeSlot % count`. Generation = `uint8(writeSlot / count)`. Old header at that position is read before overwriting to return `overwrittenEntry` for accounting.
-
-**Read path** (lock-free): validate gen2b, expTrunc, Expiry, KeyMid → return `buf[physOff+16 : physOff+16+header.ValueLen]`. Returned slice is a direct view into the region buffer; do not retain across writes.
-
-**Eviction is unconditional**: the write always claims the next slot regardless of whether the existing entry has expired. The `hasOld` flag is set when the displaced slot was previously written (Expiry > 0).
+**Memory**: identical to archive/v1 (+27MB)
+**Throughput**: **8.9M/s** (fastest of all four generations)
+**Location**: `internal/cache/` ← **this is the active implementation**
 
 ---
 
-## CacheManager
+### Generation 3 — archive/v3 (triple pre-filter + KeyFP)
+
+Designed for maximum verification depth without persisting the full key. Uses the 16 bytes of iNode padding (bytes 112–127 in CL2) for two new pre-filter words:
+
+```
+CL2 layout (archive/v3):
+  [children: 32B] [freedAt: 8B] [h2word: 8B] [klenWord: 8B] [tenantWord: 8B]
+```
+
+**`klenWord`** — packed key lengths, one `uint16` per slot. Filters out length mismatches before scanning CL1.
+
+**`tenantWord`** — packed tenant IDs, one `uint16` per slot. Filters out cross-tenant false positives before CL1.
+
+**Triple-mask filtering** on Get:
+```go
+h2mask     := h2MatchMask(h2word, queryH2)            // 4-bit mask
+klenMask   := klenMatchMask(klenWord, queryLen)        // 4-bit mask
+tenantMask := tenantMatchMask(tenantWord, queryTenant) // 4-bit mask
+candidates := h2mask & klenMask & tenantMask           // only matching slots
+```
+
+**`KeyFP [3]byte`** in EntryHeader: three bytes from adjacent-to-H2 key positions (`key[(n/2)+1%n]`, `key[(n/4)+1%n]`, `key[(3n/4)+1%n]`). Combined with H1 (64b) + H2 (16b) + TenantID (16b) + KeyLen (16b) + KeyFP (24b), the false-positive probability is **< 1/2^136** — effectively zero for any gateway workload.
+
+**Verification order** (deepest chain, cheapest first):
+```
+H2 → KeyLen → TenantID   (all from CL2, single cache line load)
+→ H1                     (from CL1 slot tag, second cache line load)
+→ KeyFP + Expiry + Gen   (from slab EntryHeader, third cache line load)
+```
+
+**Memory**: identical to main (+27MB) — klenWord + tenantWord fit in previously unused padding
+**Throughput**: 8.8M/s (essentially identical — pre-filters add no measurable overhead)
+**Location**: `internal/cache/archive/v3/`
+
+---
+
+## Benchmark Results
+
+**Workload**: 20,000 tenants, 398,000 live entries, 50:1 read:write, 8-second sustained hot loop
+Mixed key/value sizes: 30% tiny (4B key / 64B value), 50% short (16B / 512B), 20% long (48B / 2048B)
+**Machine**: all goroutines at `GOMAXPROCS`
+
+```
+implementation                                     avg TPS    ownMB    totMB     heap objs  GC
+────────────────────────────────────────────────  ────────  ───────  ───────  ────────────  ────
+cache (InlineIndex + real-byte H2)                 8.9M/s      +27MB      640MB       965k objs  gc=0
+cache/archive/v3 (klenWord + KeyFP)                8.8M/s      +27MB      640MB       965k objs  gc=0
+cache/archive/lookup (LookupIndex)                 8.8M/s      +45MB      658MB      1007k objs  gc=0
+cache/archive/v1 (InlineIndex, gen1 maphash H2)    8.5M/s      +27MB      640MB       964k objs  gc=0
+sync.Map (string key, no TTL)                      7.8M/s      +62MB      342MB      2543k objs  gc=0
+ristretto v2 (TinyLFU, async Set)                  6.0M/s      +61MB      357MB       947k objs  gc=1
+bigcache v3 (ring-buffer, global TTL)              5.6M/s       +0MB     1094MB       931k objs  gc=5
+go-cache (map+mutex, per-item TTL)                 1.5M/s      +24MB      321MB      1615k objs  gc=0
+map+RWMutex (string key, no TTL)                   1.1M/s       +7MB      312MB      1218k objs  gc=0
+```
+
+### What the numbers show
+
+**cache (main) is the fastest at 8.9M/s** — 14% faster than sync.Map, 48% faster than ristretto, 59% faster than bigcache, and 5× faster than go-cache. All with zero GC and 27MB of own index memory.
+
+**All four in-house implementations beat all third-party caches** — even archive/v1 at 8.5M/s is 9% ahead of sync.Map, which has no TTL, no tenant isolation, and no bounded memory.
+
+**Memory accuracy**: sync.Map appeared cheap in early measurements because it stored slice headers (24B) not value copies. Once adjusted to copy values fairly, our slab approach uses _less_ own memory (+27MB) than sync.Map (+62MB) while holding full value ownership.
+
+**GC**: ristretto triggers 1 GC per run (async Set goroutines), bigcache triggers 5 (ring buffer map). All in-house variants: 0 GC. The slab design eliminates GC pressure by keeping all values inside pre-allocated byte arrays.
+
+**LookupIndex overhead**: archive/lookup uses 45MB vs cache's 27MB — 67% more index memory for the same entries, because each entry also occupies a pool node with its own 8-byte pointer.
+
+---
+
+## Trie Growth: Local vs Global
+
+A key architectural advantage of the InlineIndex is **local growth**: only the trie shards that receive data grow deeper. This matters enormously for multi-tenant workloads.
+
+After populating 398K entries across 20K tenants (Tier-A: 200 hot tenants × 1000 keys; Tier-B: 1800 warm × 100 keys; Tier-C: 18000 cold × 1 key):
+
+```
+depth      nodes   entries     slots     fill%   node KB
+──────  ────────  ────────  ────────  ────────  ────────
+0            256      1024      1024    100.0%      32.0
+1           2048      8192      8192    100.0%     256.0
+2          16240     23808     64960     36.7%    2030.0
+3           6000     18000     24000     75.0%     750.0
+4          32000    128000    128000    100.0%    4000.0
+5          61376    138176    245504     56.3%    7672.0
+6          80800     80800    323200     25.0%   10100.0
+──────  ────────  ────────  ────────  ────────  ────────
+total     198720    398000    794880     50.1%   24840.0
+```
+
+- 90% of tenants (Tier-C, 1 key each) contribute negligible depth — their shards stay at depth 0–1
+- Hot tenants (Tier-A) push their shards to depth 4–6 only
+- A standard hash map would double its entire backing array when any bucket crosses load factor 0.75 — paying for all 20,000 tenants' capacity even when 18,000 of them have 1 entry
+
+---
+
+## Collision Safety Analysis
+
+For a 30-minute TTL gateway cache (worst case: stale entries persist longest), the false-positive probability per lookup across generations:
+
+| Generation | Checks | False positive rate |
+|---|---|---|
+| archive/v1 (baseline) | H1(48b) + H2(16b) + KeyMid(8b) + ExpTrunc(12b) | ~1 / 2^72 |
+| cache (main) | H1(48b) + H2_real(16b) + KeyMid(8b) + ExpTrunc(12b) | ~1 / 2^72 (stronger H2 entropy) |
+| archive/v3 | H1(48b) + H2_real(16b) + KeyLen(16b) + TenantID(16b) + KeyFP(24b) + Expiry(32b) | ~1 / 2^136 |
+
+All generations are correctness-safe for any gateway workload. archive/v3 provides defence-in-depth for long TTLs and high-value data where correctness is paramount.
+
+---
+
+## Choosing a Generation
+
+| Use case | Recommended |
+|---|---|
+| Maximum throughput, typical API gateway TTLs (≤5 min) | **cache (main)** — `internal/cache` |
+| Long TTLs (≥30 min), high-value correctness requirement | **archive/v3** — `internal/cache/archive/v3` |
+| Compatibility / reference baseline | **archive/v1** — `internal/cache/archive/v1` |
+| Debugging / LookupIndex comparison | **archive/lookup** — `internal/cache/archive/lookup` |
+
+---
+
+## Configuration
 
 ```go
-cm, _ := NewCacheManager(
-    totalMemory,    // bytes; divided evenly across all regions
-    sizeClasses,    // []uint32 e.g. [64, 256, 1024, 4096]
-    ttlTiers,       // []uint32 seconds e.g. [60, 300, 3600, 86400]
-    expectedEntries,
-    tenantLimit,    // max bytes per tenant; 0 = unlimited
+import "rah/internal/cache"
+
+cm, err := cache.NewCacheManager(
+    totalMemory,              // e.g. 512 * 1024 * 1024 for 512 MB
+    []uint32{64, 512, 2048}, // size classes (value bytes)
+    []uint32{60, 300, 1800}, // TTL tiers (seconds)
+    expectedEntries,          // e.g. 660_000 for 660K entries
+    tenantLimit,              // per-tenant quota in bytes; 0 = unlimited
+    backend,                  // nil = default disk backend; pass cache.NoopBackend for in-memory only
 )
-defer cm.Stop()    // shuts down the cleaner goroutine
 ```
 
-### Put Flow
+**Capacity formula**: `capacity = totalMemory / (sizeClass + headerSize)` per tier cell. Use the benchmark's auto-sizer output (`Auto-sized slab: X MB, Capacity: Y entries`) to dial in the right `totalMemory`.
+
+---
+
+## Package Structure
 
 ```
-1. Tenant quota check (counter.used + entrySize ≤ tenantLimit)
-2. isHashLane(key) → choose tinyIdx or hashIdx
-3. region.Write(tenantID, keyMid, value, ttl)
-   └─ returns physOff, gen, old (evicted entry), hasOld
-4. if hasOld: subUsage(old.tenantID, 16+old.valueLen)
-5. PackSlabVal(gen&0x3, ExpTrunc(expiry), classID, tierID, physOff)
-6. idx.SetTagGetPtr(tag, ptr, lane) → xSlotPtr
-7. region.UpdateXSlotPtr(physOff, xSlotPtr)
-8. counter.used.Add(entrySize); globalUsed.Add(entrySize)
-```
+internal/cache/                  ← MAIN (InlineIndex + real-byte H2, hashLaneBig16)
+  cache_manager.go               ← Put / Get / Stop, lane routing, tenant quota
+  index_inline.go                ← InlineIndex, iNode, h2word SWAR, trie traversal
+  regions.go                     ← Slab region, Write / Read, circular buffer, TTL
+  cache_types.go                 ← EntryHeader (16B), SmartPointer, xSlotPtr encoding
+  hash.go                        ← hashH1Only + hashLaneBig16 (real-byte H2)
+  backend.go / disk_backend.go   ← CacheBackend interface + bbolt persistence
 
-### Get Flow
-
-```
-1. isHashLane(key) → tinyIdx.GetTag(makeTagTiny(...))
-                  or hashIdx.GetTag(makeTagHash(fp))
-2. Unpack(val) → gen2b, expTrunc, type
-3. if type ≠ SlabRAM: miss (KeyIsValue/EmptyValue reserved)
-4. UnpackSlab(val) → classID, tierID, physOff
-5. region.Read(physOff, gen2b, expTrunc, keyMid) → []byte
+  archive/v1/                    ← Generation 1: InlineIndex + maphash H2
+  archive/v3/                    ← Generation 3: InlineIndex + klenWord + tenantWord + KeyFP
+  archive/lookup/                ← Generation 0: LookupIndex (separate pool nodes)
+  archive/lookup_v1/             ← LookupIndex variant (benchmark reference)
 ```
 
 ---
 
-## Single Cleaner Goroutine
-
-One background goroutine started by `NewCacheManager`, stopped by `Stop()`.
-
-**Strategy**: round-robin across all `[SizeClass][TTLTier]` regions, scanning `cleanerBatchSize=256` slots per region per pass. Sleeps 50ms when a full round finds nothing to clean.
-
-**Per-slot action**:
-```
-if header.Expiry > 0 AND header.Expiry < now:
-    sp = xSlotPtrFrom6(header.XSlotPtrB)
-    idx = tinyIdx or hashIdx  (sp.lane bit)
-    idx.TryTombstone(sp, physOff, header.Gen&0x3)
-```
-
-**Accounting**: the cleaner does **not** modify tenant/global counters. Accounting is owned exclusively by the overwrite path (`hasOld` in `region.Write`) to prevent double-decrement races.
-
-**`TryTombstone` safety**: before CAS-tombstoning, verifies `xSlot.val` still encodes the same `physOff` and `gen2b` — prevents false deletions if a different entry has since claimed the same xSlot.
-
----
-
-## LookupIndex — Design
-
-### Structure
-
-```
-LookupIndex
-├── shards    []xShard           — N = 1<<shardBits (default 256)
-│   ├── mu    sync.Mutex         — per-shard write lock
-│   ├── snap  atomic.Pointer     — immutable xShardSnap (COW on every split/collapse)
-│   │   └── nodes []xNode        — trie node array; nodes[0] = root
-│   └── _     [48]byte           — padding to 64B (1 cache line, no false sharing)
-└── pool      slotPool           — shared across all shards
-    ├── list  atomic.Pointer     — *[]*[1024]xSlot (grows on demand)
-    ├── next  atomic.Uint32      — bump allocator
-    ├── free  []uint32           — partition starts ready for reuse
-    └── pending []deferredFree   — partitions within 1-second grace period
-```
-
-### Tag-Based API
-
-The public `Get(fp [16]byte)` / `Set` / `Delete` methods call `makeTag(fp)` internally (uses H1, forces bit63). These are used by the existing index tests.
-
-`CacheManager` uses the tag-based variants that accept a pre-computed lane-specific tag:
-
-| Method | Purpose |
-|--------|---------|
-| `GetTag(tag)` | Lock-free lookup by pre-computed tag |
-| `SetTag(tag, val)` | Insert/update by tag (does not return xSlotPtr) |
-| `SetTagGetPtr(tag, val, lane)` | Insert/update + returns xSlotPtr encoding the exact xSlot used |
-| `DeleteTag(tag)` | Tombstone by tag |
-| `TryTombstone(sp, physOff, gen2b)` | CAS-tombstone if val still matches; used by cleaner |
-
-### Trie Routing
-
-```
-tag & shardMask              → shard index
-(tag >> shardBits) & 7       → L0 choice  (3 bits)
-(tag >> shardBits+3) & 7     → L1 choice  (if L0 was internal)
-...
-leaf slotStart → scan 4 xSlots for tag match
-```
-
-Each `xNode` = 8 × `xIndexer` = 64 bytes = exactly 1 cache line. `extension == 0` means leaf (use `slotStart`), `> 0` means internal (follow to `nodes[extension]`).
-
-### Split and Collapse
-
-**Split** (all 4 leaf slots live): claim 8 new partitions, redistribute 4 entries by next 3 bits of tag, COW-publish new snapshot. Cost: +576 bytes (+1 node +8 partitions), old partition deferred 1s.
-
-**Collapse** (8 sibling leaves combined ≤ 4 live entries): merge into 1 new partition, COW-publish. Recursive upward. Old 8 partitions deferred 1s.
-
-**Grace period** (1 second): released slots remain readable with stale data until `drainPending` clears them. Covers all in-flight lock-free readers (<5µs per read → 200,000× safety margin).
-
-### navigateToSlotStart
-
-Used by `TryTombstone` to replay an encoded path:
-```
-for d in 0..depth-1:
-    slot = (pathBits >> (27 - d*3)) & 7
-    ix = nodes[nodeIdx][slot]
-    if d == depth-1 and ix.extension == 0: return ix.slotStart ✓
-    if split/collapse detected:            return (0, false)
-    nodeIdx = ix.extension
-```
-
----
-
-## Memory Layout
-
-```
-TotalMemory / (len(SizeClasses) × len(TTLTiers))  bytes per region
-
-Example: 512MB total, SizeClasses=[64,256,1024,4096], TTLTiers=[60,3600]
- = 8 regions × 64MB each
-
-Region[0][0]: stride=80B,   count=838,860  slots (64B vals,  60s TTL)
-Region[0][1]: stride=80B,   count=838,860  slots (64B vals,  1h  TTL)
-Region[1][0]: stride=272B,  count=247,099  slots (256B vals, 60s TTL)
-...
-```
-
----
-
-## Performance Notes
-
-- **Lock-free reads**: trie snap load + 4-slot scan + header validation, 0 mutex, 0 allocs
-- **Shard-level writes**: 256 shards → low contention even under high write throughput
-- **Pre-check layering**: ExpTrunc filter avoids slab cache-line load for expired entries
-- **Fixed stride**: predictable slot size removes runtime alignment calculations
-- **Single cleaner**: minimal background overhead; 50ms sleep at idle
-- **xSlotPtr back-pointer**: O(trie depth) index navigation in cleaner vs O(N) scan
-
-### Benchmark Reference (amd64, warm L1)
-
-| Operation | Throughput |
-|-----------|-----------|
-| `GetTag` (index only) | ~4.5 ns/op |
-| `Set` | ~77 ns/op |
-| `Get` cold (500K entries, DRAM) | ~30 ns/op |
-| Delete + re-insert cycle | ~2 µs/op |
-
-All hot-path operations: **0 allocs/op**.
-
----
-
-## Hash Function
-
-```go
-Hash128(tenantID uint16, key []byte) → [16]byte
-  fp[0:8]  = maphash64(routingSeed,     tenantID, key)  ← H1: shard+trie routing
-  fp[8:16] = maphash64(fingerprintSeed, tenantID, key)  ← H2: hashIdx tag + KeyMid source
-```
-
-TenantID is mixed into both halves → identical keys for different tenants always produce distinct fingerprints. Cross-tenant index collision is impossible.
+*Last updated: 2026-03-21*

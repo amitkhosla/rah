@@ -1,4 +1,4 @@
-package cache
+package lookup_v1
 
 // CacheBackend is a TTL-aware persistent store used as the spill/warm-up layer
 // behind the in-memory slab.
@@ -28,7 +28,7 @@ type CacheBackend interface {
 // NoopBackend is a CacheBackend that does nothing.
 // Use it to disable persistence and run purely in-memory:
 //
-//	NewCacheManager(..., icache2.NoopBackend)
+//	NewCacheManager(..., cache.NoopBackend)
 var NoopBackend CacheBackend = noopBackend{}
 
 type noopBackend struct{}
