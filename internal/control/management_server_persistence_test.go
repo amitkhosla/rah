@@ -42,7 +42,7 @@ func newTestMS(t *testing.T) *ManagementServer {
 		MaxBoolsSlots: 8,
 		DefaultLimits: config.ResourceLimit{MaxBodySize: 1024 * 1024},
 	})
-	return NewManagementServer(fm, NewCompiler(fm), NewNameRegistry())
+	return NewManagementServer(fm, NewCompiler(fm), NewNameRegistry(), nil)
 }
 
 // echoFlow returns a trivial flow that compiles to a single echo_request instruction.
@@ -259,6 +259,95 @@ func TestBootstrapFromEmptyDataStoreIsNoop(t *testing.T) {
 	state := s.FlowManager.State.Load()
 	if state.Router.Lookup("/anything") != 0 {
 		t.Fatal("expected empty router after noop bootstrap")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Incremental sync — datastore accumulates across partial calls
+// ---------------------------------------------------------------------------
+
+// TestIncrementalSyncAccumulates verifies the scenario:
+//
+//	call 1 → upsert 3 APIs  → datastore has 3
+//	call 2 → upsert 2 more  → datastore has 5
+//	call 3 → delete 1       → datastore has 4
+//	restart → bootstrap     → gateway sees 4 APIs
+func TestIncrementalSyncAccumulates(t *testing.T) {
+	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	if err != nil {
+		t.Fatalf("build datastore manager: %v", err)
+	}
+
+	s := newTestMS(t)
+	s.SetDataStore(dsm)
+
+	// Call 1: 3 flows + 3 APIs
+	if err := s.ApplyUnifiedSync(UnifiedSyncRequest{
+		Flows: []FlowUpdate{
+			{Name: "f1", Instructions: echoFlow(), Action: "upsert"},
+			{Name: "f2", Instructions: echoFlow(), Action: "upsert"},
+			{Name: "f3", Instructions: echoFlow(), Action: "upsert"},
+		},
+		Apis: []ApiUpdate{
+			{Name: "a1", Path: "/v1/one", FlowName: "f1", Action: "upsert"},
+			{Name: "a2", Path: "/v1/two", FlowName: "f2", Action: "upsert"},
+			{Name: "a3", Path: "/v1/three", FlowName: "f3", Action: "upsert"},
+		},
+	}); err != nil {
+		t.Fatalf("call 1 failed: %v", err)
+	}
+
+	// Call 2: 2 more flows + 2 more APIs (partial — no mention of a1/a2/a3)
+	if err := s.ApplyUnifiedSync(UnifiedSyncRequest{
+		Flows: []FlowUpdate{
+			{Name: "f4", Instructions: echoFlow(), Action: "upsert"},
+			{Name: "f5", Instructions: echoFlow(), Action: "upsert"},
+		},
+		Apis: []ApiUpdate{
+			{Name: "a4", Path: "/v1/four", FlowName: "f4", Action: "upsert"},
+			{Name: "a5", Path: "/v1/five", FlowName: "f5", Action: "upsert"},
+		},
+	}); err != nil {
+		t.Fatalf("call 2 failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	apis, _ := dsm.ReadAPIDefinitionsSnapshot(ctx)
+	if len(apis) != 5 {
+		t.Fatalf("after 2 calls: expected 5 APIs in datastore, got %d: %v", len(apis), keys(apis))
+	}
+
+	// Call 3: delete a2 only
+	if err := s.ApplyUnifiedSync(UnifiedSyncRequest{
+		Apis:  []ApiUpdate{{Name: "a2", Action: "delete"}},
+		Flows: []FlowUpdate{{Name: "f2", Action: "delete"}},
+	}); err != nil {
+		t.Fatalf("call 3 (delete) failed: %v", err)
+	}
+
+	apis, _ = dsm.ReadAPIDefinitionsSnapshot(ctx)
+	if len(apis) != 4 {
+		t.Fatalf("after delete: expected 4 APIs in datastore, got %d: %v", len(apis), keys(apis))
+	}
+	if _, ok := apis["a2"]; ok {
+		t.Fatal("deleted API a2 still present in datastore")
+	}
+
+	// Simulate restart: new management server bootstraps from the same datastore.
+	s2 := newTestMS(t)
+	if err := s2.Bootstrap(ctx, dsm); err != nil {
+		t.Fatalf("bootstrap failed: %v", err)
+	}
+
+	state := s2.FlowManager.State.Load()
+	for _, path := range []string{"/v1/one", "/v1/three", "/v1/four", "/v1/five"} {
+		if state.Router.Lookup(path) == 0 {
+			t.Errorf("route %q not registered after bootstrap", path)
+		}
+	}
+	if state.Router.Lookup("/v1/two") != 0 {
+		t.Error("deleted route /v1/two still registered after bootstrap")
 	}
 }
 

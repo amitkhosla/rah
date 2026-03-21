@@ -37,8 +37,8 @@ func TestClientBytesSentStreamingAndBuffered(t *testing.T) {
 	if _, err := ctx.Write([]byte("abc")); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
-	if ctx.ClientBytesSent != 3 {
-		t.Fatalf("streaming bytes = %d, want 3", ctx.ClientBytesSent)
+	if ctx.Timing.ClientBytesSent != 3 {
+		t.Fatalf("streaming bytes = %d, want 3", ctx.Timing.ClientBytesSent)
 	}
 
 	ctx.Reset(noopWriter{})
@@ -46,11 +46,11 @@ func TestClientBytesSentStreamingAndBuffered(t *testing.T) {
 	if _, err := ctx.Write([]byte("hello")); err != nil {
 		t.Fatalf("buffered write failed: %v", err)
 	}
-	if ctx.ClientBytesSent != 0 {
-		t.Fatalf("buffered mode should count on finalize, got %d", ctx.ClientBytesSent)
+	if ctx.Timing.ClientBytesSent != 0 {
+		t.Fatalf("buffered mode should count on finalize, got %d", ctx.Timing.ClientBytesSent)
 	}
 	ctx.Finalize()
-	if ctx.ClientBytesSent != 5 {
-		t.Fatalf("buffered finalize bytes = %d, want 5", ctx.ClientBytesSent)
+	if ctx.Timing.ClientBytesSent != 5 {
+		t.Fatalf("buffered finalize bytes = %d, want 5", ctx.Timing.ClientBytesSent)
 	}
 }

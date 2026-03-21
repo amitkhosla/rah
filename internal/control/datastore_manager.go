@@ -229,16 +229,16 @@ func (m *DataStoreManager) ReadGlobalDomainSnapshot(ctx context.Context, domain 
 
 // ReadRegistryStoreSnapshot reads all tenant registry records for the given tenant when configured.
 func (m *DataStoreManager) ReadRegistryStoreSnapshot(ctx context.Context, tenant datastore.Tenant) (map[string][]byte, error) {
-	if !m.IsConfigured(config.DomainRegistryStore) {
+	if !m.IsConfigured(config.DomainTenantRegistry) {
 		return map[string][]byte{}, nil
 	}
-	keys, err := m.ListKeys(ctx, config.DomainRegistryStore, tenant, "")
+	keys, err := m.ListKeys(ctx, config.DomainTenantRegistry, tenant, "")
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string][]byte, len(keys))
 	for _, k := range keys {
-		v, ok, err := m.Get(ctx, config.DomainRegistryStore, tenant, k)
+		v, ok, err := m.Get(ctx, config.DomainTenantRegistry, tenant, k)
 		if err != nil {
 			return nil, err
 		}

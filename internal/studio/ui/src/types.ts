@@ -1,8 +1,15 @@
-export type TabId = 'flows' | 'apis' | 'deploy' | 'settings'
+export type TabId = 'flows' | 'apis' | 'deploy' | 'gateway' | 'tenants' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
 // ── Palette / Schema ──────────────────────────────────────────────
+
+export interface FieldDef {
+  key: string
+  label: string
+  description: string
+  placeholder: string
+}
 
 export interface PaletteBlock {
   type: string
@@ -13,6 +20,7 @@ export interface PaletteBlock {
   supports_nested: boolean
   next_hints?: string[]
   defaults: Record<string, string>
+  fields?: FieldDef[]
 }
 
 export interface SchemaResponse {
@@ -69,6 +77,11 @@ export interface TargetsResponse {
 // A step in a flow. `action` is always set; remaining keys are step parameters.
 export type FlowStep = { action: string } & Record<string, string>
 
+export interface SavedFlow {
+  name: string
+  steps: FlowStep[]
+}
+
 export interface ApiDef {
   name: string
   path: string
@@ -106,4 +119,77 @@ export interface ImportedAPI {
 export interface OpenAPIImportResponse {
   source: string
   apis: ImportedAPI[]
+}
+
+// ── Tenant Management ─────────────────────────────────────────────
+
+export interface TenantSummary {
+  tenant_id: number
+  aliases: string[]
+  service_url_count: number
+  identifier_count: number
+  metadata_count: number
+}
+
+export interface TenantListResponse {
+  items: TenantSummary[]
+  next_cursor: number
+  count: number
+}
+
+export interface TenantDetail {
+  tenant_id: number
+  aliases: string[]
+  properties: Record<string, string>  // prefixed: "url:primary", "id:api_key", "meta:tier"
+}
+
+export interface RateLimitConfig {
+  per_sec: number
+  per_min: number
+  burst_factor: number
+}
+
+export interface RateLimitRecord {
+  name: string
+  config: RateLimitConfig
+}
+
+export interface RateLimitListResponse {
+  items: RateLimitRecord[]
+  count: number
+}
+
+export interface UpsertTenantRequest {
+  aliases: string[]
+  service_urls?: Record<string, string>
+  identifiers?: Record<string, string>
+  metadata?: Record<string, string>
+}
+
+export interface UpsertRateLimitRequest {
+  name: string
+  per_sec: number
+  per_min: number
+  burst_factor: number
+}
+
+// ── Gateway live state ────────────────────────────────────────────
+
+export interface GatewayFlow {
+  name: string
+  instructions: FlowStep[]
+  action: string
+}
+
+export interface GatewayApi {
+  name: string
+  path: string
+  flow_name: string
+  action: string
+}
+
+export interface GatewayState {
+  sync_uuid: string
+  flows: GatewayFlow[]
+  apis: GatewayApi[]
 }

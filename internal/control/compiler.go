@@ -5,6 +5,7 @@ import (
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
+	registrypkg "rah/internal/registry"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ type Compiler struct {
 	slotMap     map[string]int
 	nextSlot    int
 	fm          *engine.FlowManager
+	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -22,7 +24,7 @@ type Compiler struct {
 func NewCompiler(fm *engine.FlowManager) *Compiler {
 	return &Compiler{
 		slotMap:     make(map[string]int),
-		nextSlot:    10,
+		nextSlot:    0,
 		fm:          fm,
 		GlobalTable: make([]engine.Instruction, 0, 4096),
 		FragmentMap: make(map[string]int16),
@@ -43,14 +45,16 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 
 	// 2. Bake APIs
 	for _, api := range cfg.Apis {
-		// Update the API config entry point
 		api.EntryPoint = int16(len(c.GlobalTable))
 		c.resetSlots()
 
 		// AUTO-BINDING: Discover what headers/query params this flow needs
 		deps := c.discoverDependencies(cfg.Flows[api.FlowName])
 		for _, dep := range deps {
-			slot := c.getSlot(dep.Identifier)
+			slot, err := c.getSlot(dep.Identifier)
+			if err != nil {
+				return fmt.Errorf("api %q auto-bind: %w", api.FlowName, err)
+			}
 			c.GlobalTable = append(c.GlobalTable, steps.BindInput(dep.Source, dep.Key, slot))
 		}
 
@@ -92,7 +96,10 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 
 	case "switch":
-		slot := c.getSlot(step.As)
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		jumpTable := make(map[string]int16)
 		dispatcherIdx := len(c.GlobalTable)
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "SWITCH_DISPATCH"})
@@ -111,24 +118,145 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "http_call":
 		urlSlot := -1
 		if step.UrlVar != "" {
-			urlSlot = c.getSlot(step.UrlVar)
+			var err error
+			urlSlot, err = c.getSlot(step.UrlVar)
+			if err != nil {
+				return err
+			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
 
 	case "registry_lookup":
-		keySlot := c.getSlot(step.KeyIdentifier)
-		metaSlot := c.getSlot(step.As)
-		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot, metaSlot, step.Scope))
+		// Resolves the alias in keySlot → ctx.TenantID.
+		// key_identifier names the slot holding the alias (e.g. "header.X-Tenant").
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot))
+
+	case "load_service_url":
+		// Loads the named URL for the current tenant into the slot named by "as".
+		// EnsureURLKeyID pre-resolves the radix walk once at bake time; hot path is a
+		// single array index (2–5 ns) regardless of how many URL keys exist.
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		var urlKeyID uint16
+		if c.RegMgr != nil {
+			urlKeyID = c.RegMgr.EnsureURLKeyID(step.Key)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadServiceURL(urlKeyID, destSlot))
+
+	case "load_identifier":
+		// Loads the named identifier for the current tenant into the slot named by "as".
+		// Same bake-time KeyID resolution as load_service_url.
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		var idKeyID uint16
+		if c.RegMgr != nil {
+			idKeyID = c.RegMgr.EnsureIDKeyID(step.Key)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadIdentifier(idKeyID, destSlot))
+
+	case "set_service_url":
+		// Writes a service URL for the current tenant into the URLs store.
+		// key: URL name e.g. "primary", "fallback".
+		// source: slot name holding the value to write.
+		// Management-plane write — use in admin/onboarding flows, not hot request loops.
+		if c.RegMgr == nil {
+			return fmt.Errorf("set_service_url requires a RegistryManager (not available in standalone mode)")
+		}
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetServiceURL(c.RegMgr, step.Key, srcSlot))
+
+	case "set_identifier":
+		// Writes an identifier for the current tenant into the IDs store.
+		// key: identifier name e.g. "api_key", "client_id".
+		// source: slot name holding the value to write.
+		if c.RegMgr == nil {
+			return fmt.Errorf("set_identifier requires a RegistryManager (not available in standalone mode)")
+		}
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetIdentifier(c.RegMgr, step.Key, srcSlot))
+
+	case "set_meta":
+		// Writes a metadata value for the current tenant into the Meta store.
+		// key: metadata key name e.g. "tier", "region".
+		// source: slot name holding the value to write.
+		if c.RegMgr == nil {
+			return fmt.Errorf("set_meta requires a RegistryManager (not available in standalone mode)")
+		}
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetMeta(c.RegMgr, step.Key, srcSlot))
+
+	case "check_rate_limit":
+		// Opt-in rate limit enforcement. Must be placed explicitly in the flow.
+		// Resolves the limit via ResolveRateLimit and enforces a fixed-window counter.
+		// Returns 403 if the tenant is blocked; 429 if the rate is exceeded.
+		// Optional quota group map in step.Input: {"1": "free_rl", "2": "pro_rl"}
+		// Keys are group IDs (uint8), values are rate limit config names.
+		var quotaGroupRLIds []uint16
+		if len(step.Input) > 0 && c.RegMgr != nil {
+			quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, quotaGroupRLIds))
+
+	case "assign_quota_group":
+		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.
+		// step.Input: {"free": "1", "pro": "2", "enterprise": "3"}
+		// Keys are string tier names, values are group IDs (uint8 1–255).
+		srcSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		groupMap := make(map[string]uint8, len(step.Input))
+		for name, idStr := range step.Input {
+			if id, err := strconv.ParseUint(idStr, 10, 8); err == nil {
+				groupMap[name] = uint8(id)
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.AssignQuotaGroup(srcSlot, groupMap))
+
+	case "bind_client_ip":
+		// Extracts the real client IP (X-Forwarded-For → X-Real-IP → RemoteAddr)
+		// and stores it in the named slot.
+		destSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindClientIP(destSlot))
 
 	case "token_validation":
-		tokenSlot := c.getSlot(step.KeyIdentifier)
+		tokenSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
 		cfg := steps.ParseTokenValidationConfig(step.KeyIdentifier, step.Input)
 		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tokenSlot, cfg))
 
 	case "foreach":
+		if c.nextSlot >= rctx.BaseByteSlots {
+			return fmt.Errorf("slot limit exceeded at foreach iterator: max %d", rctx.BaseByteSlots)
+		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
-		valSlot := c.getSlot(step.As)
+		valSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 
 		gateID := int16(len(c.GlobalTable))
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "LOOP_GATE_PLACEHOLDER"})
@@ -165,24 +293,51 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 
 	case "concat":
-		slotA := c.getSlot(step.KeyIdentifier)
-		slotB := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.ConcatStep(slotA, slotB, result, step.Value))
 
 	case "to_lower":
-		src := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.ToLowerStep(src, result))
 
 	case "to_upper":
-		src := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.ToUpperStep(src, result))
 
 	case "substring":
-		src := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		start := 0
 		length := -1
 		if v, ok := step.Input["start"]; ok {
@@ -198,43 +353,91 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.SubstringStep(src, result, start, length))
 
 	case "to_int":
-		src := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.ToIntStep(src, result))
 
 	case "add":
-		slotA := c.getSlot(step.KeyIdentifier)
-		slotB := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.AddStep(slotA, slotB, result))
 
 	case "sub":
-		slotA := c.getSlot(step.KeyIdentifier)
-		slotB := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.SubStep(slotA, slotB, result))
 
 	case "mul":
-		slotA := c.getSlot(step.KeyIdentifier)
-		slotB := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.MulStep(slotA, slotB, result))
 
 	case "div":
-		slotA := c.getSlot(step.KeyIdentifier)
-		slotB := c.getSlot(step.Source)
-		result := c.getSlot(step.As)
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.DivStep(slotA, slotB, result))
 
 	case "set_response_header":
-		src := c.getSlot(step.Source)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseHeaderFromSlot(step.Key, src))
 
 	case "echo_request":
 		c.GlobalTable = append(c.GlobalTable, steps.EchoRequestStep())
 
 	case "set_response_body":
-		src := c.getSlot(step.Source)
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseBodyStep(src))
 
 	case "set_response_status":
@@ -245,6 +448,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseStatusStep(code))
+
+	case "store_internal_tx_id":
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.StoreInternalTxID(slot))
+
+	case "bind_correlation_id":
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable,
+			steps.BindCorrelationID(step.Key, step.GenerateIfMissing, c.fm.TxIDGen, slot))
 
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
@@ -265,7 +483,6 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 				count += len(c.simulateBake(frags[fragName], frags)) + 1
 			}
 		case "foreach":
-			// Correctly simulate the inline steps in 'Do'
 			count += 2 + len(c.simulateBake(step.Do, frags))
 		case "http_call":
 			count += 1
@@ -338,7 +555,10 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 
 	deps := c.discoverDependenciesWithFragments(flow, fragments)
 	for _, dep := range deps {
-		slot := c.getSlot(dep.Identifier)
+		slot, err := c.getSlot(dep.Identifier)
+		if err != nil {
+			return nil, fmt.Errorf("auto-bind dependency %q: %w", dep.Identifier, err)
+		}
 		switch dep.Source {
 		case "header":
 			c.GlobalTable = append(c.GlobalTable, steps.BindHeader(dep.Key, slot))
@@ -354,19 +574,53 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 }
 
 // Helpers
-func (c *Compiler) getSlot(name string) int {
+func (c *Compiler) getSlot(name string) (int, error) {
 	if idx, ok := c.slotMap[name]; ok {
-		return idx
+		return idx, nil
+	}
+	if c.nextSlot >= rctx.BaseByteSlots {
+		return -1, fmt.Errorf("slot limit exceeded: flow requires more than %d byte slots (max %d); split into sub-flows or reduce variables", c.nextSlot, rctx.BaseByteSlots)
 	}
 	idx := c.nextSlot
 	c.slotMap[name] = idx
 	c.nextSlot++
-	return idx
+	return idx, nil
 }
 
 func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
-	c.nextSlot = 10
+	c.nextSlot = 0
+}
+
+// compileQuotaGroupMap builds a []uint16 indexed by QuotaGroupID where each
+// element is the RateLimitConfigId for that group. The input map has string
+// group IDs as keys and rate limit config names as values:
+//
+//	{"1": "free_rl", "2": "pro_rl", "3": "enterprise_rl"}
+func (c *Compiler) compileQuotaGroupMap(input map[string]string) []uint16 {
+	maxID := uint8(0)
+	parsed := make(map[uint8]string, len(input))
+	for idStr, rlName := range input {
+		id, err := strconv.ParseUint(idStr, 10, 8)
+		if err != nil || id == 0 {
+			continue
+		}
+		gid := uint8(id)
+		parsed[gid] = rlName
+		if gid > maxID {
+			maxID = gid
+		}
+	}
+	if maxID == 0 {
+		return nil
+	}
+	out := make([]uint16, int(maxID)+1)
+	for gid, rlName := range parsed {
+		if rlID, ok := c.RegMgr.GetRateLimitConfigId(rlName); ok {
+			out[gid] = rlID
+		}
+	}
+	return out
 }
 
 func (c *Compiler) newReturnStep() engine.Instruction {
@@ -412,8 +666,6 @@ func (c *Compiler) ResetLocalScope() {
 	c.resetSlots()
 }
 
-// internal/control/compiler.go
-
 func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (int16, error) {
 	entryPoint := int16(len(c.GlobalTable))
 
@@ -421,7 +673,10 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (in
 	deps := c.discoverDependencies(sharedFlow)
 
 	for i, dep := range deps {
-		slot := c.getSlot(dep.Identifier)
+		slot, err := c.getSlot(dep.Identifier)
+		if err != nil {
+			return entryPoint, fmt.Errorf("api %q dep %q: %w", api.FlowName, dep.Identifier, err)
+		}
 
 		var instr engine.Instruction
 		switch dep.Source {

@@ -1,93 +1,164 @@
 package cache
 
-// SmartPointer encodes location inside slab memory.
-//
-// Layout (64 bits):
-//
-// [63-62] Tag (2 bits)
-// [61-56] SizeClassID (6 bits)
-// [55-52] TierID (4 bits)
-// [51-44] Generation (8 bits)
-// [43-0 ] Offset (44 bits)
-//
-// Offset supports up to 16TB per region (more than enough).
-type SmartPointer uint64
+import "unsafe"
 
+// ── xSlot val encoding ───────────────────────────────────────────────────────
+//
+// 64-bit val field — all types share a 16-bit fixed header in bits[63:48]:
+//
+//	[63:62] Gen      — 2b wrap generation (fast pre-check; EntryHeader.Gen authoritative)
+//	[61:50] ExpTrunc — 12b truncated expiry: (unixSec >> 5) & 0xFFF
+//	                   32-second granularity, ~36-hour range before wrap
+//	[49:48] Type     — 00=SlabRAM  01=KeyIsValue  10=EmptyValue  11=reserved
+//
+// Type-dependent payload [47:0]:
+//
+//	SlabRAM    : SizeClass(2b) | TierID(2b) | Offset(44b)
+//	KeyIsValue : Expiry_unix32(32b) | spare(16b)   — value is the key (in tag)
+//	EmptyValue : Expiry_unix32(32b) | spare(16b)   — negative cache
 const (
-	TagSlabRAM   = 0x0 // Standard variable-length items
-	TagTiny      = 0x3 // Fixed 24B slots (10B Header + 14B Data)
-	TagDirectInt = 0x2 // Direct value storage (Future)
-	TagExternal  = 0x1 // Overflow to Redis/Disk
+	xValGenShift  = 62
+	xValExpShift  = 50
+	xValTypeShift = 48
 
-	MagicByte = 0xAA // Sentinel to detect memory corruption
+	xValTypeMask     = uint64(0x3) << xValTypeShift
+	xValTypeSlabRAM  = uint64(0x0) << xValTypeShift
+	xValTypeKeyIsVal = uint64(0x1) << xValTypeShift
+	xValTypeEmptyVal = uint64(0x2) << xValTypeShift
+
+	// SlabRAM payload bit positions within [47:0].
+	xValClassShift = 46
+	xValTierShift  = 44
+	xValOffMask    = uint64((1 << 44) - 1)
+
+	// KeyIsValue / EmptyValue: full unix32 expiry in bits[47:16].
+	xValFullExpShift = 16
 )
 
-func PackPointer(tag, classID, tierID uint8, generation uint32, offset uint64) SmartPointer {
-	return SmartPointer(
-		(uint64(tag&0x3) << 62) |
-			(uint64(classID&0x3F) << 56) |
-			(uint64(tierID&0xF) << 52) |
-			(uint64(generation&0xFF) << 44) |
-			(offset & 0xFFFFFFFFFFF),
+// SmartPointer is the 64-bit val stored in an xSlot, encoding entry location
+// and type. Use PackSlabVal / UnpackSlab to produce and decode it.
+type SmartPointer = uint64
+
+// PackSlabVal encodes a SlabRAM val for storage in xSlot.val.
+func PackSlabVal(gen uint8, expTrunc uint16, classID, tierID uint8, offset uint64) SmartPointer {
+	return (uint64(gen&0x3) << xValGenShift) |
+		(uint64(expTrunc&0xFFF) << xValExpShift) |
+		xValTypeSlabRAM |
+		(uint64(classID&0x3) << xValClassShift) |
+		(uint64(tierID&0x3) << xValTierShift) |
+		(offset & xValOffMask)
+}
+
+// Unpack decodes the common 16-bit header fields present in every val type.
+func Unpack(v SmartPointer) (gen uint8, expTrunc uint16, typ uint64) {
+	return uint8(v >> xValGenShift),
+		uint16((v >> xValExpShift) & 0xFFF),
+		v & xValTypeMask
+}
+
+// UnpackSlab decodes the SlabRAM-specific payload from a val.
+func UnpackSlab(v SmartPointer) (classID, tierID uint8, offset uint64) {
+	return uint8((v >> xValClassShift) & 0x3),
+		uint8((v >> xValTierShift) & 0x3),
+		v & xValOffMask
+}
+
+// ExpTrunc converts a full unix-second timestamp to the 12-bit truncated form
+// used as a fast pre-check in xSlot.val.
+func ExpTrunc(unixSec uint32) uint16 { return uint16((unixSec >> 5) & 0xFFF) }
+
+// ExpTruncExpired reports whether the truncated expiry suggests the entry has
+// passed. Conservative: false negatives occur after ~36 h wrap; callers must
+// also check EntryHeader.Expiry for authoritative confirmation.
+func ExpTruncExpired(trunc uint16, nowSec uint32) bool {
+	return trunc < uint16((nowSec>>5)&0xFFF)
+}
+
+// ── xSlotPtr ─────────────────────────────────────────────────────────────────
+//
+// 6-byte (48-bit) tag reference: slab entry → owning xSlot in the trie index.
+// Stored in EntryHeader so the cleaner can locate and CAS-tombstone the index
+// entry via a fresh trie traversal (immune to split/collapse path staleness).
+//
+// Bit layout (lower 48 bits of uint64, little-endian in EntryHeader.XSlotPtrB):
+//
+//	[47]    lane     — 1b  0=tinyIdx, 1=hashIdx
+//	[46:39] shard    — 8b  pre-computed shard index (= shardOf(tag))
+//	[38: 0] tagBits  — 39b lower 39 bits of the tag (routing bits for trieFind)
+//
+// The stored shard is pre-computed (rather than re-derived) so that hashed
+// shard selection (tinyIdx hashShards=true) works correctly at tombstone time.
+// The 39 routing bits cover shardBits(8) + maxDepth×xTrieBits(30) = 38 bits,
+// leaving one spare bit.
+type xSlotPtr uint64
+
+const (
+	xPtrLaneBit  = 47
+	xPtrShardBit = 39
+
+	xPtrLaneMask  = uint64(1) << xPtrLaneBit
+	xPtrShardMask = uint64(0xFF) << xPtrShardBit
+	xPtrTagMask   = (uint64(1) << xPtrShardBit) - 1
+
+	xPtrLaneTiny = uint64(0)                // lane bit = 0 for tinyIdx
+	xPtrLaneHash = uint64(1) << xPtrLaneBit // lane bit = 1 for hashIdx
+)
+
+func (p xSlotPtr) laneBit() uint64 { return uint64(p) >> xPtrLaneBit & 0x1 }
+func (p xSlotPtr) shardIdx() uint8 { return uint8(uint64(p) >> xPtrShardBit & 0xFF) }
+func (p xSlotPtr) tagBits() uint64 { return uint64(p) & xPtrTagMask }
+
+// xSlotPtrTo6 serialises p into 6 little-endian bytes for EntryHeader.XSlotPtrB.
+func xSlotPtrTo6(p xSlotPtr) [6]byte {
+	v := uint64(p)
+	return [6]byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24), byte(v >> 32), byte(v >> 40)}
+}
+
+// xSlotPtrFrom6 deserialises 6 little-endian bytes back to an xSlotPtr.
+func xSlotPtrFrom6(b [6]byte) xSlotPtr {
+	return xSlotPtr(uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 |
+		uint64(b[3])<<24 | uint64(b[4])<<32 | uint64(b[5])<<40)
+}
+
+// packXTagRef constructs an xSlotPtr from lane (pre-shifted: xPtrLaneTiny or
+// xPtrLaneHash), the pre-computed shard index, and the lower 39 bits of the tag.
+func packXTagRef(laneBit47 uint64, shard uint8, tagLower39 uint64) xSlotPtr {
+	return xSlotPtr(
+		(laneBit47 & xPtrLaneMask) |
+			(uint64(shard) << xPtrShardBit) |
+			(tagLower39 & xPtrTagMask),
 	)
 }
 
-// Unpack decodes a SmartPointer into its individual components.
-// [63-62] Tag (2 bits)
-// [61-56] SizeClassID (6 bits)
-// [55-52] TierID (4 bits)
-// [51-44] Generation (8 bits)
-// [43-0 ] Offset (44 bits)
+// ── EntryHeader ───────────────────────────────────────────────────────────────
 //
-// Returns:
+// Fixed 16-byte prefix of every slab slot.
+// Immediately followed by value bytes (zero-padded to SizeClass boundary).
 //
-//	tag         - entry type (RAM / external / etc)
-//	classID     - size class index
-//	tierID      - TTL tier index
-//	generation  - region generation (wrap protection)
-//	offset      - byte offset inside region
-func Unpack(ptr SmartPointer) (
-	tag uint8,
-	classID uint8,
-	tierID uint8,
-	generation uint32,
-	offset uint64,
-) {
-	val := uint64(ptr)
+//	Offset  Size  Field
+//	     0     4  Expiry    — unix32, authoritative TTL
+//	     4     1  Gen       — 8-bit region generation (circular-buffer wrap counter)
+//	     5     1  KeyMid    — key[len/2]; 0x00 for Lane 1 (full key verified by tag)
+//	     6     2  TenantID  — for accounting on slot eviction
+//	     8     2  ValueLen  — actual bytes used within the slot (≤ SizeClass)
+//	    10     6  XSlotPtrB — little-endian xSlotPtr back-pointer (cleaner; Phase 2)
+//
+// Total: 16 bytes, 4-byte naturally aligned.
 
-	tag = uint8(val >> 62)
-	classID = uint8((val >> 56) & 0x3F)
-	tierID = uint8((val >> 52) & 0x0F)
-	generation = uint32((val >> 44) & 0xFF)
-	offset = val & 0xFFFFFFFFFFF
+const EntryHeaderSize = 16
 
-	return
-}
-
-func GetSlabID(ptr SmartPointer) uint8 {
-	return uint8((uint64(ptr) >> 56) & 0x3F)
-}
-
-// EntryHeader is stored at the beginning of every record inside a slab.
-//
-// Layout (32 bytes, cache-line friendly):
-//
-//	0  -  3  : Expiry (absolute unix seconds)
-//	4  -  7  : ValueLen
-//	8  - 11  : Generation (region wrap protection)
-//
-// 12  - 13  : TenantID
-// 14         : Flags
-// 15         : padding (alignment)
-// 16  - 31  : 128-bit fingerprint
-//
-// Total: 32 bytes
 type EntryHeader struct {
-	Expiry      uint32
-	ValueLen    uint32
-	Generation  uint32
-	TenantID    uint16
-	Flags       uint8
-	_pad        uint8
-	Fingerprint [16]byte
+	Expiry    uint32
+	Gen       uint8
+	KeyMid    uint8
+	TenantID  uint16
+	ValueLen  uint16
+	XSlotPtrB [6]byte
+}
+
+// headerAt casts buf[physOff] to *EntryHeader via unsafe.
+// Safe when buf is Go-heap-allocated (guaranteed ≥8-byte aligned) and
+// physOff is a multiple of 8 (guaranteed by stride = align8(16 + SizeClass)).
+func headerAt(buf []byte, physOff uint64) *EntryHeader {
+	return (*EntryHeader)(unsafe.Pointer(&buf[physOff]))
 }

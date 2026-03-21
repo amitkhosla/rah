@@ -22,7 +22,7 @@ func TestUnifiedSyncRegistersApiAndRuntimeConsumesCompiledFlow(t *testing.T) {
 
 	compiler := NewCompiler(fm)
 	registry := NewNameRegistry()
-	server := NewManagementServer(fm, compiler, registry)
+	server := NewManagementServer(fm, compiler, registry, nil)
 
 	syncReq := UnifiedSyncRequest{
 		SyncUUID: "sync-1",
@@ -88,7 +88,7 @@ func TestUnifiedSyncBuildsApiPlanWithInputBindingsAndSubflowCalls(t *testing.T) 
 
 	compiler := NewCompiler(fm)
 	registry := NewNameRegistry()
-	server := NewManagementServer(fm, compiler, registry)
+	server := NewManagementServer(fm, compiler, registry, nil)
 
 	syncReq := UnifiedSyncRequest{
 		SyncUUID: "sync-2",

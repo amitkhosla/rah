@@ -30,13 +30,13 @@ func (c *TenantController) ApplyUpdate(upd TenantUpdate) {
 
 	// 1. Handle Upserts (Prioritize aliases to establish IDs)
 	for _, alias := range upd.Upsert.Aliases {
-		// For each endpoint/metadata, we call AddTenantData.
+		// For each endpoint/metadata, we call the typed store methods.
 		// This handles resolving the Alias to a Row and the Key to a Column.
 		for key, value := range upd.Upsert.Endpoints {
-			c.Reg.AddTenantData(alias, key, []byte(value))
+			c.Reg.AddServiceURL(alias, key, []byte(value))
 		}
 		for key, value := range upd.Upsert.Metadata {
-			c.Reg.AddTenantData(alias, key, []byte(value))
+			c.Reg.AddMeta(alias, key, []byte(value))
 		}
 	}
 

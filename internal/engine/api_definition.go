@@ -11,8 +11,11 @@ MethodRoots:
 */
 
 type Endpoint struct {
-	Id   uint32
-	Plan []Instruction
+	EndpointId          uint8  // sequential within ApiDefinition (0–255)
+	_                   [1]byte
+	APIRateLimitId      uint16 // rate limit config at API level; 0 = gateway default
+	EndpointRateLimitId uint16 // rate limit config at endpoint level; 0 = inherit API
+	Plan                []Instruction
 }
 
 type ApiDefinition struct {

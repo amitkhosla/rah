@@ -99,10 +99,10 @@ func TestHttpActionUsesMultipleUpstreams(t *testing.T) {
 	defer b.Close()
 
 	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
-	ctx.ByteSlots[10] = []byte(a.URL + "," + b.URL)
+	ctx.ByteSlots[0] = []byte(a.URL + "," + b.URL)
 	state := &engine.ExecutionState{PC: 0}
 
-	step := HttpAction(10, "", 0, "", 0, map[string]string{"http.upstream_strategy": "round_robin"})
+	step := HttpAction(0, "", 0, "", 0, map[string]string{"http.upstream_strategy": "round_robin"})
 
 	if next := step.Action(ctx, state); next != 1 {
 		t.Fatalf("expected next=1, got %d", next)

@@ -21,6 +21,8 @@ func (c *Compiler) BakeSubRouter(
 	method string,
 	plan []engine.Instruction,
 	isStrict bool,
+	apiRateLimitId uint16,
+	endpointRateLimitId uint16,
 ) uint32 {
 
 	segments := strings.Split(strings.Trim(path, "/"), "/")
@@ -31,9 +33,14 @@ func (c *Compiler) BakeSubRouter(
 	methodIdx := engine.MethodStringToIdx(method)
 	isAny := method == "ANY"
 
+	if len(def.Endpoints) > 255 {
+		panic("endpoint limit exceeded: an ApiDefinition supports at most 256 endpoints")
+	}
 	def.Endpoints = append(def.Endpoints, engine.Endpoint{
-		Id:   uint32(len(def.Endpoints)),
-		Plan: plan,
+		EndpointId:          uint8(len(def.Endpoints)),
+		APIRateLimitId:      apiRateLimitId,
+		EndpointRateLimitId: endpointRateLimitId,
+		Plan:                plan,
 	})
 	epIdx := uint32(len(def.Endpoints) - 1)
 
@@ -49,7 +56,7 @@ func (c *Compiler) BakeSubRouter(
 		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 
 			paramName := seg[1 : len(seg)-1]
-			slot := c.getSlot("path." + paramName)
+			slot, _ := c.getSlot("path." + paramName)
 
 			newNode := engine.SubRouteNode{
 				PrefixLen: uint16(len(seg)),

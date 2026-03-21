@@ -29,6 +29,21 @@ type HeaderMutation struct {
 	Op    uint8 // 0: Set, 1: Remove
 }
 
+// RequestTiming holds per-request timing counters and byte metrics.
+// It is embedded by value in Context so all fields are contiguous in memory
+// (56 bytes = fits in one cache line) with zero pointer indirection.
+// Reset is a single memclr: ctx.Timing = RequestTiming{}
+type RequestTiming struct {
+	StartNs         int64 // request start — set by FlowManager before Execute
+	FirstByteSentNs int64 // when first byte was written to client (TTFB)
+	UpstreamTimeNs  int64 // total upstream latency (atomic-added per call)
+	UpstreamCalls   int32 // upstream calls made this request
+	_               int32 // alignment pad → 56 bytes total, single cache line
+	ClientBytesSent int64 // bytes written to client
+	UpstreamBytesTx int64 // bytes sent upstream
+	UpstreamBytesRx int64 // bytes received from upstream
+}
+
 // internal/rctx/context.go
 
 type ParamOffset struct {
@@ -82,56 +97,44 @@ type Context struct {
 	headerSent      bool
 	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
 	ResHeaderCount  int
-	TenantID        uint16
-	TenantKey       string // human-readable tenant identifier (set by registry_lookup)
-	Obs             *observability.Telemetry
-	Trace           *observability.RequestTrace
-	RequestStartNs  int64
-	FirstByteSentNs int64 // when first byte was written to client — used for TTFB
-	UpstreamTimeNs  int64
-	UpstreamCalls   int32
-	ClientBytesSent int64
-	UpstreamBytesTx int64
-	UpstreamBytesRx int64
+	TenantID  uint16
+	TenantKey string // human-readable tenant identifier (set by registry_lookup)
+
+	// CallerID identifies the consumer (AppKey ID in future; always 0 today).
+	// Reserved to avoid a structural rewrite when AppKey auth is introduced.
+	CallerID uint32
+
+	// Routing identity — set by the engine at request time, zero cost
+	// (plain struct field assignments).
+	APIRateLimitId      uint16 // rate limit config for this API (set by resolveSubPath)
+	EndpointRateLimitId uint16 // rate limit config for this endpoint; 0 = inherit API level
+	EndpointId          uint8  // which sub-route matched within this API (0–255)
+	QuotaGroupID        uint8  // quota group (Phase 3)
+
+	// Obs holds all per-request timing counters embedded by value — zero indirection,
+	// single cache line. Tel and Trace are nil-gated optional subsystems.
+	Timing RequestTiming
+	Obs    *observability.Telemetry
+	Trace *observability.RequestTrace
 
 	// detachedFromPool prevents the request goroutine from returning this
 	// context to the pool when work is moved to a background goroutine.
 	detachedFromPool atomic.Bool
 
 	// ── Arena allocator ──────────────────────────────────────────────────────
-	// active points to the current arena block being written into.
-	// Starts as &primary; advances to extra[n] when primary fills.
-	active *arenaBlock
+	// arenaUsed is the number of bytes consumed in arenaInline.
+	arenaUsed int32
 
-	// extraN is the number of pool-borrowed overflow arena blocks in use.
-	extraN int32
+	// arenaExt is a single pool-borrowed 4KB block used when arenaInline fills.
+	// Nil in the common case (most requests fit in 1KB inline).
+	arenaExt *arenaBlock
 
-	// Overflow metrics — read by FlowManager.ReturnContext before Pool.Put.
-	// True if any extra arena block or slot extension was needed this request.
+	// ArenaOverflowed is true if any pool-borrowed or heap fallback was needed.
 	ArenaOverflowed bool
-	SlotOverflowed  bool
 
-	// slotExt is borrowed from slotExtPool when byte-slot count exceeds
-	// BaseByteSlots. Nil for the vast majority of requests.
-	slotExt *slotExtBlock
-
-	// extra holds up to MaxExtraArenas pool-borrowed 4KB blocks.
-	// GC sees these as pointer fields but they are nil until overflow occurs.
-	extra [MaxExtraArenas]*arenaBlock
-
-	// ── SlotOverflowStore tracking ────────────────────────────────────────────
-	// ReqID is assigned by FlowManager per request. It scopes DataStore keys
-	// so concurrent requests never collide on the same store key.
-	ReqID uint64
-
-	// slotDataSeq increments each time a value is spilled to the store,
-	// making data-overflow keys unique within a request.
-	slotDataSeq uint32
-
-	// slotOverflowKeys accumulates DataStore keys written this request.
-	// FlowManager.ReturnContext iterates these to delete them before Pool.Put.
-	// Allocated lazily — nil for requests that never overflow.
-	slotOverflowKeys []string
+	// InternalTxID is a globally-unique transaction ID assigned per request
+	// by FlowManager via TxIDGenerator. Use rctx.FormatTxID to format.
+	InternalTxID [2]uint64
 
 	// ── Inline slot headers (no heap allocation) ─────────────────────────────
 	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
@@ -141,9 +144,9 @@ type Context struct {
 	intSlotBase  [BaseIntSlots]int64
 	boolSlotBase [BaseBoolSlots]bool
 
-	// primary is the inline 4KB arena for slot data. Raw bytes only — no Go
-	// pointers — so GC never scans its contents. Declared last (largest field).
-	primary arenaBlock
+	// arenaInline is the 1KB always-inline arena for slot data. Raw bytes only
+	// — no Go pointers — so GC never scans its contents. Declared last (large).
+	arenaInline [ArenaInlineSize]byte
 }
 
 // flushResponseHeaders copies any headers set via SetResponseHeader to the
@@ -171,8 +174,8 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 
 	// Flavor 1: Direct Streaming
 	if !ctx.headerSent {
-		if ctx.FirstByteSentNs == 0 {
-			ctx.FirstByteSentNs = nanotime()
+		if ctx.Timing.FirstByteSentNs == 0 {
+			ctx.Timing.FirstByteSentNs = nanotime()
 		}
 		ctx.flushResponseHeaders()
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
@@ -180,7 +183,7 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 	}
 	n, err = ctx.Writer.Write(p)
 	if n > 0 {
-		ctx.ClientBytesSent += int64(n)
+		ctx.Timing.ClientBytesSent += int64(n)
 	}
 	return n, err
 }
@@ -189,185 +192,76 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 // If data was buffered, it flushes it to the wire in one go.
 func (ctx *Context) Finalize() {
 	if ctx.IsBuffered && !ctx.headerSent {
-		if ctx.FirstByteSentNs == 0 {
-			ctx.FirstByteSentNs = nanotime()
+		if ctx.Timing.FirstByteSentNs == 0 {
+			ctx.Timing.FirstByteSentNs = nanotime()
 		}
 		ctx.flushResponseHeaders()
 		ctx.Writer.WriteHeader(ctx.ResponseStatus)
 		n, _ := ctx.Writer.Write(ctx.ResponseBuffer)
 		if n > 0 {
-			ctx.ClientBytesSent += int64(n)
+			ctx.Timing.ClientBytesSent += int64(n)
 		}
 		ctx.headerSent = true
 	}
 }
 
-// ── SlotOverflowStore helpers ─────────────────────────────────────────────────
-// These methods let the engine layer query and update slot state without the
-// Context knowing anything about the backing store itself.
-
-// IsSlotInStore reports whether ByteSlots[i] holds a store-reference sentinel
-// rather than inline arena data. The engine layer calls this before reads.
-func (ctx *Context) IsSlotInStore(i int) bool {
-	if i < 0 || i >= len(ctx.ByteSlots) {
-		return false
-	}
-	return IsSlotOverflowRef(ctx.ByteSlots[i])
-}
-
-// SlotStoreKey decodes and returns the DataStore key from a sentinel slot.
-// Call only when IsSlotInStore returns true.
-func (ctx *Context) SlotStoreKey(i int) string {
-	return DecodeSlotOverflowKey(ctx.ByteSlots[i])
-}
-
-// IsSlotIndexOverflow reports whether slot index i exceeds the in-memory
-// ByteSlots capacity. The engine layer stores/retrieves such slots via DataStore.
-func (ctx *Context) IsSlotIndexOverflow(i int) bool {
-	return i >= len(ctx.ByteSlots)
-}
-
-// NextSlotDataKey builds a unique DataStore key for a value-overflow spill
-// and advances the per-request sequence counter.
-func (ctx *Context) NextSlotDataKey() string {
-	key := BuildSlotDataKey(ctx.ReqID, ctx.slotDataSeq)
-	ctx.slotDataSeq++
-	return key
-}
-
-// SlotIndexStoreKey returns the deterministic DataStore key for a slot-index
-// overflow. No counter needed — key is stable across reads and writes.
-func (ctx *Context) SlotIndexStoreKey(i int) string {
-	return BuildSlotIndexKey(ctx.ReqID, i)
-}
-
-// EncodeSlotRef encodes key as a store-reference sentinel and carves the
-// tiny result from the arena (a few dozen bytes, never triggers overflow).
-func (ctx *Context) EncodeSlotRef(key string) []byte {
-	n := 2 + len(key)
-	s := ctx.Alloc(n)
-	s[0] = slotOverflowSentinel[0]
-	s[1] = slotOverflowSentinel[1]
-	copy(s[2:], key)
-	return s
-}
-
-// TrackSlotKey records a DataStore key written during this request so that
-// FlowManager.ReturnContext can delete it at request end.
-func (ctx *Context) TrackSlotKey(key string) {
-	ctx.slotOverflowKeys = append(ctx.slotOverflowKeys, key)
-}
-
-// TakeSlotOverflowKeys returns the accumulated DataStore keys and resets the
-// internal list. Called by FlowManager.ReturnContext before Pool.Put.
-func (ctx *Context) TakeSlotOverflowKeys() []string {
-	keys := ctx.slotOverflowKeys
-	if len(ctx.slotOverflowKeys) > 0 {
-		ctx.slotOverflowKeys = ctx.slotOverflowKeys[:0]
-	}
-	return keys
-}
-
 // InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers
-// to the inline base arrays and initialises the arena. Called once from
-// Pool.New — no heap allocation, no make().
+// to the inline base arrays. Called once from Pool.New — no heap allocation.
+// arenaUsed=0 and arenaExt=nil are already the zero values.
 func (ctx *Context) InitSlots() {
 	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
 	ctx.IntSlots = ctx.intSlotBase[:BaseIntSlots]
 	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
-	ctx.active = &ctx.primary
 }
 
 // Alloc carves n bytes from the arena without any heap allocation in the
-// common case. Falls back to pool-borrowed extra blocks when the primary
-// fills, then to make() only if all extra blocks are also exhausted (rare).
+// common case (value fits in 1KB inline arena). Falls back to a single
+// pool-borrowed 4KB ext block, then to make() only for values > 4KB (rare).
 //
 // The returned slice is valid until ReleaseOverflow is called.
 func (ctx *Context) Alloc(n int) []byte {
-	b := ctx.active
-	end := int(b.used) + n
-	if end <= ArenaBlockSize {
-		s := b.buf[b.used:end:end]
-		b.used = int32(end)
+	// Fast path: fits in inline arena (no pool, no GC).
+	end := int(ctx.arenaUsed) + n
+	if end <= ArenaInlineSize {
+		s := ctx.arenaInline[ctx.arenaUsed:end:end]
+		ctx.arenaUsed = int32(end)
 		return s
 	}
 
-	// Primary arena full — borrow next block from pool.
-	if ctx.extraN < MaxExtraArenas {
-		nb := arenaPool.Get().(*arenaBlock)
-		nb.used = 0
-		ctx.extra[ctx.extraN] = nb
-		ctx.extraN++
-		ctx.active = nb
+	// Borrow single 4KB ext block from pool when inline fills.
+	if ctx.arenaExt == nil {
+		b := arenaPool.Get().(*arenaBlock)
+		b.used = 0
+		ctx.arenaExt = b
 		ctx.ArenaOverflowed = true
-		if n <= ArenaBlockSize {
-			s := nb.buf[0:n:n]
-			nb.used = int32(n)
-			return s
-		}
+	}
+	b := ctx.arenaExt
+	end2 := int(b.used) + n
+	if end2 <= ArenaBlockSize {
+		s := b.buf[b.used:end2:end2]
+		b.used = int32(end2)
+		return s
 	}
 
-	// All extra arenas exhausted or value larger than one block.
-	// TODO: route to DataStore (disk / GCS) for true spill-to-storage.
-	// For now fall back to heap so execution is never blocked.
+	// Value > 4KB — heap fallback (very rare). Execution is never blocked.
 	ctx.ArenaOverflowed = true
 	return make([]byte, n)
 }
 
-// GrowByteSlots borrows a slotExtBlock from the pool, copies the existing
-// base slot headers into it, and re-points ByteSlots at the larger backing
-// array. Instruction code using ctx.ByteSlots[i] requires no changes.
-// Called by the compiler/executor when a flow needs more than BaseByteSlots.
-func (ctx *Context) GrowByteSlots(needed int) {
-	if needed <= len(ctx.ByteSlots) {
-		return // already large enough
-	}
-	if ctx.slotExt == nil {
-		ctx.slotExt = slotExtPool.Get().(*slotExtBlock)
-		copy(ctx.slotExt.slots[:], ctx.byteSlotBase[:])
-		ctx.SlotOverflowed = true
-	}
-	if needed <= ExtByteSlots {
-		ctx.ByteSlots = ctx.slotExt.slots[:needed]
-	}
-	// Beyond ExtByteSlots: grow the extension slice via append (heap, very rare).
-	// TODO: chain a second slotExtBlock from pool instead.
-}
-
-// ReleaseOverflow returns all pool-borrowed arena blocks and the slot
-// extension (if any) back to their respective pools. Must be called before
-// Pool.Put so that borrowed resources are available to other requests
-// immediately rather than sitting idle inside the pool context.
+// ReleaseOverflow returns the pool-borrowed ext block (if any) back to the
+// pool. Must be called before Pool.Put so the block is available immediately.
 func (ctx *Context) ReleaseOverflow() {
-	for i := int32(0); i < ctx.extraN; i++ {
-		ctx.extra[i].used = 0
-		arenaPool.Put(ctx.extra[i])
-		ctx.extra[i] = nil
-	}
-	ctx.extraN = 0
-	ctx.active = &ctx.primary
-
-	if ctx.slotExt != nil {
-		// Zero slot-ext before returning so the next borrower gets a clean block.
-		for i := range ctx.slotExt.slots {
-			ctx.slotExt.slots[i] = nil
-		}
-		for i := range ctx.slotExt.ints {
-			ctx.slotExt.ints[i] = 0
-		}
-		for i := range ctx.slotExt.bools {
-			ctx.slotExt.bools[i] = false
-		}
-		slotExtPool.Put(ctx.slotExt)
-		ctx.slotExt = nil
-		ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
+	if ctx.arenaExt != nil {
+		ctx.arenaExt.used = 0
+		arenaPool.Put(ctx.arenaExt)
+		ctx.arenaExt = nil
 	}
 }
 
 // Reset clears the context for reuse in the sync.Pool.
 // We pass the concrete writer here for the new request.
 // ReleaseOverflow must have been called before Pool.Put (done by
-// FlowManager.ReturnContext) so Reset only needs to reset the primary arena.
+// FlowManager.ReturnContext) so Reset only needs to reset arenaUsed.
 func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Writer = w
 	ctx.Request = nil
@@ -382,25 +276,22 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.headerSent = false
 	ctx.IsBuffered = false
 	ctx.detachedFromPool.Store(false)
-	ctx.Trace = nil
-	ctx.Obs = nil
-	ctx.RequestStartNs = 0
-	ctx.FirstByteSentNs = 0
 	ctx.TenantKey = ""
-	ctx.UpstreamTimeNs = 0
-	ctx.UpstreamCalls = 0
-	ctx.ClientBytesSent = 0
-	ctx.UpstreamBytesTx = 0
-	ctx.UpstreamBytesRx = 0
+	ctx.TenantID = 0
+	ctx.CallerID = 0
+	ctx.APIRateLimitId = 0
+	ctx.EndpointRateLimitId = 0
+	ctx.EndpointId = 0
+	ctx.QuotaGroupID = 0
+	ctx.Timing = RequestTiming{} // single memclr — all 8 timing fields zeroed at once
+	ctx.Obs = nil
+	ctx.Trace = nil
 	ctx.ArenaOverflowed = false
-	ctx.SlotOverflowed = false
-	ctx.ReqID = 0
-	ctx.slotDataSeq = 0
-	// slotOverflowKeys already cleared by TakeSlotOverflowKeys in ReturnContext.
+	ctx.InternalTxID = [2]uint64{}
 
-	// Reset primary arena — one integer write, all slot data is implicitly gone.
-	ctx.primary.used = 0
-	ctx.active = &ctx.primary
+	// Reset inline arena — one integer write, all slot data is implicitly gone.
+	// arenaExt is already nil after ReleaseOverflow in ReturnContext.
+	ctx.arenaUsed = 0
 
 	// Clean up body streams
 	if ctx.RequestBody != nil {

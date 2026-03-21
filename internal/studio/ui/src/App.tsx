@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { fetchSchema } from './api'
-import type { ApiDef, ConnStatus, FlowStep, PaletteBlock, TabId } from './types'
+import type { ApiDef, ConnStatus, FlowStep, PaletteBlock, SavedFlow, TabId } from './types'
 import FlowDesigner from './components/FlowDesigner'
 import APIDefinition from './components/APIDefinition'
 import Deploy from './components/Deploy'
+import Gateway from './components/Gateway'
+import Tenants from './components/Tenants'
 import Settings from './components/Settings'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'flows',    label: 'Flow Designer' },
   { id: 'apis',     label: 'API Definition' },
   { id: 'deploy',   label: 'Deploy / Releases' },
+  { id: 'gateway',  label: 'Gateway' },
+  { id: 'tenants',  label: 'Tenants' },
   { id: 'settings', label: 'UI Settings' },
 ]
 
@@ -36,6 +40,21 @@ export default function App() {
   const [flowName, setFlowName] = useState('')
   const [steps, setSteps] = useState<FlowStep[]>([])
   const [apis, setApis] = useState<ApiDef[]>([])
+
+  // Flows saved to the local palette during this session
+  const [savedFlows, setSavedFlows] = useState<SavedFlow[]>([])
+  function saveCurrentFlow() {
+    if (!flowName.trim() || steps.length === 0) return
+    setSavedFlows(prev => {
+      const idx = prev.findIndex(f => f.name === flowName)
+      if (idx >= 0) {
+        const updated = [...prev]
+        updated[idx] = { name: flowName, steps: [...steps] }
+        return updated
+      }
+      return [...prev, { name: flowName, steps: [...steps] }]
+    })
+  }
 
   const connLabel: Record<ConnStatus, string> = {
     connecting: 'connecting…',
@@ -80,6 +99,8 @@ export default function App() {
             setSteps={setSteps}
             flowName={flowName}
             setFlowName={setFlowName}
+            savedFlows={savedFlows}
+            onSaveFlow={saveCurrentFlow}
           />
         )}
         {tab === 'apis' && (
@@ -96,6 +117,16 @@ export default function App() {
             flowName={flowName}
           />
         )}
+        {tab === 'gateway' && (
+          <Gateway
+            onLoadFlow={(name, steps) => {
+              setFlowName(name)
+              setSteps(steps)
+              setTab('flows')
+            }}
+          />
+        )}
+        {tab === 'tenants' && <Tenants />}
         {tab === 'settings' && (
           <Settings accent={accent} setAccent={setAccent} />
         )}

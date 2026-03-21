@@ -33,7 +33,7 @@ func TestHttpActionRetriesTransientStatuses(t *testing.T) {
 	defer ts.Close()
 
 	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
-	ctx.ByteSlots[10] = []byte(ts.URL)
+	ctx.ByteSlots[0] = []byte(ts.URL)
 	state := &engine.ExecutionState{PC: 7}
 
 	flowInput := map[string]string{
@@ -42,7 +42,7 @@ func TestHttpActionRetriesTransientStatuses(t *testing.T) {
 		"http.retry_jitter_ms":       "0",
 	}
 
-	next := HttpAction(10, "", 0, "status >= 500", 3, flowInput).Action(ctx, state)
+	next := HttpAction(0, "", 0, "status >= 500", 3, flowInput).Action(ctx, state)
 
 	if next != 8 {
 		t.Fatalf("expected next pc 8, got %d", next)
@@ -66,7 +66,7 @@ func TestHttpActionDoesNotRetryBadResponse(t *testing.T) {
 	defer ts.Close()
 
 	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
-	ctx.ByteSlots[10] = []byte(ts.URL)
+	ctx.ByteSlots[0] = []byte(ts.URL)
 	state := &engine.ExecutionState{PC: 2}
 
 	flowInput := map[string]string{
@@ -75,7 +75,7 @@ func TestHttpActionDoesNotRetryBadResponse(t *testing.T) {
 		"http.retry_jitter_ms":       "0",
 	}
 
-	next := HttpAction(10, "", 0, "status >= 500", 3, flowInput).Action(ctx, state)
+	next := HttpAction(0, "", 0, "status >= 500", 3, flowInput).Action(ctx, state)
 
 	if next != 3 {
 		t.Fatalf("expected next pc 3, got %d", next)
