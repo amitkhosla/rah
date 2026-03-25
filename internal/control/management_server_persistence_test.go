@@ -124,7 +124,7 @@ func TestFlowDeleteAllowedWhenUnreferenced(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPersistenceFlowAndApiUpsertedToDataStore(t *testing.T) {
-	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("build datastore manager: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestPersistenceFlowAndApiUpsertedToDataStore(t *testing.T) {
 }
 
 func TestPersistenceFlowAndApiDeletedFromDataStore(t *testing.T) {
-	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("build datastore manager: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestPersistenceSkippedWhenDataStoreNotSet(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBootstrapFromDataStore(t *testing.T) {
-	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("build datastore manager: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestBootstrapFromDataStore(t *testing.T) {
 }
 
 func TestBootstrapFromEmptyDataStoreIsNoop(t *testing.T) {
-	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("build datastore manager: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestBootstrapFromEmptyDataStoreIsNoop(t *testing.T) {
 //	call 3 → delete 1       → datastore has 4
 //	restart → bootstrap     → gateway sees 4 APIs
 func TestIncrementalSyncAccumulates(t *testing.T) {
-	dsm, err := NewDataStoreManager(diskOnlyStoreConfig(t))
+	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("build datastore manager: %v", err)
 	}

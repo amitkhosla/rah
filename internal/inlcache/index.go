@@ -587,6 +587,8 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 	}
 
 	// Write child entries into parent's free slots.
+	// h2word must be updated (before the tag store) just like insertAt does,
+	// otherwise Get's H2 pre-filter will skip the slot and miss the entry.
 	wi := 0
 	for i := range parent.slots {
 		if wi >= childLiveN {
@@ -595,6 +597,7 @@ func (idx *InlineIndex) tryCollapse(parentIdx uint32) (bool, []uint32) {
 		s := &parent.slots[i]
 		t := s.tag.Load()
 		if t == iEmpty || t == iTombstone {
+			parent.h2word.Store(h2Set(parent.h2word.Load(), i, h2ForTag(childLive[wi].tag)))
 			s.val.Store(childLive[wi].val)
 			s.tag.Store(childLive[wi].tag)
 			wi++

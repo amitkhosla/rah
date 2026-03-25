@@ -16,6 +16,7 @@ type Compiler struct {
 	nextSlot    int
 	fm          *engine.FlowManager
 	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
+	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -463,6 +464,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable,
 			steps.BindCorrelationID(step.Key, step.GenerateIfMissing, c.fm.TxIDGen, slot))
+
+	case "load_secret":
+		if c.SecretsMgr == nil {
+			return fmt.Errorf("load_secret step requires a secrets manager — set SecretsMgr on the Compiler")
+		}
+		if step.Source == "" {
+			return fmt.Errorf("load_secret: 'source' (secret reference) is required")
+		}
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadSecret(c.SecretsMgr, step.Source, slot))
 
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)

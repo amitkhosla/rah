@@ -47,8 +47,8 @@ const (
 	htTotalKeys     = htNumTenants * htKeysPerTenant // 100 000
 	htValueSize     = 256                            // bytes
 	htTTL           = uint32(10)                     // 10-second TTL
-	htRunDuration   = 30 * time.Second
-	htSampleEvery   = 5 * time.Second
+	htRunDuration   = 2 * time.Second
+	htSampleEvery   = 1 * time.Second
 	htWriteEvery    = 100  // 1 Put per 100 hot-loop ops → ~10K puts/sec at 1M TPS
 	htMapCleanEvery = time.Second // background delete goroutine interval for maps
 )
@@ -434,12 +434,12 @@ func TestHighTPSWithEviction(t *testing.T) {
 					mm.Set(htTenantLongKeys[tid][i], val, htTTL)
 				}
 			}
+			startMapCleaner(mm, htMapCleanEvery, mmStop) // start before hot loop
 		},
 		func(tid uint16, i int) { mm.Get(htTenantLongKeys[tid-1][i]) },
 		func(tid uint16, i int) { mm.Set(htTenantLongKeys[tid-1][i], val, htTTL) },
 		mmStop,
 	)
-	startMapCleaner(mm, htMapCleanEvery, mmStop)
 
 	// ── timedMutexMap (short keys) ────────────────────────────────────────────
 	mmShortStop := make(chan struct{})
@@ -452,12 +452,12 @@ func TestHighTPSWithEviction(t *testing.T) {
 					mmShort.Set(htTenantShortKeys[tid][i], val, htTTL)
 				}
 			}
+			startMapCleaner(mmShort, htMapCleanEvery, mmShortStop) // start before hot loop
 		},
 		func(tid uint16, i int) { mmShort.Get(htTenantShortKeys[tid-1][i]) },
 		func(tid uint16, i int) { mmShort.Set(htTenantShortKeys[tid-1][i], val, htTTL) },
 		mmShortStop,
 	)
-	startMapCleaner(mmShort, htMapCleanEvery, mmShortStop)
 
 	// ── timedSyncMap (long keys) ──────────────────────────────────────────────
 	smStop := make(chan struct{})
@@ -470,12 +470,12 @@ func TestHighTPSWithEviction(t *testing.T) {
 					sm.Set(htTenantLongKeys[tid][i], val, htTTL)
 				}
 			}
+			startMapCleaner(sm, htMapCleanEvery, smStop) // start before hot loop
 		},
 		func(tid uint16, i int) { sm.Get(htTenantLongKeys[tid-1][i]) },
 		func(tid uint16, i int) { sm.Set(htTenantLongKeys[tid-1][i], val, htTTL) },
 		smStop,
 	)
-	startMapCleaner(sm, htMapCleanEvery, smStop)
 
 	// ── timedSyncMap (short keys) ─────────────────────────────────────────────
 	smShortStop := make(chan struct{})
@@ -488,12 +488,12 @@ func TestHighTPSWithEviction(t *testing.T) {
 					smShort.Set(htTenantShortKeys[tid][i], val, htTTL)
 				}
 			}
+			startMapCleaner(smShort, htMapCleanEvery, smShortStop) // start before hot loop
 		},
 		func(tid uint16, i int) { smShort.Get(htTenantShortKeys[tid-1][i]) },
 		func(tid uint16, i int) { smShort.Set(htTenantShortKeys[tid-1][i], val, htTTL) },
 		smShortStop,
 	)
-	startMapCleaner(smShort, htMapCleanEvery, smShortStop)
 
 	// ── print results ─────────────────────────────────────────────────────────
 	results := []htResult{

@@ -36,6 +36,23 @@ Tag construction for hashIdx (icache2 change):
     semantically meaningful bytes than the XOR-folded H1 mix of hashTagFast.
 */
 
+// asyncQueueSize is the capacity of the async backend-write channel.
+// If full, Put falls back to a synchronous write (best-effort semantics are
+// preserved: neither path fails the in-memory Put on backend error).
+const asyncQueueSize = 2048
+
+// eventChanSize is the capacity of the async event-dispatch channel.
+// Events are dropped (not delivered) when the channel is full.
+const eventChanSize = 4096
+
+// writeJob is a pending backend write queued by Put.
+type writeJob struct {
+	tenantID uint16
+	key      []byte
+	value    []byte
+	expiry   uint32
+}
+
 type CacheManager struct {
 	// Immutable after init.
 	totalMemory uint64
@@ -60,10 +77,17 @@ type CacheManager struct {
 	globalUsed atomic.Uint64
 
 	// Persistent / overflow backend. Never nil: defaults to diskBackend.
-	// Writes happen before in-memory locks are acquired.
-	backend CacheBackend
+	// Writes are dispatched asynchronously via asyncQueue.
+	backend    CacheBackend
+	asyncQueue chan writeJob
 
-	// Cleaner lifecycle.
+	// Event subscribers and async dispatch channel.
+	// Handlers are called sequentially per event in eventDispatchLoop.
+	eventHandlers []EventHandler
+	eventMu       sync.RWMutex
+	eventCh       chan WriteEvent
+
+	// Cleaner lifecycle (shared stop signal for all background goroutines).
 	cleanerStop chan struct{}
 }
 
@@ -109,11 +133,15 @@ func NewCacheManager(
 		hashIdx:     NewInlineIndex(0),
 		tenantLimit: tenantLimit,
 		backend:     backend,
+		asyncQueue:  make(chan writeJob, asyncQueueSize),
+		eventCh:     make(chan WriteEvent, eventChanSize),
 		cleanerStop: make(chan struct{}),
 	}
 	cm.allocateRegions()
 	go cm.cleanerLoop()
 	go cm.backendSweepLoop()
+	go cm.asyncWriteLoop()
+	go cm.eventDispatchLoop()
 	return cm, nil
 }
 
@@ -296,18 +324,111 @@ func (cm *CacheManager) getTenantCounter(tenantID uint16) *tenantCounter {
 	return val.(*tenantCounter)
 }
 
-// ── Put ───────────────────────────────────────────────────────────────────────
+// ── async backend write ───────────────────────────────────────────────────────
+
+// enqueueWrite sends a backend write to the async queue.
+// If the queue is full it falls back to a synchronous write so that backend
+// persistence is never silently dropped (best-effort; errors are ignored).
+func (cm *CacheManager) enqueueWrite(tenantID uint16, key, value []byte, expiry uint32) {
+	job := writeJob{tenantID: tenantID, key: key, value: value, expiry: expiry}
+	select {
+	case cm.asyncQueue <- job:
+	default:
+		// Queue saturated — write synchronously rather than drop.
+		_ = cm.backend.Set(tenantID, key, value, expiry)
+	}
+}
+
+// asyncWriteLoop drains the async backend-write queue until Stop is called.
+func (cm *CacheManager) asyncWriteLoop() {
+	for {
+		select {
+		case <-cm.cleanerStop:
+			return
+		case job := <-cm.asyncQueue:
+			_ = cm.backend.Set(job.tenantID, job.key, job.value, job.expiry)
+		}
+	}
+}
+
+// ── event bus ────────────────────────────────────────────────────────────────
+
+// Subscribe registers h to be called after every successful Put.
+// Handlers are invoked sequentially in a dedicated goroutine; they must not
+// block indefinitely. To update a cached value from inside a handler use
+// cm.Update (not cm.Put, which would re-emit a WriteEvent).
+func (cm *CacheManager) Subscribe(h EventHandler) {
+	cm.eventMu.Lock()
+	cm.eventHandlers = append(cm.eventHandlers, h)
+	cm.eventMu.Unlock()
+}
+
+// enqueueEvent sends ev to the async dispatch channel.
+// Events are dropped when the channel is full.
+func (cm *CacheManager) enqueueEvent(ev WriteEvent) {
+	select {
+	case cm.eventCh <- ev:
+	default:
+	}
+}
+
+// eventDispatchLoop delivers WriteEvents to all registered handlers until
+// Stop is called.
+func (cm *CacheManager) eventDispatchLoop() {
+	for {
+		select {
+		case <-cm.cleanerStop:
+			return
+		case ev := <-cm.eventCh:
+			cm.eventMu.RLock()
+			handlers := cm.eventHandlers
+			cm.eventMu.RUnlock()
+			for _, h := range handlers {
+				h(ev)
+			}
+		}
+	}
+}
+
+// ── Put / Update ──────────────────────────────────────────────────────────────
 
 // Put inserts value into the cache.
 //
 //  1. Enforce tenant quota.
-//  2. Write to backend BEFORE acquiring any in-memory lock (slow I/O first).
+//  2. Enqueue an async backend write (non-blocking; falls back to sync if full).
 //  3. Route to lane (tinyIdx vs hashIdx) by key length / byte range.
 //  4. Write into slab region (circular, evicts oldest/expired slot).
 //  5. Insert SmartPointer into the index; capture xSlotPtr.
 //  6. Write xSlotPtr back into EntryHeader for the cleaner.
 //  7. Update accounting; decrement counters for any evicted entry.
+//  8. Emit a WriteEvent asynchronously to all subscribers.
 func (cm *CacheManager) Put(
+	tenantID uint16,
+	key []byte,
+	value []byte,
+	ttl uint32,
+) (SmartPointer, bool) {
+	ptr, ok := cm.put(tenantID, key, value, ttl)
+	if ok {
+		cm.enqueueEvent(WriteEvent{TenantID: tenantID, Key: key, Value: value, TTL: ttl})
+	}
+	return ptr, ok
+}
+
+// Update writes to the in-memory cache and enqueues an async backend write,
+// but does NOT emit a WriteEvent. Use this from inside EventHandler
+// implementations to avoid recursive event dispatch.
+func (cm *CacheManager) Update(
+	tenantID uint16,
+	key []byte,
+	value []byte,
+	ttl uint32,
+) (SmartPointer, bool) {
+	return cm.put(tenantID, key, value, ttl)
+}
+
+// put is the shared implementation for Put and Update.
+func (cm *CacheManager) put(
 	tenantID uint16,
 	key []byte,
 	value []byte,
@@ -320,13 +441,13 @@ func (cm *CacheManager) Put(
 		return 0, false
 	}
 
-	// Write to backend first — before any in-memory lock is acquired.
+	// Enqueue async backend write before touching any in-memory lock.
 	now := uint32(time.Now().Unix())
 	expiry := now + ttl
 	if ttl == 0 {
 		expiry = now
 	}
-	_ = cm.backend.Set(tenantID, key, value, expiry) // best-effort; don't fail Put on backend error
+	cm.enqueueWrite(tenantID, key, value, expiry)
 
 	classID := cm.selectSizeClass(len(value))
 	tierID := cm.selectTTLTier(ttl)
@@ -447,7 +568,7 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 	if expiry > now {
 		ttl = expiry - now
 	}
-	cm.Put(tenantID, key, val, ttl)
+	cm.Update(tenantID, key, val, ttl)
 
 	return val, true
 }

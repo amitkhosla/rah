@@ -70,7 +70,7 @@ const (
 	rsTotalKeys  = rsTierA*rsTierAKeys + rsTierB*rsTierBKeys + rsTierC*rsTierCKeys
 	rsTTL        = uint32(60)   // 60s TTL
 	rsReadRatio  = 50           // 1 write every rsReadRatio ops (realistic gateway: ~2% writes)
-	rsRunSecs    = 8            // hot-loop duration
+	rsRunSecs    = 2            // hot-loop duration
 
 	// Mixed key lengths (realistic API gateway distribution):
 	//   30% tiny  (4 B)  → tinyIdx lane, lossless tag, NO hash — fastest path

@@ -20,12 +20,23 @@ end
 
 // PutWithTTL stores value at key with an expiry duration.
 // ttl=0 stores permanently (identical to Put).
+// If IODedupWindow is configured and the key already holds the same value with
+// the same TTL, the Redis write is skipped.
 func (s *Store) PutWithTTL(ctx context.Context, tenant, key string, value []byte, ttl time.Duration) error {
 	k, err := scopedKey(tenant, s.domain, key)
 	if err != nil {
 		return err
 	}
-	return s.client.Set(ctx, k, value, ttl).Err()
+	if s.dedup != nil && s.dedup.ShouldSkipWrite(k, value, ttl) {
+		return nil
+	}
+	if err := s.client.Set(ctx, k, value, ttl).Err(); err != nil {
+		return err
+	}
+	if s.dedup != nil {
+		s.dedup.Store(k, value, ttl)
+	}
+	return nil
 }
 
 // Increment atomically adds delta to the integer at key and returns the new value.

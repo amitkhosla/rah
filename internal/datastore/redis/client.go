@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 	"rah/internal/config"
@@ -52,15 +53,23 @@ func parseTopology(cfg config.StoreConfig) (Topology, error) {
 
 func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, error) {
 	poolSize := poolSizeFrom(cfg)
+	username := cfg.Connection.Username
 	password := cfg.Connection.Password
+	maxRetries := cfg.Connection.MaxRetries
+	minBackoff := parseBackoff(cfg.Connection.MinRetryBackoff)
+	maxBackoff := parseBackoff(cfg.Connection.MaxRetryBackoff)
 
 	switch topology {
 	case TopologySingle:
 		c := goredis.NewClient(&goredis.Options{
-			Addr:     cfg.Connection.Address,
-			Password: password,
-			DB:       dbIndexFrom(cfg),
-			PoolSize: poolSize,
+			Addr:            cfg.Connection.Address,
+			Username:        username,
+			Password:        password,
+			DB:              dbIndexFrom(cfg),
+			PoolSize:        poolSize,
+			MaxRetries:      maxRetries,
+			MinRetryBackoff: minBackoff,
+			MaxRetryBackoff: maxBackoff,
 		})
 		return &clientBundle{
 			cmdable: c,
@@ -74,10 +83,14 @@ func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, 
 			return nil, fmt.Errorf("redis sentinel topology requires sentinel_master in connection config")
 		}
 		c := goredis.NewFailoverClient(&goredis.FailoverOptions{
-			MasterName:    master,
-			SentinelAddrs: nodeAddrs(cfg),
-			Password:      password,
-			PoolSize:      poolSize,
+			MasterName:      master,
+			SentinelAddrs:   nodeAddrs(cfg),
+			Username:        username,
+			Password:        password,
+			PoolSize:        poolSize,
+			MaxRetries:      maxRetries,
+			MinRetryBackoff: minBackoff,
+			MaxRetryBackoff: maxBackoff,
 		})
 		return &clientBundle{
 			cmdable: c,
@@ -91,9 +104,13 @@ func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, 
 			return nil, fmt.Errorf("redis cluster topology requires cluster_addrs or address in connection config")
 		}
 		cc := goredis.NewClusterClient(&goredis.ClusterOptions{
-			Addrs:    addrs,
-			Password: password,
-			PoolSize: poolSize,
+			Addrs:           addrs,
+			Username:        username,
+			Password:        password,
+			PoolSize:        poolSize,
+			MaxRetries:      maxRetries,
+			MinRetryBackoff: minBackoff,
+			MaxRetryBackoff: maxBackoff,
 		})
 		return &clientBundle{
 			cmdable: cc,
@@ -105,6 +122,25 @@ func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, 
 	default:
 		return nil, fmt.Errorf("unknown topology %q", topology)
 	}
+}
+
+// parseBackoff converts a config backoff string to a time.Duration for go-redis.
+//   - ""  or "0"  → 0 (go-redis uses its own default: 8ms min, 512ms max)
+//   - "-1"        → -1 (go-redis disables backoff — retries immediately)
+//   - "50ms" etc. → parsed duration
+func parseBackoff(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0
+	}
+	if s == "-1" {
+		return -1
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0 // fall back to go-redis default on bad input
+	}
+	return d
 }
 
 // wrapPoolStats converts a go-redis PoolStats method value into a Stats closure.

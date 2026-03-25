@@ -80,12 +80,12 @@ func TestSchemaAndUIServed(t *testing.T) {
 	s, _ := NewServer("http://127.0.0.1:8081", ServerConfig{})
 	rrUI := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rrUI, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rrUI.Code != http.StatusOK || !strings.Contains(rrUI.Body.String(), "Flow Designer") || !strings.Contains(rrUI.Body.String(), "API Definition") {
+	if rrUI.Code != http.StatusOK || !strings.Contains(rrUI.Body.String(), "RAH Studio") || !strings.Contains(rrUI.Body.String(), `id="root"`) {
 		t.Fatalf("ui not served")
 	}
 	rrSchema := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rrSchema, httptest.NewRequest(http.MethodGet, "/api/schema", nil))
-	if rrSchema.Code != http.StatusOK || !strings.Contains(rrSchema.Body.String(), "mcp_call") {
+	if rrSchema.Code != http.StatusOK || !strings.Contains(rrSchema.Body.String(), "http_call") {
 		t.Fatalf("schema invalid")
 	}
 }
