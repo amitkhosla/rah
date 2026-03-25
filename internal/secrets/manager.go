@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -28,15 +29,18 @@ type Manager struct {
 }
 
 // New builds a Manager from the gateway secrets config.
-// ctx is used to cancel the background cache-rotation goroutine.
+// ctx is used to cancel the background cache-rotation goroutine and is
+// forwarded to all provider factories (e.g. for token-refresh goroutines).
 //
-// Providers registered in priority order:
-//  1. env  — always available (no config needed)
-//  2. file — always available (no config needed)
-//  3. enc  — when cfg.Encrypted.Enabled
-//  4. gsm  — when cfg.GSM.Enabled
-//  5. vault — when cfg.Vault.Enabled
-//  6. awssm — when cfg.AWSSM.Enabled
+// Built-in providers (always available, no config required):
+//   - env  — "env:VAR", "$VAR", "${VAR}"
+//   - file — "file:///path"
+//
+// Built-in providers (require config):
+//   - enc  — "enc:base64" — needs cfg.Encrypted.Enabled + Key
+//
+// Pluggable providers (activated by blank imports in main.go):
+//   - gsm, vault, awssm, … — registered via RegisterProviderFactory in init()
 func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 	m := &Manager{
 		providers: make(map[string]Provider),
@@ -45,10 +49,12 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 	}
 
 	// Bootstrap providers — always registered, no external deps.
+	// Must be registered first so the encrypted provider and cloud provider
+	// factories can use them to resolve their own bootstrap credentials.
 	m.register(newEnvProvider())
 	m.register(newFileProvider())
 
-	// Encrypted provider — requires a master key resolved via env/file.
+	// Encrypted provider — built in, needs master key config.
 	if cfg.Encrypted.Enabled {
 		p, err := newEncryptedProvider(ctx, cfg.Encrypted, m)
 		if err != nil {
@@ -57,27 +63,24 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		m.register(p)
 	}
 
-	// Cloud providers — stubs until SDK deps are added.
-	if cfg.GSM.Enabled {
-		p, err := newGSMProvider(ctx, cfg.GSM, m)
-		if err != nil {
-			return nil, fmt.Errorf("secrets: gsm provider: %w", err)
-		}
-		m.register(p)
+	// Pluggable cloud providers — registered via init() in sub-packages.
+	// Copy the global map under lock so concurrent test binaries are safe.
+	globalFactoriesMu.Lock()
+	factories := make(map[string]ProviderFactory, len(globalFactories))
+	for k, v := range globalFactories {
+		factories[k] = v
 	}
-	if cfg.Vault.Enabled {
-		p, err := newVaultProvider(ctx, cfg.Vault, m)
+	globalFactoriesMu.Unlock()
+
+	for scheme, factory := range factories {
+		p, err := factory(ctx, cfg, m)
 		if err != nil {
-			return nil, fmt.Errorf("secrets: vault provider: %w", err)
+			return nil, fmt.Errorf("secrets: provider %q: %w", scheme, err)
 		}
-		m.register(p)
-	}
-	if cfg.AWSSM.Enabled {
-		p, err := newAWSSMProvider(ctx, cfg.AWSSM, m)
-		if err != nil {
-			return nil, fmt.Errorf("secrets: aws_sm provider: %w", err)
+		if p != nil {
+			m.register(p)
 		}
-		m.register(p)
+		// nil return means "not enabled in config" — silently skip.
 	}
 
 	go m.rotationLoop(ctx)
@@ -100,14 +103,29 @@ func (m *Manager) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	v, err, _ := m.sf.Do(ref, func() (any, error) {
 		scheme := parseScheme(ref)
 
-		// Literal — no provider needed.
+		// Literal — no provider needed, return as-is.
 		if scheme == "" {
 			return []byte(ref), nil
 		}
 
 		p, ok := m.providers[scheme]
 		if !ok {
-			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q", scheme, ref)
+			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q — "+
+				"is the provider sub-package imported in main.go?", scheme, ref)
+		}
+
+		// If the provider knows its token TTL (e.g. OAuth2, Google ID token),
+		// use the returned TTL so short-lived tokens are refreshed before expiry.
+		if tp, ok := p.(TTLProvider); ok {
+			val, ttl, err := tp.ResolveTTL(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			if ttl <= 0 {
+				ttl = m.cacheTTL
+			}
+			m.cache.set(ref, val, ttl)
+			return val, nil
 		}
 
 		val, err := p.Resolve(ctx, ref)
@@ -141,8 +159,14 @@ func (m *Manager) ResolveString(ctx context.Context, ref string) (string, error)
 	return s, nil
 }
 
-// Close zeroes all cached secrets and stops background goroutines.
+// Close zeroes all cached secrets, closes provider clients, and stops the
+// background rotation goroutine (via the context passed to New).
 func (m *Manager) Close() {
+	for _, p := range m.providers {
+		if c, ok := p.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
 	m.cache.purge()
 }
 

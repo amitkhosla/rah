@@ -17,6 +17,7 @@ type Compiler struct {
 	fm          *engine.FlowManager
 	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
+	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -477,6 +478,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return err
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.LoadSecret(c.SecretsMgr, step.Source, slot))
+
+	case "load_credential":
+		if c.CredMgr == nil {
+			return fmt.Errorf("load_credential step requires a credential registry — set CredMgr on the Compiler")
+		}
+		if step.Source == "" {
+			return fmt.Errorf("load_credential: 'source' (credential name) is required")
+		}
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadCredential(c.CredMgr, step.Source, slot))
 
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
