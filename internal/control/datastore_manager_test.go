@@ -16,22 +16,21 @@ func testStoreConfig(t *testing.T) config.DataStoreConfig {
 	dataPath := t.TempDir()
 	return config.DataStoreConfig{
 		Stores: map[string]config.StoreConfig{
-			"disk":  {Name: "disk", Kind: config.StoreDisk, Enabled: true, Connection: config.StoreConnection{Path: dataPath}},
-			"redis": {Name: "redis", Kind: config.StoreRedis, Enabled: true},
+			"disk": {Name: "disk", Kind: config.StoreDisk, Enabled: true, Connection: config.StoreConnection{Path: dataPath}},
 		},
 		Bindings: map[config.DataDomain]string{
 			config.DomainAPIDefinitions: "disk",
 			config.DomainFlows:          "disk",
 			config.DomainTenantRegistry: "disk",
-			config.DomainCache:          "redis",
-			config.DomainCustomerData:   "redis",
-			config.DomainInstances:      "redis",
+			config.DomainCache:          "disk",
+			config.DomainCustomerData:   "disk",
+			config.DomainInstances:      "disk",
 		},
 	}
 }
 
 func TestDataStoreManagerDataStoreConfigHandlerGet(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestDataStoreManagerDataStoreConfigHandlerGet(t *testing.T) {
 }
 
 func TestDataStoreManagerDataStoreConfigHandlerPost(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -77,7 +76,7 @@ func TestDataStoreManagerDataStoreConfigHandlerPost(t *testing.T) {
 }
 
 func TestDataStoreManagerPutGetTenantScoped(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -102,7 +101,7 @@ func TestDataStoreManagerPutGetTenantScoped(t *testing.T) {
 }
 
 func TestDataStoreManagerPoolStatsPresent(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -117,7 +116,7 @@ func TestDataStoreManagerPoolStatsPresent(t *testing.T) {
 }
 
 func TestDataStoreManagerRegistryStoreBootstrapRead(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -140,7 +139,7 @@ func TestDataStoreManagerRegistryStoreBootstrapRead(t *testing.T) {
 }
 
 func TestDataStoreManagerInstanceRegistry(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -158,7 +157,7 @@ func TestDataStoreManagerInstanceRegistry(t *testing.T) {
 }
 
 func TestDataStoreManagerGlobalSnapshotsForApisAndFlows(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -188,7 +187,7 @@ func TestDataStoreManagerGlobalSnapshotsForApisAndFlows(t *testing.T) {
 }
 
 func TestDataStoreManagerUpdateRejectsStartupDomainChange(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -197,13 +196,13 @@ func TestDataStoreManagerUpdateRejectsStartupDomainChange(t *testing.T) {
 	cfg.Stores["alt"] = config.StoreConfig{Name: "alt", Kind: config.StoreMongoDB, Enabled: true}
 	cfg.Bindings[config.DomainAPIDefinitions] = "alt"
 
-	if err := mgr.Update(cfg); err == nil {
+	if err := mgr.Update(context.Background(), cfg); err == nil {
 		t.Fatalf("expected startup domain update rejection")
 	}
 }
 
 func TestDataStoreManagerUpdateAllowsCacheChange(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
@@ -212,13 +211,13 @@ func TestDataStoreManagerUpdateAllowsCacheChange(t *testing.T) {
 	cfg.Stores["alt"] = config.StoreConfig{Name: "alt", Kind: config.StoreMongoDB, Enabled: true}
 	cfg.Bindings[config.DomainCache] = "alt"
 
-	if err := mgr.Update(cfg); err != nil {
+	if err := mgr.Update(context.Background(), cfg); err != nil {
 		t.Fatalf("expected cache update to succeed: %v", err)
 	}
 }
 
 func TestDataStoreManagerDataStoreConfigHandlerPostMutableDomain(t *testing.T) {
-	mgr, err := NewDataStoreManager(testStoreConfig(t))
+	mgr, err := NewDataStoreManager(context.Background(), testStoreConfig(t), nil)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}

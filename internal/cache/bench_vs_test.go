@@ -46,8 +46,8 @@ const (
 	bvTotalKeys     = bvNumTenants * bvKeysPerTenant
 	bvValueSize     = 256
 	bvTTL           = uint32(10)
-	bvRunDuration   = 8 * time.Second  // 7 backends × 2 sections × 8s ≈ 112s total
-	bvSampleEvery   = 4 * time.Second  // 2 sample windows per run
+	bvRunDuration   = 2 * time.Second  // reduced for CI; was 8s (7 backends × 2 sections × 8s ≈ 112s)
+	bvSampleEvery   = 1 * time.Second  // 2 sample windows per run
 	bvWriteEvery    = 100 // 1 write per 100 ops → ~1% writes
 	bvHardMaxMB     = 32
 )

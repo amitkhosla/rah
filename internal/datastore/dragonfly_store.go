@@ -1,7 +1,11 @@
 package datastore
 
-import "rah/internal/config"
+import (
+	"context"
 
-func newDragonFlyStore(cfg config.StoreConfig, domain string) (KeyValueStore, error) {
-	return newRedisAdapter(cfg, domain, "dragonfly")
+	"rah/internal/config"
+)
+
+func newDragonFlyStore(ctx context.Context, cfg config.StoreConfig, domain string) (KeyValueStore, error) {
+	return newRedisAdapter(ctx, cfg, domain, "dragonfly")
 }

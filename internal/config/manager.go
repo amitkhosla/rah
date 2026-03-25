@@ -92,3 +92,6 @@ func (m *Manager) DataStore() DataStoreConfig { return m.gateway.DataStore }
 
 // Gateway returns the full top-level config (useful for serialisation/debug).
 func (m *Manager) Gateway() GatewayConfig { return m.gateway }
+
+// Secrets returns the credential provider configuration.
+func (m *Manager) Secrets() SecretsConfig { return m.gateway.Secrets }

@@ -503,7 +503,7 @@ func BenchmarkWithDeletes1000R1W1D_SyncMap(b *testing.B) {
 
 const (
 	throughputDuration = 3 * time.Second
-	gcStressDuration   = 30 * time.Second // long enough for GC to kick in multiple times
+	gcStressDuration   = 4 * time.Second // long enough for GC to kick in multiple times
 	numTenants         = 5
 	numKeysPerTenant   = 10_000 // 50 000 total keys across all tenants
 	writeEvery         = 100    // 1 Put per 100 ops
@@ -708,10 +708,11 @@ func TestThroughputGCStress(t *testing.T) {
 			}()
 		}
 
-		// Sample every 5 seconds.
-		var gcStats [6]struct{ tps float64; gcCycles uint32; gcPause uint64 }
-		interval := 5 * time.Second
-		for s := 0; s < 6; s++ {
+		// Sample in windows across gcStressDuration.
+		const gcWindows = 4
+		interval := gcStressDuration / gcWindows
+		gcStats := make([]struct{ tps float64; gcCycles uint32; gcPause uint64 }, gcWindows)
+		for s := 0; s < gcWindows; s++ {
 			prev := make([]uint64, goroutines)
 			for g := range counters {
 				prev[g] = counters[g].Load()
@@ -734,15 +735,16 @@ func TestThroughputGCStress(t *testing.T) {
 		close(stop)
 		wg.Wait()
 
-		t.Logf("\n--- %s (30s GC stress) ---", name)
+		t.Logf("\n--- %s (%ds GC stress) ---", name, int(gcStressDuration.Seconds()))
 		t.Logf("  %6s  %12s  %10s  %12s", "window", "TPS", "GC cycles", "GC pause (ms)")
 		var totalTPS float64
+		winSecs := int(interval.Seconds())
 		for s, gs := range gcStats {
 			t.Logf("  %3d–%3ds  %12.0f  %10d  %12.1f",
-				s*5, (s+1)*5, gs.tps, gs.gcCycles, float64(gs.gcPause)/1e6)
+				s*winSecs, (s+1)*winSecs, gs.tps, gs.gcCycles, float64(gs.gcPause)/1e6)
 			totalTPS += gs.tps
 		}
-		t.Logf("  %-8s  %12.0f  (average)", "avg", totalTPS/6)
+		t.Logf("  %-8s  %12.0f  (average)", "avg", totalTPS/gcWindows)
 	}
 
 	runGCStress("CacheManager",

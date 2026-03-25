@@ -15,6 +15,7 @@ import (
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
 	"rah/internal/router"
+	"rah/internal/secrets"
 	"sync/atomic"
 	"time"
 )
@@ -62,12 +63,23 @@ func main() {
 
 	cfg := cfgMgr.Layout()
 
-	dataStoreMgr, err := control.NewDataStoreManager(cfgMgr.DataStore())
+	gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
+	defer gatewayCancel()
+
+	// 1a. Secrets Manager — must be initialised before the datastore so that
+	// credential references in store configs are resolved at startup.
+	secretsMgr, err := secrets.New(gatewayCtx, cfgMgr.Secrets())
+	if err != nil {
+		log.Fatalf("failed to initialise secrets manager: %v", err)
+	}
+	defer secretsMgr.Close()
+
+	dataStoreMgr, err := control.NewDataStoreManager(gatewayCtx, cfgMgr.DataStore(), secretsMgr)
 	if err != nil {
 		log.Fatalf("invalid data store config: %v", err)
 	}
 
-	bootstrapCtx := context.Background()
+	bootstrapCtx := gatewayCtx
 
 	if dataStoreMgr.IsConfigured(config.DomainAPIDefinitions) {
 		apisSnapshot, err := dataStoreMgr.ReadAPIDefinitionsSnapshot(bootstrapCtx)
@@ -120,6 +132,7 @@ func main() {
 	// 3. Setup compiler and routes
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
+	compiler.SecretsMgr = secretsMgr
 	setupRoutes(r, fm, compiler)
 
 	// 4. The Unified Hot-Path Handler

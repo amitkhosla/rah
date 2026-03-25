@@ -37,6 +37,34 @@ type ExpiringStore interface {
 	PutWithTTL(ctx context.Context, tenant Tenant, key string, value []byte, ttl time.Duration) error
 }
 
+// ZMember is a scored member of a sorted set.
+type ZMember struct {
+	Score  float64
+	Member string
+}
+
+// ZSetStore is an optional interface for Redis sorted-set operations.
+// Use for ordered collections: aliases, identifiers, weighted service URLs.
+//
+// Score semantics by use case:
+//   - Aliases / identifiers: score = insertion Unix millis (stable ordering)
+//   - Service URLs: score = weight/priority (higher = preferred in LB)
+//   - Rate limit tiers: score = tier level
+type ZSetStore interface {
+	// ZAdd adds or updates members. Existing members have their score updated.
+	ZAdd(ctx context.Context, tenant Tenant, key string, members ...ZMember) error
+	// ZRem removes members. No-op for members that don't exist.
+	ZRem(ctx context.Context, tenant Tenant, key string, members ...string) error
+	// ZRange returns all members ordered by score ascending (lowest first).
+	ZRange(ctx context.Context, tenant Tenant, key string) ([]ZMember, error)
+	// ZRangeByScore returns members whose score is within [min, max] inclusive.
+	ZRangeByScore(ctx context.Context, tenant Tenant, key string, min, max float64) ([]ZMember, error)
+	// ZScore returns the score of a member. found=false if member does not exist.
+	ZScore(ctx context.Context, tenant Tenant, key string, member string) (float64, bool, error)
+	// ZCard returns the number of members in the sorted set.
+	ZCard(ctx context.Context, tenant Tenant, key string) (int64, error)
+}
+
 // DistributedStore is an optional interface for distributed coordination
 // primitives. Implemented by Redis/Dragonfly; not available on disk/file stores.
 type DistributedStore interface {

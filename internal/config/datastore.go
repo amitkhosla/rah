@@ -69,6 +69,28 @@ type StoreConnection struct {
 	SentinelMaster string   `json:"sentinel_master,omitempty" yaml:"sentinel_master,omitempty"`  // required for sentinel topology
 	ClusterAddrs   []string `json:"cluster_addrs,omitempty"   yaml:"cluster_addrs,omitempty"`   // seed nodes for cluster/sentinel
 	PoolSize       int      `json:"pool_size,omitempty"       yaml:"pool_size,omitempty"`        // connection pool size (default 32)
+
+	// IODedupWindow is the in-process I/O deduplication TTL for Redis/Dragonfly stores.
+	// It coalesces burst reads (same key, many goroutines) and suppresses identical writes
+	// (same key+value already in Redis). Set "" to disable (default).
+	// Use a Go duration string: "200ms", "500ms", "1s".
+	// Recommended: 200ms–1s. Do not use "0" — that means infinite in Redis convention.
+	IODedupWindow string `json:"io_dedup_window,omitempty" yaml:"io_dedup_window,omitempty"`
+
+	// MaxRetries is the maximum number of retries on transient network/connection errors
+	// (e.g. Redis momentarily unreachable). Applied per Redis command.
+	// 0 = go-redis default (3 retries). -1 = disabled (no retries).
+	MaxRetries int `json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
+
+	// MinRetryBackoff is the minimum sleep between retries.
+	// "" or "0" = go-redis default (8ms). "-1" = no backoff (retry immediately).
+	// Use a Go duration string: "8ms", "50ms".
+	MinRetryBackoff string `json:"min_retry_backoff,omitempty" yaml:"min_retry_backoff,omitempty"`
+
+	// MaxRetryBackoff is the maximum sleep between retries (exponential cap).
+	// "" or "0" = go-redis default (512ms). "-1" = no backoff (retry immediately).
+	// Use a Go duration string: "100ms", "512ms".
+	MaxRetryBackoff string `json:"max_retry_backoff,omitempty" yaml:"max_retry_backoff,omitempty"`
 }
 
 // StoreConfig defines a single named backend instance.

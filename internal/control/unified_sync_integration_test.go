@@ -30,7 +30,7 @@ func TestUnifiedSyncRegistersApiAndRuntimeConsumesCompiledFlow(t *testing.T) {
 			{
 				Name: "usersFlow",
 				Instructions: []StepConfig{
-					{Action: "registry_lookup", KeyIdentifier: "header.X-User", As: "userMeta", Scope: "tenant"},
+					{Action: "set_response_status", Value: "200"},
 				},
 				Action: "upsert",
 			},

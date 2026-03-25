@@ -4,8 +4,9 @@ package config
 // It is the single struct passed to config.Manager and distributed to all
 // components via Manager accessors.
 type GatewayConfig struct {
-	Layout    GlobalLayout    `json:"layout"    yaml:"layout"`
-	DataStore DataStoreConfig `json:"datastore" yaml:"datastore"`
+	Layout    GlobalLayout    `json:"layout"             yaml:"layout"`
+	DataStore DataStoreConfig `json:"datastore"          yaml:"datastore"`
+	Secrets   SecretsConfig   `json:"secrets,omitempty"  yaml:"secrets,omitempty"`
 }
 
 type ResourceLimit struct {

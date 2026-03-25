@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"rah/internal/config"
 	"rah/internal/datastore"
+	"rah/internal/secrets"
 	"sync"
 )
 
@@ -25,19 +26,23 @@ type DataStoreManager struct {
 	mu            sync.RWMutex
 	active        config.DataStoreConfig
 	registryStore map[config.DataDomain]datastore.KeyValueStore
+	resolver      secrets.Resolver // nil when no secrets manager is configured
 }
 
-func NewDataStoreManager(initial config.DataStoreConfig) (*DataStoreManager, error) {
+// NewDataStoreManager builds a DataStoreManager from the given config.
+// resolver is optional (pass nil to skip credential resolution — suitable for
+// tests and deployments where credentials are already in the config as literals).
+func NewDataStoreManager(ctx context.Context, initial config.DataStoreConfig, resolver secrets.Resolver) (*DataStoreManager, error) {
 	if err := initial.Validate(); err != nil {
 		return nil, err
 	}
 
-	stores, err := buildDomainStores(initial)
+	stores, err := buildDomainStores(ctx, initial, resolver)
 	if err != nil {
 		return nil, err
 	}
 
-	return &DataStoreManager{active: initial, registryStore: stores}, nil
+	return &DataStoreManager{active: initial, registryStore: stores, resolver: resolver}, nil
 }
 
 func validateImmutableStartupDomains(oldCfg, newCfg config.DataStoreConfig) error {
@@ -51,7 +56,7 @@ func validateImmutableStartupDomains(oldCfg, newCfg config.DataStoreConfig) erro
 	return nil
 }
 
-func (m *DataStoreManager) Update(cfg config.DataStoreConfig) error {
+func (m *DataStoreManager) Update(ctx context.Context, cfg config.DataStoreConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -63,7 +68,7 @@ func (m *DataStoreManager) Update(cfg config.DataStoreConfig) error {
 		return err
 	}
 
-	stores, err := buildDomainStores(cfg)
+	stores, err := buildDomainStores(ctx, cfg, m.resolver)
 	if err != nil {
 		return err
 	}
@@ -89,20 +94,47 @@ func (m *DataStoreManager) Close() {
 	}
 }
 
-func buildDomainStores(cfg config.DataStoreConfig) (map[config.DataDomain]datastore.KeyValueStore, error) {
+func buildDomainStores(ctx context.Context, cfg config.DataStoreConfig, resolver secrets.Resolver) (map[config.DataDomain]datastore.KeyValueStore, error) {
 	stores := make(map[config.DataDomain]datastore.KeyValueStore, len(cfg.Bindings))
 	for domain := range cfg.Bindings {
 		storeCfg, err := cfg.ResolveStore(domain)
 		if err != nil {
 			return nil, err
 		}
-		store, err := datastore.NewStore(storeCfg, domain)
+		if resolver != nil {
+			if storeCfg, err = resolveStoreCredentials(ctx, storeCfg, resolver); err != nil {
+				return nil, fmt.Errorf("domain %q: %w", domain, err)
+			}
+		}
+		store, err := datastore.NewStore(ctx, storeCfg, domain)
 		if err != nil {
 			return nil, err
 		}
 		stores[domain] = store
 	}
 	return stores, nil
+}
+
+// resolveStoreCredentials returns a copy of storeCfg with Username and Password
+// resolved through the secrets manager. All other fields are unchanged.
+func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, resolver secrets.Resolver) (config.StoreConfig, error) {
+	if storeCfg.Connection.Username != "" {
+		val, err := resolver.Resolve(ctx, storeCfg.Connection.Username)
+		if err != nil {
+			return storeCfg, fmt.Errorf("resolving username for store %q: %w", storeCfg.Name, err)
+		}
+		storeCfg.Connection.Username = string(val)
+		clear(val)
+	}
+	if storeCfg.Connection.Password != "" {
+		val, err := resolver.Resolve(ctx, storeCfg.Connection.Password)
+		if err != nil {
+			return storeCfg, fmt.Errorf("resolving password for store %q: %w", storeCfg.Name, err)
+		}
+		storeCfg.Connection.Password = string(val)
+		clear(val)
+	}
+	return storeCfg, nil
 }
 
 func (m *DataStoreManager) Snapshot() config.DataStoreConfig {
@@ -306,7 +338,7 @@ func (m *DataStoreManager) DataStoreConfigHandler(w http.ResponseWriter, r *http
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
-		if err := m.Update(cfg); err != nil {
+		if err := m.Update(r.Context(), cfg); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
@@ -26,10 +27,13 @@ type Store struct {
 	client   goredis.Cmdable
 	bundle   *clientBundle
 	sf       singleflight.Group // coalesces concurrent reads for the same key
+	dedup    *IODeduper         // nil when IODedupWindow is ""
 }
 
 // New creates a Store from config. kind is "redis" or "dragonfly".
-func New(cfg config.StoreConfig, domain, kind string) (*Store, error) {
+// ctx is used to cancel the IODeduper's background rotation goroutine when
+// IODedupWindow is non-empty; pass the gateway's root context.
+func New(ctx context.Context, cfg config.StoreConfig, domain, kind string) (*Store, error) {
 	topology, err := parseTopology(cfg)
 	if err != nil {
 		return nil, err
@@ -41,6 +45,20 @@ func New(cfg config.StoreConfig, domain, kind string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	var dedup *IODeduper
+	if w := cfg.Connection.IODedupWindow; w != "" {
+		ttl, err := time.ParseDuration(w)
+		if err != nil {
+			return nil, fmt.Errorf("invalid io_dedup_window %q: %w", w, err)
+		}
+		if ttl <= 0 {
+			return nil, fmt.Errorf("io_dedup_window must be a positive duration (got %q)", w)
+		}
+		dedup = newIODeduper(ttl)
+		dedup.StartRotation(ctx)
+	}
+
 	return &Store{
 		name:     cfg.Name,
 		kind:     kind,
@@ -48,16 +66,28 @@ func New(cfg config.StoreConfig, domain, kind string) (*Store, error) {
 		topology: topology,
 		client:   b.cmdable,
 		bundle:   b,
+		dedup:    dedup,
 	}, nil
 }
 
 // Put stores value at key with no expiry. Use PutWithTTL for expiring entries.
+// If IODedupWindow is configured and the key already holds the same bytes in
+// the dedup layer, the Redis write is skipped.
 func (s *Store) Put(ctx context.Context, tenant, key string, value []byte) error {
 	k, err := scopedKey(tenant, s.domain, key)
 	if err != nil {
 		return err
 	}
-	return s.client.Set(ctx, k, value, 0).Err()
+	if s.dedup != nil && s.dedup.ShouldSkipWrite(k, value, 0) {
+		return nil
+	}
+	if err := s.client.Set(ctx, k, value, 0).Err(); err != nil {
+		return err
+	}
+	if s.dedup != nil {
+		s.dedup.Store(k, value, 0)
+	}
+	return nil
 }
 
 // getResult is the value type shared by all callers coalesced by singleflight.
@@ -68,13 +98,23 @@ type getResult struct {
 
 // Get retrieves a value. Returns (nil, false, nil) when the key does not exist.
 //
-// Concurrent calls for the same key are coalesced: only one Redis GET is sent
-// and all waiting goroutines receive the same result. This prevents thundering
-// herd on cache misses when many goroutines request the same key simultaneously.
+// If IODedupWindow is configured, the dedup layer is checked first; a Redis
+// round-trip is only made on a miss, and the result is stored back into the
+// dedup layer for subsequent burst requests.
+//
+// Within the same burst (multiple goroutines requesting the same key while no
+// dedup entry exists yet), singleflight ensures only one Redis GET is issued.
 func (s *Store) Get(ctx context.Context, tenant, key string) ([]byte, bool, error) {
 	k, err := scopedKey(tenant, s.domain, key)
 	if err != nil {
 		return nil, false, err
+	}
+
+	// Fast path: dedup layer hit — no Redis round-trip needed.
+	if s.dedup != nil {
+		if val, ok := s.dedup.Get(k); ok {
+			return val, val != nil, nil
+		}
 	}
 
 	v, err, _ := s.sf.Do(k, func() (any, error) {
@@ -91,16 +131,27 @@ func (s *Store) Get(ctx context.Context, tenant, key string) ([]byte, bool, erro
 		return nil, false, err
 	}
 	r := v.(getResult)
+	if s.dedup != nil {
+		// Store the result (including misses as nil) so the next burst hit is local.
+		s.dedup.Store(k, r.val, 0)
+	}
 	return r.val, r.found, nil
 }
 
 // Delete removes a key. No-op if the key does not exist.
+// Always reaches Redis (never skipped); also invalidates any dedup entry.
 func (s *Store) Delete(ctx context.Context, tenant, key string) error {
 	k, err := scopedKey(tenant, s.domain, key)
 	if err != nil {
 		return err
 	}
-	return s.client.Del(ctx, k).Err()
+	if err := s.client.Del(ctx, k).Err(); err != nil {
+		return err
+	}
+	if s.dedup != nil {
+		s.dedup.Invalidate(k)
+	}
+	return nil
 }
 
 // ListKeys returns all keys under prefix for the given tenant+domain.
