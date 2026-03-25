@@ -8,10 +8,12 @@ package config
 // path) must themselves use only "env:" or "file://" references — not another
 // secrets manager, to avoid circular resolution.
 type SecretsConfig struct {
-	GSM       GSMConfig       `json:"gsm,omitempty"       yaml:"gsm,omitempty"`
-	Vault     VaultConfig     `json:"vault,omitempty"     yaml:"vault,omitempty"`
-	AWSSM     AWSSMConfig     `json:"aws_sm,omitempty"    yaml:"aws_sm,omitempty"`
-	Encrypted EncryptedConfig `json:"encrypted,omitempty" yaml:"encrypted,omitempty"`
+	GSM          GSMConfig                 `json:"gsm,omitempty"          yaml:"gsm,omitempty"`
+	Vault        VaultConfig               `json:"vault,omitempty"        yaml:"vault,omitempty"`
+	AWSSM        AWSSMConfig               `json:"aws_sm,omitempty"       yaml:"aws_sm,omitempty"`
+	Encrypted    EncryptedConfig           `json:"encrypted,omitempty"    yaml:"encrypted,omitempty"`
+	OAuth2       OAuth2Config              `json:"oauth2,omitempty"       yaml:"oauth2,omitempty"`
+	GoogleToken  GoogleTokenConfig         `json:"google_token,omitempty" yaml:"google_token,omitempty"`
 }
 
 // GSMConfig configures the Google Secret Manager provider.
@@ -67,6 +69,44 @@ type AWSSMConfig struct {
 	// Leave empty to use the attached IAM role (recommended).
 	AccessKey string `json:"access_key,omitempty" yaml:"access_key,omitempty"`
 	SecretKey string `json:"secret_key,omitempty" yaml:"secret_key,omitempty"`
+}
+
+// OAuth2Config configures the OAuth2 client credentials provider.
+// Each named client is registered as a separate entry in Clients.
+// URI format: oauth2token://client-name
+//
+// Example:
+//
+//	secrets:
+//	  oauth2:
+//	    clients:
+//	      payment-service:
+//	        token_url: "https://auth.payment.example.com/token"
+//	        client_id: "my-client-id"
+//	        client_secret: "env:PAYMENT_CLIENT_SECRET"
+//	        scopes: ["payment.read", "payment.write"]
+type OAuth2Config struct {
+	Clients map[string]OAuth2ClientConfig `json:"clients,omitempty" yaml:"clients,omitempty"`
+}
+
+// OAuth2ClientConfig configures a single OAuth2 client credentials flow client.
+type OAuth2ClientConfig struct {
+	TokenURL     string   `json:"token_url"               yaml:"token_url"`
+	ClientID     string   `json:"client_id"               yaml:"client_id"`
+	ClientSecret string   `json:"client_secret,omitempty" yaml:"client_secret,omitempty"` // accepts env: refs
+	Scopes       []string `json:"scopes,omitempty"        yaml:"scopes,omitempty"`
+}
+
+// GoogleTokenConfig configures the Google ID token provider.
+// URI format: googletoken://https://your-service.run.app
+//
+// The provider uses Application Default Credentials (ADC) to fetch a
+// Google-signed OIDC token for the given audience. No config is needed when
+// running on GKE/Cloud Run — ADC provides the identity automatically.
+//
+// To enable: go build -tags googletoken ./cmd/rah-gateway/
+type GoogleTokenConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
 }
 
 // EncryptedConfig configures the AES-256-GCM encrypted-value provider.

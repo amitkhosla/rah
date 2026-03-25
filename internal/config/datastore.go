@@ -43,7 +43,8 @@ const (
 	DomainCache DataDomain = "cache" // request-level response cache
 
 	// Infrastructure / operational
-	DomainInstances DataDomain = "instances" // live gateway instance registry
+	DomainInstances    DataDomain = "instances"    // live gateway instance registry
+	DomainCredentials  DataDomain = "credentials"  // named credential mappings (CredentialRegistry)
 )
 
 var requiredDomains = []DataDomain{

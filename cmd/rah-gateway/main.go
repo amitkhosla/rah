@@ -133,6 +133,17 @@ func main() {
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
+
+	// CredentialRegistry — optional; requires DomainCredentials in datastore config.
+	var credReg *secrets.CredentialRegistry
+	if credStore := control.NewCredentialStore(dataStoreMgr); credStore != nil {
+		credReg = secrets.NewCredentialRegistry(credStore, secretsMgr)
+		compiler.CredMgr = credReg
+		log.Printf("CredentialRegistry enabled (credentials domain configured)")
+	} else {
+		log.Printf("CredentialRegistry disabled (no credentials domain configured — add 'credentials' binding to datastore config)")
+	}
+
 	setupRoutes(r, fm, compiler)
 
 	// 4. The Unified Hot-Path Handler
@@ -300,6 +311,9 @@ func main() {
 	})
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
 	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
+	if credReg != nil {
+		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
+	}
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }
