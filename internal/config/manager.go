@@ -95,3 +95,6 @@ func (m *Manager) Gateway() GatewayConfig { return m.gateway }
 
 // Secrets returns the credential provider configuration.
 func (m *Manager) Secrets() SecretsConfig { return m.gateway.Secrets }
+
+// Cache returns the cache configuration.
+func (m *Manager) Cache() CacheConfig { return m.gateway.Cache }

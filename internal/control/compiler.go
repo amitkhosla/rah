@@ -18,6 +18,7 @@ type Compiler struct {
 	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
+	CacheMgr    steps.CacheStore             // optional; enables cache_get/cache_put steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -491,6 +492,62 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return err
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.LoadCredential(c.CredMgr, step.Source, slot))
+
+	case "cache_get":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_get step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheGet(c.CacheMgr, keySlot, destSlot))
+
+	case "cache_put":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_put step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		valueSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CachePut(c.CacheMgr, keySlot, valueSlot, step.TTL))
+
+	case "cache_get_global":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_get_global step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheGetGlobal(c.CacheMgr, keySlot, destSlot))
+
+	case "cache_put_global":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_put_global step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		valueSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CachePutGlobal(c.CacheMgr, keySlot, valueSlot, step.TTL))
 
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
