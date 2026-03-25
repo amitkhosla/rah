@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/control"
 	"rah/internal/datastore"
@@ -142,6 +143,61 @@ func main() {
 		log.Printf("CredentialRegistry enabled (credentials domain configured)")
 	} else {
 		log.Printf("CredentialRegistry disabled (no credentials domain configured — add 'credentials' binding to datastore config)")
+	}
+
+	// Cache — optional; controlled by [cache] section in config.
+	// When enabled, cache_get/cache_put/cache_get_global/cache_put_global steps are available in flows.
+	var cacheMgr *cache.CacheManager
+	cacheCfg := cfgMgr.Cache()
+	if !cacheCfg.Disabled {
+		memBudget := uint64(cacheCfg.MemBudgetMB) * 1024 * 1024
+		if memBudget == 0 {
+			memBudget = 256 * 1024 * 1024 // default 256 MB
+		}
+		tenantLimit := uint64(cacheCfg.TenantLimitMB) * 1024 * 1024
+
+		sizeClasses := cacheCfg.SizeClasses
+		if len(sizeClasses) == 0 {
+			sizeClasses = []uint32{256, 1024, 4096, 16384}
+		}
+		ttlTiers := cacheCfg.TTLTiers
+		if len(ttlTiers) == 0 {
+			ttlTiers = []uint32{60, 300, 3600}
+		}
+
+		var cacheBackend cache.CacheBackend
+		switch cacheCfg.Backend.Kind {
+		case "memory":
+			cacheBackend = cache.NoopBackend
+		case config.StoreRedis, config.StoreDragonFly:
+			b, err := cache.NewRedisBackend(gatewayCtx, cacheCfg.Backend)
+			if err != nil {
+				log.Fatalf("cache: failed to connect Redis backend: %v", err)
+			}
+			cacheBackend = b
+		default:
+			// "" or "disk" — use disk backend; path from Backend.Connection.Path or default
+			if cacheCfg.Backend.Connection.Path != "" {
+				b, err := cache.NewDiskBackend(cacheCfg.Backend.Connection.Path)
+				if err != nil {
+					log.Fatalf("cache: failed to init disk backend at %q: %v", cacheCfg.Backend.Connection.Path, err)
+				}
+				cacheBackend = b
+			}
+			// nil → NewCacheManager will use DefaultDiskCachePath ("./icache2")
+		}
+
+		var err error
+		cacheMgr, err = cache.NewCacheManager(memBudget, sizeClasses, ttlTiers, 0, tenantLimit, cacheBackend)
+		if err != nil {
+			log.Fatalf("cache: failed to initialise CacheManager: %v", err)
+		}
+		defer cacheMgr.Stop()
+		compiler.CacheMgr = cacheMgr
+		log.Printf("Cache enabled: mem=%dMB sizeClasses=%v ttlTiers=%v backend=%s",
+			cacheCfg.MemBudgetMB, sizeClasses, ttlTiers, cacheCfg.Backend.Kind)
+	} else {
+		log.Printf("Cache disabled (cache.disabled=true in config)")
 	}
 
 	setupRoutes(r, fm, compiler)

@@ -1,5 +1,24 @@
 package config
 
+// CacheConfig controls the in-process response cache (Gen-2 slab cache).
+//
+// Backend.Kind selects the persistence/overflow layer:
+//   - "" or "disk"   → disk backend; Backend.Connection.Path sets the directory (default ./icache2)
+//   - "memory"       → no persistence (pure in-process; data lost on restart)
+//   - "redis"        → Redis backend
+//   - "dragonfly"    → Dragonfly backend (Redis-compatible)
+//
+// Disabled=true skips CacheManager creation entirely; cache_get/cache_put steps
+// become no-ops at compile time.
+type CacheConfig struct {
+	Disabled      bool        `json:"disabled,omitempty"        yaml:"disabled,omitempty"`
+	MemBudgetMB   int         `json:"mem_budget_mb,omitempty"   yaml:"mem_budget_mb,omitempty"`
+	TenantLimitMB int         `json:"tenant_limit_mb,omitempty" yaml:"tenant_limit_mb,omitempty"`
+	SizeClasses   []uint32    `json:"size_classes,omitempty"    yaml:"size_classes,omitempty"`
+	TTLTiers      []uint32    `json:"ttl_tiers,omitempty"       yaml:"ttl_tiers,omitempty"`
+	Backend       StoreConfig `json:"backend,omitempty"         yaml:"backend,omitempty"`
+}
+
 // GatewayConfig is the top-level configuration read from a JSON or YAML file.
 // It is the single struct passed to config.Manager and distributed to all
 // components via Manager accessors.
@@ -7,6 +26,7 @@ type GatewayConfig struct {
 	Layout    GlobalLayout    `json:"layout"             yaml:"layout"`
 	DataStore DataStoreConfig `json:"datastore"          yaml:"datastore"`
 	Secrets   SecretsConfig   `json:"secrets,omitempty"  yaml:"secrets,omitempty"`
+	Cache     CacheConfig     `json:"cache,omitempty"    yaml:"cache,omitempty"`
 }
 
 type ResourceLimit struct {

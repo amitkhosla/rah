@@ -315,6 +315,46 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		// ── Cache ─────────────────────────────────────────────────────────────────
+		{
+			Type: "cache_get", Title: "Cache Get (Tenant)", Category: "cache", Capability: "read",
+			Description: "Look up a key in the tenant-scoped cache. On hit, writes the value to the dest slot. On miss, the dest slot is unchanged. Follow with an `if` step checking whether the slot is non-empty to branch on hit vs miss.",
+			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
+			Fields: []StepField{
+				sf("key_identifier", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
+				sf("as", "Store as", "Slot to write the cached value into on a hit", "cached_body"),
+			},
+		},
+		{
+			Type: "cache_put", Title: "Cache Put (Tenant)", Category: "cache", Capability: "write",
+			Description: "Store a value in the tenant-scoped cache under the given key with a TTL in seconds. Skipped silently if key or value slot is empty.",
+			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
+			Fields: []StepField{
+				sf("key_identifier", "Key slot", "Slot whose value is used as the cache key", "cache_key"),
+				sf("source", "Value slot", "Slot holding the value to cache", "upstream_response"),
+				sf("ttl", "TTL (seconds)", "How long to cache the value; routed to the nearest TTL tier", "300"),
+			},
+		},
+		{
+			Type: "cache_get_global", Title: "Cache Get (Global)", Category: "cache", Capability: "read",
+			Description: "Look up a key in the shared (tenant-agnostic) cache namespace. Useful for caching data that is the same for all tenants (e.g. public API responses, config payloads). Behaviour is identical to cache_get but tenantID=0 is used.",
+			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
+			Fields: []StepField{
+				sf("key_identifier", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
+				sf("as", "Store as", "Slot to write the cached value into on a hit", "cached_body"),
+			},
+		},
+		{
+			Type: "cache_put_global", Title: "Cache Put (Global)", Category: "cache", Capability: "write",
+			Description: "Store a value in the shared (tenant-agnostic) cache namespace with a TTL in seconds. The stored value is readable by all tenants via cache_get_global.",
+			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
+			Fields: []StepField{
+				sf("key_identifier", "Key slot", "Slot whose value is used as the cache key", "cache_key"),
+				sf("source", "Value slot", "Slot holding the value to cache", "upstream_response"),
+				sf("ttl", "TTL (seconds)", "How long to cache the value; routed to the nearest TTL tier", "300"),
+			},
+		},
+
 		// ── Response ─────────────────────────────────────────────────────────────
 		{
 			Type: "set_response_header", Title: "Set Response Header", Category: "response", Capability: "response-mod",
