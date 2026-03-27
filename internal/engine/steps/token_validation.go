@@ -213,7 +213,7 @@ func parseValidationSet(raw string) ValidationSet {
 		return ValidationSet{Signature: true, Issuer: true, Audience: true, Expiry: true, NotBefore: true}
 	}
 	set := ValidationSet{}
-	for _, item := range strings.Split(raw, ",") {
+	for item := range strings.SplitSeq(raw, ",") {
 		switch strings.ToLower(strings.TrimSpace(item)) {
 		case "signature", "sig":
 			set.Signature = true
@@ -303,6 +303,10 @@ func resolveJWKSURI(ctx *rctx.Context, cfg TokenValidationConfig) (string, error
 func rejectUnauthorized(ctx *rctx.Context) int16 {
 	ctx.ResponseStatus = http.StatusUnauthorized
 	ctx.Write([]byte("unauthorized"))
+	ctx.Failed = true
+	ctx.ErrorCode = 401
+	ctx.ErrorMsg = ctx.Alloc(len("unauthorized"))
+	copy(ctx.ErrorMsg, "unauthorized")
 	return engine.StopPlan
 }
 
@@ -416,13 +420,13 @@ func validateRequiredScopes(claims map[string]any, claimKeys []string, required 
 func extractScopesIntoSet(v any, set map[string]struct{}) {
 	switch s := v.(type) {
 	case string:
-		for _, scope := range strings.Fields(s) {
+		for scope := range strings.FieldsSeq(s) {
 			set[scope] = struct{}{}
 		}
 	case []any:
 		for _, item := range s {
 			if sv, ok := item.(string); ok {
-				for _, scope := range strings.Fields(sv) {
+				for scope := range strings.FieldsSeq(sv) {
 					set[scope] = struct{}{}
 				}
 			}

@@ -109,7 +109,7 @@ func parseStatusSet(raw string, fallback map[int]struct{}) map[int]struct{} {
 		return fallback
 	}
 	out := make(map[int]struct{})
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		code, err := strconv.Atoi(strings.TrimSpace(part))
 		if err == nil && code > 0 {
 			out[code] = struct{}{}
@@ -264,7 +264,7 @@ func shouldRetryError(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 	return false
 }
@@ -307,7 +307,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 			url, err := selectUpstreamURL(rawUpstream, flowInput)
 			if err != nil {
 				ctx.ResponseStatus = 500
-				return -1
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				ctx.ErrorMsg = ctx.Alloc(len("upstream url resolution failed"))
+				copy(ctx.ErrorMsg, "upstream url resolution failed")
+				return engine.StopPlan
 			}
 			upstreamHost := extractUpstreamHost(url)
 			bundle := getClientForTarget(upstreamHost, flowInput)
@@ -335,7 +339,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				if err != nil {
 					cancel()
 					ctx.ResponseStatus = 500
-					return -1
+					ctx.Failed = true
+					ctx.ErrorCode = 500
+					ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+					copy(ctx.ErrorMsg, "upstream call failed")
+					return engine.StopPlan
 				}
 
 				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
@@ -404,7 +412,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 						continue
 					}
 					ctx.ResponseStatus = 502
-					return -1
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+					copy(ctx.ErrorMsg, "upstream call failed")
+					return engine.StopPlan
 				}
 
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
@@ -426,7 +438,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
 					}
 					ctx.ResponseStatus = 502
-					return -1
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+					copy(ctx.ErrorMsg, "upstream call failed")
+					return engine.StopPlan
 				}
 
 				ctx.ResponseStatus = resp.StatusCode
@@ -443,7 +459,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				return state.PC + 1
 			}
 
-			return -1
+			ctx.Failed = true
+			ctx.ErrorCode = int16(ctx.ResponseStatus)
+			ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+			copy(ctx.ErrorMsg, "upstream call failed")
+			return engine.StopPlan
 		},
 	}
 }
