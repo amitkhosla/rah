@@ -132,6 +132,18 @@ type Context struct {
 	// ArenaOverflowed is true if any pool-borrowed or heap fallback was needed.
 	ArenaOverflowed bool
 
+	// Failed is set to true by any step that encounters a non-recoverable error.
+	// It is distinct from intentional stops (early_return sets Failed=false).
+	// Cleared by on_error:continue wrappers or on_error:jump wrappers.
+	Failed bool
+	// ErrorCode is an application-level error code set by the failing step.
+	// 0 means no error. Typical values mirror HTTP status codes (401, 503) or
+	// custom gateway codes (1001-1999).
+	ErrorCode int16
+	// ErrorMsg points into the arena (zero allocation). Set by the failing step.
+	// Cleared together with Failed by error wrappers.
+	ErrorMsg []byte
+
 	// InternalTxID is a globally-unique transaction ID assigned per request
 	// by FlowManager via TxIDGenerator. Use rctx.FormatTxID to format.
 	InternalTxID [2]uint64
@@ -317,6 +329,9 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Obs = nil
 	ctx.Trace = nil
 	ctx.ArenaOverflowed = false
+	ctx.Failed = false
+	ctx.ErrorCode = 0
+	ctx.ErrorMsg = nil
 	ctx.InternalTxID = [2]uint64{}
 
 	// Reset inline arena — one integer write, all slot data is implicitly gone.

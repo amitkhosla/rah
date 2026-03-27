@@ -150,6 +150,22 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		// ── AI / LLM ─────────────────────────────────────────────────────────────
+		{
+			Type: "llm_call", Title: "LLM Call", Category: "ai", Capability: "inference",
+			Description: "Send a prompt to a configured LLM (Anthropic, OpenAI, Gemini, Ollama) and store the text response in a slot. Returns 413 if the prompt exceeds the model's context limit.",
+			Defaults: map[string]string{
+				"key_identifier": "var.prompt",
+				"as":             "llm_response",
+				"input":          `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000"}`,
+			},
+			Fields: []StepField{
+				sf("key_identifier", "Prompt slot", "Slot containing the user prompt text", "var.prompt"),
+				sf("as", "Store as", "Slot to write the LLM text response into", "llm_response"),
+				sf("input", "Config (JSON)", `Keys: model (catalog slug), temperature, max_tokens, timeout_ms, system_slot (slot name for system prompt), api_key (overrides catalog)`, `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000"}`),
+			},
+		},
+
 		// ── HTTP ─────────────────────────────────────────────────────────────────
 		{
 			Type: "http_call", Title: "HTTP Call", Category: "http", Capability: "upstream",
@@ -221,6 +237,35 @@ func AllStepDescriptors() []StepDescriptor {
 			Defaults: map[string]string{"flow_name": ""},
 			Fields: []StepField{
 				sf("flow_name", "Flow name", "Name of the sub-flow to invoke", "my_sub_flow"),
+			},
+		},
+		{
+			Type: "return", Title: "Early Return", Category: "control", Capability: "termination",
+			Description: "Terminate flow immediately with a given HTTP status and body.",
+			Defaults: map[string]string{"status": "200", "body": ""},
+			Fields: []StepField{
+				sf("status", "HTTP status", "Numeric HTTP status code to respond with (default 200)", "200"),
+				sf("body", "Static body", "Static response body string. Leave empty to use the slot named by 'as'.", ""),
+				sf("as", "Body slot", "Slot name holding a dynamic body (used when body is empty)", ""),
+			},
+		},
+		{
+			Type: "fail", Title: "Fail", Category: "control", Capability: "termination",
+			Description: "Mark the request as failed with a code and message, then stop.",
+			Defaults: map[string]string{"status": "500", "body": ""},
+			Fields: []StepField{
+				sf("status", "Error code", "Numeric error code stored in ctx.ErrorCode (default 500)", "500"),
+				sf("body", "Static message", "Static error message string. Leave empty to use the slot named by 'as'.", ""),
+				sf("as", "Message slot", "Slot name holding a dynamic error message (used when body is empty)", ""),
+			},
+		},
+		{
+			Type: "capture_error", Title: "Capture Error", Category: "control", Capability: "error-handling",
+			Description: "Capture current error state into slots and clear it.",
+			Defaults: map[string]string{},
+			Fields: []StepField{
+				sf("key", "Code slot", "Slot name to capture the error code into (must already exist in slotMap)", ""),
+				sf("as", "Message slot", "Slot name to capture the error message into (allocated if new)", "err_msg"),
 			},
 		},
 

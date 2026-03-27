@@ -10,4 +10,6 @@ type GatewayConfig struct {
 	Apis []ApiConfig `json:"apis"`
 	// DataStores configures where each logical data domain is persisted.
 	DataStores config.DataStoreConfig `json:"data_stores"`
+	// LLM configures the model catalog used by llm_call steps.
+	LLM config.LLMConfig `json:"llm,omitempty"`
 }

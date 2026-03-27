@@ -42,7 +42,11 @@ func LoadSecret(loader SecretLoader, ref string, slot int) engine.Instruction {
 			val, err := loader.Resolve(context.Background(), ref)
 			if err != nil {
 				ctx.ResponseStatus = 500
-				return -1 // abort execution
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				ctx.ErrorMsg = ctx.Alloc(len("secret resolution failed"))
+				copy(ctx.ErrorMsg, "secret resolution failed")
+				return engine.StopPlan
 			}
 			ctx.ByteSlots[slot] = val
 			return s.PC + 1

@@ -42,6 +42,24 @@ type StepConfig struct {
 	Variable    string              `json:"variable,omitempty"`    // For cache_get_batched / json_extract_emit / json_foreach_emit: input slot name
 	Params      []map[string]string `json:"params,omitempty"`      // For json_extract_emit / json_foreach_emit: list of ExtractOp descriptors
 	Destination string              `json:"destination,omitempty"` // For cache_get_batched: dest slot name
+
+	// Error handling
+	// OnError controls what happens when this step signals failure (sets ctx.Failed + StopPlan).
+	// Values:
+	//   "" or "fail"     — default: stop execution (no wrapper emitted)
+	//   "continue"       — clear error and continue to next step
+	//   "jump:<flow>"    — jump to named flow's entry point on error
+	//   "status:<code>"  — set HTTP status <code> and stop cleanly (e.g. "status:503")
+	OnError string `json:"on_error,omitempty"`
+
+	// Status is the HTTP response code for "return" and "fail" actions.
+	// Also used as the static status for on_error:"status:<code>" when the code
+	// is not parseable from OnError (fallback).
+	Status int `json:"status,omitempty"`
+
+	// Body is used by the "return" action as a static response body string.
+	// If empty and a BodySlot is named via As, that slot's value is used.
+	Body string `json:"body,omitempty"`
 }
 
 // EndpointConfig defines per-endpoint overrides within an API definition.

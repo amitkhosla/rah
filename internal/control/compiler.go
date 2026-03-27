@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
@@ -10,6 +11,14 @@ import (
 	"strconv"
 	"strings"
 )
+
+// pendingJump tracks an on_error:jump: wrapper that referenced a not-yet-compiled
+// flow. Resolved in a second pass after all flows are compiled.
+type pendingJump struct {
+	instrIdx int               // index in GlobalTable to patch
+	flowName string            // target flow name to resolve
+	inner    engine.Instruction // original unwrapped instruction
+}
 
 type Compiler struct {
 	slotMap   map[string]int
@@ -20,23 +29,29 @@ type Compiler struct {
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
 	CacheMgr    steps.CacheStore             // optional; enables cache_get/cache_put steps
+	LLMCfg      config.LLMConfig             // optional; enables llm_call steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
+	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
+	// flow. Resolved in a second pass after all flows are compiled.
+	pendingJumps []pendingJump
 }
 
 func NewCompiler(fm *engine.FlowManager) *Compiler {
 	return &Compiler{
-		slotMap:     make(map[string]int),
-		nextSlot:    0,
-		fm:          fm,
-		GlobalTable: make([]engine.Instruction, 0, 4096),
-		FragmentMap: make(map[string]int16),
+		slotMap:      make(map[string]int),
+		nextSlot:     0,
+		fm:           fm,
+		GlobalTable:  make([]engine.Instruction, 0, 4096),
+		FragmentMap:  make(map[string]int16),
+		pendingJumps: make([]pendingJump, 0, 8),
 	}
 }
 
 // BakeAll flattens Fragments and APIs into a single Instruction Table.
 func (c *Compiler) BakeAll(cfg GatewayConfig) error {
+	c.LLMCfg = cfg.LLM
 	// 1. Map Fragments (Subflows)
 	for name, flow := range cfg.Flows {
 		c.FragmentMap[name] = int16(len(c.GlobalTable))
@@ -49,7 +64,6 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 
 	// 2. Bake APIs
 	for _, api := range cfg.Apis {
-		api.EntryPoint = int16(len(c.GlobalTable))
 		c.resetSlots()
 
 		// AUTO-BINDING: Discover what headers/query params this flow needs
@@ -66,6 +80,9 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 			return fmt.Errorf("api %q: %w", api.FlowName, err)
 		}
 		c.GlobalTable = append(c.GlobalTable, c.newStopStep())
+	}
+	if err := c.resolvePendingJumps(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -145,6 +162,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
+
+	case "llm_call":
+		return c.compileLLMCall(step)
 
 	case "registry_lookup":
 		// Resolves the alias in keySlot → ctx.TenantID.
@@ -606,9 +626,103 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.JSONForeachEmit(bodySlot, arrayPath, ops))
 
+	case "return":
+		// Terminate flow immediately with a given HTTP status and body.
+		// status: HTTP response code (default 200).
+		// body: static response body string (optional; if empty, body slot named by As is used).
+		// as: slot name holding a dynamic body (used when body is empty).
+		bodySlot := -1
+		if step.As != "" {
+			if s, ok := c.slotMap[step.As]; ok {
+				bodySlot = s
+			}
+		}
+		status := step.Status
+		if status == 0 {
+			status = 200
+		}
+		var staticBody []byte
+		if step.Body != "" {
+			staticBody = []byte(step.Body)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.EarlyReturn(status, bodySlot, staticBody))
+
+	case "fail":
+		// Mark the request as failed with a code and message, then stop.
+		// status: error code stored in ctx.ErrorCode (default 500).
+		// body: static error message string (optional; if empty, msg slot named by As is used).
+		// as: slot name holding a dynamic error message (used when body is empty).
+		msgSlot := -1
+		if step.As != "" {
+			if s, ok := c.slotMap[step.As]; ok {
+				msgSlot = s
+			}
+		}
+		code := int16(step.Status)
+		if code == 0 {
+			code = 500
+		}
+		var staticMsg []byte
+		if step.Body != "" {
+			staticMsg = []byte(step.Body)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.Fail(code, msgSlot, staticMsg))
+
+	case "capture_error":
+		// Capture current error state into slots and clear it.
+		// key: slot name to capture the error code into (optional).
+		// as: slot name to capture the error message into (optional, allocated if new).
+		codeSlot := -1
+		msgSlot := -1
+		if step.Key != "" {
+			if s, ok := c.slotMap[step.Key]; ok {
+				codeSlot = s
+			}
+		}
+		if step.As != "" {
+			var err error
+			msgSlot, err = c.getSlot(step.As)
+			if err != nil {
+				return err
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CaptureError(codeSlot, msgSlot))
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
+
+	// Apply on_error wrapping to the last emitted instruction for fallible leaf steps.
+	// Branching/control-flow steps (if, switch, call, return, fail, capture_error)
+	// manage their own termination and must not be wrapped.
+	if step.OnError != "" && !isControlFlowAction(step.Action) && len(c.GlobalTable) > 0 {
+		lastIdx := len(c.GlobalTable) - 1
+		last := c.GlobalTable[lastIdx]
+		switch step.OnError {
+		case "continue":
+			c.GlobalTable[lastIdx] = steps.WrapOnErrorContinue(last)
+		default:
+			if flowName, ok2 := strings.CutPrefix(step.OnError, "jump:"); ok2 {
+				
+				if errPC, ok := c.FragmentMap[flowName]; ok {
+					c.GlobalTable[lastIdx] = steps.WrapOnErrorJump(last, errPC)
+				} else {
+					// Flow not yet compiled — record for second pass
+					c.pendingJumps = append(c.pendingJumps, pendingJump{
+						instrIdx: lastIdx,
+						flowName: flowName,
+						inner:    last,
+					})
+				}
+			} else if codeStr, ok2 := strings.CutPrefix(step.OnError, "status:"); ok2 {
+				
+				if httpStatus, err2 := strconv.Atoi(codeStr); err2 == nil {
+					c.GlobalTable[lastIdx] = steps.WrapOnErrorStatus(last, httpStatus, nil)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -740,6 +854,30 @@ func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
 	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
+}
+
+// isControlFlowAction returns true for step actions that must not be wrapped
+// with on_error handlers because they control their own execution flow.
+func isControlFlowAction(action string) bool {
+	switch action {
+	case "if", "switch", "call", "return", "fail", "capture_error":
+		return true
+	}
+	return false
+}
+
+// resolvePendingJumps patches any on_error:jump wrappers that referenced
+// flows compiled after the referencing step.
+func (c *Compiler) resolvePendingJumps() error {
+	for _, pj := range c.pendingJumps {
+		errPC, ok := c.FragmentMap[pj.flowName]
+		if !ok {
+			return fmt.Errorf("on_error:jump references unknown flow %q", pj.flowName)
+		}
+		c.GlobalTable[pj.instrIdx] = steps.WrapOnErrorJump(pj.inner, errPC)
+	}
+	c.pendingJumps = c.pendingJumps[:0]
+	return nil
 }
 
 // compileQuotaGroupMap builds a []uint16 indexed by QuotaGroupID where each
