@@ -147,6 +147,22 @@ type Context struct {
 	// arenaInline is the 1KB always-inline arena for slot data. Raw bytes only
 	// — no Go pointers — so GC never scans its contents. Declared last (large).
 	arenaInline [ArenaInlineSize]byte
+
+	// ── Op buffer — per-request storage operation queue ──────────────────────
+	// opKeysBuf is a dedicated inline buffer for constructing op keys at runtime
+	// (prefix + extracted value). Kept separate from arenaInline so key construction
+	// does not compete with slot data. Reset by ResetOps().
+	opKeysBuf  [512]byte
+	opKeysUsed int32
+
+	// opsBase is the inline backing array; Ops is a slice header over it.
+	// len(Ops) == OpCount always. MaxOps and OnFlush are set by FlowManager
+	// at request start and survive Reset() (pool-level config).
+	opsBase  [DefaultMaxOps]StorageOp // never heap-allocated
+	Ops      []StorageOp              // slice header: opsBase[:OpCount]
+	OpCount  int                      // valid op count; always == len(Ops)
+	MaxOps   int                      // 0 = no auto-flush; set from config
+	OnFlush  func(ctx *Context)       // called when OpCount >= MaxOps; nil = disabled
 }
 
 // flushResponseHeaders copies any headers set via SetResponseHeader to the
@@ -212,6 +228,7 @@ func (ctx *Context) InitSlots() {
 	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
 	ctx.IntSlots = ctx.intSlotBase[:BaseIntSlots]
 	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
+	ctx.Ops = ctx.opsBase[:0]
 }
 
 // Alloc carves n bytes from the arena without any heap allocation in the
@@ -246,6 +263,19 @@ func (ctx *Context) Alloc(n int) []byte {
 	// Value > 4KB — heap fallback (very rare). Execution is never blocked.
 	ctx.ArenaOverflowed = true
 	return make([]byte, n)
+}
+
+// AllocOpKey carves n bytes from opKeysBuf for op key construction.
+// Falls back to arenaInline when opKeysBuf is exhausted (rare).
+// Never heap-allocates in the common case.
+func (ctx *Context) AllocOpKey(n int) []byte {
+	end := int(ctx.opKeysUsed) + n
+	if end <= len(ctx.opKeysBuf) {
+		s := ctx.opKeysBuf[ctx.opKeysUsed:end]
+		ctx.opKeysUsed = int32(end)
+		return s
+	}
+	return ctx.Alloc(n)
 }
 
 // ReleaseOverflow returns the pool-borrowed ext block (if any) back to the
@@ -336,6 +366,10 @@ func (ctx *Context) Reset(w ResponseWriter) {
 
 	ctx.scratchIdx = 0
 	ctx.ScratchBuffer = ctx.ScratchBuffer[:0]
+
+	// Reset op buffer — keep MaxOps and OnFlush (pool-level config).
+	ctx.opKeysUsed = 0
+	ctx.ResetOps()
 }
 
 // MarkDetachedFromPool signals that this context is still in use by async work

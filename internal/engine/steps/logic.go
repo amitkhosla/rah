@@ -3,6 +3,7 @@ package steps
 import (
 	"rah/internal/engine"
 	"rah/internal/rctx"
+	"strings"
 )
 
 // ComplexLogicGate evaluates a pre-parsed RPN condition against slots.
@@ -28,30 +29,80 @@ const (
 )
 
 func evaluateRPN(ctx *rctx.Context, stack []int) bool {
+	if len(stack) == 0 {
+		return false
+	}
 	var results []bool
 	for _, val := range stack {
 		switch val {
 		case OpAnd:
+			if len(results) < 2 {
+				return false
+			}
 			l, r := results[len(results)-2], results[len(results)-1]
 			results = results[:len(results)-2]
 			results = append(results, l && r)
 		case OpOr:
+			if len(results) < 2 {
+				return false
+			}
 			l, r := results[len(results)-2], results[len(results)-1]
 			results = results[:len(results)-2]
 			results = append(results, l || r)
 		default:
-			// Treat non-empty/non-zero byte slot as "true"
-			results = append(results, len(ctx.ByteSlots[val]) > 0)
+			// Treat non-empty byte slot as "true"; out-of-range slot = false
+			if val >= 0 && val < len(ctx.ByteSlots) {
+				results = append(results, len(ctx.ByteSlots[val]) > 0)
+			} else {
+				results = append(results, false)
+			}
 		}
+	}
+	if len(results) == 0 {
+		return false
 	}
 	return results[0]
 }
 
-// Simple RPN parser (Stub - would typically involve a Shunting-Yard algorithm)
+// parseToRPN converts a simple boolean condition string into a postfix (RPN)
+// integer stack. Variable names are replaced with their slot IDs from slotMap.
+// Supports: single variables, && (AND), || (OR), left-to-right evaluation.
+// Parentheses are stripped (no precedence grouping beyond left-to-right).
+//
+// Examples:
+//
+//	"header.X-Admin"           → [slotID]
+//	"header.X-Admin && query.role" → [slotA, slotB, OpAnd]
 func parseToRPN(cond string, slotMap map[string]int) []int {
-	// Implementation of Shunting-Yard would go here to convert
-	// string logic to the integer stack used in evaluateRPN
-	return []int{}
+	cond = strings.TrimSpace(cond)
+	if cond == "" {
+		return nil
+	}
+	tokens := strings.Fields(cond)
+	var result []int
+	var pendingOp *int
+	for _, tok := range tokens {
+		tok = strings.Trim(tok, "()")
+		switch tok {
+		case "&&":
+			op := OpAnd
+			pendingOp = &op
+		case "||":
+			op := OpOr
+			pendingOp = &op
+		default:
+			idx, ok := slotMap[tok]
+			if !ok {
+				continue // unknown variable — skip
+			}
+			result = append(result, idx)
+			if pendingOp != nil {
+				result = append(result, *pendingOp)
+				pendingOp = nil
+			}
+		}
+	}
+	return result
 }
 
 // NewComplexLogicGate creates an instruction that evaluates boolean logic

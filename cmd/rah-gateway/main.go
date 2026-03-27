@@ -32,6 +32,9 @@ type domainScopedKV struct {
 func (d *domainScopedKV) Put(ctx context.Context, key string, value []byte) error {
 	return d.mgr.PutGlobal(ctx, d.domain, key, value)
 }
+func (d *domainScopedKV) MultiPut(ctx context.Context, kvs map[string][]byte) error {
+	return d.mgr.MultiPutGlobal(ctx, d.domain, kvs)
+}
 func (d *domainScopedKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return d.mgr.GetGlobal(ctx, d.domain, key)
 }
@@ -176,7 +179,7 @@ func main() {
 			}
 			cacheBackend = b
 		default:
-			// "" or "disk" — use disk backend; path from Backend.Connection.Path or default
+			// "" or "disk" — use disk backend
 			if cacheCfg.Backend.Connection.Path != "" {
 				b, err := cache.NewDiskBackend(cacheCfg.Backend.Connection.Path)
 				if err != nil {
@@ -184,7 +187,7 @@ func main() {
 				}
 				cacheBackend = b
 			}
-			// nil → NewCacheManager will use DefaultDiskCachePath ("./icache2")
+			// nil → NewCacheManager uses DefaultDiskCachePath ("./icache2")
 		}
 
 		var err error
@@ -196,8 +199,33 @@ func main() {
 		compiler.CacheMgr = cacheMgr
 		log.Printf("Cache enabled: mem=%dMB sizeClasses=%v ttlTiers=%v backend=%s",
 			cacheCfg.MemBudgetMB, sizeClasses, ttlTiers, cacheCfg.Backend.Kind)
+
+		// CacheManager IS the OpFlusher — it decides L1 vs backend based on config.
+		fm.CacheExec = cacheMgr
 	} else {
 		log.Printf("Cache disabled (cache.disabled=true in config)")
+	}
+
+	// Registry manager — created here (before the gateway goroutine) so that
+	// RegistryExec can be wired to fm before the first request arrives.
+	regMgr := tenantregistry.NewRegistryManager()
+	// Wire RegistryExec: routes buffered registry PUT ops to RegistryManager.
+	fm.RegistryExec = engine.NewRegistryExecutor(regMgr)
+
+	// Wire regMgr into compiler so load_service_url / load_identifier can
+	// pre-resolve KeyIDs at bake time (avoids radix walk on every request).
+	compiler.RegMgr = regMgr
+
+	// Load default rate limit presets from config into the registry.
+	for _, preset := range cfg.DefaultRateLimits {
+		if preset.Name == "" {
+			continue
+		}
+		regMgr.UpsertNamedRateLimitConfig(preset.Name, tenantregistry.RateLimitConfig{
+			PerSec:      preset.RatePerSec,
+			PerMin:      preset.RatePerMin,
+			BurstFactor: preset.BurstFactor,
+		})
 	}
 
 	setupRoutes(r, fm, compiler)
@@ -296,24 +324,6 @@ func main() {
 		log.Printf("Rah Gateway listening on %s\n", addr)
 		log.Fatal(http.ListenAndServe(addr, handler))
 	}()
-
-	regMgr := tenantregistry.NewRegistryManager()
-	// Wire regMgr into compiler so load_service_url / load_identifier can
-	// pre-resolve KeyIDs at bake time (avoids radix walk on every request).
-	compiler.RegMgr = regMgr
-
-	// Load default rate limit presets from config into the registry.
-	// These are named configs that can be referenced by API/endpoint definitions.
-	for _, preset := range cfg.DefaultRateLimits {
-		if preset.Name == "" {
-			continue
-		}
-		regMgr.UpsertNamedRateLimitConfig(preset.Name, tenantregistry.RateLimitConfig{
-			PerSec:      preset.RatePerSec,
-			PerMin:      preset.RatePerMin,
-			BurstFactor: preset.BurstFactor,
-		})
-	}
 
 	ts := tenantregistry.NewTenantServer(regMgr)
 

@@ -180,3 +180,23 @@ func poolSizeFrom(cfg config.StoreConfig) int {
 	}
 	return 32
 }
+
+// NewUniversalClient creates a goredis.UniversalClient from cfg.
+// The returned closeFn must be called when the client is no longer needed.
+// All three topology types (single, sentinel, cluster) return a value that
+// implements goredis.UniversalClient.
+func NewUniversalClient(cfg config.StoreConfig) (goredis.UniversalClient, func() error, error) {
+	topo, err := parseTopology(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	bundle, err := newClientBundle(cfg, topo)
+	if err != nil {
+		return nil, nil, err
+	}
+	uc, ok := bundle.cmdable.(goredis.UniversalClient)
+	if !ok {
+		return nil, nil, fmt.Errorf("redis: client type %T does not implement UniversalClient", bundle.cmdable)
+	}
+	return uc, bundle.closeFn, nil
+}

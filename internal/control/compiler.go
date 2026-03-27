@@ -12,9 +12,10 @@ import (
 )
 
 type Compiler struct {
-	slotMap     map[string]int
-	nextSlot    int
-	fm          *engine.FlowManager
+	slotMap   map[string]int
+	freeSlots []int // slots freed by liveness analysis, available for reuse
+	nextSlot  int
+	fm        *engine.FlowManager
 	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
@@ -69,7 +70,23 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 	return nil
 }
 
+// bakeFlow compiles a flow with slot liveness analysis.
+// Dead slots are freed after each step so they can be reused by subsequent steps.
 func (c *Compiler) bakeFlow(flow []StepConfig, fragments map[string][]StepConfig) error {
+	lastUse := c.computeLastUse(flow, fragments)
+	for i, step := range flow {
+		if err := c.compileStep(step, fragments); err != nil {
+			return err
+		}
+		c.releaseDeadSlots(i, lastUse)
+	}
+	return nil
+}
+
+// bakeFlowRaw compiles a flow without liveness analysis.
+// Used for recursive sub-flow calls within compileStep (if/else branches, call)
+// where the outer bakeFlow's liveness pass already accounts for variables in branches.
+func (c *Compiler) bakeFlowRaw(flow []StepConfig, fragments map[string][]StepConfig) error {
 	for _, step := range flow {
 		if err := c.compileStep(step, fragments); err != nil {
 			return err
@@ -90,11 +107,11 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		postElseID := elseStartID + int16(len(elseBlock))
 
 		c.GlobalTable = append(c.GlobalTable, steps.NewComplexLogicGate(step.Condition, thenStartID, elseStartID, c.slotMap))
-		if err := c.bakeFlow(fragments[step.Then], fragments); err != nil {
+		if err := c.bakeFlowRaw(fragments[step.Then], fragments); err != nil {
 			return err
 		}
 		c.GlobalTable = append(c.GlobalTable, c.newInternalJump(postElseID))
-		if err := c.bakeFlow(fragments[step.Else], fragments); err != nil {
+		if err := c.bakeFlowRaw(fragments[step.Else], fragments); err != nil {
 			return err
 		}
 
@@ -289,7 +306,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			})
 		} else if fragments != nil {
 			if called, exists := fragments[step.FlowName]; exists {
-				if err := c.bakeFlow(called, fragments); err != nil {
+				if err := c.bakeFlowRaw(called, fragments); err != nil {
 					return err
 				}
 			}
@@ -519,7 +536,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return err
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.CachePut(c.CacheMgr, keySlot, valueSlot, step.TTL))
+		c.GlobalTable = append(c.GlobalTable, steps.CachePut(keySlot, valueSlot, step.TTL))
 
 	case "cache_get_global":
 		if c.CacheMgr == nil {
@@ -547,7 +564,47 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return err
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.CachePutGlobal(c.CacheMgr, keySlot, valueSlot, step.TTL))
+		c.GlobalTable = append(c.GlobalTable, steps.CachePutGlobal(keySlot, valueSlot, step.TTL))
+
+	case "batch_flush":
+		c.GlobalTable = append(c.GlobalTable, steps.BatchFlush())
+
+	case "cache_get_batched":
+		keySlot, err := c.getSlot(step.Variable)
+		if err != nil {
+			return fmt.Errorf("cache_get_batched: %w", err)
+		}
+		destSlot, err := c.getSlot(step.Destination)
+		if err != nil {
+			return fmt.Errorf("cache_get_batched: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheGetBatched(keySlot, destSlot))
+
+	case "json_extract_emit":
+		bodySlot, err := c.getSlot(step.Variable)
+		if err != nil {
+			return fmt.Errorf("json_extract_emit: %w", err)
+		}
+		ops, err := c.buildExtractOps(step)
+		if err != nil {
+			return fmt.Errorf("json_extract_emit: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.JSONExtractEmit(bodySlot, ops))
+
+	case "json_foreach_emit":
+		bodySlot, err := c.getSlot(step.Variable)
+		if err != nil {
+			return fmt.Errorf("json_foreach_emit: %w", err)
+		}
+		arrayPath := step.Path
+		if arrayPath == "" {
+			return fmt.Errorf("json_foreach_emit: missing path")
+		}
+		ops, err := c.buildExtractOps(step)
+		if err != nil {
+			return fmt.Errorf("json_foreach_emit: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.JSONForeachEmit(bodySlot, arrayPath, ops))
 
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
@@ -591,7 +648,7 @@ func (c *Compiler) discoverDependenciesWithFragments(flow []StepConfig, fragment
 	var walkFlow func([]StepConfig)
 	walkFlow = func(stepsToWalk []StepConfig) {
 		for _, step := range stepsToWalk {
-			blob := strings.Join([]string{step.Condition, step.KeyIdentifier, step.UrlVar, step.Source}, " ")
+			blob := strings.Join([]string{step.Condition, step.KeyIdentifier, step.UrlVar, step.Source, step.As, step.Variable}, " ")
 			matches := re.FindAllStringSubmatch(blob, -1)
 			for _, m := range matches {
 				if !found[m[0]] {
@@ -663,17 +720,25 @@ func (c *Compiler) getSlot(name string) (int, error) {
 	if idx, ok := c.slotMap[name]; ok {
 		return idx, nil
 	}
-	if c.nextSlot >= rctx.BaseByteSlots {
-		return -1, fmt.Errorf("slot limit exceeded: flow requires more than %d byte slots (max %d); split into sub-flows or reduce variables", c.nextSlot, rctx.BaseByteSlots)
+	var idx int
+	if len(c.freeSlots) > 0 {
+		// Reuse a slot freed by liveness analysis.
+		idx = c.freeSlots[len(c.freeSlots)-1]
+		c.freeSlots = c.freeSlots[:len(c.freeSlots)-1]
+	} else {
+		if c.nextSlot >= rctx.BaseByteSlots {
+			return -1, fmt.Errorf("slot limit exceeded: flow requires more than %d byte slots (max %d); split into sub-flows or reduce variables", c.nextSlot, rctx.BaseByteSlots)
+		}
+		idx = c.nextSlot
+		c.nextSlot++
 	}
-	idx := c.nextSlot
 	c.slotMap[name] = idx
-	c.nextSlot++
 	return idx, nil
 }
 
 func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
+	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
 }
 
@@ -706,6 +771,174 @@ func (c *Compiler) compileQuotaGroupMap(input map[string]string) []uint16 {
 		}
 	}
 	return out
+}
+
+// buildExtractOps parses step.Params into a []steps.ExtractOp slice.
+// Each param map must have: path, key_prefix, op_type ("get"/"put"),
+// target ("cache"/"registry_url"/"registry_id"/"registry_meta"),
+// dest_slot (variable name for get ops), value_slot (variable name for put ops, or "" to use extracted value).
+// async ("true"/"false", put only).
+func (c *Compiler) buildExtractOps(step StepConfig) ([]steps.ExtractOp, error) {
+	ops := make([]steps.ExtractOp, 0, len(step.Params))
+	for _, p := range step.Params {
+		op := steps.ExtractOp{
+			Path:      p["path"],
+			KeyPrefix: p["key_prefix"],
+			Async:     p["async"] == "true",
+		}
+		switch p["op_type"] {
+		case "get":
+			op.OpType = rctx.OpGet
+		case "put":
+			op.OpType = rctx.OpPut
+		default:
+			return nil, fmt.Errorf("unknown op_type %q", p["op_type"])
+		}
+		switch p["target"] {
+		case "cache":
+			op.Target = rctx.TargetCache
+		case "registry_url":
+			op.Target = rctx.TargetRegistryURL
+		case "registry_id":
+			op.Target = rctx.TargetRegistryID
+		case "registry_meta":
+			op.Target = rctx.TargetRegistryMeta
+		default:
+			return nil, fmt.Errorf("unknown target %q", p["target"])
+		}
+		if op.OpType == rctx.OpGet {
+			if p["dest_slot"] != "" {
+				slot, err := c.getSlot(p["dest_slot"])
+				if err != nil {
+					return nil, err
+				}
+				op.DestSlot = slot
+			} else {
+				op.DestSlot = -1
+			}
+		}
+		if op.OpType == rctx.OpPut {
+			if p["value_slot"] != "" {
+				slot, err := c.getSlot(p["value_slot"])
+				if err != nil {
+					return nil, err
+				}
+				op.ValueSlot = slot
+			} else {
+				op.ValueSlot = -1
+			}
+			if ttlStr := p["ttl"]; ttlStr != "" {
+				if n, err := strconv.ParseUint(ttlStr, 10, 32); err == nil {
+					op.TTL = uint32(n)
+				}
+			}
+		}
+		ops = append(ops, op)
+	}
+	return ops, nil
+}
+
+// computeLastUse performs a single-pass liveness analysis over a flat flow.
+// Returns a map from variable name to the last step index that references it.
+// For if/else branches, all variables used in either branch are extended to the
+// if step's index (the join point), preventing premature slot release.
+func (c *Compiler) computeLastUse(flow []StepConfig, frags map[string][]StepConfig) map[string]int {
+	lastUse := make(map[string]int, len(flow)*2)
+	for i, step := range flow {
+		for _, name := range c.varRefsInStep(step) {
+			lastUse[name] = i
+		}
+		// Join-point rule: variables used inside branches must survive until after the if step.
+		if step.Action == "if" {
+			for _, name := range c.varRefsInFlow(frags[step.Then], frags) {
+				if cur, ok := lastUse[name]; !ok || cur < i {
+					lastUse[name] = i
+				}
+			}
+			for _, name := range c.varRefsInFlow(frags[step.Else], frags) {
+				if cur, ok := lastUse[name]; !ok || cur < i {
+					lastUse[name] = i
+				}
+			}
+		}
+		// foreach: variables in the Do body survive until after the foreach step.
+		if step.Action == "foreach" {
+			for _, name := range c.varRefsInFlow(step.Do, frags) {
+				if cur, ok := lastUse[name]; !ok || cur < i {
+					lastUse[name] = i
+				}
+			}
+		}
+		// call: variables in the called flow survive until after the call step.
+		if step.Action == "call" && step.FlowName != "" {
+			for _, name := range c.varRefsInFlow(frags[step.FlowName], frags) {
+				if cur, ok := lastUse[name]; !ok || cur < i {
+					lastUse[name] = i
+				}
+			}
+		}
+	}
+	return lastUse
+}
+
+// varRefsInStep returns the variable names directly referenced in a single step.
+func (c *Compiler) varRefsInStep(step StepConfig) []string {
+	names := [7]string{step.As, step.Variable, step.Destination, step.Source, step.KeyIdentifier, step.UrlVar}
+	var refs []string
+	for _, n := range names {
+		if n != "" {
+			refs = append(refs, n)
+		}
+	}
+	// Extract params dest_slot / value_slot variable names.
+	for _, p := range step.Params {
+		if n := p["dest_slot"]; n != "" {
+			refs = append(refs, n)
+		}
+		if n := p["value_slot"]; n != "" {
+			refs = append(refs, n)
+		}
+	}
+	return refs
+}
+
+// varRefsInFlow collects all variable names referenced anywhere in a flow
+// (recursively through branches and called sub-flows).
+func (c *Compiler) varRefsInFlow(flow []StepConfig, frags map[string][]StepConfig) []string {
+	var refs []string
+	visited := make(map[string]bool)
+	var walk func([]StepConfig)
+	walk = func(steps []StepConfig) {
+		for _, s := range steps {
+			refs = append(refs, c.varRefsInStep(s)...)
+			if len(s.Do) > 0 {
+				walk(s.Do)
+			}
+			for _, ref := range []string{s.Then, s.Else, s.FlowName} {
+				if ref != "" && !visited[ref] {
+					visited[ref] = true
+					if nested, ok := frags[ref]; ok {
+						walk(nested)
+					}
+				}
+			}
+		}
+	}
+	walk(flow)
+	return refs
+}
+
+// releaseDeadSlots frees slots whose last use was at stepIdx.
+// Freed slots are added to freeSlots for reuse by getSlot.
+func (c *Compiler) releaseDeadSlots(stepIdx int, lastUse map[string]int) {
+	for name, last := range lastUse {
+		if last == stepIdx {
+			if slot, ok := c.slotMap[name]; ok {
+				c.freeSlots = append(c.freeSlots, slot)
+				delete(c.slotMap, name)
+			}
+		}
+	}
 }
 
 func (c *Compiler) newReturnStep() engine.Instruction {

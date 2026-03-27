@@ -27,6 +27,7 @@ import (
 // Implementations must be safe for concurrent use.
 type RegistryStoreBackend interface {
 	Put(ctx context.Context, key string, value []byte) error
+	MultiPut(ctx context.Context, kvs map[string][]byte) error
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Delete(ctx context.Context, key string) error
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
@@ -82,6 +83,29 @@ func (s *TenantRegistryStore) PutIdentifier(ctx context.Context, primaryAlias, k
 
 func (s *TenantRegistryStore) PutMetadata(ctx context.Context, primaryAlias, key, value string) error {
 	return s.backend.Put(ctx, tenantKeyPrefix+primaryAlias+metaPropPrefix+key, []byte(value))
+}
+
+// ── Tenant: batch write ──────────────────────────────────────────────────────
+
+// PutBatch writes all URL, identifier, and metadata properties for a tenant
+// in a single round-trip. More efficient than individual PutServiceURL /
+// PutIdentifier / PutMetadata calls when writing many properties at once.
+func (s *TenantRegistryStore) PutBatch(ctx context.Context, primaryAlias string, urls, ids, meta map[string]string) error {
+	total := len(urls) + len(ids) + len(meta)
+	if total == 0 {
+		return nil
+	}
+	kvs := make(map[string][]byte, total)
+	for k, v := range urls {
+		kvs[tenantKeyPrefix+primaryAlias+urlPropPrefix+k] = []byte(v)
+	}
+	for k, v := range ids {
+		kvs[tenantKeyPrefix+primaryAlias+idPropPrefix+k] = []byte(v)
+	}
+	for k, v := range meta {
+		kvs[tenantKeyPrefix+primaryAlias+metaPropPrefix+k] = []byte(v)
+	}
+	return s.backend.MultiPut(ctx, kvs)
 }
 
 // ── Tenant: lifecycle ────────────────────────────────────────────────────────

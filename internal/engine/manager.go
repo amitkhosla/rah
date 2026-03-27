@@ -34,6 +34,12 @@ type OverflowMetrics struct {
 	ArenaOverflows atomic.Int64 // extra arenaBlock borrowed from pool
 }
 
+// OpFlusher accepts a Batch of storage operations and dispatches them
+// to the underlying data store. Submit must be safe to call concurrently.
+type OpFlusher interface {
+	Submit(batch rctx.Batch)
+}
+
 type FlowManager struct {
 	State   atomic.Pointer[EngineState]
 	Pool    sync.Pool
@@ -47,6 +53,10 @@ type FlowManager struct {
 	// RateLimitStore is a 1M-slot fixed-window counter arena (8 MB).
 	// Used by the opt-in check_rate_limit step.
 	RateLimitStore *CounterStore
+	// CacheExec dispatches buffered cache ops via pipeline. Nil = no batching.
+	CacheExec OpFlusher
+	// RegistryExec dispatches buffered registry PUT ops. Nil = no batching.
+	RegistryExec OpFlusher
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
@@ -80,6 +90,11 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		// Wire ByteSlots/IntSlots/BoolSlots to inline base arrays.
 		// Zero heap allocations for slot infrastructure.
 		ctx.InitSlots()
+		// Wire op-buffer auto-flush only when a pipeline executor is configured.
+		if fm.CacheExec != nil || fm.RegistryExec != nil {
+			ctx.MaxOps = rctx.DefaultMaxOps
+			ctx.OnFlush = fm.flushOps
+		}
 		return ctx
 	}
 	return fm
@@ -115,6 +130,11 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 
 	// 5. Plan Execution
 	Execute(ctx, endpoint.Plan, 0)
+
+	// 6. Flush any storage ops that accumulated but didn't hit MaxOps.
+	if (fm.CacheExec != nil || fm.RegistryExec != nil) && ctx.OpCount > 0 {
+		fm.flushOps(ctx)
+	}
 }
 
 // ReturnContext records overflow metrics, releases pool-borrowed overflow
@@ -126,6 +146,94 @@ func (fm *FlowManager) ReturnContext(ctx *rctx.Context) {
 	}
 	ctx.ReleaseOverflow()
 	fm.Pool.Put(ctx)
+}
+
+// flushOps drains ctx.Ops, partitions them by target (cache vs registry),
+// and submits each group to the appropriate executor concurrently.
+// For batches that contain GETs or synchronous PUTs it blocks until the
+// executor signals Done, then writes GET results back to ByteSlots.
+// Async-only batches are submitted fire-and-forget (Done = nil).
+// Ops are always copied so opsBase can be reused immediately.
+func (fm *FlowManager) flushOps(ctx *rctx.Context) {
+	if ctx.OpCount == 0 {
+		return
+	}
+
+	n := ctx.OpCount
+	ops := make([]rctx.StorageOp, n)
+	copy(ops, ctx.Ops[:n])
+	ctx.ResetOps()
+
+	// Partition ops by target family.
+	var cacheOps, registryOps []rctx.StorageOp
+	for i := range ops {
+		switch ops[i].Target {
+		case rctx.TargetCache:
+			cacheOps = append(cacheOps, ops[i])
+		case rctx.TargetRegistryURL, rctx.TargetRegistryID, rctx.TargetRegistryMeta:
+			registryOps = append(registryOps, ops[i])
+		}
+	}
+
+	// Determine sync requirement per group.
+	var cacheDone, registryDone chan struct{}
+
+	if fm.CacheExec != nil && len(cacheOps) > 0 {
+		needsSync := false
+		for i := range cacheOps {
+			if cacheOps[i].Type == rctx.OpGet || !cacheOps[i].Async {
+				needsSync = true
+				break
+			}
+		}
+		if !needsSync {
+			for i := range cacheOps {
+				cacheOps[i].Key = append([]byte(nil), cacheOps[i].Key...)
+				if cacheOps[i].Value != nil {
+					cacheOps[i].Value = append([]byte(nil), cacheOps[i].Value...)
+				}
+			}
+		} else {
+			cacheDone = make(chan struct{}, 1)
+		}
+		fm.CacheExec.Submit(rctx.Batch{Ops: cacheOps, Done: cacheDone})
+	}
+
+	if fm.RegistryExec != nil && len(registryOps) > 0 {
+		needsSync := false
+		for i := range registryOps {
+			if registryOps[i].Type == rctx.OpGet || !registryOps[i].Async {
+				needsSync = true
+				break
+			}
+		}
+		if !needsSync {
+			for i := range registryOps {
+				registryOps[i].Key = append([]byte(nil), registryOps[i].Key...)
+				if registryOps[i].Value != nil {
+					registryOps[i].Value = append([]byte(nil), registryOps[i].Value...)
+				}
+			}
+		} else {
+			registryDone = make(chan struct{}, 1)
+		}
+		fm.RegistryExec.Submit(rctx.Batch{Ops: registryOps, Done: registryDone})
+	}
+
+	// Wait for both concurrently.
+	if cacheDone != nil {
+		<-cacheDone
+		for i := range cacheOps {
+			if cacheOps[i].Type == rctx.OpGet && cacheOps[i].Result != nil {
+				if cacheOps[i].DestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[cacheOps[i].DestSlot] = cacheOps[i].Result
+				}
+			}
+		}
+	}
+	if registryDone != nil {
+		<-registryDone
+	}
 }
 
 // RunInBackground detaches a context from the request lifecycle and executes

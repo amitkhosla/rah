@@ -656,6 +656,28 @@ func (m *RegistryManager) persistTenant(rec TenantRecord) {
 	}()
 }
 
+// persistTenantBatch asynchronously writes all properties for a tenant in a
+// single MultiPut round-trip. Falls back to persistTenant if the store does
+// not implement PutBatch (i.e. is not a *TenantRegistryStore).
+// Must be called while the mutex is held (copies data before releasing).
+func (m *RegistryManager) persistTenantBatch(rec TenantRecord) {
+	if m.store == nil || len(rec.Aliases) == 0 {
+		return
+	}
+	s, ok := m.store.(*TenantRegistryStore)
+	if !ok {
+		m.persistTenant(rec)
+		return
+	}
+	primary := rec.Aliases[0]
+	urls := copyStrMap(rec.ServiceURLs)
+	ids := copyStrMap(rec.Identifiers)
+	meta := copyStrMap(rec.Metadata)
+	go func() {
+		_ = s.PutBatch(context.Background(), primary, urls, ids, meta)
+	}()
+}
+
 // persistTenantAlias asynchronously writes only the alias list (used when an
 // alias is added without touching properties).
 func (m *RegistryManager) persistTenantAliases(primary string, aliases []string) {
@@ -859,6 +881,11 @@ func (m *RegistryManager) internValue(reg *TenantRegistry, value []byte) uint32 
 	if len(value) == 0 {
 		return 0
 	}
+	// Sentinel: index 0 means "not set" (matches the zero-initialised matrix).
+	// Real values start at index 1.
+	if len(reg.ValuePool) == 0 {
+		reg.ValuePool = append(reg.ValuePool, nil)
+	}
 	for i, existing := range reg.ValuePool {
 		if bytes.Equal(existing, value) {
 			return uint32(i)
@@ -873,7 +900,8 @@ func (m *RegistryManager) internValue(reg *TenantRegistry, value []byte) uint32 
 func (m *RegistryManager) insertIntoPropertiesRadix(nodes *[]RegistryNode, pool *[]byte, key string, val uint32) {
 	input := []byte(key)
 	if len(*nodes) == 0 {
-		*nodes = append(*nodes, RegistryNode{}) // root node
+		// Root node: ChildBase=1 so children start at index 1 (not 0=self).
+		*nodes = append(*nodes, RegistryNode{ChildBase: 1})
 	}
 	offset := uint32(len(*pool))
 	*pool = append(*pool, input...)

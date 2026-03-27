@@ -355,6 +355,42 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		// ── Batch / Extract ──────────────────────────────────────────────────────
+		{
+			Type: "batch_flush", Title: "Batch Flush", Category: "cache", Capability: "batch",
+			Description: "Flush all queued storage ops (cache gets/puts, registry ops) in a single pipeline round-trip. Place after a group of cache_get_batched / json_extract_emit steps and before any step that reads the results.",
+			Defaults: map[string]string{},
+			Fields:   []StepField{},
+		},
+		{
+			Type: "cache_get_batched", Title: "Cache Get (Batched)", Category: "cache", Capability: "read",
+			Description: "Queue a cache GET into the op buffer. The result is written to the dest slot only after a batch_flush instruction executes. Use when multiple cache lookups can be batched before their results are needed.",
+			Defaults: map[string]string{"variable": "cache_key", "destination": "cached_body"},
+			Fields: []StepField{
+				sf("variable", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
+				sf("destination", "Store as", "Slot to write the cached value into after batch_flush", "cached_body"),
+			},
+		},
+		{
+			Type: "json_extract_emit", Title: "JSON Extract & Emit", Category: "cache", Capability: "batch",
+			Description: "Extract multiple fields from a JSON body in one scan and emit one storage op per field. Use params to configure each extraction (path, key_prefix, op_type, target, dest_slot/value_slot, async).",
+			Defaults: map[string]string{"variable": "http_resp"},
+			Fields: []StepField{
+				sf("variable", "Body slot", "Slot holding the JSON body to extract from", "http_resp"),
+				sf("params", "Extract ops (JSON array)", `Array of op descriptors. Each: {"path":"user.id","key_prefix":"user:","op_type":"put","target":"cache","value_slot":"","async":"true"}`, ""),
+			},
+		},
+		{
+			Type: "json_foreach_emit", Title: "JSON Foreach & Emit", Category: "cache", Capability: "batch",
+			Description: "Iterate over a JSON array and emit one batch of storage ops per element. Handles unbounded arrays via auto-flush. Use params to configure per-element extractions.",
+			Defaults: map[string]string{"variable": "http_resp", "path": "items"},
+			Fields: []StepField{
+				sf("variable", "Body slot", "Slot holding the JSON body containing the array", "http_resp"),
+				sf("path", "Array path", "gjson path to the array within the body (e.g. items, data.services)", "items"),
+				sf("params", "Extract ops (JSON array)", `Array of op descriptors applied to each element. Each: {"path":"id","key_prefix":"item:","op_type":"put","target":"cache","value_slot":"","async":"true"}`, ""),
+			},
+		},
+
 		// ── Response ─────────────────────────────────────────────────────────────
 		{
 			Type: "set_response_header", Title: "Set Response Header", Category: "response", Capability: "response-mod",

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"rah/internal/rctx"
 )
 
 /*
@@ -340,14 +342,39 @@ func (cm *CacheManager) enqueueWrite(tenantID uint16, key, value []byte, expiry 
 }
 
 // asyncWriteLoop drains the async backend-write queue until Stop is called.
+// It coalesces queued items into a single SetBatch call to reduce backend
+// round-trips (critical for Redis; also reduces fsync pressure on disk).
 func (cm *CacheManager) asyncWriteLoop() {
+	var batch []BackendEntry
 	for {
+		// Block until the first item is available.
 		select {
 		case <-cm.cleanerStop:
 			return
 		case job := <-cm.asyncQueue:
-			_ = cm.backend.Set(job.tenantID, job.key, job.value, job.expiry)
+			batch = append(batch[:0], BackendEntry{
+				TenantID: job.tenantID,
+				Key:      job.key,
+				Value:    job.value,
+				Expiry:   job.expiry,
+			})
 		}
+		// Drain any additional items already in the queue (non-blocking).
+		draining := true
+		for draining {
+			select {
+			case job := <-cm.asyncQueue:
+				batch = append(batch, BackendEntry{
+					TenantID: job.tenantID,
+					Key:      job.key,
+					Value:    job.value,
+					Expiry:   job.expiry,
+				})
+			default:
+				draining = false
+			}
+		}
+		_ = cm.backend.SetBatch(batch)
 	}
 }
 
@@ -571,6 +598,52 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 	cm.Update(tenantID, key, val, ttl)
 
 	return val, true
+}
+
+// Submit implements engine.OpFlusher, making CacheManager the direct target of
+// batch_flush. It is the single decision point for all cache ops:
+//   - PUT: written to L1 slab immediately; all PUTs in the batch are then
+//     sent to the backend in a single SetBatch call (pipeline for Redis,
+//     parallel for disk) rather than queued individually.
+//   - GET: L1 checked first; on miss the configured backend is consulted.
+//     Result is populated before Done is closed.
+//
+// fm.CacheExec should be set to the CacheManager directly — no wrapper needed.
+func (cm *CacheManager) Submit(batch rctx.Batch) {
+	var puts []BackendEntry
+
+	for i := range batch.Ops {
+		op := &batch.Ops[i]
+		switch op.Type {
+		case rctx.OpPut:
+			// Write to L1 slab first.
+			cm.Put(op.TenantID, op.Key, op.Value, op.TTL)
+			// Collect for batched backend write (bypasses async queue for efficiency).
+			expiry := uint32(0)
+			if op.TTL > 0 {
+				expiry = uint32(time.Now().Unix()) + op.TTL
+			}
+			puts = append(puts, BackendEntry{
+				TenantID: op.TenantID,
+				Key:      op.Key,
+				Value:    op.Value,
+				Expiry:   expiry,
+			})
+		case rctx.OpGet:
+			if val, ok := cm.Get(op.TenantID, op.Key); ok {
+				op.Result = val
+			}
+		}
+	}
+
+	// Flush all PUTs to the backend in one call.
+	if len(puts) > 0 {
+		_ = cm.backend.SetBatch(puts)
+	}
+
+	if batch.Done != nil {
+		close(batch.Done)
+	}
 }
 
 // Stats returns the current global memory usage in bytes.
