@@ -38,17 +38,17 @@ func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	}
 }
 
-// CachePut stores ByteSlots[valueSlot] in the cache under key ByteSlots[keySlot]
-// for ctx.TenantID with the given TTL in seconds.
+// CachePut queues a cache PUT into the per-request op buffer (async, fire-and-forget).
+// The actual write is dispatched in a later batch_flush instruction or at request end.
 // Skipped silently if key or value slot is empty.
-func CachePut(store CacheStore, keySlot, valueSlot int, ttl uint32) engine.Instruction {
+func CachePut(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_put",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			key := ctx.ByteSlots[keySlot]
 			val := ctx.ByteSlots[valueSlot]
 			if len(key) > 0 && len(val) > 0 {
-				store.Put(ctx.TenantID, key, val, ttl)
+				rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
 			}
 			return s.PC + 1
 		},
@@ -74,18 +74,62 @@ func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction 
 	}
 }
 
-// CachePutGlobal stores ByteSlots[valueSlot] in the shared (tenant-agnostic) namespace.
-// Behaviour is identical to CachePut except tenantID=0 is used, making the entry
-// readable by all tenants via CacheGetGlobal.
-func CachePutGlobal(store CacheStore, keySlot, valueSlot int, ttl uint32) engine.Instruction {
+// CachePutGlobal queues a cache PUT into the shared (tenant-agnostic) namespace via the op buffer.
+// The op is emitted with async=true (fire-and-forget); the flusher is responsible for dispatching.
+// The TenantID captured in the StorageOp will be ctx.TenantID at emit time; the flusher must
+// override it to globalCacheTenantID (0) when routing this op to the cache.
+// Skipped silently if key or value slot is empty.
+func CachePutGlobal(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_put_global",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			key := ctx.ByteSlots[keySlot]
 			val := ctx.ByteSlots[valueSlot]
 			if len(key) > 0 && len(val) > 0 {
-				store.Put(globalCacheTenantID, key, val, ttl)
+				// Temporarily override TenantID so the buffered op targets the global namespace.
+				saved := ctx.TenantID
+				ctx.TenantID = globalCacheTenantID
+				rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
+				ctx.TenantID = saved
 			}
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheGetBatched queues a cache GET into the op buffer.
+// The result is written to ByteSlots[destSlot] only after a batch_flush instruction executes.
+// Use this when multiple cache lookups can be batched before their results are needed.
+func CacheGetBatched(keySlot, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_get_batched",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) == 0 {
+				return s.PC + 1
+			}
+			rctx.EmitGet(ctx, key, rctx.TargetCache, destSlot)
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheGetGlobalBatched queues a cache GET in the shared (tenant-agnostic) namespace into the op buffer.
+// The result is written to ByteSlots[destSlot] only after a batch_flush instruction executes.
+// Use this when multiple cache lookups can be batched before their results are needed.
+func CacheGetGlobalBatched(keySlot, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_get_global_batched",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) == 0 {
+				return s.PC + 1
+			}
+			// Temporarily override TenantID so the buffered op targets the global namespace.
+			saved := ctx.TenantID
+			ctx.TenantID = globalCacheTenantID
+			rctx.EmitGet(ctx, key, rctx.TargetCache, destSlot)
+			ctx.TenantID = saved
 			return s.PC + 1
 		},
 	}

@@ -71,6 +71,15 @@ type StoreConnection struct {
 	ClusterAddrs   []string `json:"cluster_addrs,omitempty"   yaml:"cluster_addrs,omitempty"`   // seed nodes for cluster/sentinel
 	PoolSize       int      `json:"pool_size,omitempty"       yaml:"pool_size,omitempty"`        // connection pool size (default 32)
 
+	// MaxCmdsPerPipeline caps the number of Redis commands batched in one pipeline exec.
+	// 0 = use executor default (256).
+	MaxCmdsPerPipeline int `json:"max_cmds_per_pipeline,omitempty" yaml:"max_cmds_per_pipeline,omitempty"`
+
+	// MaxBytesPerPipeline caps the estimated payload size of one pipeline exec (bytes).
+	// PUT ops: key+value bytes counted. GET ops: key bytes only.
+	// 0 = use executor default (1MB).
+	MaxBytesPerPipeline int64 `json:"max_bytes_per_pipeline,omitempty" yaml:"max_bytes_per_pipeline,omitempty"`
+
 	// IODedupWindow is the in-process I/O deduplication TTL for Redis/Dragonfly stores.
 	// It coalesces burst reads (same key, many goroutines) and suppresses identical writes
 	// (same key+value already in Redis). Set "" to disable (default).

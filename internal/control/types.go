@@ -37,6 +37,11 @@ type StepConfig struct {
 
 	// TX ID / Correlation
 	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
+
+	// Batch / Extract ops
+	Variable    string              `json:"variable,omitempty"`    // For cache_get_batched / json_extract_emit / json_foreach_emit: input slot name
+	Params      []map[string]string `json:"params,omitempty"`      // For json_extract_emit / json_foreach_emit: list of ExtractOp descriptors
+	Destination string              `json:"destination,omitempty"` // For cache_get_batched: dest slot name
 }
 
 // EndpointConfig defines per-endpoint overrides within an API definition.

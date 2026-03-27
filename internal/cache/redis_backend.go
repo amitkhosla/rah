@@ -91,6 +91,38 @@ func (r *redisBackend) Set(tenantID uint16, key []byte, value []byte, expiry uin
 	return r.client.Set(context.Background(), k, buf, ttl).Err()
 }
 
+// SetBatch writes all entries in a single Redis pipeline, reducing round-trips
+// from N to 1 regardless of batch size.
+func (r *redisBackend) SetBatch(entries []BackendEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) == 1 {
+		e := entries[0]
+		return r.Set(e.TenantID, e.Key, e.Value, e.Expiry)
+	}
+	ctx := context.Background()
+	pipe := r.client.Pipeline()
+	now := time.Now().Unix()
+	for _, e := range entries {
+		k := redisKey(e.TenantID, e.Key)
+		buf := make([]byte, 4+len(e.Value))
+		binary.LittleEndian.PutUint32(buf[:4], e.Expiry)
+		copy(buf[4:], e.Value)
+		var ttl time.Duration
+		if e.Expiry > 0 {
+			remaining := int64(e.Expiry) - now
+			if remaining <= 0 {
+				continue // already expired
+			}
+			ttl = time.Duration(remaining) * time.Second
+		}
+		pipe.Set(ctx, k, buf, ttl)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 func (r *redisBackend) Delete(tenantID uint16, key []byte) error {
 	return r.client.Del(context.Background(), redisKey(tenantID, key)).Err()
 }

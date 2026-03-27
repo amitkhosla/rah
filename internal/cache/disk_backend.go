@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -88,6 +89,34 @@ func (d *diskBackend) Set(tenantID uint16, key []byte, value []byte, expiry uint
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// SetBatch writes all entries concurrently — each disk write is independent
+// (separate file + atomic rename), so parallelism is safe and beneficial.
+func (d *diskBackend) SetBatch(entries []BackendEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) == 1 {
+		e := entries[0]
+		return d.Set(e.TenantID, e.Key, e.Value, e.Expiry)
+	}
+	errs := make([]error, len(entries))
+	var wg sync.WaitGroup
+	wg.Add(len(entries))
+	for i, e := range entries {
+		go func(i int, e BackendEntry) {
+			defer wg.Done()
+			errs[i] = d.Set(e.TenantID, e.Key, e.Value, e.Expiry)
+		}(i, e)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *diskBackend) Delete(tenantID uint16, key []byte) error {

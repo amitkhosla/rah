@@ -226,6 +226,25 @@ func (m *DataStoreManager) PutGlobal(ctx context.Context, domain config.DataDoma
 	return m.Put(ctx, domain, GlobalTenant, key, value)
 }
 
+// MultiPutGlobal writes multiple key-value pairs to the given domain in a
+// single round-trip when the backend supports BatchStore. Falls back to
+// individual puts for backends that do not implement BatchStore.
+func (m *DataStoreManager) MultiPutGlobal(ctx context.Context, domain config.DataDomain, kvs map[string][]byte) error {
+	store, err := m.resolveDomainStore(domain)
+	if err != nil {
+		return err
+	}
+	if b, ok := store.(datastore.BatchStore); ok {
+		return b.MultiPut(ctx, GlobalTenant, kvs)
+	}
+	for k, v := range kvs {
+		if err := store.Put(ctx, GlobalTenant, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *DataStoreManager) GetGlobal(ctx context.Context, domain config.DataDomain, key string) ([]byte, bool, error) {
 	return m.Get(ctx, domain, GlobalTenant, key)
 }
