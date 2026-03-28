@@ -11,6 +11,7 @@ import type {
   RateLimitRecord,
   UpsertTenantRequest,
   UpsertRateLimitRequest,
+  CredentialListResponse,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -93,5 +94,25 @@ export function upsertRateLimitConfig(body: UpsertRateLimitRequest): Promise<voi
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  })
+}
+
+// ── Credentials ────────────────────────────────────────────────────
+
+export function listCredentials(alias: string): Promise<CredentialListResponse> {
+  return request<CredentialListResponse>(`/api/tenants/${encodeURIComponent(alias)}/credentials`)
+}
+
+export function setCredential(alias: string, name: string, value: string): Promise<void> {
+  return request<void>(`/api/tenants/${encodeURIComponent(alias)}/credentials/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ value }),
+  })
+}
+
+export function deleteCredential(alias: string, name: string): Promise<void> {
+  return request<void>(`/api/tenants/${encodeURIComponent(alias)}/credentials/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
   })
 }

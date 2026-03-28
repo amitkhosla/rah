@@ -10,11 +10,20 @@ MethodRoots:
 - Entry index for each method.
 */
 
+// AsyncMode controls per-endpoint async behaviour, set at compile time from ApiConfig.Async.
+type AsyncMode uint8
+
+const (
+	AsyncDisabled AsyncMode = 0 // always synchronous (default)
+	AsyncAllowed  AsyncMode = 1 // client opts in via Prefer/X-Async header or ?async=true
+	AsyncForced   AsyncMode = 2 // always async regardless of client preference
+)
+
 type Endpoint struct {
-	EndpointId          uint8  // sequential within ApiDefinition (0–255)
-	_                   [1]byte
-	APIRateLimitId      uint16 // rate limit config at API level; 0 = gateway default
-	EndpointRateLimitId uint16 // rate limit config at endpoint level; 0 = inherit API
+	EndpointId          uint8     // sequential within ApiDefinition (0–255)
+	AsyncMode           AsyncMode // set at bake time from ApiConfig.Async
+	APIRateLimitId      uint16    // rate limit config at API level; 0 = gateway default
+	EndpointRateLimitId uint16    // rate limit config at endpoint level; 0 = inherit API
 	Plan                []Instruction
 }
 

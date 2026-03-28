@@ -18,16 +18,56 @@ import (
 
 // LLMCallConfig is resolved once at bake time and captured in the instruction closure.
 type LLMCallConfig struct {
-	ModelConfig config.LLMModelConfig
-	APIKey      string  // literal key resolved at bake time
-	TimeoutMs   int     // per-request timeout; default 30 000 ms
-	MaxRetries  int     // default 2
-	PromptSlot  int     // ByteSlots index for the user prompt input
-	ResultSlot  int     // ByteSlots index for the LLM text response output
-	SystemSlot  int     // ByteSlots index for the system prompt; -1 = not used
-	MaxTokens   int     // max output tokens; falls back to ModelConfig.MaxTokens
-	Temperature float64 // 0.0 = use model default
-	OnExceed    string  // "reject" (default) — return 413 when prompt exceeds context
+	ModelConfig  config.LLMModelConfig            // bake-time resolved model
+	APIKey       string                           // literal key resolved at bake time
+	TimeoutMs    int                              // per-request timeout; default 30 000 ms
+	MaxRetries   int                              // default 2
+	PromptSlot   int                              // ByteSlots index for the user prompt input
+	ResultSlot   int                              // ByteSlots index for the LLM text response output
+	SystemSlot   int                              // ByteSlots index for the system prompt; -1 = not used
+	MaxTokens    int                              // max output tokens; falls back to ModelConfig.MaxTokens
+	Temperature  float64                          // 0.0 = use model default
+	OnExceed     string                           // "reject" (default) — return 413 when prompt exceeds context
+	ModelSlot    int                              // >= 0: read model slug from ByteSlots at runtime
+	ModelCatalog map[string]config.LLMModelConfig // full catalog for runtime lookup
+
+	// APIKeySlot: if >= 0, read the API key at request time from ctx.ByteSlots[APIKeySlot]
+	// instead of using the baked-in APIKey string. Allows per-tenant key injection.
+	// Set to -1 (default) to use the baked APIKey.
+	APIKeySlot int
+
+	// InputTokensSlot: if >= 0, write response.InputTokens to ctx.IntSlots[InputTokensSlot]
+	// after a successful call. Set to -1 (default) to skip.
+	InputTokensSlot int
+
+	// OutputTokensSlot: if >= 0, write response.OutputTokens to ctx.IntSlots[OutputTokensSlot]
+	// after a successful call. Set to -1 (default) to skip.
+	OutputTokensSlot int
+}
+
+// llmCallParams holds the runtime-resolved call parameters (adapter, endpoint, auth).
+type llmCallParams struct {
+	adapter   ProviderAdapter
+	endpoint  string
+	authName  string
+	authValue string
+}
+
+// resolveCallParams derives call parameters from a model config and API key.
+// Called both at bake time (pre-resolve) and at runtime (dynamic model override).
+func resolveCallParams(modelCfg config.LLMModelConfig, apiKey string) (llmCallParams, error) {
+	adapter, err := NewAdapter(modelCfg.Adapter)
+	if err != nil {
+		return llmCallParams{}, err
+	}
+	endpoint := adapter.Endpoint(modelCfg.BaseURL, modelCfg.Slug)
+	authName, authValue := adapter.AuthHeader(apiKey)
+	return llmCallParams{
+		adapter:   adapter,
+		endpoint:  endpoint,
+		authName:  authName,
+		authValue: authValue,
+	}, nil
 }
 
 var (
@@ -80,8 +120,14 @@ func getLLMClient(baseURL string, timeoutMs int) *http.Client {
 //  4. Marshals canonical request to provider wire format via adapter
 //  5. POSTs to provider endpoint with retry on 429 / 5xx (up to cfg.MaxRetries)
 //  6. Writes response text to ctx.ByteSlots[cfg.ResultSlot]
+//  7. Writes token counts to ctx.IntSlots[cfg.InputTokensSlot / cfg.OutputTokensSlot] (if >= 0)
 func LLMCall(cfg LLMCallConfig) engine.Instruction {
-	adapter, err := NewAdapter(cfg.ModelConfig.Adapter)
+	// Ensure ModelSlot default: 0 would conflict with a real slot, so callers
+	// that don't want dynamic routing must explicitly set ModelSlot = -1.
+	// For backward compatibility, treat ModelSlot == 0 with nil catalog as "disabled".
+
+	// Resolve baked params using the baked-in key; runtime slot key applied per-request below.
+	bakedParams, err := resolveCallParams(cfg.ModelConfig, cfg.APIKey)
 	if err != nil {
 		// Misconfiguration caught at bake time — return a poisoned instruction
 		// that immediately fails every request with 500.
@@ -117,9 +163,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 		timeoutMs = 30_000
 	}
 
-	endpoint := adapter.Endpoint(cfg.ModelConfig.BaseURL, cfg.ModelConfig.Slug)
-	authName, authValue := adapter.AuthHeader(cfg.APIKey)
-	endpointHost := extractUpstreamHost(endpoint)
+	bakedEndpointHost := extractUpstreamHost(bakedParams.endpoint)
 
 	return engine.Instruction{
 		Name: "llm_call[" + cfg.ModelConfig.Slug + "]",
@@ -134,6 +178,59 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
+			// Runtime API key override: read from slot if configured.
+			// This replaces cfg.APIKey (the baked-in key) for this request.
+			apiKey := cfg.APIKey
+			if cfg.APIKeySlot >= 0 && cfg.APIKeySlot < len(ctx.ByteSlots) {
+				if k := ctx.ByteSlots[cfg.APIKeySlot]; len(k) > 0 {
+					apiKey = string(k)
+				}
+			}
+
+			// Dynamic model override from slot
+			activeCfg := cfg.ModelConfig // local copy
+			// Re-resolve params with the (possibly overridden) API key.
+			activeParams := bakedParams
+			if apiKey != cfg.APIKey {
+				rp, rpErr := resolveCallParams(cfg.ModelConfig, apiKey)
+				if rpErr == nil {
+					activeParams = rp
+				}
+			}
+			activeEndpointHost := bakedEndpointHost
+			if cfg.ModelSlot >= 0 && len(cfg.ModelCatalog) > 0 &&
+				cfg.ModelSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.ModelSlot]) > 0 {
+				slug := string(ctx.ByteSlots[cfg.ModelSlot])
+				if mc, ok := cfg.ModelCatalog[slug]; ok {
+					activeCfg = mc
+					// Resolve API key: prefer runtime slot key, then catalog ref, then baked key.
+					dynKey := apiKey // already set to runtime slot key or baked key above
+					if mc.APIKeyRef != "" {
+						dynKey = mc.APIKeyRef
+					}
+					rp, rpErr := resolveCallParams(mc, dynKey)
+					if rpErr != nil {
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						ctx.ErrorCode = 500
+						msg := "llm_call: dynamic model adapter error: " + rpErr.Error()
+						ctx.ErrorMsg = ctx.Alloc(len(msg))
+						copy(ctx.ErrorMsg, msg)
+						return engine.StopPlan
+					}
+					activeParams = rp
+					activeEndpointHost = extractUpstreamHost(rp.endpoint)
+				} else {
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					ctx.ErrorCode = 500
+					msg := "llm_call: dynamic model not found: " + slug
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				}
+			}
+
 			// 2. Read system prompt
 			var systemContent string
 			if cfg.SystemSlot >= 0 && cfg.SystemSlot < len(ctx.ByteSlots) {
@@ -144,15 +241,15 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			req := LLMRequest{
 				Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
 				System:      systemContent,
-				Model:       cfg.ModelConfig.Slug,
+				Model:       activeCfg.Slug,
 				MaxTokens:   maxTokens,
 				Temperature: cfg.Temperature,
 			}
 
 			// 4. Token limit check (reject — no truncation)
-			if cfg.ModelConfig.Capabilities.MaxContextTokens > 0 {
+			if activeCfg.Capabilities.MaxContextTokens > 0 {
 				est := estimateRequestTokens(req) + maxTokens
-				if est > cfg.ModelConfig.Capabilities.MaxContextTokens {
+				if est > activeCfg.Capabilities.MaxContextTokens {
 					ctx.ResponseStatus = 413
 					ctx.Failed = true
 					ctx.ErrorCode = 413
@@ -164,7 +261,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			}
 
 			// 5. Marshal to provider wire format
-			body, marshalErr := adapter.Marshal(req)
+			body, marshalErr := activeParams.adapter.Marshal(req)
 			if marshalErr != nil {
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -176,7 +273,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			}
 
 			// 6. HTTP call with retry
-			client := getLLMClient(cfg.ModelConfig.BaseURL, timeoutMs)
+			client := getLLMClient(activeCfg.BaseURL, timeoutMs)
 			attempts := maxRetries + 1
 
 			var lastStatus int
@@ -184,7 +281,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				start := time.Now()
 
 				reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-				httpReq, reqErr := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+				httpReq, reqErr := http.NewRequestWithContext(reqCtx, http.MethodPost, activeParams.endpoint, bytes.NewReader(body))
 				if reqErr != nil {
 					cancel()
 					ctx.ResponseStatus = 500
@@ -196,11 +293,11 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					return engine.StopPlan
 				}
 				httpReq.Header.Set("Content-Type", "application/json")
-				if authName != "" {
-					httpReq.Header.Set(authName, authValue)
+				if activeParams.authName != "" {
+					httpReq.Header.Set(activeParams.authName, activeParams.authValue)
 				}
 				// Anthropic requires API version header
-				if cfg.ModelConfig.Adapter == config.AdapterAnthropic {
+				if activeCfg.Adapter == config.AdapterAnthropic {
 					httpReq.Header.Set("anthropic-version", "2023-06-01")
 				}
 
@@ -213,9 +310,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 
 				if doErr != nil {
 					if ctx.Obs != nil {
-						ctx.Obs.RecordUpstream(endpointHost, elapsed, int64(len(body)), 0)
+						ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), 0)
 						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-							Host: endpointHost, URL: endpoint, Attempt: attempt,
+							Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
 							Err: doErr.Error(), TotalNs: elapsed.Nanoseconds(),
 						})
 					}
@@ -240,9 +337,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, int64(len(body)))
 
 				if ctx.Obs != nil {
-					ctx.Obs.RecordUpstream(endpointHost, elapsed, int64(len(body)), int64(len(respBody)))
+					ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), int64(len(respBody)))
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-						Host: endpointHost, URL: endpoint, Attempt: attempt,
+						Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
 						Status: resp.StatusCode, TotalNs: elapsed.Nanoseconds(),
 						BytesSent: int64(len(body)), BytesReceived: int64(len(respBody)),
 					})
@@ -288,7 +385,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 
 				// 7. Unmarshal response
-				llmResp, unmarshalErr := adapter.Unmarshal(respBody)
+				llmResp, unmarshalErr := activeParams.adapter.Unmarshal(respBody)
 				if unmarshalErr != nil {
 					ctx.ResponseStatus = 502
 					ctx.Failed = true
@@ -304,6 +401,14 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					result := []byte(llmResp.Content)
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(result))
 					copy(ctx.ByteSlots[cfg.ResultSlot], result)
+				}
+
+				// 9. Write token usage to IntSlots (if configured).
+				if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[cfg.InputTokensSlot] = int64(llmResp.InputTokens)
+				}
+				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[cfg.OutputTokensSlot] = int64(llmResp.OutputTokens)
 				}
 
 				return state.PC + 1

@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"strings"
@@ -168,6 +169,58 @@ func LoopRepeat(gateID int16, iterSlot int) engine.InstructionFunc {
 	return func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 		ctx.IntSlots[iterSlot]++ // Increment the iterator
 		return gateID            // Jump back to the LoopGate check
+	}
+}
+
+// LoopGateSlot iterates over a JSON array stored in ctx.ByteSlots[sourceSlot].
+// Each iteration writes the raw JSON element to ctx.ByteSlots[valueSlot].
+// Uses iterSlot (IntSlot) as the loop counter. Resets to 0 on exit.
+func LoopGateSlot(sourceSlot int, valueSlot int, iterSlot int, bodyStart int16, exitID int16) engine.InstructionFunc {
+	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+		raw := ctx.ByteSlots[sourceSlot]
+		if len(raw) == 0 {
+			return exitID
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+			return exitID
+		}
+		idx := ctx.GetInt(iterSlot)
+		if idx >= int64(len(items)) {
+			ctx.SetInt(iterSlot, 0)
+			return exitID
+		}
+		ctx.SetSlot(valueSlot, []byte(items[idx]))
+		ctx.SetInt(iterSlot, idx+1)
+		return bodyStart
+	}
+}
+
+// WhileGate loops while ctx.BoolSlots[condSlot] is true, up to maxIter times.
+// iterSlot (IntSlot) tracks the iteration count; reset to 0 on exit.
+// maxIter <= 0 defaults to 100 to prevent infinite loops.
+func WhileGate(condSlot int, iterSlot int, maxIter int, bodyStart int16, exitID int16) engine.InstructionFunc {
+	limit := int64(maxIter)
+	if limit <= 0 {
+		limit = 100
+	}
+	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+		iter := ctx.GetInt(iterSlot)
+		cond := condSlot >= 0 && condSlot < len(ctx.BoolSlots) && ctx.BoolSlots[condSlot]
+		if !cond || iter >= limit {
+			ctx.SetInt(iterSlot, 0)
+			return exitID
+		}
+		ctx.SetInt(iterSlot, iter+1)
+		return bodyStart
+	}
+}
+
+// WhileRepeat jumps back to the WhileGate check without incrementing the counter
+// (WhileGate itself handles counting).
+func WhileRepeat(gateID int16) engine.InstructionFunc {
+	return func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+		return gateID
 	}
 }
 

@@ -282,15 +282,9 @@ func main() {
 			total := time.Since(reqStart)
 			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
 			upstream := time.Duration(upstreamNs)
-			gateway := total - upstream
-			if gateway < 0 {
-				gateway = 0
-			}
+			gateway := max(total-upstream, 0)
 
-			ttfbNs := ctx.Timing.FirstByteSentNs - ctx.Timing.StartNs
-			if ttfbNs < 0 {
-				ttfbNs = 0
-			}
+			ttfbNs := max(ctx.Timing.FirstByteSentNs-ctx.Timing.StartNs, 0)
 
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
@@ -356,6 +350,26 @@ func main() {
 	}
 	ms.SetDataStore(dataStoreMgr)
 
+	// Load master key for encrypting credential values stored via the per-tenant API.
+	// Returns NoopEncryptor (passthrough) if no master key is configured — safe to use regardless.
+	encCfg := cfgMgr.Secrets().Encrypted
+	masterKeyEnc, err := secrets.LoadMasterKey(secrets.MasterKeyConfig{
+		KeyEnv:        encCfg.MasterKeyEnv,
+		KeyPath:       encCfg.MasterKeyPath,
+		PassphraseEnv: encCfg.MasterKeyPassphraseEnv,
+		Salt:          encCfg.MasterKeySalt,
+		KeyVersion:    encCfg.MasterKeyVersion,
+	})
+	if err != nil {
+		log.Fatalf("failed to load master key for credential encryption: %v", err)
+	}
+
+	// Wire per-tenant credential routes into the tenant sub-handler BEFORE
+	// calling ts.RegisterHandlers so the ExtraSubHandler is set when /tenants/ is registered.
+	if credReg != nil {
+		ts.ExtraSubHandler = control.NewTenantCredentialHandler(credReg, masterKeyEnc)
+	}
+
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
@@ -400,7 +414,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	}
 
 	def1 := engine.BakeDefinition(1, "/v1/hello")
-	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true, 0, 0)
+	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true, 0, 0, engine.AsyncDisabled)
 
 	state.Definitions[1] = def1
 	state.Router.Add(def1.BaseRawPath, 1)
@@ -419,7 +433,7 @@ func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.
 	}
 
 	def2 := engine.BakeDefinition(2, "/v1/user")
-	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true, 0, 0)
+	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true, 0, 0, engine.AsyncDisabled)
 
 	state.Definitions[2] = def2
 	state.Router.Add(def2.BaseRawPath, 2)

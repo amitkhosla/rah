@@ -322,6 +322,16 @@ func (m *DataStoreManager) ListInstances(ctx context.Context) ([]string, error) 
 	return m.ListKeys(ctx, config.DomainInstances, SystemTenant, "")
 }
 
+// StoreFor returns the KeyValueStore for the given domain name, or nil if not configured.
+// Used by the compiler to resolve stores at bake time for instruction capture.
+func (m *DataStoreManager) StoreFor(domain string) datastore.KeyValueStore {
+	store, err := m.resolveDomainStore(config.DataDomain(domain))
+	if err != nil {
+		return nil
+	}
+	return store
+}
+
 func (m *DataStoreManager) resolveDomainStore(domain config.DataDomain) (datastore.KeyValueStore, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

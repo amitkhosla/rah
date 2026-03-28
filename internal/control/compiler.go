@@ -29,6 +29,7 @@ type Compiler struct {
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
 	CacheMgr    steps.CacheStore             // optional; enables cache_get/cache_put steps
+	DSM         *DataStoreManager            // optional; enables load_history/save_history steps
 	LLMCfg      config.LLMConfig             // optional; enables llm_call steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
@@ -165,6 +166,66 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "llm_call":
 		return c.compileLLMCall(step)
+
+	case "route_llm":
+		return c.compileRouteLLM(step)
+
+	case "estimate_tokens":
+		return c.compileEstimateTokens(step)
+
+	case "sanitize_prompt":
+		return c.compileSanitizePrompt(step)
+
+	case "compress_prompt":
+		return c.compileCompressPrompt(step)
+
+	case "append_message":
+		return c.compileAppendMessage(step)
+	case "trim_history":
+		return c.compileTrimHistory(step)
+	case "load_history":
+		return c.compileLoadHistory(step)
+	case "save_history":
+		return c.compileSaveHistory(step)
+
+	case "mcp_list_tools":
+		return c.compileMCPListTools(step)
+
+	case "mcp_fetch_schemas":
+		return c.compileMCPFetchSchemas(step)
+
+	case "mcp_call_tool":
+		return c.compileMCPCallTool(step)
+
+	case "detect_message_format":
+		return c.compileDetectMessageFormat(step)
+
+	case "check_context_fit":
+		return c.compileCheckContextFit(step)
+
+	case "transform_messages":
+		return c.compileTransformMessages(step)
+
+	case "overflow_history":
+		return c.compileOverflowHistory(step)
+
+	case "load_overflow_history":
+		return c.compileLoadOverflowHistory(step)
+
+	case "parse_tool_calls":
+		return c.compileParseToolCalls(step)
+
+	case "append_tool_result":
+		return c.compileAppendToolResult(step)
+
+	case "load_llm_key":
+		return c.compileLoadLLMKey(step)
+
+	case "parse_message_format":
+		return c.compileParseMessageFormat(step)
+
+	case "format_response":
+		return c.compileFormatResponse(step)
 
 	case "registry_lookup":
 		// Resolves the alias in keySlot → ctx.TenantID.
@@ -313,9 +374,61 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		})
 
 		exitID := int16(len(c.GlobalTable))
-		c.GlobalTable[gateID] = engine.Instruction{
-			Name:   "LOOP_GATE",
-			Action: steps.LoopGate(step.Source, valSlot, iterSlot, gateID+1, exitID),
+		// If source resolves to a named slot (var.x), use slot-based JSON array iteration.
+		// Otherwise fall back to the string-based GetCollection (headers, cookies).
+		if srcSlot, slotErr := c.getSlotReadOnly(step.Source); slotErr == nil {
+			c.GlobalTable[gateID] = engine.Instruction{
+				Name:   "LOOP_GATE_SLOT",
+				Action: steps.LoopGateSlot(srcSlot, valSlot, iterSlot, gateID+1, exitID),
+			}
+		} else {
+			c.GlobalTable[gateID] = engine.Instruction{
+				Name:   "LOOP_GATE",
+				Action: steps.LoopGate(step.Source, valSlot, iterSlot, gateID+1, exitID),
+			}
+		}
+
+	case "while":
+		// while loops until ctx.BoolSlots[condSlot] is false or maxIter is reached.
+		// step.Source: BoolSlot name for the loop condition
+		// step.Do: sub-steps executed each iteration
+		// step.Input["max_iter"]: optional integer safety limit (default 100)
+		if c.nextSlot >= rctx.BaseByteSlots {
+			return fmt.Errorf("slot limit exceeded at while iterator: max %d", rctx.BaseByteSlots)
+		}
+		iterSlot := c.nextSlot
+		c.nextSlot++
+
+		condSlot, condErr := c.getBoolSlot(step.Source)
+		if condErr != nil {
+			return fmt.Errorf("while: condition slot %q: %w", step.Source, condErr)
+		}
+
+		maxIter := 100
+		if v, ok := step.Input["max_iter"]; ok {
+			if n, parseErr := strconv.Atoi(v); parseErr == nil && n > 0 {
+				maxIter = n
+			}
+		}
+
+		whileGateID := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "WHILE_GATE_PLACEHOLDER"})
+
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "WHILE_REPEAT",
+			Action: steps.WhileRepeat(whileGateID),
+		})
+
+		whileExitID := int16(len(c.GlobalTable))
+		c.GlobalTable[whileGateID] = engine.Instruction{
+			Name:   "WHILE_GATE",
+			Action: steps.WhileGate(condSlot, iterSlot, maxIter, whileGateID+1, whileExitID),
 		}
 
 	case "call":
@@ -740,6 +853,8 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 			}
 		case "foreach":
 			count += 2 + len(c.simulateBake(step.Do, frags))
+		case "while":
+			count += 2 + len(c.simulateBake(step.Do, frags))
 		case "http_call":
 			count += 1
 		default:
@@ -848,6 +963,23 @@ func (c *Compiler) getSlot(name string) (int, error) {
 	}
 	c.slotMap[name] = idx
 	return idx, nil
+}
+
+// getSlotReadOnly returns the slot index for name only if it was already allocated.
+// Returns an error if the name is unknown, without allocating a new slot.
+// Used for foreach source slots that must have been declared earlier in the flow.
+func (c *Compiler) getSlotReadOnly(name string) (int, error) {
+	if idx, ok := c.slotMap[name]; ok {
+		return idx, nil
+	}
+	return -1, fmt.Errorf("slot %q not yet declared in this flow", name)
+}
+
+// getBoolSlot resolves (or allocates) a slot index used as a BoolSlot index.
+// BoolSlots share the same name→index mapping as ByteSlots by convention;
+// the instruction is responsible for selecting the correct slice.
+func (c *Compiler) getBoolSlot(name string) (int, error) {
+	return c.getSlot(name)
 }
 
 func (c *Compiler) resetSlots() {

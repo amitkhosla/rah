@@ -157,10 +157,7 @@ func (cs *CounterStore) TokenBucket(idx uint32, rate uint32, burst uint32, now u
 
 		// Refill tokens based on time passed
 		elapsed := now - lastUpdate
-		newTokens := oldTokens + (elapsed * rate)
-		if newTokens > burst {
-			newTokens = burst
-		}
+		newTokens := min(oldTokens+(elapsed*rate), burst)
 
 		if newTokens < 1 {
 			return false // Bucket empty
@@ -268,19 +265,16 @@ func (s *RemoteRateLimitStep) Execute(ctx *rctx.Context) int16 {
 	return 1
 }
 
-// We will use a helper to extract the TenantID from a known slot (usually slot 0)
+// calculateIndex maps (tenant, rule, bucket) to a slot in the CounterStore arena.
+// TenantID is mixed into the hash so each tenant has isolated counters.
 func (s *FixedWindowStep) calculateIndex(ctx *rctx.Context, bucketID uint32) uint32 {
-	// Assuming TenantID is an integer in slot 0 or derived from string
-	// If your context has a specific GetTenantID() method, use that.
-	tenantID := uint32(0) // Default or ctx.GetTenantID()
-
+	tenantID := uint32(ctx.TenantID)
 	h := tenantID ^ s.RuleID ^ bucketID
 	return h % uint32(len(s.Store.Arena))
 }
 
-func (s *TokenBucketStep) calculateIndex(ctx *rctx.Context, bucketID uint32) uint32 {
-	// Logic for Token Bucket index
-	tenantID := uint32(0)
+func (s *TokenBucketStep) calculateIndex(ctx *rctx.Context, _ uint32) uint32 {
+	tenantID := uint32(ctx.TenantID)
 	h := tenantID ^ uint32(s.Rule)
 	return h % uint32(len(s.Store.Arena))
 }

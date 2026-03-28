@@ -121,4 +121,35 @@ type EncryptedConfig struct {
 	// Key is a 32-byte AES-256 master key encoded as standard base64.
 	// Accepts "env:RAH_MASTER_KEY" or "file:///run/secrets/master-key".
 	Key string `json:"key,omitempty" yaml:"key,omitempty"`
+
+	// Master key for encrypting credential values in the datastore.
+	// Priority: MasterKeyEnv > MasterKeyPath > MasterKeyPassphraseEnv+MasterKeySalt > none (noop)
+	MasterKeyEnv           string `json:"master_key_env,omitempty"            yaml:"master_key_env,omitempty"`
+	MasterKeyPath          string `json:"master_key_path,omitempty"           yaml:"master_key_path,omitempty"`
+	MasterKeyPassphraseEnv string `json:"master_key_passphrase_env,omitempty" yaml:"master_key_passphrase_env,omitempty"`
+	MasterKeySalt          string `json:"master_key_salt,omitempty"           yaml:"master_key_salt,omitempty"`
+	MasterKeyVersion       string `json:"master_key_version,omitempty"        yaml:"master_key_version,omitempty"`
+}
+
+// MasterKeyConfig is an intermediate struct used to pass master-key configuration
+// to the secrets package without creating a circular import. The secrets package
+// converts this to its own MasterKeyConfig type.
+type MasterKeyConfig struct {
+	KeyEnv        string
+	KeyPath       string
+	PassphraseEnv string
+	Salt          string
+	KeyVersion    string
+}
+
+// ToMasterKeyConfig converts the EncryptedConfig master-key fields to a
+// MasterKeyConfig for use with secrets.LoadMasterKey (after conversion).
+func (c EncryptedConfig) ToMasterKeyConfig() MasterKeyConfig {
+	return MasterKeyConfig{
+		KeyEnv:        c.MasterKeyEnv,
+		KeyPath:       c.MasterKeyPath,
+		PassphraseEnv: c.MasterKeyPassphraseEnv,
+		Salt:          c.MasterKeySalt,
+		KeyVersion:    c.MasterKeyVersion,
+	}
 }
