@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 )
 
 // StoreKind identifies the backend technology selected by customer.
@@ -45,6 +45,7 @@ const (
 	// Infrastructure / operational
 	DomainInstances    DataDomain = "instances"    // live gateway instance registry
 	DomainCredentials  DataDomain = "credentials"  // named credential mappings (CredentialRegistry)
+	DomainAsyncJobs    DataDomain = "async_jobs"   // async job state (status + results)
 )
 
 var requiredDomains = []DataDomain{
@@ -180,6 +181,6 @@ func SupportedStoreKinds() []StoreKind {
 	for kind := range supportedStoreKinds {
 		kinds = append(kinds, kind)
 	}
-	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+	slices.Sort(kinds)
 	return kinds
 }

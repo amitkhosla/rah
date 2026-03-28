@@ -77,6 +77,7 @@ type ApiConfig struct {
 	FlowName        string           `json:"flow_name"`             // The entry fragment
 	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
 	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name (e.g. "premium", "global")
+	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
 	EntryPoint      int16            `json:"-"`                     // Absolute ID in GlobalTable (calculated at Bake)
 	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
 }
@@ -94,6 +95,7 @@ type ApiUpdate struct {
 	FlowName        string           `json:"flow_name"`             // Reference to a Flow name
 	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
 	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name
+	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
 	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
 	Action          string           `json:"action"`                // "upsert" or "delete"
 }

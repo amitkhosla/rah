@@ -13,6 +13,12 @@ import (
 // therefore do not block the hot path.
 type TenantServer struct {
 	mgr *RegistryManager
+
+	// ExtraSubHandler is an optional http.Handler invoked for /tenants/{alias}/...
+	// paths that are not recognised by tenantSubHandler's built-in dispatch table.
+	// Set this before calling RegisterHandlers to extend the sub-path routing
+	// without registering an additional /tenants/ pattern on the same mux.
+	ExtraSubHandler http.Handler
 }
 
 // NewTenantServer creates a TenantServer backed by the given RegistryManager.
@@ -435,6 +441,12 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 		s.SetTenantModifierHandler(w, r)
 	case strings.HasSuffix(path, "/rate-limit-overrides") && r.Method == http.MethodPost:
 		s.UpsertTenantRateLimitOverrideHandler(w, r)
+	case isCredentialsSubPath(path) && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodDelete):
+		if s.ExtraSubHandler != nil {
+			s.ExtraSubHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 	case r.Method == http.MethodGet:
 		s.GetTenantHandler(w, r)
 	case r.Method == http.MethodDelete:
@@ -449,6 +461,27 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// isCredentialsSubPath reports whether path is a /tenants/{alias}/credentials[/...]
+// sub-path. It requires the "/credentials" segment to appear after the alias
+// (i.e. not as a prefix of the alias itself) so that tenant aliases that happen
+// to contain "credentials" in their name are not mistakenly dispatched.
+func isCredentialsSubPath(path string) bool {
+	// Strip /tenants/ prefix.
+	rest := strings.TrimPrefix(path, "/tenants/")
+	if rest == path {
+		return false // no /tenants/ prefix
+	}
+	// rest = "{alias}/credentials[/...]"
+	// Find the slash that follows the alias.
+	idx := strings.Index(rest, "/")
+	if idx < 0 {
+		return false // no sub-path at all
+	}
+	subPath := rest[idx:] // "/credentials[/...]"
+	return subPath == "/credentials" ||
+		strings.HasPrefix(subPath, "/credentials/")
 }
 
 // aliasFromPath strips prefix from path and returns the remainder.

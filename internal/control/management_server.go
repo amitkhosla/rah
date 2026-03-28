@@ -88,6 +88,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 			FlowName:        api.FlowName,
 			RateLimitName:   api.RateLimitName,
 			EndpointConfigs: api.EndpointConfigs,
+			Async:           api.Async,
 			Action:          "upsert",
 		})
 	}
@@ -224,9 +225,18 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					apiRLId = rlid
 				}
 			}
+			// Parse async mode from the api update config
+			asyncMode := engine.AsyncDisabled
+			switch a.Async {
+			case "allowed":
+				asyncMode = engine.AsyncAllowed
+			case "forced":
+				asyncMode = engine.AsyncForced
+			}
+
 			if len(a.EndpointConfigs) == 0 {
 				// No sub-route config — register root for all methods.
-				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0)
+				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 			} else {
 				for _, ec := range a.EndpointConfigs {
 					epRLId := uint16(0)
@@ -244,7 +254,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 						epPath = "/"
 					}
 					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
-					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId)
+					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId, asyncMode)
 				}
 			}
 
@@ -265,6 +275,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				FlowName:        a.FlowName,
 				RateLimitName:   a.RateLimitName,
 				EndpointConfigs: a.EndpointConfigs,
+				Async:           a.Async,
 			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})

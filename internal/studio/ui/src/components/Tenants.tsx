@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   listTenants, getTenant, upsertTenant, deleteTenant, addAlias,
   listRateLimitConfigs, upsertRateLimitConfig,
+  listCredentials, setCredential, deleteCredential,
 } from '../api'
 import type {
   TenantSummary, TenantDetail, RateLimitRecord, UpsertTenantRequest,
@@ -43,6 +44,171 @@ function KVTable({ title, data }: { title: string; data: Record<string, string> 
   )
 }
 
+// ── Credentials panel ─────────────────────────────────────────────────────────
+
+const LLM_PRESETS = ['llm:openai', 'llm:anthropic', 'llm:gemini', 'llm:ollama']
+const MCP_PRESETS = ['mcp:brave-search', 'mcp:e2b']
+const ALL_PRESETS = [...LLM_PRESETS, ...MCP_PRESETS]
+
+function groupCredentials(names: string[]) {
+  const llm: string[] = []
+  const mcp: string[] = []
+  const other: string[] = []
+  for (const n of names) {
+    if (n.startsWith('llm:'))      llm.push(n)
+    else if (n.startsWith('mcp:')) mcp.push(n)
+    else                            other.push(n)
+  }
+  return { llm, mcp, other }
+}
+
+function CredentialsPanel({ alias }: { alias: string }) {
+  const [names, setNames]       = useState<string[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [err, setErr]           = useState('')
+
+  // add-credential form state
+  const [credName, setCredName]   = useState('')
+  const [credValue, setCredValue] = useState('')
+  const [saving, setSaving]       = useState(false)
+  const [saveMsg, setSaveMsg]     = useState('')
+  const [saveErr, setSaveErr]     = useState('')
+
+  // delete confirmation: name of cred awaiting confirm, or ''
+  const [delConfirm, setDelConfirm] = useState('')
+  const [delErr, setDelErr]         = useState('')
+
+  const load = useCallback(() => {
+    setLoading(true); setErr('')
+    listCredentials(alias)
+      .then(r => setNames(r.credentials ?? []))
+      .catch(e => setErr(String(e)))
+      .finally(() => setLoading(false))
+  }, [alias])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleSet() {
+    const n = credName.trim()
+    const v = credValue.trim()
+    if (!n) { setSaveErr('Credential name required'); return }
+    if (!v) { setSaveErr('Value required'); return }
+    setSaving(true); setSaveErr(''); setSaveMsg('')
+    try {
+      await setCredential(alias, n, v)
+      setCredName(''); setCredValue('')
+      setSaveMsg('Key saved.')
+      load()
+    } catch (e) { setSaveErr(String(e)) }
+    finally { setSaving(false) }
+  }
+
+  async function handleDelete(name: string) {
+    if (delConfirm !== name) { setDelConfirm(name); setDelErr(''); return }
+    try {
+      await deleteCredential(alias, name)
+      setDelConfirm('')
+      load()
+    } catch (e) { setDelErr(String(e)) }
+  }
+
+  const { llm, mcp, other } = groupCredentials(names)
+
+  function CredGroup({ title, items }: { title: string; items: string[] }) {
+    if (items.length === 0) return null
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--accent)', fontSize: 13 }}>{title}</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <tbody>
+            {items.map(n => (
+              <tr key={n} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '5px 8px', wordBreak: 'break-all' }}>
+                  <span style={{
+                    background: 'var(--block-bg)', border: '1px solid var(--border)',
+                    borderRadius: 4, padding: '2px 8px', fontSize: 12,
+                  }}>{n}</span>
+                </td>
+                <td style={{ padding: '5px 8px', color: 'var(--text-muted)', fontFamily: 'monospace', letterSpacing: 2 }}>
+                  ••••••••
+                </td>
+                <td style={{ padding: '5px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {delErr && delConfirm === n && (
+                    <span style={{ color: '#f87171', fontSize: 11, marginRight: 6 }}>{delErr}</span>
+                  )}
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11, background: delConfirm === n ? '#ef4444' : undefined }}
+                    onClick={() => handleDelete(n)}
+                  >
+                    {delConfirm === n ? 'Confirm delete' : 'Delete'}
+                  </button>
+                  {delConfirm === n && (
+                    <button
+                      className="btn"
+                      style={{ fontSize: 11, marginLeft: 4 }}
+                      onClick={() => setDelConfirm('')}
+                    >Cancel</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {loading && <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 12 }}>Loading…</div>}
+      {err && <div style={{ color: '#f87171', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+
+      {!loading && names.length === 0 && !err && (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>No credentials stored.</div>
+      )}
+
+      <CredGroup title="LLM Keys" items={llm} />
+      <CredGroup title="MCP Keys" items={mcp} />
+      <CredGroup title="Other" items={other} />
+
+      {/* Add credential form */}
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 4 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Set Credential</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: '1 1 180px', minWidth: 160 }}>
+            <input
+              className="input"
+              style={{ width: '100%', boxSizing: 'border-box' }}
+              list="cred-name-presets"
+              placeholder="llm:openai or custom…"
+              value={credName}
+              onChange={e => { setCredName(e.target.value); setSaveMsg(''); setSaveErr('') }}
+            />
+            <datalist id="cred-name-presets">
+              {ALL_PRESETS.map(p => <option key={p} value={p} />)}
+            </datalist>
+          </div>
+          <input
+            className="input"
+            style={{ flex: '2 1 220px', minWidth: 180 }}
+            type="password"
+            placeholder="Value (write-only)"
+            value={credValue}
+            onChange={e => { setCredValue(e.target.value); setSaveMsg(''); setSaveErr('') }}
+            onKeyDown={e => e.key === 'Enter' && handleSet()}
+          />
+          <button className="btn" onClick={handleSet} disabled={saving} style={{ whiteSpace: 'nowrap' }}>
+            {saving ? 'Saving…' : 'Set Key'}
+          </button>
+        </div>
+        {saveErr && <div style={{ color: '#f87171', fontSize: 12 }}>{saveErr}</div>}
+        {saveMsg && <div style={{ color: '#4ade80', fontSize: 12 }}>{saveMsg}</div>}
+      </div>
+    </div>
+  )
+}
+
 // ── Tenant detail panel ───────────────────────────────────────────────────────
 
 function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => void }) {
@@ -52,6 +218,7 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
   const [newAlias, setNewAlias] = useState('')
   const [aliasErr, setAliasErr] = useState('')
   const [delConfirm, setDelConfirm] = useState(false)
+  const [tab, setTab] = useState<'properties' | 'credentials'>('properties')
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -128,12 +295,36 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
         {aliasErr && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{aliasErr}</div>}
       </div>
 
-      <KVTable title="Service URLs" data={urls} />
-      <KVTable title="Identifiers"  data={ids} />
-      <KVTable title="Metadata"     data={meta} />
+      {/* Tab switcher */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+        <button
+          className={`tab-btn${tab === 'properties' ? ' active' : ''}`}
+          style={{ fontSize: 12 }}
+          onClick={() => setTab('properties')}
+        >Properties</button>
+        <button
+          className={`tab-btn${tab === 'credentials' ? ' active' : ''}`}
+          style={{ fontSize: 12 }}
+          onClick={() => setTab('credentials')}
+        >Credentials</button>
+      </div>
 
-      {Object.keys(detail.properties).length === 0 && (
-        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No properties stored.</div>
+      {/* Properties tab */}
+      {tab === 'properties' && (
+        <>
+          <KVTable title="Service URLs" data={urls} />
+          <KVTable title="Identifiers"  data={ids} />
+          <KVTable title="Metadata"     data={meta} />
+
+          {Object.keys(detail.properties).length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No properties stored.</div>
+          )}
+        </>
+      )}
+
+      {/* Credentials tab */}
+      {tab === 'credentials' && (
+        <CredentialsPanel alias={alias} />
       )}
     </div>
   )

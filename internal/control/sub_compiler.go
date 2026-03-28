@@ -23,6 +23,7 @@ func (c *Compiler) BakeSubRouter(
 	isStrict bool,
 	apiRateLimitId uint16,
 	endpointRateLimitId uint16,
+	asyncMode engine.AsyncMode,
 ) uint32 {
 
 	segments := strings.Split(strings.Trim(path, "/"), "/")
@@ -38,6 +39,7 @@ func (c *Compiler) BakeSubRouter(
 	}
 	def.Endpoints = append(def.Endpoints, engine.Endpoint{
 		EndpointId:          uint8(len(def.Endpoints)),
+		AsyncMode:           asyncMode,
 		APIRateLimitId:      apiRateLimitId,
 		EndpointRateLimitId: endpointRateLimitId,
 		Plan:                plan,
@@ -108,7 +110,7 @@ func registerTerminal(
 	node := &def.SubArena[nodeIdx]
 
 	if isAny {
-		for m := 0; m < 5; m++ {
+		for m := range 5 {
 			if node.AllowedMethods&(1<<m) != 0 {
 				panic("Duplicate route definition")
 			}

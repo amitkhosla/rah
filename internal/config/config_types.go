@@ -16,7 +16,7 @@ type CacheConfig struct {
 	TenantLimitMB int         `json:"tenant_limit_mb,omitempty" yaml:"tenant_limit_mb,omitempty"`
 	SizeClasses   []uint32    `json:"size_classes,omitempty"    yaml:"size_classes,omitempty"`
 	TTLTiers      []uint32    `json:"ttl_tiers,omitempty"       yaml:"ttl_tiers,omitempty"`
-	Backend       StoreConfig `json:"backend,omitempty"         yaml:"backend,omitempty"`
+	Backend       StoreConfig `json:"backend"         yaml:"backend"`
 }
 
 // LLMProviderAdapter identifies which wire-format adapter to use for a model.
@@ -49,14 +49,53 @@ type LLMModelConfig struct {
 	BaseURL      string             `json:"base_url,omitempty"    yaml:"base_url,omitempty"`
 	APIKeyRef    string             `json:"api_key_ref,omitempty" yaml:"api_key_ref,omitempty"`
 	MaxTokens    int                `json:"max_tokens,omitempty"  yaml:"max_tokens,omitempty"`
-	Capabilities ModelCapabilities  `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Capabilities ModelCapabilities  `json:"capabilities" yaml:"capabilities"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
 // Default is the slug used when a flow step does not specify a model.
 type LLMConfig struct {
-	Models  []LLMModelConfig `json:"models,omitempty"  yaml:"models,omitempty"`
-	Default string           `json:"default,omitempty" yaml:"default,omitempty"`
+	Models     []LLMModelConfig  `json:"models,omitempty"      yaml:"models,omitempty"`
+	Default    string            `json:"default,omitempty"     yaml:"default,omitempty"`
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty" yaml:"mcp_servers,omitempty"`
+}
+
+// MCPTransport identifies the connection method for an MCP server.
+type MCPTransport string
+
+const (
+	MCPTransportHTTP  MCPTransport = "http"
+	MCPTransportSSE   MCPTransport = "sse"
+	MCPTransportStdio MCPTransport = "stdio"
+)
+
+// MCPServerConfig describes one registered MCP tool server.
+// Only HTTP transport is active in Phase 2; stdio/SSE come later.
+type MCPServerConfig struct {
+	Alias     string       `json:"alias"                 yaml:"alias"`
+	Transport MCPTransport `json:"transport"             yaml:"transport"`
+	URL       string       `json:"url,omitempty"         yaml:"url,omitempty"`
+	Command   []string     `json:"command,omitempty"     yaml:"command,omitempty"`
+	APIKeyRef string       `json:"api_key_ref,omitempty" yaml:"api_key_ref,omitempty"`
+	TimeoutMs int          `json:"timeout_ms,omitempty"  yaml:"timeout_ms,omitempty"`
+}
+
+// AsyncConfig controls the asynchronous job execution subsystem.
+// When Enabled=false (the default), all endpoints execute synchronously
+// regardless of their Async setting.
+//
+// Backend selects where job state is persisted:
+//
+//	"memory"  — in-process only; state lost on restart (default, zero infra needed)
+//	any domain name — uses the datastore domain of that name (e.g. "async_jobs")
+//
+// MaxWorkers caps the number of concurrent in-process job goroutines.
+// JobTTLSecs controls how long completed/failed jobs are retained.
+type AsyncConfig struct {
+	Enabled    bool   `json:"enabled,omitempty"      yaml:"enabled,omitempty"`
+	Backend    string `json:"backend,omitempty"      yaml:"backend,omitempty"`  // "memory" or datastore domain name
+	MaxWorkers int    `json:"max_workers,omitempty"  yaml:"max_workers,omitempty"`  // default 64
+	JobTTLSecs int64  `json:"job_ttl_secs,omitempty" yaml:"job_ttl_secs,omitempty"` // default 3600
 }
 
 // GatewayConfig is the top-level configuration read from a JSON or YAML file.
@@ -65,9 +104,10 @@ type LLMConfig struct {
 type GatewayConfig struct {
 	Layout    GlobalLayout    `json:"layout"             yaml:"layout"`
 	DataStore DataStoreConfig `json:"datastore"          yaml:"datastore"`
-	Secrets   SecretsConfig   `json:"secrets,omitempty"  yaml:"secrets,omitempty"`
-	Cache     CacheConfig     `json:"cache,omitempty"    yaml:"cache,omitempty"`
-	LLM       LLMConfig       `json:"llm,omitempty"      yaml:"llm,omitempty"`
+	Secrets   SecretsConfig   `json:"secrets"  yaml:"secrets"`
+	Cache     CacheConfig     `json:"cache"    yaml:"cache"`
+	LLM       LLMConfig       `json:"llm"      yaml:"llm"`
+	Async     AsyncConfig     `json:"async"    yaml:"async"`
 }
 
 type ResourceLimit struct {
@@ -92,7 +132,7 @@ type GlobalLayout struct {
 	MaxIntsSlots       int               `json:"max_ints_slots,omitempty"       yaml:"max_ints_slots,omitempty"`
 	MaxBoolsSlots      int               `json:"max_bools_slots,omitempty"      yaml:"max_bools_slots,omitempty"`
 	MaxHeapBytes       int64             `json:"max_heap_bytes,omitempty"       yaml:"max_heap_bytes,omitempty"`
-	DefaultLimits      ResourceLimit     `json:"default_limits,omitempty"       yaml:"default_limits,omitempty"`
+	DefaultLimits      ResourceLimit     `json:"default_limits"       yaml:"default_limits"`
 	SlotValueThreshold int               `json:"slot_value_threshold,omitempty" yaml:"slot_value_threshold,omitempty"` // per-value arena limit; 0 = rctx default (256)
 	DefaultRateLimits  []RateLimitPreset `json:"default_rate_limits,omitempty"  yaml:"default_rate_limits,omitempty"`  // system-wide defaults loaded at startup
 }

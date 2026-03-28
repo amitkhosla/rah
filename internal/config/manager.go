@@ -98,3 +98,6 @@ func (m *Manager) Secrets() SecretsConfig { return m.gateway.Secrets }
 
 // Cache returns the cache configuration.
 func (m *Manager) Cache() CacheConfig { return m.gateway.Cache }
+
+// Async returns the async job execution subsystem configuration.
+func (m *Manager) Async() AsyncConfig { return m.gateway.Async }

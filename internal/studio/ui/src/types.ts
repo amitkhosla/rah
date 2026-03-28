@@ -173,6 +173,12 @@ export interface UpsertRateLimitRequest {
   burst_factor: number
 }
 
+// ── Credentials ───────────────────────────────────────────────────
+
+export interface CredentialListResponse {
+  credentials: string[]  // names only, e.g. ["llm:openai", "mcp:brave-search"]
+}
+
 // ── Gateway live state ────────────────────────────────────────────
 
 export interface GatewayFlow {

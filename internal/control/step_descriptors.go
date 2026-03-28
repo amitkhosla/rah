@@ -54,7 +54,7 @@ func sf(key, label, desc, placeholder string) StepField {
 // AllStepDescriptors returns every action the compiler supports, in palette order.
 // This is the authoritative list — compiler.go compileStep() mirrors it 1:1.
 func AllStepDescriptors() []StepDescriptor {
-	return []StepDescriptor{
+	base := []StepDescriptor{
 
 		// ── Registry / Identity ───────────────────────────────────────────────────
 		{
@@ -469,6 +469,22 @@ func AllStepDescriptors() []StepDescriptor {
 			Fields:   []StepField{},
 		},
 	}
+
+	// Append AI sub-group step descriptors.
+	base = append(base, SanitizeStepDescriptors()...)
+	base = append(base, RoutingStepDescriptors()...)
+	base = append(base, FormatStepDescriptors()...)
+	base = append(base, MCPStepDescriptors()...)
+	base = append(base, MCPCallToolDescriptors()...)
+	base = append(base, HistoryStepDescriptors()...)
+	base = append(base, DetectStepDescriptors()...)
+	base = append(base, ContextFitStepDescriptors()...)
+	base = append(base, TransformStepDescriptors()...)
+	base = append(base, OverflowStepDescriptors()...)
+	base = append(base, ToolParseStepDescriptors()...)
+	base = append(base, LLMKeyStepDescriptors()...)
+	base = append(base, WhileStepDescriptors()...)
+	return base
 }
 
 // BuildStepCatalog builds a StepCatalog from AllStepDescriptors, deduplicating

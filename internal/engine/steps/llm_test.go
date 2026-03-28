@@ -497,3 +497,154 @@ func TestEstimateTokens(t *testing.T) {
 		}
 	}
 }
+
+// ── APIKeySlot and token slot tests ──────────────────────────────────────────
+
+// captureAuthServer creates a test server that records the Authorization (or
+// x-api-key) header from the incoming request, then returns a minimal
+// Anthropic-format success response with the given token counts.
+func captureAuthServer(t *testing.T, gotKey *string, inputTokens, outputTokens int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Anthropic adapter uses "x-api-key" header.
+		*gotKey = r.Header.Get("x-api-key")
+		if *gotKey == "" {
+			*gotKey = r.Header.Get("Authorization")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"content":     []any{map[string]any{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens},
+		})
+	}))
+}
+
+func TestLLMCall_APIKeyFromSlot(t *testing.T) {
+	var gotKey string
+	srv := captureAuthServer(t, &gotKey, 10, 5)
+	defer srv.Close()
+
+	ctx := newTestContext()
+	ctx.ByteSlots[0] = []byte("what is 1+1?")
+	ctx.ByteSlots[3] = []byte("sk-from-slot") // runtime key in slot 3
+
+	cfg := LLMCallConfig{
+		ModelConfig:  modelConfig(config.AdapterAnthropic, srv.URL),
+		APIKey:       "sk-baked-key",
+		PromptSlot:   0,
+		ResultSlot:   1,
+		SystemSlot:   -1,
+		APIKeySlot:   3,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		MaxTokens:    50,
+	}
+	instr := LLMCall(cfg)
+	next := runInstruction(instr, ctx)
+
+	if next != 1 {
+		t.Fatalf("want next=1, got %d (status %d)", next, ctx.ResponseStatus)
+	}
+	if gotKey != "sk-from-slot" {
+		t.Errorf("want auth key %q, got %q", "sk-from-slot", gotKey)
+	}
+}
+
+func TestLLMCall_APIKeySlotEmpty_FallsBackToBakedKey(t *testing.T) {
+	var gotKey string
+	srv := captureAuthServer(t, &gotKey, 8, 3)
+	defer srv.Close()
+
+	ctx := newTestContext()
+	ctx.ByteSlots[0] = []byte("prompt")
+	// slot 3 is intentionally empty — should fall back to baked key
+
+	cfg := LLMCallConfig{
+		ModelConfig:  modelConfig(config.AdapterAnthropic, srv.URL),
+		APIKey:       "sk-baked-fallback",
+		PromptSlot:   0,
+		ResultSlot:   1,
+		SystemSlot:   -1,
+		APIKeySlot:   3,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		MaxTokens:    50,
+	}
+	instr := LLMCall(cfg)
+	next := runInstruction(instr, ctx)
+
+	if next != 1 {
+		t.Fatalf("want next=1, got %d (status %d)", next, ctx.ResponseStatus)
+	}
+	if gotKey != "sk-baked-fallback" {
+		t.Errorf("want baked key %q, got %q", "sk-baked-fallback", gotKey)
+	}
+}
+
+func TestLLMCall_TokenSlotsWritten(t *testing.T) {
+	srv := captureAuthServer(t, new(string), 42, 17)
+	defer srv.Close()
+
+	ctx := newTestContext()
+	ctx.ByteSlots[0] = []byte("count my tokens")
+
+	cfg := LLMCallConfig{
+		ModelConfig:      modelConfig(config.AdapterAnthropic, srv.URL),
+		APIKey:           "test-key",
+		PromptSlot:       0,
+		ResultSlot:       1,
+		SystemSlot:       -1,
+		APIKeySlot:       -1,
+		InputTokensSlot:  2,
+		OutputTokensSlot: 3,
+		MaxTokens:        50,
+	}
+	instr := LLMCall(cfg)
+	next := runInstruction(instr, ctx)
+
+	if next != 1 {
+		t.Fatalf("want next=1, got %d (status %d)", next, ctx.ResponseStatus)
+	}
+	if ctx.IntSlots[2] != 42 {
+		t.Errorf("InputTokensSlot: want 42, got %d", ctx.IntSlots[2])
+	}
+	if ctx.IntSlots[3] != 17 {
+		t.Errorf("OutputTokensSlot: want 17, got %d", ctx.IntSlots[3])
+	}
+}
+
+func TestLLMCall_TokenSlotsNegative_NoWrite(t *testing.T) {
+	srv := captureAuthServer(t, new(string), 10, 5)
+	defer srv.Close()
+
+	ctx := newTestContext()
+	ctx.ByteSlots[0] = []byte("prompt")
+	ctx.IntSlots[0] = 99 // pre-set sentinel; should remain unchanged
+	ctx.IntSlots[1] = 88
+
+	cfg := LLMCallConfig{
+		ModelConfig:      modelConfig(config.AdapterAnthropic, srv.URL),
+		APIKey:           "test-key",
+		PromptSlot:       0,
+		ResultSlot:       1,
+		SystemSlot:       -1,
+		APIKeySlot:       -1,
+		InputTokensSlot:  -1, // disabled
+		OutputTokensSlot: -1, // disabled
+		MaxTokens:        50,
+	}
+	instr := LLMCall(cfg)
+	next := runInstruction(instr, ctx)
+
+	if next != 1 {
+		t.Fatalf("want next=1, got %d (status %d)", next, ctx.ResponseStatus)
+	}
+	// Sentinel values must be untouched
+	if ctx.IntSlots[0] != 99 {
+		t.Errorf("IntSlots[0] should be unchanged (99), got %d", ctx.IntSlots[0])
+	}
+	if ctx.IntSlots[1] != 88 {
+		t.Errorf("IntSlots[1] should be unchanged (88), got %d", ctx.IntSlots[1])
+	}
+}
