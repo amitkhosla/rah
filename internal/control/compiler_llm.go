@@ -140,6 +140,32 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		}
 	}
 
+	// Resolve fallback model if specified
+	if fallbackSlug, ok := step.Input["fallback_model"]; ok && fallbackSlug != "" {
+		var fallbackModelCfg config.LLMModelConfig
+		found := false
+		for _, m := range c.LLMCfg.Models {
+			if m.Slug == fallbackSlug {
+				fallbackModelCfg = m
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("llm_call: fallback_model %q not found in LLM catalog", fallbackSlug)
+		}
+
+		// Resolve fallback API key: step.Input["fallback_api_key"] overrides catalog APIKeyRef
+		fallbackAPIKey := step.Input["fallback_api_key"]
+		if fallbackAPIKey == "" {
+			fallbackAPIKey = fallbackModelCfg.APIKeyRef
+		}
+
+		llmCfg.FallbackModel = fallbackSlug
+		llmCfg.FallbackModelConfig = fallbackModelCfg
+		llmCfg.FallbackAPIKey = fallbackAPIKey
+	}
+
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
 	return nil
 }

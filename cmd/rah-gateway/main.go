@@ -17,6 +17,7 @@ import (
 	tenantregistry "rah/internal/registry"
 	"rah/internal/router"
 	"rah/internal/secrets"
+	"rah/internal/vectorstore"
 	"sync/atomic"
 	"time"
 )
@@ -205,6 +206,30 @@ func main() {
 	} else {
 		log.Printf("Cache disabled (cache.disabled=true in config)")
 	}
+
+	// Initialize vector stores — optional; controlled by [vector_stores] in config.
+	// Each store's API key is resolved through the secrets manager at startup.
+	vectorStores := make(map[string]vectorstore.VectorStore)
+	for _, vsCfg := range cfgMgr.Gateway().VectorStores {
+		resolvedKey, err := secretsMgr.ResolveString(gatewayCtx, vsCfg.APIKeyRef)
+		if err != nil {
+			log.Fatalf("vector store %q: failed to resolve api_key_ref %q: %v", vsCfg.Name, vsCfg.APIKeyRef, err)
+		}
+		vs, err := vectorstore.NewVectorStore(vsCfg, resolvedKey)
+		if err != nil {
+			log.Fatalf("vector store %q: %v", vsCfg.Name, err)
+		}
+		vectorStores[vsCfg.Name] = vs
+		log.Printf("vector store %q (%s) initialized", vsCfg.Name, vsCfg.Kind)
+	}
+	defer func() {
+		for name, vs := range vectorStores {
+			if err := vs.Close(); err != nil {
+				log.Printf("vector store %q close: %v", name, err)
+			}
+		}
+	}()
+	compiler.VectorStores = vectorStores
 
 	// Registry manager — created here (before the gateway goroutine) so that
 	// RegistryExec can be wired to fm before the first request arrives.
