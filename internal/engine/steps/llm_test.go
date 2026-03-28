@@ -14,13 +14,7 @@ import (
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func newTestContext() *rctx.Context {
-	ctx := &rctx.Context{}
-	ctx.ByteSlots = make([][]byte, 16)
-	ctx.IntSlots = make([]int64, 8)
-	ctx.BoolSlots = make([]bool, 8)
-	return ctx
-}
+// Note: newTestContext is defined in llm_execute_plan_test.go (uses InitSlots).
 
 func runInstruction(instr engine.Instruction, ctx *rctx.Context) int16 {
 	state := &engine.ExecutionState{PC: 0}

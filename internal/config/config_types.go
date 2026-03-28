@@ -101,13 +101,50 @@ type AsyncConfig struct {
 // GatewayConfig is the top-level configuration read from a JSON or YAML file.
 // It is the single struct passed to config.Manager and distributed to all
 // components via Manager accessors.
+// VectorStoreKind identifies the vector database backend.
+type VectorStoreKind string
+
+const (
+	VectorStoreQdrant   VectorStoreKind = "qdrant"
+	VectorStoreChroma   VectorStoreKind = "chroma"
+	VectorStoreWeaviate VectorStoreKind = "weaviate"
+	VectorStoreRedis    VectorStoreKind = "redis"    // Redis Stack / RediSearch with vector index
+	VectorStoreMongoDB  VectorStoreKind = "mongodb"  // MongoDB Atlas Vector Search
+	VectorStorePgVector VectorStoreKind = "pgvector" // PostgreSQL + pgvector via REST
+	VectorStoreHTTP     VectorStoreKind = "http"     // Generic HTTP — any custom backend
+)
+
+// VectorStoreConfig describes one registered vector store backend.
+// Multiple stores can be registered under different names; steps reference
+// them by name (same convention as MCPServerConfig).
+type VectorStoreConfig struct {
+	// Name is the identifier referenced by vector_search / vector_upsert steps.
+	Name string `json:"name" yaml:"name"`
+	// Kind selects the backend implementation.
+	Kind VectorStoreKind `json:"kind" yaml:"kind"`
+	// URL is the base URL of the vector store service.
+	URL string `json:"url" yaml:"url"`
+	// APIKey is a literal API key (prefer APIKeyRef for production).
+	APIKey string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	// APIKeyRef resolves the key at startup: "secret:name" or literal.
+	APIKeyRef string `json:"api_key_ref,omitempty" yaml:"api_key_ref,omitempty"`
+	// DefaultCollection is used when the step does not specify a collection slot.
+	DefaultCollection string `json:"default_collection,omitempty" yaml:"default_collection,omitempty"`
+	// Dimension is the vector size (required by some backends at index creation time).
+	Dimension int `json:"dimension,omitempty" yaml:"dimension,omitempty"`
+	// Options holds backend-specific tuning (e.g. index type, distance metric).
+	// Keys: "distance" (cosine|dot|euclid), "index_type", "ef", "m", etc.
+	Options map[string]string `json:"options,omitempty" yaml:"options,omitempty"`
+}
+
 type GatewayConfig struct {
-	Layout    GlobalLayout    `json:"layout"             yaml:"layout"`
-	DataStore DataStoreConfig `json:"datastore"          yaml:"datastore"`
-	Secrets   SecretsConfig   `json:"secrets"  yaml:"secrets"`
-	Cache     CacheConfig     `json:"cache"    yaml:"cache"`
-	LLM       LLMConfig       `json:"llm"      yaml:"llm"`
-	Async     AsyncConfig     `json:"async"    yaml:"async"`
+	Layout       GlobalLayout        `json:"layout"             yaml:"layout"`
+	DataStore    DataStoreConfig     `json:"datastore"          yaml:"datastore"`
+	Secrets      SecretsConfig       `json:"secrets"            yaml:"secrets"`
+	Cache        CacheConfig         `json:"cache"              yaml:"cache"`
+	LLM          LLMConfig           `json:"llm"                yaml:"llm"`
+	Async        AsyncConfig         `json:"async"              yaml:"async"`
+	VectorStores []VectorStoreConfig `json:"vector_stores,omitempty" yaml:"vector_stores,omitempty"`
 }
 
 type ResourceLimit struct {

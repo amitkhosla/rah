@@ -484,6 +484,13 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, ToolParseStepDescriptors()...)
 	base = append(base, LLMKeyStepDescriptors()...)
 	base = append(base, WhileStepDescriptors()...)
+	base = append(base, EmbedStepDescriptors()...)
+	base = append(base, ExecutePlanStepDescriptors()...)
+	base = append(base, VectorStepDescriptors()...)
+	base = append(base, ChunkStepDescriptors()...)
+	base = append(base, SSEStepDescriptors()...)
+	base = append(base, RerankStepDescriptors()...)
+	base = append(base, SemanticCacheStepDescriptors()...)
 	return base
 }
 

@@ -7,6 +7,7 @@ import (
 	"rah/internal/engine/steps"
 	"rah/internal/rctx"
 	registrypkg "rah/internal/registry"
+	"rah/internal/vectorstore"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,8 +30,9 @@ type Compiler struct {
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
 	CacheMgr    steps.CacheStore             // optional; enables cache_get/cache_put steps
-	DSM         *DataStoreManager            // optional; enables load_history/save_history steps
-	LLMCfg      config.LLMConfig             // optional; enables llm_call steps
+	DSM          *DataStoreManager                   // optional; enables load_history/save_history steps
+	LLMCfg       config.LLMConfig                    // optional; enables llm_call steps
+	VectorStores map[string]vectorstore.VectorStore  // optional; enables vector_search/vector_upsert steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -220,6 +222,33 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "load_llm_key":
 		return c.compileLoadLLMKey(step)
+
+	case "embed_text":
+		return c.compileEmbedText(step)
+
+	case "execute_plan":
+		return c.compileExecutePlan(step)
+
+	case "vector_search":
+		return c.compileVectorSearch(step)
+
+	case "vector_upsert":
+		return c.compileVectorUpsert(step)
+
+	case "chunk_text":
+		return c.compileChunkText(step)
+
+	case "send_sse_event":
+		return c.compileSSEEvent(step)
+
+	case "rerank":
+		return c.compileRerank(step)
+
+	case "semantic_cache_get":
+		return c.compileSemanticCacheGet(step)
+
+	case "semantic_cache_put":
+		return c.compileSemanticCachePut(step)
 
 	case "parse_message_format":
 		return c.compileParseMessageFormat(step)
