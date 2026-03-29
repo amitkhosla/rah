@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"rah/internal/config"
 	"rah/internal/engine/steps"
@@ -34,7 +35,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 	var modelCfg config.LLMModelConfig
 	found := false
 	for _, m := range c.LLMCfg.Models {
-		if m.Slug == modelSlug {
+		if m.Alias == modelSlug {
 			modelCfg = m
 			found = true
 			break
@@ -109,7 +110,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			// Build catalog map for runtime lookup
 			llmCfg.ModelCatalog = make(map[string]config.LLMModelConfig, len(c.LLMCfg.Models))
 			for _, m := range c.LLMCfg.Models {
-				llmCfg.ModelCatalog[m.Slug] = m
+				llmCfg.ModelCatalog[m.Alias] = m
 			}
 		}
 	}
@@ -140,32 +141,94 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		}
 	}
 
-	// Resolve fallback model if specified
-	if fallbackSlug, ok := step.Input["fallback_model"]; ok && fallbackSlug != "" {
-		var fallbackModelCfg config.LLMModelConfig
+	// Resolve fallback chain.
+	// Supports two formats:
+	//   fallback_model: "alias"               → single-entry chain (backward compat)
+	//   fallback_chain: "alias1,alias2,..."   → ordered multi-hop chain
+	// Both can be combined; fallback_model is appended after fallback_chain entries.
+	var fallbackChain []steps.FallbackEntry
+
+	if chainStr, ok := step.Input["fallback_chain"]; ok && chainStr != "" {
+		for _, alias := range splitTrimmed(chainStr, ',') {
+			if alias == "" {
+				continue
+			}
+			var mc config.LLMModelConfig
+			found := false
+			for _, m := range c.LLMCfg.Models {
+				if m.Alias == alias {
+					mc = m
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("llm_call: fallback_chain entry %q not found in LLM catalog", alias)
+			}
+			fbKey := mc.APIKeyRef
+			fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+		}
+	}
+
+	if singleFallback, ok := step.Input["fallback_model"]; ok && singleFallback != "" {
+		var mc config.LLMModelConfig
 		found := false
 		for _, m := range c.LLMCfg.Models {
-			if m.Slug == fallbackSlug {
-				fallbackModelCfg = m
+			if m.Alias == singleFallback {
+				mc = m
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("llm_call: fallback_model %q not found in LLM catalog", fallbackSlug)
+			return fmt.Errorf("llm_call: fallback_model %q not found in LLM catalog", singleFallback)
 		}
-
-		// Resolve fallback API key: step.Input["fallback_api_key"] overrides catalog APIKeyRef
-		fallbackAPIKey := step.Input["fallback_api_key"]
-		if fallbackAPIKey == "" {
-			fallbackAPIKey = fallbackModelCfg.APIKeyRef
+		fbKey := step.Input["fallback_api_key"]
+		if fbKey == "" {
+			fbKey = mc.APIKeyRef
 		}
+		fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+	}
 
-		llmCfg.FallbackModel = fallbackSlug
-		llmCfg.FallbackModelConfig = fallbackModelCfg
-		llmCfg.FallbackAPIKey = fallbackAPIKey
+	llmCfg.FallbackChain = fallbackChain
+
+	// model_config_slot: optional slot holding a runtime JSON-encoded LLMModelConfig
+	// that overrides the baked model config per request (payload injection).
+	llmCfg.ModelConfigSlot = -1
+	if v, ok := step.Input["model_config_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: model_config_slot: %w", err)
+		}
+		llmCfg.ModelConfigSlot = s
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
 	return nil
+}
+
+// splitTrimmed splits s by sep and trims whitespace from each piece.
+func splitTrimmed(s string, sep rune) []string {
+	var out []string
+	for _, p := range splitRune(s, sep) {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitRune splits s by sep rune (avoids importing strings just for Split).
+func splitRune(s string, sep rune) []string {
+	var parts []string
+	start := 0
+	for i, r := range s {
+		if r == sep {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
 }

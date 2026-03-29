@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -44,12 +45,22 @@ type LLMCallConfig struct {
 	// after a successful call. Set to -1 (default) to skip.
 	OutputTokensSlot int
 
-	// FallbackModel is an optional model slug to try if primary exhausts all retries.
-	// If FallbackModel is empty, no fallback is attempted.
-	// Requires FallbackModelConfig and FallbackAPIKey to be populated at bake time.
-	FallbackModel       string
-	FallbackModelConfig config.LLMModelConfig // resolved at compile time
-	FallbackAPIKey      string                // resolved at compile time
+	// FallbackChain is an ordered list of fallback models tried in sequence when
+	// the primary model exhausts all retries. Each entry is resolved at bake time.
+	// An empty chain means no fallback.
+	FallbackChain []FallbackEntry
+
+	// ModelConfigSlot: if >= 0, read a JSON-encoded LLMModelConfig from
+	// ctx.ByteSlots[ModelConfigSlot] at runtime and use it instead of the
+	// baked ModelConfig. Allows per-request model config injection from payload.
+	// Set to -1 (default) to use the baked ModelConfig.
+	ModelConfigSlot int
+}
+
+// FallbackEntry holds one step in the fallback chain, resolved at bake time.
+type FallbackEntry struct {
+	ModelConfig config.LLMModelConfig
+	APIKey      string
 }
 
 // llmCallParams holds the runtime-resolved call parameters (adapter, endpoint, auth).
@@ -67,7 +78,7 @@ func resolveCallParams(modelCfg config.LLMModelConfig, apiKey string) (llmCallPa
 	if err != nil {
 		return llmCallParams{}, err
 	}
-	endpoint := adapter.Endpoint(modelCfg.BaseURL, modelCfg.Slug)
+	endpoint := adapter.Endpoint(modelCfg.BaseURL, modelCfg.Alias)
 	authName, authValue := adapter.AuthHeader(apiKey)
 	return llmCallParams{
 		adapter:   adapter,
@@ -173,7 +184,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 	bakedEndpointHost := extractUpstreamHost(bakedParams.endpoint)
 
 	return engine.Instruction{
-		Name: "llm_call[" + cfg.ModelConfig.Slug + "]",
+		Name: "llm_call[" + cfg.ModelConfig.Alias + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			// 1. Read prompt
 			var promptContent string
@@ -238,6 +249,27 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 			}
 
+			// Runtime model config override from slot (payload injection).
+			// If ModelConfigSlot >= 0 and the slot contains a JSON-encoded
+			// LLMModelConfig, use it instead of the baked model config.
+			if cfg.ModelConfigSlot >= 0 && cfg.ModelConfigSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ModelConfigSlot]; len(raw) > 0 {
+					var runtimeCfg config.LLMModelConfig
+					if jsonErr := json.Unmarshal(raw, &runtimeCfg); jsonErr == nil && runtimeCfg.Alias != "" {
+						runtimeKey := runtimeCfg.APIKeyRef
+						if runtimeKey == "" {
+							runtimeKey = apiKey // fall back to baked/slot key
+						}
+						rp, rpErr := resolveCallParams(runtimeCfg, runtimeKey)
+						if rpErr == nil {
+							activeCfg = runtimeCfg
+							activeParams = rp
+							activeEndpointHost = extractUpstreamHost(rp.endpoint)
+						}
+					}
+				}
+			}
+
 			// 2. Read system prompt
 			var systemContent string
 			if cfg.SystemSlot >= 0 && cfg.SystemSlot < len(ctx.ByteSlots) {
@@ -248,7 +280,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			req := LLMRequest{
 				Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
 				System:      systemContent,
-				Model:       activeCfg.Slug,
+				Model:       activeCfg.Alias,
 				MaxTokens:   maxTokens,
 				Temperature: cfg.Temperature,
 			}
@@ -421,88 +453,56 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// --- fallback model attempt ---
-			if cfg.FallbackModel != "" {
+			// --- fallback chain: walk each entry until one succeeds ---
+			for chainIdx, fb := range cfg.FallbackChain {
 				if ctx.Obs != nil {
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-						Host: "llm_fallback", URL: "fallback:" + cfg.FallbackModel,
-						Attempt: 1,
-						Err: "primary model exhausted retries; attempting fallback",
-						TotalNs: 0,
+						Host:    "llm_fallback",
+						URL:     "fallback:" + fb.ModelConfig.Alias,
+						Attempt: chainIdx + 1,
+						Err:     "primary exhausted; trying fallback chain entry",
 					})
 				}
 
-				// Resolve fallback call params
-				fallbackParams, fbParamErr := resolveCallParams(cfg.FallbackModelConfig, cfg.FallbackAPIKey)
+				fbParams, fbParamErr := resolveCallParams(fb.ModelConfig, fb.APIKey)
 				if fbParamErr != nil {
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback adapter error: " + fbParamErr.Error()
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue // bad adapter config — skip to next
 				}
 
-				fallbackEndpointHost := extractUpstreamHost(fallbackParams.endpoint)
-
-				// Build request for fallback model
+				fbEndpointHost := extractUpstreamHost(fbParams.endpoint)
 				fbReq := LLMRequest{
 					Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
 					System:      systemContent,
-					Model:       cfg.FallbackModelConfig.Slug,
+					Model:       fb.ModelConfig.Alias,
 					MaxTokens:   maxTokens,
 					Temperature: cfg.Temperature,
 				}
 
-				// Token limit check on fallback (reject — no truncation)
-				if cfg.FallbackModelConfig.Capabilities.MaxContextTokens > 0 {
-					est := estimateRequestTokens(fbReq) + maxTokens
-					if est > cfg.FallbackModelConfig.Capabilities.MaxContextTokens {
-						ctx.ResponseStatus = 413
-						ctx.Failed = true
-						ctx.ErrorCode = 413
-						msg := "llm_call: fallback prompt exceeds model context limit"
-						ctx.ErrorMsg = ctx.Alloc(len(msg))
-						copy(ctx.ErrorMsg, msg)
-						return engine.StopPlan
+				// Skip if prompt exceeds this fallback model's context limit.
+				if fb.ModelConfig.Capabilities.MaxContextTokens > 0 {
+					if estimateRequestTokens(fbReq)+maxTokens > fb.ModelConfig.Capabilities.MaxContextTokens {
+						continue
 					}
 				}
 
-				// Marshal to fallback provider format
-				fbBody, fbMarshalErr := fallbackParams.adapter.Marshal(fbReq)
+				fbBody, fbMarshalErr := fbParams.adapter.Marshal(fbReq)
 				if fbMarshalErr != nil {
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback marshal failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue
 				}
 
-				// Attempt fallback (single try, no retries)
-				fbClient := getLLMClient(cfg.FallbackModelConfig.BaseURL, timeoutMs)
+				fbClient := getLLMClient(fb.ModelConfig.BaseURL, timeoutMs)
 				fbStart := time.Now()
-
 				fbReqCtx, fbCancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-				fbHttpReq, fbReqErr := http.NewRequestWithContext(fbReqCtx, http.MethodPost, fallbackParams.endpoint, bytes.NewReader(fbBody))
+				fbHttpReq, fbReqErr := http.NewRequestWithContext(fbReqCtx, http.MethodPost, fbParams.endpoint, bytes.NewReader(fbBody))
 				if fbReqErr != nil {
 					fbCancel()
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback request build failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue
 				}
 				fbHttpReq.Header.Set("Content-Type", "application/json")
-				if fallbackParams.authName != "" {
-					fbHttpReq.Header.Set(fallbackParams.authName, fallbackParams.authValue)
+				if fbParams.authName != "" {
+					fbHttpReq.Header.Set(fbParams.authName, fbParams.authValue)
 				}
-				// Anthropic requires API version header
-				if cfg.FallbackModelConfig.Adapter == config.AdapterAnthropic {
+				if fb.ModelConfig.Adapter == config.AdapterAnthropic {
 					fbHttpReq.Header.Set("anthropic-version", "2023-06-01")
 				}
 
@@ -515,87 +515,58 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 
 				if fbDoErr != nil {
 					if ctx.Obs != nil {
-						ctx.Obs.RecordUpstream(fallbackEndpointHost, fbElapsed, int64(len(fbBody)), 0)
+						ctx.Obs.RecordUpstream(fbEndpointHost, fbElapsed, int64(len(fbBody)), 0)
 						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-							Host: fallbackEndpointHost, URL: fallbackParams.endpoint, Attempt: 1,
+							Host: fbEndpointHost, URL: fbParams.endpoint, Attempt: chainIdx + 1,
 							Err: fbDoErr.Error(), TotalNs: fbElapsed.Nanoseconds(),
 						})
 					}
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback upstream error"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue // network error — try next
 				}
 
 				fbRespBody, fbReadErr := io.ReadAll(fbResp.Body)
 				fbResp.Body.Close()
-
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, int64(len(fbRespBody)))
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, int64(len(fbBody)))
 
 				if ctx.Obs != nil {
-					ctx.Obs.RecordUpstream(fallbackEndpointHost, fbElapsed, int64(len(fbBody)), int64(len(fbRespBody)))
+					ctx.Obs.RecordUpstream(fbEndpointHost, fbElapsed, int64(len(fbBody)), int64(len(fbRespBody)))
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-						Host: fallbackEndpointHost, URL: fallbackParams.endpoint, Attempt: 1,
+						Host: fbEndpointHost, URL: fbParams.endpoint, Attempt: chainIdx + 1,
 						Status: fbResp.StatusCode, TotalNs: fbElapsed.Nanoseconds(),
 						BytesSent: int64(len(fbBody)), BytesReceived: int64(len(fbRespBody)),
 					})
 				}
 
-				if fbReadErr != nil {
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback response read failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+				// Transient errors → try next entry.
+				if fbReadErr != nil || fbResp.StatusCode == 429 || fbResp.StatusCode >= 500 {
+					continue
 				}
-
 				if fbResp.StatusCode != http.StatusOK {
-					ctx.ResponseStatus = fbResp.StatusCode
-					ctx.Failed = true
-					ctx.ErrorCode = int16(fbResp.StatusCode)
-					msg := "llm_call: fallback unexpected status"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue
 				}
 
-				// Unmarshal fallback response
-				fbLlmResp, fbUnmarshalErr := fallbackParams.adapter.Unmarshal(fbRespBody)
+				fbLlmResp, fbUnmarshalErr := fbParams.adapter.Unmarshal(fbRespBody)
 				if fbUnmarshalErr != nil {
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: fallback response parse failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					continue
 				}
 
-				// Write result from fallback
+				// Success — write result and return.
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					result := []byte(fbLlmResp.Content)
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(result))
 					copy(ctx.ByteSlots[cfg.ResultSlot], result)
 				}
-
-				// Write token usage from fallback
 				if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.InputTokensSlot] = int64(fbLlmResp.InputTokens)
 				}
 				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.OutputTokensSlot] = int64(fbLlmResp.OutputTokens)
 				}
-
 				return state.PC + 1
 			}
 
-			// All retries exhausted and no fallback configured
+			// All retries and fallback chain exhausted
 			ctx.ResponseStatus = lastStatus
 			if ctx.ResponseStatus == 0 {
 				ctx.ResponseStatus = 502

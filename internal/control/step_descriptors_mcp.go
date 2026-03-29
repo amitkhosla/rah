@@ -36,5 +36,22 @@ func MCPStepDescriptors() []StepDescriptor {
 				sf("input", "Config (JSON)", `Keys: server (MCP server alias), timeout_ms`, `{"server":"tools_server"}`),
 			},
 		},
+		{
+			Type:        "call_mcp_tool",
+			Title:       "Call MCP Tool",
+			Category:    "ai",
+			Capability:  "mcp",
+			Description: "Invoke a tool on a registered MCP server via JSON-RPC 2.0 (HTTP transport). Tool name is baked at compile time. Input is a JSON object of tool arguments; result is the tool's concatenated text response.",
+			Defaults: map[string]string{
+				"key_identifier": "tool_args",
+				"as":             "tool_result",
+				"input":          `{"server":"mcp_server","tool":"search_repositories","timeout_ms":"10000"}`,
+			},
+			Fields: []StepField{
+				sf("key_identifier", "Arguments slot", "Slot containing JSON arguments object for the tool (leave empty for {})", "tool_args"),
+				sf("as", "Result slot", "Slot to write the tool's text response", "tool_result"),
+				sf("input", "Config (JSON)", `{"server":"mcp_server","tool":"search_repositories","timeout_ms":"10000"}`, ""),
+			},
+		},
 	}
 }

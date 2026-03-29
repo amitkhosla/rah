@@ -285,11 +285,11 @@ func CompressPrompt(cfg CompressPromptConfig) engine.Instruction {
 		maxTokens = 2000
 	}
 
-	endpoint := adapter.Endpoint(cfg.ModelConfig.BaseURL, cfg.ModelConfig.Slug)
+	endpoint := adapter.Endpoint(cfg.ModelConfig.BaseURL, cfg.ModelConfig.Alias)
 	authName, authValue := adapter.AuthHeader(cfg.APIKey)
 
 	return engine.Instruction{
-		Name: "compress_prompt[" + cfg.ModelConfig.Slug + "]",
+		Name: "compress_prompt[" + cfg.ModelConfig.Alias + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			if cfg.PromptSlot < 0 || cfg.PromptSlot >= len(ctx.ByteSlots) {
 				return state.PC + 1
@@ -315,7 +315,7 @@ func CompressPrompt(cfg CompressPromptConfig) engine.Instruction {
 			// 3. Build canonical request.
 			req := LLMRequest{
 				Messages:    []CanonicalMessage{{Role: RoleUser, Content: metaPrompt}},
-				Model:       cfg.ModelConfig.Slug,
+				Model:       cfg.ModelConfig.Alias,
 				MaxTokens:   maxTokens,
 				Temperature: 0.3, // low temperature for faithful summarisation
 			}

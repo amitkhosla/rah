@@ -46,6 +46,8 @@ const (
 	DomainInstances    DataDomain = "instances"    // live gateway instance registry
 	DomainCredentials  DataDomain = "credentials"  // named credential mappings (CredentialRegistry)
 	DomainAsyncJobs    DataDomain = "async_jobs"   // async job state (status + results)
+	DomainAIConfig     DataDomain = "ai_config"    // runtime LLM model catalog + MCP server registry
+	DomainMCPTools     DataDomain = "mcp_tools"   // virtual MCP server definitions + API tool catalog
 )
 
 var requiredDomains = []DataDomain{

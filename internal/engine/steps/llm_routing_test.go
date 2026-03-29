@@ -302,7 +302,7 @@ func TestLLMCall_DynamicModel_FromSlot(t *testing.T) {
 
 	// Catalog: two models pointing to the same mock server
 	dynamicModel := config.LLMModelConfig{
-		Slug:      "dynamic-model",
+		Alias:      "dynamic-model",
 		Provider:  "test",
 		Adapter:   config.AdapterAnthropic,
 		BaseURL:   srv.URL,
@@ -312,7 +312,7 @@ func TestLLMCall_DynamicModel_FromSlot(t *testing.T) {
 		},
 	}
 	defaultModel := config.LLMModelConfig{
-		Slug:      "default-model",
+		Alias:      "default-model",
 		Provider:  "test",
 		Adapter:   config.AdapterAnthropic,
 		BaseURL:   srv.URL,
@@ -357,7 +357,7 @@ func TestLLMCall_DynamicModel_NotFoundInCatalog(t *testing.T) {
 	ctx.ByteSlots[2] = []byte("nonexistent-model") // slug not in catalog
 
 	baseModel := config.LLMModelConfig{
-		Slug:    "base-model",
+		Alias:    "base-model",
 		Adapter: config.AdapterAnthropic,
 	}
 	catalog := map[string]config.LLMModelConfig{
@@ -406,7 +406,7 @@ func TestLLMCall_DynamicModel_SlotEmpty_UsesBakedModel(t *testing.T) {
 	// slot 2 is nil/empty → use baked model
 
 	bakedModel := config.LLMModelConfig{
-		Slug:     "baked-model",
+		Alias:     "baked-model",
 		Adapter:  config.AdapterAnthropic,
 		BaseURL:  srv.URL,
 		MaxTokens: 100,
@@ -454,7 +454,7 @@ func TestLLMCall_DynamicModel_NilCatalog_UsesBakedModel(t *testing.T) {
 	ctx.ByteSlots[2] = []byte("some-model") // slot set but catalog nil → no override
 
 	bakedModel := config.LLMModelConfig{
-		Slug:    "baked-model",
+		Alias:    "baked-model",
 		Adapter: config.AdapterAnthropic,
 		BaseURL: srv.URL,
 	}

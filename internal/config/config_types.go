@@ -40,10 +40,10 @@ type ModelCapabilities struct {
 }
 
 // LLMModelConfig describes one model in the catalog.
-// Slug is the stable identifier used in flow step.Input["model"].
+// Alias is the stable identifier used in flow step.Input["model"] and fallback_chain.
 // APIKeyRef is either a literal API key or a secret reference (e.g. "gsm://…").
 type LLMModelConfig struct {
-	Slug         string             `json:"slug"                  yaml:"slug"`
+	Alias        string             `json:"alias"                 yaml:"alias"`
 	Provider     string             `json:"provider"              yaml:"provider"`
 	Adapter      LLMProviderAdapter `json:"adapter"               yaml:"adapter"`
 	BaseURL      string             `json:"base_url,omitempty"    yaml:"base_url,omitempty"`
@@ -53,7 +53,7 @@ type LLMModelConfig struct {
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
-// Default is the slug used when a flow step does not specify a model.
+// Default is the alias used when a flow step does not specify a model.
 type LLMConfig struct {
 	Models     []LLMModelConfig  `json:"models,omitempty"      yaml:"models,omitempty"`
 	Default    string            `json:"default,omitempty"     yaml:"default,omitempty"`

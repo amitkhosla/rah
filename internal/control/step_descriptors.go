@@ -162,7 +162,7 @@ func AllStepDescriptors() []StepDescriptor {
 			Fields: []StepField{
 				sf("key_identifier", "Prompt slot", "Slot containing the user prompt text", "var.prompt"),
 				sf("as", "Store as", "Slot to write the LLM text response into", "llm_response"),
-				sf("input", "Config (JSON)", `Keys: model (catalog slug), temperature, max_tokens, timeout_ms, system_slot (slot name for system prompt), api_key (overrides catalog)`, `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000"}`),
+				sf("input", "Config (JSON)", `Keys: model (catalog alias), temperature, max_tokens, timeout_ms, system_slot, api_key, fallback_model (single alias), fallback_chain (comma-sep aliases), model_config_slot (runtime JSON model config)`, `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000","fallback_chain":"gpt-4o,gemini-flash"}`),
 			},
 		},
 
@@ -491,6 +491,8 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, SSEStepDescriptors()...)
 	base = append(base, RerankStepDescriptors()...)
 	base = append(base, SemanticCacheStepDescriptors()...)
+	base = append(base, MCPStepDescriptors()...)
+	base = append(base, ServeMCPStepDescriptors()...)
 	return base
 }
 

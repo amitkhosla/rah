@@ -109,3 +109,68 @@ func (c *Compiler) findMCPServer(alias string) (config.MCPServerConfig, error) {
 	}
 	return config.MCPServerConfig{}, fmt.Errorf("MCP server %q not found in llm.mcp_servers", alias)
 }
+
+// compileMCPToolCall resolves and appends the call_mcp_tool instruction.
+//
+// Step fields:
+//   - step.Input["server"]     → MCP server alias (required)
+//   - step.Input["tool"]       → tool name to call (required, baked at compile time)
+//   - step.Input["timeout_ms"] → int milliseconds (default 10000)
+//   - step.KeyIdentifier       → slot name holding the JSON arguments object (optional)
+//   - step.As                  → result slot name (required)
+func (c *Compiler) compileMCPToolCall(step StepConfig) error {
+	// Resolve server alias
+	alias := step.Input["server"]
+	if alias == "" {
+		return fmt.Errorf("call_mcp_tool: input.server is required")
+	}
+
+	serverCfg, err := c.findMCPServer(alias)
+	if err != nil {
+		return fmt.Errorf("call_mcp_tool: %w", err)
+	}
+
+	// Resolve tool name (baked at compile time)
+	toolName := step.Input["tool"]
+	if toolName == "" {
+		return fmt.Errorf("call_mcp_tool: input.tool is required")
+	}
+
+	// Resolve input slot (optional)
+	inputSlot := -1
+	if inputSlotName := step.KeyIdentifier; inputSlotName != "" {
+		s, slotErr := c.getSlot(inputSlotName)
+		if slotErr != nil {
+			return fmt.Errorf("call_mcp_tool: input slot: %w", slotErr)
+		}
+		inputSlot = s
+	}
+
+	// Resolve result slot
+	resultSlot, err := c.getSlot(step.As)
+	if err != nil {
+		return fmt.Errorf("call_mcp_tool: result slot: %w", err)
+	}
+
+	// Resolve API key from server config
+	apiKey := serverCfg.APIKeyRef
+
+	// Resolve timeout
+	timeoutMs := 10_000
+	if t := step.Input["timeout_ms"]; t != "" {
+		if n, convErr := strconv.Atoi(t); convErr == nil && n > 0 {
+			timeoutMs = n
+		}
+	}
+
+	cfg := steps.MCPCallConfig{
+		Server:     serverCfg,
+		APIKey:     apiKey,
+		ToolName:   toolName,
+		InputSlot:  inputSlot,
+		ResultSlot: resultSlot,
+		TimeoutMs:  timeoutMs,
+	}
+	c.GlobalTable = append(c.GlobalTable, steps.MCPToolCall(cfg))
+	return nil
+}

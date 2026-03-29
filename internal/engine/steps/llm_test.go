@@ -23,7 +23,7 @@ func runInstruction(instr engine.Instruction, ctx *rctx.Context) int16 {
 
 func modelConfig(adapter config.LLMProviderAdapter, baseURL string) config.LLMModelConfig {
 	return config.LLMModelConfig{
-		Slug:      "test-model",
+		Alias:      "test-model",
 		Provider:  "test",
 		Adapter:   adapter,
 		BaseURL:   baseURL,
@@ -215,7 +215,7 @@ func TestLLMCall_TokenLimitExceeded_Returns413(t *testing.T) {
 
 	cfg := LLMCallConfig{
 		ModelConfig: config.LLMModelConfig{
-			Slug:    "small-model",
+			Alias:    "small-model",
 			Adapter: config.AdapterAnthropic,
 			Capabilities: config.ModelCapabilities{
 				MaxContextTokens: 1100, // prompt ~1000 + maxTokens 200 > 1100
@@ -312,7 +312,7 @@ func TestLLMCall_MissingAPIKey_StillCallsProvider(t *testing.T) {
 func TestLLMCall_UnknownAdapter(t *testing.T) {
 	cfg := LLMCallConfig{
 		ModelConfig: config.LLMModelConfig{
-			Slug:    "bad",
+			Alias:    "bad",
 			Adapter: "nonexistent",
 		},
 		PromptSlot: 0,
