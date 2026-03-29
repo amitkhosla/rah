@@ -98,7 +98,7 @@ func (c *Compiler) compileCompressPrompt(step StepConfig) error {
 	var resolvedModel config.LLMModelConfig
 	foundModel := false
 	for _, m := range c.LLMCfg.Models {
-		if m.Slug == modelSlug {
+		if m.Alias == modelSlug {
 			resolvedModel = m
 			foundModel = true
 			break

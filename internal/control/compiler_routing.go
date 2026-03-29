@@ -53,7 +53,7 @@ func (c *Compiler) compileRouteLLM(step StepConfig) error {
 	// Build ModelCatalog from LLM config for validation reference
 	catalog := make(map[string]config.LLMModelConfig, len(c.LLMCfg.Models))
 	for _, m := range c.LLMCfg.Models {
-		catalog[m.Slug] = m
+		catalog[m.Alias] = m
 	}
 
 	cfg := steps.RouteLLMConfig{

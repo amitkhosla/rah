@@ -75,7 +75,7 @@ func (c *Compiler) compileCheckContextFit(step StepConfig) error {
 
 	if modelSlug := step.Input["model"]; modelSlug != "" {
 		for _, m := range c.LLMCfg.Models {
-			if m.Slug == modelSlug {
+			if m.Alias == modelSlug {
 				maxContextTokens = m.Capabilities.MaxContextTokens
 				if m.MaxTokens > 0 {
 					maxOutputTokens = m.MaxTokens

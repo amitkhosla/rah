@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +15,7 @@ import (
 // accessors for each component. All components receive their config slice
 // through the Manager rather than constructing it independently.
 type Manager struct {
+	mu      sync.RWMutex
 	gateway GatewayConfig
 }
 
@@ -101,3 +103,74 @@ func (m *Manager) Cache() CacheConfig { return m.gateway.Cache }
 
 // Async returns the async job execution subsystem configuration.
 func (m *Manager) Async() AsyncConfig { return m.gateway.Async }
+
+// LLM returns a snapshot of the LLM catalog (models + MCP servers).
+func (m *Manager) LLM() LLMConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	// Return a shallow copy so the caller cannot mutate in-place.
+	cfg := m.gateway.LLM
+	models := make([]LLMModelConfig, len(cfg.Models))
+	copy(models, cfg.Models)
+	cfg.Models = models
+	servers := make([]MCPServerConfig, len(cfg.MCPServers))
+	copy(servers, cfg.MCPServers)
+	cfg.MCPServers = servers
+	return cfg
+}
+
+// UpsertLLMModel adds or updates an LLM model in the live catalog.
+// The model is matched by Alias; if no existing entry has the same Alias
+// the model is appended.
+func (m *Manager) UpsertLLMModel(model LLMModelConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.gateway.LLM.Models {
+		if existing.Alias == model.Alias {
+			m.gateway.LLM.Models[i] = model
+			return
+		}
+	}
+	m.gateway.LLM.Models = append(m.gateway.LLM.Models, model)
+}
+
+// DeleteLLMModel removes a model by alias. Returns false if not found.
+func (m *Manager) DeleteLLMModel(slug string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.gateway.LLM.Models {
+		if existing.Alias == slug {
+			m.gateway.LLM.Models = append(m.gateway.LLM.Models[:i], m.gateway.LLM.Models[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// UpsertMCPServer adds or updates an MCP server config.
+// The server is matched by Alias; if no existing entry has the same Alias
+// the server is appended.
+func (m *Manager) UpsertMCPServer(srv MCPServerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.gateway.LLM.MCPServers {
+		if existing.Alias == srv.Alias {
+			m.gateway.LLM.MCPServers[i] = srv
+			return
+		}
+	}
+	m.gateway.LLM.MCPServers = append(m.gateway.LLM.MCPServers, srv)
+}
+
+// DeleteMCPServer removes an MCP server by alias. Returns false if not found.
+func (m *Manager) DeleteMCPServer(alias string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.gateway.LLM.MCPServers {
+		if existing.Alias == alias {
+			m.gateway.LLM.MCPServers = append(m.gateway.LLM.MCPServers[:i], m.gateway.LLM.MCPServers[i+1:]...)
+			return true
+		}
+	}
+	return false
+}

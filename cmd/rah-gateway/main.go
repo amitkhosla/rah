@@ -12,6 +12,7 @@ import (
 	"rah/internal/control"
 	"rah/internal/datastore"
 	"rah/internal/engine"
+	"rah/internal/mcpreg"
 	"rah/internal/observability"
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
@@ -419,6 +420,18 @@ func main() {
 	if credReg != nil {
 		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
 	}
+	mcpReg := mcpreg.NewRegistry()
+	compiler.MCPRegistry = mcpReg
+	compiler.GatewayBase = fmt.Sprintf("http://localhost:%d", *port)
+	control.RegisterAIRoutes(mux, cfgMgr, func() {
+		go func() {
+			if err := ms.Bootstrap(bootstrapCtx, dataStoreMgr); err != nil {
+				log.Printf("[AI] rebake failed: %v", err)
+			}
+		}()
+	}, dataStoreMgr, mcpReg)
+	log.Printf("MCPReg initialized; virtual MCP server routes available at /ai/mcp/virtual")
+
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
 }
