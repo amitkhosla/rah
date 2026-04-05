@@ -120,8 +120,9 @@ func (cs *CounterStore) FixedWindow(idx uint32, limit uint32) bool {
 // new time bucket. Collisions between (tenant, config, bucket) triples are
 // benign: worst case is a marginally tighter limit for one request.
 //
-// Returns true if the request is within the limit, false if it exceeds it.
-func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32) bool {
+// Returns (allowed, remaining) where remaining is requests left in this window.
+// remaining is 0 when the request is denied.
+func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32) (bool, uint32) {
 	for {
 		old := atomic.LoadUint64(&cs.Arena[idx])
 		storedEpoch := uint32(old >> 32)
@@ -130,7 +131,11 @@ func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32)
 			// New time window — reset slot to [epoch | 1].
 			newSlot := (uint64(epoch) << 32) | 1
 			if atomic.CompareAndSwapUint64(&cs.Arena[idx], old, newSlot) {
-				return true // first request in this window
+				remaining := uint32(0)
+				if limit > 1 {
+					remaining = limit - 1
+				}
+				return true, remaining // first request in this window
 			}
 			continue // another goroutine won the CAS — retry
 		}
@@ -138,18 +143,24 @@ func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32)
 		// Same window — check current count before incrementing.
 		count := uint32(old & 0xFFFFFFFF)
 		if count >= limit {
-			return false // limit already reached
+			return false, 0 // limit already reached
 		}
 
 		if atomic.CompareAndSwapUint64(&cs.Arena[idx], old, old+1) {
-			return true
+			newCount := count + 1
+			remaining := uint32(0)
+			if limit > newCount {
+				remaining = limit - newCount
+			}
+			return true, remaining
 		}
 		// CAS failed (concurrent increment) — retry
 	}
 }
 
 // 2. TokenBucket: Uses the slot as [LastUpdate(32bit) | Tokens(32bit)].
-func (cs *CounterStore) TokenBucket(idx uint32, rate uint32, burst uint32, now uint32) bool {
+// Returns (allowed, remaining) where remaining is tokens left after this request.
+func (cs *CounterStore) TokenBucket(idx uint32, rate uint32, burst uint32, now uint32) (bool, uint32) {
 	for {
 		oldState := atomic.LoadUint64(&cs.Arena[idx])
 		lastUpdate := uint32(oldState >> 32)
@@ -160,15 +171,16 @@ func (cs *CounterStore) TokenBucket(idx uint32, rate uint32, burst uint32, now u
 		newTokens := min(oldTokens+(elapsed*rate), burst)
 
 		if newTokens < 1 {
-			return false // Bucket empty
+			return false, 0 // Bucket empty
 		}
 
-		// Pack new state: [CurrentTime | Tokens-1]
-		newState := (uint64(now) << 32) | uint64(newTokens-1)
+		remaining := newTokens - 1
+		// Pack new state: [CurrentTime | remaining]
+		newState := (uint64(now) << 32) | uint64(remaining)
 
 		// CAS ensures thread-safety without locks
 		if atomic.CompareAndSwapUint64(&cs.Arena[idx], oldState, newState) {
-			return true
+			return true, remaining
 		}
 		// If CAS fails, another thread updated the bucket; loop and retry (rare)
 	}
@@ -232,7 +244,7 @@ type TokenBucketStep struct {
 func (s *TokenBucketStep) Execute(ctx *rctx.Context) int16 {
 	idx := s.calculateIndex(ctx, 0) // Token bucket doesn't need bucket IDs
 
-	if !s.Store.TokenBucket(idx, s.Rate, s.Burst, uint32(time.Now().Unix())) {
+	if ok, _ := s.Store.TokenBucket(idx, s.Rate, s.Burst, uint32(time.Now().Unix())); !ok {
 		ctx.ResponseStatus = 429
 		return -1
 	}

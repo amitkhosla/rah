@@ -19,6 +19,69 @@ import (
 	"time"
 )
 
+// upstreamCooldownEntry records when a host is blocked until.
+type upstreamCooldownEntry struct {
+	until time.Time
+}
+
+var upstreamCooldowns sync.Map // key: string (host) → upstreamCooldownEntry
+
+func markCooldown(host string, until time.Time) {
+	upstreamCooldowns.Store(host, upstreamCooldownEntry{until: until})
+}
+
+func inCooldown(host string) (bool, time.Duration) {
+	v, ok := upstreamCooldowns.Load(host)
+	if !ok {
+		return false, 0
+	}
+	entry := v.(upstreamCooldownEntry)
+	remaining := time.Until(entry.until)
+	if remaining <= 0 {
+		upstreamCooldowns.Delete(host)
+		return false, 0
+	}
+	return true, remaining
+}
+
+// parseRetryAfter parses the value of a Retry-After header.
+// Supports integer seconds ("120") and HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT").
+func parseRetryAfter(h string) (time.Duration, bool) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(h); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	for _, layout := range []string{time.RFC1123, time.RFC850, time.ANSIC} {
+		if t, err := time.Parse(layout, h); err == nil {
+			d := time.Until(t)
+			if d <= 0 {
+				return 0, false
+			}
+			return d, true
+		}
+	}
+	return 0, false
+}
+
+func flowBool(flowInput map[string]string, key string, fallback bool) bool {
+	if flowInput == nil {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(flowInput[key])) {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	}
+	return fallback
+}
+
 // All duration values are in milliseconds (ms) when provided via flow input.
 // DialTimeout is the maximum time allowed to establish a TCP connection to upstream.
 type httpClientConfig struct {
@@ -37,6 +100,9 @@ type httpClientConfig struct {
 	RetryMaxBackoff       time.Duration
 	RetryJitter           time.Duration
 	RetryOnStatuses       map[int]struct{}
+	HonorRetryAfter       bool
+	RetryAfterMaxWait     time.Duration
+	UpstreamCooldown      bool
 }
 
 type cachedClient struct {
@@ -74,6 +140,9 @@ func loadHTTPClientConfig() httpClientConfig {
 		RetryMaxBackoff:       250 * time.Millisecond,
 		RetryJitter:           10 * time.Millisecond,
 		RetryOnStatuses:       map[int]struct{}{429: {}, 502: {}, 503: {}, 504: {}},
+		HonorRetryAfter:       true,
+		RetryAfterMaxWait:     30 * time.Second,
+		UpstreamCooldown:      true,
 	}
 }
 
@@ -173,6 +242,9 @@ func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string
 	cfg.RetryMaxBackoff = flowDurationMs(flowInput, "http.retry_max_backoff_ms", cfg.RetryMaxBackoff)
 	cfg.RetryJitter = flowDurationMs(flowInput, "http.retry_jitter_ms", cfg.RetryJitter)
 	cfg.RetryOnStatuses = parseStatusSet(flowInput["http.retry_on_statuses"], cfg.RetryOnStatuses)
+	cfg.HonorRetryAfter = flowBool(flowInput, "http.honor_retry_after", cfg.HonorRetryAfter)
+	cfg.RetryAfterMaxWait = flowDurationMs(flowInput, "http.retry_after_max_wait_ms", cfg.RetryAfterMaxWait)
+	cfg.UpstreamCooldown = flowBool(flowInput, "http.upstream_cooldown", cfg.UpstreamCooldown)
 	return cfg
 }
 
@@ -202,6 +274,9 @@ func configFingerprint(cfg httpClientConfig) string {
 		strconv.FormatInt(int64(cfg.RetryMaxBackoff/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.RetryJitter/time.Millisecond), 10),
 		strings.Join(parts, ","),
+		strconv.FormatBool(cfg.HonorRetryAfter),
+		strconv.FormatInt(int64(cfg.RetryAfterMaxWait/time.Millisecond), 10),
+		strconv.FormatBool(cfg.UpstreamCooldown),
 	}, "|")
 }
 
@@ -325,6 +400,18 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 			}
 
 			for attempt := 1; attempt <= attempts; attempt++ {
+				// Check per-upstream cooldown before attempting.
+				if bundle.Cfg.UpstreamCooldown {
+					if cooling, _ := inCooldown(upstreamHost); cooling {
+						ctx.ResponseStatus = 503
+						ctx.Failed = true
+						ctx.ErrorCode = 503
+						msg := "upstream in cooldown"
+						ctx.ErrorMsg = ctx.Alloc(len(msg))
+						copy(ctx.ErrorMsg, msg)
+						return engine.StopPlan
+					}
+				}
 				upstreamStart := time.Now()
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
@@ -452,7 +539,26 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 
 				if attempt < attempts && (retryCondition == "" || strings.Contains(retryCondition, "status")) && isRetryableStatus(resp.StatusCode, bundle.Cfg) {
-					time.Sleep(backoffDelay(attempt, bundle.Cfg, upstreamHost))
+					sleepFor := backoffDelay(attempt, bundle.Cfg, upstreamHost)
+					if bundle.Cfg.HonorRetryAfter {
+						if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+							if ra > bundle.Cfg.RetryAfterMaxWait {
+								// Upstream wants us to wait longer than we allow — mark cooldown and stop.
+								if bundle.Cfg.UpstreamCooldown {
+									markCooldown(upstreamHost, time.Now().Add(ra))
+								}
+								ctx.ResponseStatus = resp.StatusCode
+								ctx.Failed = true
+								ctx.ErrorCode = int16(resp.StatusCode)
+								msg := "upstream requested retry-after exceeds max wait"
+								ctx.ErrorMsg = ctx.Alloc(len(msg))
+								copy(ctx.ErrorMsg, msg)
+								return engine.StopPlan
+							}
+							sleepFor = ra
+						}
+					}
+					time.Sleep(sleepFor)
 					continue
 				}
 
