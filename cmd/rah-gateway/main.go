@@ -12,6 +12,7 @@ import (
 	"rah/internal/control"
 	"rah/internal/datastore"
 	"rah/internal/engine"
+	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/observability"
 	"rah/internal/rctx"
@@ -135,6 +136,23 @@ func main() {
 	accessLog := observability.NewAccessLogger(8192)
 	registry := control.NewNameRegistry()
 
+	// 2b. Ingestion pipeline — started before the compiler so that
+	// IngestPipeline can be wired into baked instruction closures.
+	var ingestPipeline *ingest.Pipeline
+	{
+		pipeline, err := ingest.NewPipelineFromConfig(cfgMgr.Gateway().Ingest)
+		if err != nil {
+			log.Fatalf("[ingest] configuration error: %v", err)
+		}
+		if pipeline != nil {
+			log.Printf("[ingest] pipeline started")
+			defer pipeline.Stop()
+			ingestPipeline = pipeline
+		} else {
+			log.Printf("[ingest] pipeline disabled (ingest.enabled=false)")
+		}
+	}
+
 	// 3. Setup compiler and routes
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
@@ -242,6 +260,10 @@ func main() {
 	// pre-resolve KeyIDs at bake time (avoids radix walk on every request).
 	compiler.RegMgr = regMgr
 
+	// Wire ingestion pipeline into compiler so emit_event steps capture it
+	// in their instruction closures at bake time.
+	compiler.IngestPipeline = ingestPipeline
+
 	// Load default rate limit presets from config into the registry.
 	for _, preset := range cfg.DefaultRateLimits {
 		if preset.Name == "" {
@@ -300,6 +322,13 @@ func main() {
 
 			// D. Finalize: flush buffered response — client receives data here.
 			ctx.Finalize()
+
+			// D2. After-response hooks: run deferred ingest events now that
+			// the response is committed. These are non-blocking channel sends
+			// so they complete in nanoseconds; no latency impact on the caller.
+			for _, fn := range ctx.AfterResponse {
+				fn()
+			}
 
 			// E. Post-response: snapshot for async access log and observability.
 			// Client has already received the response — none of this adds latency.

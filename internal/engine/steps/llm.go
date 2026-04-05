@@ -45,6 +45,11 @@ type LLMCallConfig struct {
 	// after a successful call. Set to -1 (default) to skip.
 	OutputTokensSlot int
 
+	// StopReasonSlot: if >= 0, write response.StopReason to ctx.ByteSlots[StopReasonSlot]
+	// after a successful call. Used by format_response to map stop reason to caller's format.
+	// Set to -1 (default) to skip.
+	StopReasonSlot int
+
 	// FallbackChain is an ordered list of fallback models tried in sequence when
 	// the primary model exhausts all retries. Each entry is resolved at bake time.
 	// An empty chain means no fallback.
@@ -449,6 +454,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.OutputTokensSlot] = int64(llmResp.OutputTokens)
 				}
+				// 10. Write stop reason to ByteSlot (used by format_response).
+				if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
+					sr := ctx.Alloc(len(llmResp.StopReason))
+					copy(sr, llmResp.StopReason)
+					ctx.ByteSlots[cfg.StopReasonSlot] = sr
+				}
 
 				return state.PC + 1
 			}
@@ -562,6 +573,11 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.OutputTokensSlot] = int64(fbLlmResp.OutputTokens)
+				}
+				if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
+					sr := ctx.Alloc(len(fbLlmResp.StopReason))
+					copy(sr, fbLlmResp.StopReason)
+					ctx.ByteSlots[cfg.StopReasonSlot] = sr
 				}
 				return state.PC + 1
 			}

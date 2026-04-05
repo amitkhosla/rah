@@ -297,10 +297,15 @@ func TestFormatResponse_Anthropic(t *testing.T) {
 	ctx.ByteSlots[0] = []byte("Here is your answer.")
 
 	cfg := FormatResponseConfig{
-		ResponseSlot: 0,
-		OutputSlot:   1,
-		Format:       "anthropic",
-		Model:        "claude-3-haiku",
+		ContentSlot:      0,
+		ResultSlot:       1,
+		Format:           "anthropic",
+		Model:            "claude-3-haiku",
+		StopReasonSlot:   -1,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		FormatSlot:       -1,
+		ModelSlot:        -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)
@@ -347,10 +352,15 @@ func TestFormatResponse_OpenAI(t *testing.T) {
 	ctx.ByteSlots[0] = []byte("The answer is 42.")
 
 	cfg := FormatResponseConfig{
-		ResponseSlot: 0,
-		OutputSlot:   1,
-		Format:       "openai",
-		Model:        "gpt-4",
+		ContentSlot:      0,
+		ResultSlot:       1,
+		Format:           "openai",
+		Model:            "gpt-4",
+		StopReasonSlot:   -1,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		FormatSlot:       -1,
+		ModelSlot:        -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)
@@ -399,10 +409,15 @@ func TestFormatResponse_Gemini(t *testing.T) {
 	ctx.ByteSlots[0] = []byte("Gemini says hello.")
 
 	cfg := FormatResponseConfig{
-		ResponseSlot: 0,
-		OutputSlot:   1,
-		Format:       "gemini",
-		Model:        "gemini-pro",
+		ContentSlot:      0,
+		ResultSlot:       1,
+		Format:           "gemini",
+		Model:            "gemini-pro",
+		StopReasonSlot:   -1,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		FormatSlot:       -1,
+		ModelSlot:        -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)

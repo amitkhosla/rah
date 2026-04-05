@@ -5,6 +5,7 @@ import (
 	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
+	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/rctx"
 	registrypkg "rah/internal/registry"
@@ -34,8 +35,9 @@ type Compiler struct {
 	DSM          *DataStoreManager                   // optional; enables load_history/save_history steps
 	LLMCfg       config.LLMConfig                    // optional; enables llm_call steps
 	VectorStores map[string]vectorstore.VectorStore  // optional; enables vector_search/vector_upsert steps
-	MCPRegistry  *mcpreg.Registry                    // optional; virtual MCP server and API tool catalog
-	GatewayBase  string                              // base URL for api_tool loopback calls (e.g. "http://localhost:8080")
+	MCPRegistry    *mcpreg.Registry                    // optional; virtual MCP server and API tool catalog
+	GatewayBase    string                              // base URL for api_tool loopback calls (e.g. "http://localhost:8080")
+	IngestPipeline *ingest.Pipeline                    // optional; enables emit_event steps
 	GlobalTable []engine.Instruction
 	FragmentMap map[string]int16
 	FlowLibrary map[string][]StepConfig
@@ -258,6 +260,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "serve_mcp":
 		return c.compileServeMCP(step)
+
+	case "emit_event":
+		return c.compileEmitEvent(step)
 
 	case "parse_message_format":
 		return c.compileParseMessageFormat(step)

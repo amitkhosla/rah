@@ -1,0 +1,94 @@
+package steps
+
+import (
+	"time"
+
+	"rah/internal/engine"
+	"rah/internal/ingest"
+	"rah/internal/rctx"
+)
+
+// EmitEventConfig is baked at compile time and captured in the instruction closure.
+type EmitEventConfig struct {
+	Pipeline    *ingest.Pipeline  // nil = no-op (pipeline disabled)
+	Kind        ingest.EventKind  // event kind label
+	PayloadSlot int               // ByteSlots index for event payload; -1 = no payload
+	ModelSlot   int               // ByteSlots index for model name annotation; -1 = skip
+	SessionSlot int               // ByteSlots index for session ID string; -1 = skip
+	// Deferred=true emits after the HTTP response is committed (AfterResponse hook).
+	// Deferred=false emits immediately (non-blocking channel write).
+	Deferred bool
+}
+
+// EmitEvent returns an engine.Instruction that fires an ingest event.
+// The instruction always returns state.PC+1 — it never stops the plan.
+// The actual channel write is non-blocking; dropped events are silently discarded.
+func EmitEvent(cfg EmitEventConfig) engine.Instruction {
+	return engine.Instruction{
+		Name: "emit_event[" + string(cfg.Kind) + "]",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if cfg.Pipeline == nil {
+				return state.PC + 1
+			}
+
+			// Snapshot event fields from the current context.
+			// Snapshots are cheap value copies; no arena allocation needed.
+			e := ingest.Event{
+				TenantID:    ctx.TenantID,
+				APIID:       ctx.ApiId,
+				Kind:        cfg.Kind,
+				TimestampNs: time.Now().UnixNano(),
+			}
+
+			// Session ID from slot.
+			if cfg.SessionSlot >= 0 && cfg.SessionSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.SessionSlot]; len(raw) > 0 {
+					e.SessionID = string(raw)
+				}
+			}
+
+			// Model name from slot.
+			if cfg.ModelSlot >= 0 && cfg.ModelSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ModelSlot]; len(raw) > 0 {
+					e.Model = string(raw)
+				}
+			}
+
+			// TxID from InternalTxID.
+			if ctx.InternalTxID != ([2]uint64{}) {
+				e.TxID = rctx.FormatTxID(ctx.InternalTxID)
+			}
+
+			// Payload from slot.
+			if cfg.PayloadSlot >= 0 && cfg.PayloadSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.PayloadSlot]; len(raw) > 0 {
+					// Determine number of sinks that will consume this event.
+					numSinks := 1
+					if cfg.Pipeline != nil {
+						numSinks = cfg.Pipeline.NumSinksForKind(cfg.Kind)
+					}
+					if numSinks == 0 {
+						numSinks = 1 // safety fallback
+					}
+					// SetPayload handles inline (≤128B) vs heap storage automatically.
+					// For heap storage, ref count is pre-set to numSinks.
+					e.SetPayload(raw, numSinks)
+				}
+			}
+
+			if cfg.Deferred {
+				// Schedule emission after the HTTP response is committed.
+				// Capture e by value so the closure owns its own copy.
+				captured := e
+				pipeline := cfg.Pipeline
+				ctx.AfterResponse = append(ctx.AfterResponse, func() {
+					pipeline.Emit(captured)
+				})
+			} else {
+				cfg.Pipeline.Emit(e)
+			}
+
+			return state.PC + 1
+		},
+	}
+}

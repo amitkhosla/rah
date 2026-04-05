@@ -145,6 +145,68 @@ type GatewayConfig struct {
 	LLM          LLMConfig           `json:"llm"                yaml:"llm"`
 	Async        AsyncConfig         `json:"async"              yaml:"async"`
 	VectorStores []VectorStoreConfig `json:"vector_stores,omitempty" yaml:"vector_stores,omitempty"`
+	Ingest       IngestConfig        `json:"ingest,omitempty"   yaml:"ingest,omitempty"`
+}
+
+// ── Ingestion pipeline ───────────────────────────────────────────────────────
+
+// IngestSinkKind identifies the backend type for an ingestion sink.
+type IngestSinkKind string
+
+const (
+	IngestSinkStdout      IngestSinkKind = "stdout"
+	IngestSinkFile        IngestSinkKind = "file"
+	IngestSinkHTTP        IngestSinkKind = "http"
+	IngestSinkRedisStream IngestSinkKind = "redis_stream"
+)
+
+// IngestSinkConfig describes one named sink in the ingestion pipeline.
+// Name is the unique identifier referenced by IngestKindConfig.Sinks.
+type IngestSinkConfig struct {
+	Name      string            `json:"name"                    yaml:"name"`
+	Kind      IngestSinkKind    `json:"kind"                    yaml:"kind"`
+	// Formatting
+	Format    string            `json:"format,omitempty"        yaml:"format,omitempty"`   // "ndjson" (default), "json_array", "text"
+	Template  string            `json:"template,omitempty"      yaml:"template,omitempty"` // Go template string; required when format="text"
+	// File sink
+	FilePath  string            `json:"file_path,omitempty"     yaml:"file_path,omitempty"`
+	FileBufKB int               `json:"file_buf_kb,omitempty"   yaml:"file_buf_kb,omitempty"`
+	// HTTP sink
+	URL       string            `json:"url,omitempty"           yaml:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"       yaml:"headers,omitempty"`
+	TimeoutMs int               `json:"timeout_ms,omitempty"    yaml:"timeout_ms,omitempty"`
+	// Redis stream sink
+	DSN        string `json:"dsn,omitempty"           yaml:"dsn,omitempty"`
+	StreamName string `json:"stream_name,omitempty"   yaml:"stream_name,omitempty"`
+	MaxLen     int64  `json:"max_len,omitempty"       yaml:"max_len,omitempty"` // XTRIM MAXLEN (0=no trim)
+	// Worker pool per sink
+	MinWorkers    int `json:"min_workers,omitempty"    yaml:"min_workers,omitempty"`    // default 2
+	MaxWorkers    int `json:"max_workers,omitempty"    yaml:"max_workers,omitempty"`    // default 8
+	SinkQueueSize int `json:"sink_queue_size,omitempty" yaml:"sink_queue_size,omitempty"` // default 16384
+	// Batching
+	MaxBatchItems int `json:"max_batch_items,omitempty" yaml:"max_batch_items,omitempty"` // default 256
+	MaxBatchBytes int `json:"max_batch_bytes,omitempty" yaml:"max_batch_bytes,omitempty"` // default 1048576
+	FlushMs       int `json:"flush_ms,omitempty"        yaml:"flush_ms,omitempty"`        // default 200
+}
+
+// IngestKindConfig routes one event kind to a set of named sinks.
+// Each kind has its own ring buffer, drop policy, and drain priority.
+type IngestKindConfig struct {
+	Kind      string   `json:"kind"                   yaml:"kind"`       // EventKind value e.g. "llm_request"
+	RingSize  int      `json:"ring_size,omitempty"    yaml:"ring_size,omitempty"`  // default 65536
+	AllowDrop bool     `json:"allow_drop,omitempty"   yaml:"allow_drop,omitempty"` // if true, drop on overflow instead of blocking
+	Priority  int      `json:"priority,omitempty"     yaml:"priority,omitempty"`   // lower = drained first; default 10
+	Sinks     []string `json:"sinks"                  yaml:"sinks"`               // names from IngestSinkConfig.Name
+}
+
+// IngestConfig is the gateway-level configuration for the ingestion pipeline.
+// All behavior is driven by config — main.go makes one call to NewPipelineFromConfig.
+type IngestConfig struct {
+	Enabled                bool               `json:"enabled"                            yaml:"enabled"`
+	FanoutWorkers          int                `json:"fanout_workers,omitempty"           yaml:"fanout_workers,omitempty"`           // goroutines draining rings; default 2
+	BackpressureTimeoutSec int                `json:"backpressure_timeout_sec,omitempty" yaml:"backpressure_timeout_sec,omitempty"` // default 30
+	Kinds                  []IngestKindConfig `json:"kinds,omitempty"                    yaml:"kinds,omitempty"`
+	Sinks                  []IngestSinkConfig `json:"sinks,omitempty"                    yaml:"sinks,omitempty"`
 }
 
 type ResourceLimit struct {

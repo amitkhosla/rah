@@ -203,6 +203,17 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		llmCfg.ModelConfigSlot = s
 	}
 
+	// stop_reason_slot: optional ByteSlot to write the LLM stop reason after a successful call.
+	// Used by format_response to map the stop reason to the caller's expected wire format.
+	llmCfg.StopReasonSlot = -1
+	if v, ok := step.Input["stop_reason_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: stop_reason_slot: %w", err)
+		}
+		llmCfg.StopReasonSlot = s
+	}
+
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
 	return nil
 }

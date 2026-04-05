@@ -493,6 +493,7 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, SemanticCacheStepDescriptors()...)
 	base = append(base, MCPStepDescriptors()...)
 	base = append(base, ServeMCPStepDescriptors()...)
+	base = append(base, IngestStepDescriptors()...)
 	return base
 }
 
@@ -512,5 +513,22 @@ func BuildStepCatalog() StepCatalog {
 		Version:    "1",
 		Categories: cats,
 		Steps:      steps,
+	}
+}
+
+// IngestStepDescriptors returns descriptors for the ingestion/logging pipeline steps.
+func IngestStepDescriptors() []StepDescriptor {
+	return []StepDescriptor{
+		{
+			Type: "emit_event", Title: "Emit Ingest Event", Category: "ingest", Capability: "logging",
+			Description: "Emit a structured event to the ingestion pipeline (non-blocking). Runs after response if deferred=true.",
+			Fields: []StepField{
+				sf("input.kind", "Event kind", "One of: prompt_in, prompt_out, llm_request, llm_response, tool_call, tool_result, route_decision, cache_hit, custom", "llm_request"),
+				sf("input.payload_slot", "Payload slot", "Slot name containing the event payload (raw bytes or JSON)", "var.prompt"),
+				sf("input.model_slot", "Model slot", "Optional: slot containing the model name string", "var.chosen_model"),
+				sf("input.session_slot", "Session slot", "Optional: slot containing the session ID", "var.session_id"),
+				sf("input.deferred", "Deferred", "true = emit after HTTP response is committed; false = emit immediately", "false"),
+			},
+		},
 	}
 }
