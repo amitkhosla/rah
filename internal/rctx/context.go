@@ -148,6 +148,12 @@ type Context struct {
 	// by FlowManager via TxIDGenerator. Use rctx.FormatTxID to format.
 	InternalTxID [2]uint64
 
+	// AfterResponse holds zero-allocation callbacks invoked by the gateway
+	// after the HTTP response is committed. Used by ingest steps to emit
+	// events (e.g. the final response body) without blocking the caller.
+	// Nil slice is safe; the gateway checks len before ranging.
+	AfterResponse []func()
+
 	// ── Inline slot headers (no heap allocation) ─────────────────────────────
 	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
 	// arrays. No make() required; GC correctly scans the typed []byte elements.
@@ -333,6 +339,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ErrorCode = 0
 	ctx.ErrorMsg = nil
 	ctx.InternalTxID = [2]uint64{}
+	ctx.AfterResponse = ctx.AfterResponse[:0] // keep capacity, drop closures
 
 	// Reset inline arena — one integer write, all slot data is implicitly gone.
 	// arenaExt is already nil after ReleaseOverflow in ReturnContext.

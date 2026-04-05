@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"strconv"
 
 	"rah/internal/engine/steps"
 )
@@ -51,40 +52,76 @@ func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 // compileFormatResponse resolves slots and appends the format_response instruction.
 //
 // Slot mapping:
-//   - key_identifier     → responseSlot (input: response text string)
-//   - as                 → outputSlot (output: formatted JSON)
-//   - input["format"]    → format string (required: "anthropic", "openai", or "gemini")
-//   - input["model"]     → model name string (optional)
+//   - key_identifier            → contentSlot (input: LLM response content text)
+//   - as                        → resultSlot  (output: formatted JSON response body)
+//
+// Optional input keys:
+//
+//	format_slot        → ByteSlot: caller's detected format (from detect_message_format / parse_message_format)
+//	format             → static format string "anthropic"|"openai"|"gemini" (bake time; overridden by format_slot)
+//	stop_reason_slot   → ByteSlot: stop reason written by llm_call
+//	model              → static model slug (bake time)
+//	model_slot         → ByteSlot: runtime model slug override
+//	input_tokens_slot  → IntSlot index (integer string, e.g. "0")
+//	output_tokens_slot → IntSlot index (integer string, e.g. "1")
 func (c *Compiler) compileFormatResponse(step StepConfig) error {
-	responseSlot, err := c.getSlot(step.KeyIdentifier)
+	contentSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
-		return fmt.Errorf("format_response: response slot: %w", err)
+		return fmt.Errorf("format_response: content slot: %w", err)
 	}
 
-	outputSlot, err := c.getSlot(step.As)
+	resultSlot, err := c.getSlot(step.As)
 	if err != nil {
-		return fmt.Errorf("format_response: output slot: %w", err)
+		return fmt.Errorf("format_response: result slot: %w", err)
 	}
-
-	format := step.Input["format"]
-	if format == "" {
-		return fmt.Errorf("format_response: input[\"format\"] is required (\"anthropic\", \"openai\", or \"gemini\")")
-	}
-	switch format {
-	case "anthropic", "openai", "gemini":
-		// valid
-	default:
-		return fmt.Errorf("format_response: unrecognized format %q (must be \"anthropic\", \"openai\", or \"gemini\")", format)
-	}
-
-	model := step.Input["model"]
 
 	cfg := steps.FormatResponseConfig{
-		ResponseSlot: responseSlot,
-		OutputSlot:   outputSlot,
-		Format:       format,
-		Model:        model,
+		ContentSlot:      contentSlot,
+		ResultSlot:       resultSlot,
+		StopReasonSlot:   -1,
+		InputTokensSlot:  -1,
+		OutputTokensSlot: -1,
+		FormatSlot:       -1,
+		ModelSlot:        -1,
+		Format:           step.Input["format"],
+		Model:            step.Input["model"],
 	}
+
+	if v := step.Input["format_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: format_slot: %w", slotErr)
+		}
+		cfg.FormatSlot = s
+	}
+
+	if v := step.Input["stop_reason_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: stop_reason_slot: %w", slotErr)
+		}
+		cfg.StopReasonSlot = s
+	}
+
+	if v := step.Input["model_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: model_slot: %w", slotErr)
+		}
+		cfg.ModelSlot = s
+	}
+
+	if v := step.Input["input_tokens_slot"]; v != "" {
+		if idx, convErr := strconv.Atoi(v); convErr == nil && idx >= 0 {
+			cfg.InputTokensSlot = idx
+		}
+	}
+	if v := step.Input["output_tokens_slot"]; v != "" {
+		if idx, convErr := strconv.Atoi(v); convErr == nil && idx >= 0 {
+			cfg.OutputTokensSlot = idx
+		}
+	}
+
 	c.GlobalTable = append(c.GlobalTable, steps.FormatResponse(cfg))
 	return nil
 }

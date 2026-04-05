@@ -27,16 +27,16 @@ func FormatStepDescriptors() []StepDescriptor {
 			Title:       "Format Response",
 			Category:    "ai",
 			Capability:  "format",
-			Description: "Encode a text response into a provider-specific JSON response structure (Anthropic/OpenAI/Gemini).",
+			Description: "Encode a canonical LLM text response into the caller's expected provider-specific JSON envelope (Anthropic/OpenAI/Gemini). Supports runtime format detection via format_slot.",
 			Defaults: map[string]string{
-				"key_identifier": "var.response_text",
-				"as":             "formatted_response",
-				"input":          `{"format":"openai","model":"gpt-4"}`,
+				"key_identifier": "var.llm_content",
+				"as":             "var.formatted_response",
+				"input":          `{"format":"anthropic","model":"claude-sonnet-4-6","stop_reason_slot":"var.stop_reason","format_slot":"var.detected_format","input_tokens_slot":"0","output_tokens_slot":"1"}`,
 			},
 			Fields: []StepField{
-				sf("key_identifier", "Response text slot", "Slot containing the plain-text response to format", "var.response_text"),
-				sf("as", "Output slot", "Slot to write the provider-specific JSON response into", "formatted_response"),
-				sf("input", "Config (JSON)", `Keys: format (required — "anthropic", "openai", or "gemini"), model (optional — model name included in response)`, `{"format":"openai","model":"gpt-4"}`),
+				sf("key_identifier", "Content slot", "Slot containing the plain-text LLM response content", "var.llm_content"),
+				sf("as", "Output slot", "Slot to write the formatted JSON response body into", "var.formatted_response"),
+				sf("input", "Config (JSON)", `Keys: format ("anthropic"|"openai"|"gemini", bake-time default), format_slot (slot name for runtime format override — from parse_message_format), model (bake-time model slug), model_slot (slot for runtime model slug), stop_reason_slot (slot written by llm_call stop_reason_slot), input_tokens_slot (IntSlot index as string), output_tokens_slot (IntSlot index as string)`, `{"format":"anthropic","model":"claude-sonnet-4-6"}`),
 			},
 		},
 	}
