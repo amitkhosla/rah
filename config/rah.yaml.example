@@ -1,0 +1,49 @@
+# RAH Gateway Configuration - Tenant Management, API Keys, and Cost Quotas
+
+tenants:
+  # Premium customer (brings their own API keys)
+  acme-corp:
+    tier: "premium"
+    api_keys:
+      openai: "sk-acme-corp-custom-key-12345"
+      anthropic: "sk-ant-acme-corp-67890"
+      google: "AIzaSy-acme-corp-xyz-abc"
+    cost_quotas:
+      daily_limit: 100.00      # $100/day
+      monthly_limit: 2000.00   # $2000/month
+
+  # Standard customer (uses shared API keys from environment)
+  startup-xyz:
+    tier: "standard"
+    # No api_keys defined — will use env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+    cost_quotas:
+      daily_limit: 10.00       # $10/day
+      monthly_limit: 200.00    # $200/month
+
+  # Enterprise customer (mixed configuration)
+  enterprise-bank:
+    tier: "enterprise"
+    api_keys:
+      # Anthropic: custom key (sensitive compliance requirement)
+      anthropic: "sk-ant-enterprise-custom-key-67890"
+      # OpenAI: will use shared env var (OPENAI_API_KEY)
+    cost_quotas:
+      daily_limit: 1000.00     # $1000/day
+      monthly_limit: 30000.00  # $30000/month
+
+  # Development/testing tenant (unlimited, for testing)
+  dev-team:
+    tier: "development"
+    # No api_keys — uses shared env vars
+    # No cost_quotas — unlimited access for testing
+
+# Global settings
+global:
+  # Pricing refresh interval (how often to fetch latest pricing from models)
+  pricing_refresh_interval: "1h"
+
+  # Log level: debug, info, warn, error
+  log_level: "info"
+
+  # Admin token for protected endpoints (quota status, API key listing)
+  admin_token: "${ADMIN_TOKEN}"  # Loaded from env var
