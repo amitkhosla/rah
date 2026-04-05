@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(go test:*)",
+      "Bash(set:*)",
+      "Bash(cd:*)",
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(sed:*)",
+      "Bash(ls -la /d/GoLand/rah/*.exe)",
+      "Bash(ls D:/GoLand/rah/internal/datastore/*.go)",
+      "Bash(ls:*)",
+      "mcp__dev-tool__list_symbols"
+    ]
+  }
+}

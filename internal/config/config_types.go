@@ -42,14 +42,18 @@ type ModelCapabilities struct {
 // LLMModelConfig describes one model in the catalog.
 // Alias is the stable identifier used in flow step.Input["model"] and fallback_chain.
 // APIKeyRef is either a literal API key or a secret reference (e.g. "gsm://…").
+// CostPerInputToken and CostPerOutputToken define model pricing (cost per 1M tokens).
+// If not specified, gateway will fetch from provider API at startup or use hardcoded defaults.
 type LLMModelConfig struct {
-	Alias        string             `json:"alias"                 yaml:"alias"`
-	Provider     string             `json:"provider"              yaml:"provider"`
-	Adapter      LLMProviderAdapter `json:"adapter"               yaml:"adapter"`
-	BaseURL      string             `json:"base_url,omitempty"    yaml:"base_url,omitempty"`
-	APIKeyRef    string             `json:"api_key_ref,omitempty" yaml:"api_key_ref,omitempty"`
-	MaxTokens    int                `json:"max_tokens,omitempty"  yaml:"max_tokens,omitempty"`
-	Capabilities ModelCapabilities  `json:"capabilities" yaml:"capabilities"`
+	Alias                string             `json:"alias"                          yaml:"alias"`
+	Provider             string             `json:"provider"                       yaml:"provider"`
+	Adapter              LLMProviderAdapter `json:"adapter"                        yaml:"adapter"`
+	BaseURL              string             `json:"base_url,omitempty"             yaml:"base_url,omitempty"`
+	APIKeyRef            string             `json:"api_key_ref,omitempty"          yaml:"api_key_ref,omitempty"`
+	MaxTokens            int                `json:"max_tokens,omitempty"           yaml:"max_tokens,omitempty"`
+	Capabilities         ModelCapabilities  `json:"capabilities"                   yaml:"capabilities"`
+	CostPerInputToken    float64            `json:"cost_per_input_token,omitempty" yaml:"cost_per_input_token,omitempty"`
+	CostPerOutputToken   float64            `json:"cost_per_output_token,omitempty" yaml:"cost_per_output_token,omitempty"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
