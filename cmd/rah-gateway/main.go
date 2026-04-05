@@ -153,6 +153,15 @@ func main() {
 		}
 	}
 
+	// 2c. Wire ingest eventing into all datastore domains.
+	// Every successful Put/Delete/MultiPut emits a KindDBPut or KindDBDelete event.
+	if ingestPipeline != nil {
+		dataStoreMgr.SetStoreWrapper(func(domain config.DataDomain, store datastore.KeyValueStore) datastore.KeyValueStore {
+			return datastore.WrapWithEventing(store, ingestPipeline, string(domain))
+		})
+		log.Printf("[ingest] datastore eventing enabled for all domains")
+	}
+
 	// 3. Setup compiler and routes
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)

@@ -1,12 +1,31 @@
 package steps
 
 import (
+	"strconv"
 	"time"
 
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"rah/internal/registry"
 )
+
+// Standard rate-limit response header names (pre-allocated, never mutated).
+var (
+	hdrRLLimitSecond     = []byte("X-RateLimit-Limit-Second")
+	hdrRLRemainingSecond = []byte("X-RateLimit-Remaining-Second")
+	hdrRLLimitMinute     = []byte("X-RateLimit-Limit-Minute")
+	hdrRLRemainingMinute = []byte("X-RateLimit-Remaining-Minute")
+	hdrRLReset           = []byte("X-RateLimit-Reset")
+	hdrRetryAfterRL      = []byte("Retry-After")
+)
+
+// fmtUint32 formats v as decimal bytes using the arena so no heap allocation
+// occurs on the header-emit path.
+func fmtUint32(ctx *rctx.Context, v uint32) []byte {
+	buf := ctx.Alloc(10)
+	b := strconv.AppendUint(buf[:0], uint64(v), 10)
+	return b
+}
 
 // CheckRateLimit is an opt-in step that enforces the rate limit configured
 // for the matched API and endpoint.
@@ -29,7 +48,9 @@ import (
 //
 // Returns 403 if the tenant is blocked; 429 if either window is exceeded.
 // No-ops (passes through) if both limits are 0 (unlimited).
-func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16) engine.Instruction {
+// When emitQuotaHeaders is true, X-RateLimit-* headers are written to the
+// response for every request (allowed or denied). Retry-After is added on 429.
+func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16, emitQuotaHeaders bool) engine.Instruction {
 	return engine.Instruction{
 		Name: "CHECK_RATE_LIMIT",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -71,8 +92,18 @@ func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16) engine
 					effectiveSec = 1
 				}
 				idxSec := rateLimitIndex(store, ctx.TenantID, apiRLId, ctx.EndpointRateLimitId, ctx.QuotaGroupID, now, 0)
-				if !store.FixedWindowEpoch(idxSec, now, effectiveSec) {
+				ok, remSec := store.FixedWindowEpoch(idxSec, now, effectiveSec)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+					ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+					// Reset = start of next second
+					ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+				}
+				if !ok {
 					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+					}
 					return -1
 				}
 			}
@@ -81,8 +112,18 @@ func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16) engine
 			if resolved.PerMin > 0 {
 				epochMin := now / 60
 				idxMin := rateLimitIndex(store, ctx.TenantID, apiRLId, ctx.EndpointRateLimitId, ctx.QuotaGroupID, epochMin, 1)
-				if !store.FixedWindowEpoch(idxMin, epochMin, resolved.PerMin) {
+				ok, remMin := store.FixedWindowEpoch(idxMin, epochMin, resolved.PerMin)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+					ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+				}
+				if !ok {
 					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						// Retry-After = seconds until end of current minute window
+						secsUntilReset := 60 - (now % 60)
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+					}
 					return -1
 				}
 			}

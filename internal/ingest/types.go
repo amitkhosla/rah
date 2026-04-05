@@ -21,6 +21,15 @@ const (
 	KindCacheMiss     EventKind = "cache_miss"
 	KindHistoryTrim   EventKind = "history_trim"
 	KindCustom        EventKind = "custom"
+
+	// KindDBPut is emitted after any successful Put/MultiPut/PutWithTTL to a
+	// datastore domain. SessionID = domain, TxID = full scoped key,
+	// Model = store name, Payload = written value bytes.
+	KindDBPut EventKind = "db_put"
+
+	// KindDBDelete is emitted after any successful Delete from a datastore
+	// domain. SessionID = domain, TxID = full scoped key, Model = store name.
+	KindDBDelete EventKind = "db_delete"
 )
 
 // inlinePayloadMax is the threshold below which payload bytes are stored
