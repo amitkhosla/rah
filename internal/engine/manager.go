@@ -57,6 +57,9 @@ type FlowManager struct {
 	// CostQuotaManager tracks cost-based quotas for tenants.
 	// Used by the opt-in enforce_cost_budget step.
 	CostQuotaManager *quota.CostQuotaManager
+	// APIKeyResolver resolves API keys with fallback chain:
+	// X-API-Key header → per-tenant-per-model → per-tenant-default → configured
+	APIKeyResolver *APIKeyResolver
 	// CacheExec dispatches buffered cache ops via pipeline. Nil = no batching.
 	CacheExec OpFlusher
 	// RegistryExec dispatches buffered registry PUT ops. Nil = no batching.
@@ -74,6 +77,7 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		TxIDGen:          rctx.NewTxIDGenerator(),
 		RateLimitStore:   NewCounterStore(1 << 20), // 1M slots = 8 MB
 		CostQuotaManager: quota.NewCostQuotaManager(),
+		APIKeyResolver:   NewAPIKeyResolver(),
 	}
 	log.Printf("instance fingerprint: %s", fm.TxIDGen.Fingerprint())
 
