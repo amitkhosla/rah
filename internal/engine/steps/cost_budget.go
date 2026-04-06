@@ -1,10 +1,32 @@
 package steps
 
 import (
+	"encoding/json"
+	"time"
+
 	"rah/internal/engine"
+	"rah/internal/ingest"
 	"rah/internal/quota"
 	"rah/internal/rctx"
 )
+
+// CostEventPayload is the structured data emitted to ingest pipeline when cost is recorded.
+// It's serialized as JSON and sent to configured sinks (HTTP, Redis, S3, etc.) for analytics.
+type CostEventPayload struct {
+	TenantKey string  `json:"tenant_key"`        // Tenant identifier
+	APIKey    string  `json:"api_key,omitempty"` // The actual API key used (if tracked)
+	Cost      float64 `json:"cost"`              // Total cost in USD
+	Model     string  `json:"model,omitempty"`   // LLM model name
+	Timestamp int64   `json:"timestamp_ns"`      // Unix nanoseconds
+}
+
+// RecordCostConfig holds configuration for the RecordCost instruction.
+// Includes both quota manager (local in-memory) and ingest pipeline (external events).
+type RecordCostConfig struct {
+	QuotaManager   *quota.CostQuotaManager
+	IngestPipeline *ingest.Pipeline // nil = no-op for cost event emission
+	CostSlot       int
+}
 
 // EnforceCostBudget checks if a tenant can afford the estimated LLM cost before proceeding.
 // This is a pre-check that prevents expensive LLM calls from proceeding if the tenant
@@ -74,27 +96,31 @@ func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int) engin
 }
 
 // RecordCost records the actual cost after an LLM call completes.
-// This must be called after the LLM response is received to update the quota manager
-// with the actual tokens used (not estimated).
+// This instruction:
+// 1. Updates the local quota manager with actual cost (fast, in-memory)
+// 2. Schedules a cost event emission via AfterResponse hook (deferred, to ingest pipeline)
+//
+// Cost events are emitted after the response is sent, allowing external analytics
+// services to consume and store cost data without blocking the gateway.
 //
 // Usage in a flow:
 //
 //	{"action": "llm_call", "output_tokens_slot": "actual_output_tokens_slot", ...}
 //	{"action": "record_cost", "cost_slot": "actual_cost_slot"}
 //
-// actualCostSlot: IntSlot index containing actual cost (fixed-point: value/1e9 = cost in dollars)
-func RecordCost(quotaManager *quota.CostQuotaManager, costSlot int) engine.Instruction {
+// cfg: RecordCostConfig containing quota manager and ingest pipeline
+func RecordCost(cfg RecordCostConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "RECORD_COST",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			// Validate slot index
-			if costSlot < 0 || costSlot >= len(ctx.IntSlots) {
+			if cfg.CostSlot < 0 || cfg.CostSlot >= len(ctx.IntSlots) {
 				// Invalid slot, but don't fail — just skip recording
 				return s.PC + 1
 			}
 
 			// Read actual cost from slot (stored as fixed-point: divide by 1e9)
-			actualCostFixed := ctx.IntSlots[costSlot]
+			actualCostFixed := ctx.IntSlots[cfg.CostSlot]
 			if actualCostFixed == 0 {
 				// No cost to record, proceed
 				return s.PC + 1
@@ -110,12 +136,57 @@ func RecordCost(quotaManager *quota.CostQuotaManager, costSlot int) engine.Instr
 				return s.PC + 1
 			}
 
-			// Record the actual cost in quota manager
-			err := quotaManager.RecordCost(tenantKey, actualCost)
+			// 1. Update local quota manager (fast, in-memory)
+			err := cfg.QuotaManager.RecordCost(tenantKey, actualCost)
 			if err != nil {
 				// Log error but don't fail the request (cost recording is best-effort)
 				ctx.ErrorMsg = []byte(err.Error())
 				// Continue anyway — don't stop the request
+			}
+
+			// 2. Schedule cost event emission (deferred, after response sent)
+			// Capture values for closure
+			if cfg.IngestPipeline != nil {
+				capturedCost := actualCost
+				capturedModel := ctx.Model
+				capturedTenantKey := tenantKey
+				capturedTenantID := ctx.TenantID
+				capturedTimestamp := time.Now().UnixNano()
+
+				ctx.AfterResponse = append(ctx.AfterResponse, func() {
+					// Build cost event payload
+					payload := CostEventPayload{
+						TenantKey: capturedTenantKey,
+						Cost:      capturedCost,
+						Model:     capturedModel,
+						Timestamp: capturedTimestamp,
+					}
+
+					// Serialize to JSON
+					payloadJSON, err := json.Marshal(payload)
+					if err != nil {
+						// Silently skip on marshal error (observability shouldn't fail)
+						return
+					}
+
+					// Create ingest event
+					evt := ingest.Event{
+						TenantID:    capturedTenantID,
+						Kind:        ingest.KindCostRecord,
+						Model:       capturedModel,
+						TimestampNs: capturedTimestamp,
+					}
+
+					// Determine number of sinks
+					numSinks := cfg.IngestPipeline.NumSinksForKind(ingest.KindCostRecord)
+					if numSinks == 0 {
+						numSinks = 1 // safety fallback
+					}
+
+					// Set payload and emit
+					evt.SetPayload(payloadJSON, numSinks)
+					cfg.IngestPipeline.Emit(evt)
+				})
 			}
 
 			return s.PC + 1
