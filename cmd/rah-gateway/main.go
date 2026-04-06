@@ -15,6 +15,8 @@ import (
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/observability"
+	"rah/internal/pricing"
+	"rah/internal/quota"
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
 	"rah/internal/router"
@@ -153,10 +155,47 @@ func main() {
 		}
 	}
 
+	// 2c. Pricing Manager — initialize before compiler
+	// Loads pricing from config, with fallback to hardcoded defaults
+	log.Printf("Initializing pricing manager...")
+	pricingMgr := pricing.NewPricingManager()
+	if err := pricingMgr.LoadFromConfig(cfgMgr.Gateway().Pricing); err != nil {
+		log.Printf("Warning: failed to load pricing from config: %v (using defaults)", err)
+	}
+	if err := pricingMgr.LoadFromLLMConfig(cfgMgr.Gateway().LLM); err != nil {
+		log.Printf("Warning: failed to load pricing from llm.models[]: %v", err)
+	}
+	pricingModels := pricingMgr.GetPricing()
+	log.Printf("Pricing initialized: %d models cached", len(pricingModels))
+
+	// 2d. Metrics Collector & Daily Learning Job
+	// Track token estimation accuracy for next day's estimates
+	log.Printf("Initializing metrics collection...")
+	metricsCollector := pricing.NewMetricsCollector()
+	learningJobTime := time.Date(2000, 1, 1, 2, 0, 0, 0, time.UTC) // 2 AM UTC
+	learningJob := pricing.NewDailyLearningJob(metricsCollector, learningJobTime)
+	defer learningJob.Stop()
+	log.Printf("Daily learning job scheduled")
+
+	// 2e. Cost Quotas
+	// TODO: Load tenant quotas from config or database.
+	// For now, quotaManager is ready but no quotas are configured (all tenants unlimited).
+	// Example of registering a quota:
+	//   fm.CostQuotaManager.RegisterQuota("acme-corp", quota.CostQuotaConfig{
+	//       DailyCostLimit: 1000.0,
+	//       MonthlyCostLimit: 20000.0,
+	//       Windows: []quota.QuotaWindow{...},
+	//   })
+	// Quotas can be registered per-tenant as needed via:
+	// - Config file (to be implemented)
+	// - Management API (to be implemented)
+	// - Direct API calls at startup
+
 	// 3. Setup compiler and routes
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
+	compiler.PricingManager = pricingMgr
 
 	// CredentialRegistry — optional; requires DomainCredentials in datastore config.
 	var credReg *secrets.CredentialRegistry
@@ -449,6 +488,16 @@ func main() {
 	if credReg != nil {
 		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
 	}
+
+	// ─── Cost Tracking API Routes ───────────────────────────────────────
+	// Requires admin token in X-Admin-Token header or Authorization: Bearer
+	adminToken := os.Getenv("ADMIN_TOKEN")
+	if adminToken == "" {
+		log.Printf("Warning: ADMIN_TOKEN environment variable not set. Cost tracking endpoints will deny all access.")
+	}
+	RegisterCostRoutes(mux, fm.CostQuotaManager, adminToken)
+	log.Printf("Cost tracking endpoints registered at /api/v1/costs*")
+
 	mcpReg := mcpreg.NewRegistry()
 	compiler.MCPRegistry = mcpReg
 	compiler.GatewayBase = fmt.Sprintf("http://localhost:%d", *port)
