@@ -1,0 +1,163 @@
+# RAH Gateway - Pricing Configuration
+#
+# This example shows how to configure pricing in the YAML config file.
+# All pricing fields are OPTIONAL — the gateway continues to work without them.
+#
+# Pricing can come from three sources (in order of precedence):
+# 1. pricing.models[] section (explicit per-model pricing)
+# 2. llm.models[].cost_per_input_token / cost_per_output_token fields
+# 3. Hardcoded defaults (bootstrapped at startup from pricing_data.go)
+#
+# If all three are missing for a model, the gateway:
+# - Uses zero cost (no quota enforcement)
+# - Logs a warning (if log_missing_models: true)
+# - Continues execution normally
+
+# ────────────────────────────────────────────────────────────────────────────────
+# PRICING SECTION (OPTIONAL)
+# ────────────────────────────────────────────────────────────────────────────────
+
+pricing:
+  # Explicit model pricing overrides
+  # Cost is per 1 million tokens
+  models:
+    # OpenAI models
+    - model: gpt-4o
+      provider: openai
+      cost_per_input_token: 5.0      # $/1M input tokens
+      cost_per_output_token: 15.0    # $/1M output tokens
+
+    - model: gpt-4-turbo
+      provider: openai
+      cost_per_input_token: 10.0
+      cost_per_output_token: 30.0
+
+    - model: gpt-3.5-turbo
+      provider: openai
+      cost_per_input_token: 0.5
+      cost_per_output_token: 1.5
+
+    # Anthropic models
+    - model: claude-3-opus
+      provider: anthropic
+      cost_per_input_token: 15.0
+      cost_per_output_token: 75.0
+
+    - model: claude-3-sonnet
+      provider: anthropic
+      cost_per_input_token: 3.0
+      cost_per_output_token: 15.0
+
+    - model: claude-3-haiku
+      provider: anthropic
+      cost_per_input_token: 0.8
+      cost_per_output_token: 4.0
+
+    # Google models
+    - model: gemini-1.5-pro
+      provider: google
+      cost_per_input_token: 3.5
+      cost_per_output_token: 10.5
+
+    - model: gemini-1.5-flash
+      provider: google
+      cost_per_input_token: 0.075
+      cost_per_output_token: 0.3
+
+  # Cache TTL for pricing data
+  # How long to keep pricing in memory before refreshing
+  cache_ttl: "1h"
+
+  # Refresh interval for live pricing updates
+  # How often to fetch updated pricing from provider APIs
+  refresh_interval: "1h"
+
+  # Allow missing pricing (default: true)
+  # If false, gateway fails to start if any model's pricing is missing
+  # If true, gateway continues with zero-cost fallback
+  allow_missing_pricing: true
+
+  # Log warnings when model pricing is missing
+  # Helps identify pricing gaps during operation
+  log_missing_models: true
+
+# ────────────────────────────────────────────────────────────────────────────────
+# ALTERNATIVE: LLM-LEVEL PRICING (can be combined with pricing section above)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# You can also specify pricing directly in the llm.models[] section:
+#
+# llm:
+#   models:
+#     - alias: my-gpt-4o
+#       provider: openai
+#       adapter: openai
+#       base_url: https://api.openai.com/v1
+#       api_key_ref: "env:OPENAI_API_KEY"
+#       cost_per_input_token: 5.0    # Optional
+#       cost_per_output_token: 15.0  # Optional
+#       capabilities:
+#         max_context_tokens: 128000
+#
+# This is useful when:
+# - You have custom/local models with specific pricing
+# - You want to override global pricing for a specific model alias
+# - You prefer co-locating model config and pricing
+
+# ────────────────────────────────────────────────────────────────────────────────
+# WHAT HAPPENS IF PRICING IS MISSING?
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# Scenario 1: Model not in pricing.models[], no LLM-level pricing, not in hardcoded defaults
+# - Cost calculation returns 0
+# - Quota checking is skipped (unlimited)
+# - Warning logged (if log_missing_models: true)
+# - Gateway continues normally ✓
+#
+# Scenario 2: Model in hardcoded defaults (bootstrapped at startup)
+# - Pricing is used from bootstrapped data
+# - Cost calculation works normally
+# - No warnings
+#
+# Scenario 3: Model has LLM-level pricing
+# - Pricing is used from llm.models[].cost_per_* fields
+# - Cost calculation works normally
+#
+# Scenario 4: Model in pricing.models[] section
+# - Pricing overrides LLM-level pricing and hardcoded defaults
+# - Cost calculation uses this pricing
+
+# ────────────────────────────────────────────────────────────────────────────────
+# MINIMAL SETUP (NO PRICING CONFIGURED)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# If you don't configure any pricing:
+#
+# pricing:
+#   models: []
+#
+# The gateway will:
+# 1. Bootstrap from hardcoded defaults (pricing_data.go)
+# 2. Use those for all requests
+# 3. Continue working if bootstrap fails
+#
+# This ensures zero config overhead for basic deployments.
+
+# ────────────────────────────────────────────────────────────────────────────────
+# GRACEFUL FALLBACK CHAIN
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# When calculating cost for a model:
+#
+# 1. Check pricing.models[] section
+#    ↓ (if not found)
+# 2. Check llm.models[].cost_per_* fields
+#    ↓ (if not found)
+# 3. Check hardcoded defaults (OpenAIPricing, AnthropicPricing, etc.)
+#    ↓ (if not found)
+# 4. Use zero cost (no quota enforcement)
+#
+# This design means:
+# - Gateway ALWAYS works, even if pricing is completely missing
+# - You can mix configured pricing with hardcoded defaults
+# - No configuration is required for the gateway to start

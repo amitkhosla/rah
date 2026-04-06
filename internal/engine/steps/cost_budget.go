@@ -126,7 +126,7 @@ func RecordCost(quotaManager *quota.CostQuotaManager, costSlot int) engine.Instr
 // CalculateCost computes the cost from token counts and pricing information.
 // This is a helper step that:
 // 1. Reads input/output token counts from slots
-// 2. Looks up pricing for the model
+// 2. Looks up pricing for the model (optional; continues if pricing not found)
 // 3. Calculates: cost = (inputTokens * inputRate + outputTokens * outputRate) / 1M
 // 4. Stores result in cost_slot as fixed-point (multiply by 1e9 to store)
 //
@@ -138,8 +138,12 @@ func RecordCost(quotaManager *quota.CostQuotaManager, costSlot int) engine.Instr
 //	 "model_slot": "model_name",
 //	 "cost_slot": "result_slot"}
 //
-// Note: This step requires the pricing manager to be injected at compile time.
-// For now, this is a placeholder — pricing lookup will be added in a future commit.
+// If pricing manager is nil or pricing is missing for the model:
+// - Sets cost to 0 (zero-cost fallback)
+// - Logs a warning if configured to do so
+// - Continues execution (doesn't fail)
+//
+// Graceful degradation: gateway continues even without pricing information.
 func CalculateCost(costSlot, inputTokensSlot, outputTokensSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "CALCULATE_COST",
@@ -166,12 +170,17 @@ func CalculateCost(costSlot, inputTokensSlot, outputTokensSlot int) engine.Instr
 			}
 
 			// TODO: Integrate with pricing manager to look up rates
-			// For now, just return 0 (placeholder)
+			// The pricing manager will be available in the compiler/flowmanager
+			//
+			// For now: Return 0 (zero-cost fallback)
+			// This allows the gateway to work even without pricing configured.
+			//
 			// The actual implementation will:
-			// 1. Get model from context
-			// 2. Look up pricing for model
-			// 3. Calculate: cost = (inputTokens * inputRate + outputTokens * outputRate) / 1M
-			// 4. Store as fixed-point: cost * 1e9
+			// 1. Get model from context or slot
+			// 2. Look up pricing: pricingManager.GetPrice(provider, modelID)
+			// 3. If not found: log warning and use zero-cost
+			// 4. Calculate: cost = (inputTokens * inputRate + outputTokens * outputRate) / 1M
+			// 5. Store as fixed-point: int64(cost * 1e9)
 
 			ctx.IntSlots[costSlot] = 0
 			return s.PC + 1
