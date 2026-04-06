@@ -201,10 +201,21 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// Runtime API key override: read from slot if configured.
-			// This replaces cfg.APIKey (the baked-in key) for this request.
+			// Runtime API key resolution with fallback chain:
+			// 1. X-API-Key header (highest priority)
+			// 2. APIKeySlot (if configured)
+			// 3. Baked-in APIKey (lowest priority)
 			apiKey := cfg.APIKey
-			if cfg.APIKeySlot >= 0 && cfg.APIKeySlot < len(ctx.ByteSlots) {
+
+			// 1. Check X-API-Key header
+			if ctx.Request != nil {
+				if headerKey := ctx.Request.Header.Get("X-API-Key"); headerKey != "" {
+					apiKey = headerKey
+				}
+			}
+
+			// 2. Check APIKeySlot (if X-API-Key not provided and key not already set)
+			if apiKey == cfg.APIKey && cfg.APIKeySlot >= 0 && cfg.APIKeySlot < len(ctx.ByteSlots) {
 				if k := ctx.ByteSlots[cfg.APIKeySlot]; len(k) > 0 {
 					apiKey = string(k)
 				}
