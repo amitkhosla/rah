@@ -178,18 +178,68 @@ func main() {
 	log.Printf("Daily learning job scheduled")
 
 	// 2e. Cost Quotas
-	// TODO: Load tenant quotas from config or database.
-	// For now, quotaManager is ready but no quotas are configured (all tenants unlimited).
-	// Example of registering a quota:
-	//   fm.CostQuotaManager.RegisterQuota("acme-corp", quota.CostQuotaConfig{
-	//       DailyCostLimit: 1000.0,
-	//       MonthlyCostLimit: 20000.0,
-	//       Windows: []quota.QuotaWindow{...},
-	//   })
-	// Quotas can be registered per-tenant as needed via:
-	// - Config file (to be implemented)
-	// - Management API (to be implemented)
-	// - Direct API calls at startup
+	// Load tenant quotas from config
+	log.Printf("Loading cost quotas...")
+	quotasConfig := cfgMgr.Gateway().Quotas
+	quotaCount := 0
+	for _, tenantQuota := range quotasConfig.Tenants {
+		tenantID := tenantQuota.TenantID
+		if tenantID == "" {
+			continue
+		}
+
+		// Build QuotaConfig from TenantQuotaConfig
+		quotaCfg := quota.CostQuotaConfig{
+			DailyCostLimit:   tenantQuota.DailyCostLimit,
+			MonthlyCostLimit: tenantQuota.MonthlyCostLimit,
+		}
+
+		// Parse flexible windows if provided
+		// Windows format: [{"duration": "1h", "limit": 100.0}, ...]
+		for _, window := range tenantQuota.Windows {
+			if durationStr, ok := window["duration"].(string); ok {
+				duration, err := time.ParseDuration(durationStr)
+				if err != nil {
+					log.Printf("Warning: invalid window duration for tenant %s: %s", tenantID, durationStr)
+					continue
+				}
+
+				limitVal := window["limit"]
+				limit := 0.0
+				switch v := limitVal.(type) {
+				case float64:
+					limit = v
+				case int:
+					limit = float64(v)
+				}
+
+				windowName, _ := window["name"].(string)
+				if windowName == "" {
+					windowName = durationStr
+				}
+
+				quotaCfg.Windows = append(quotaCfg.Windows, quota.QuotaWindow{
+					Duration: duration,
+					Name:     windowName,
+					Limit:    limit,
+				})
+			}
+		}
+
+		// Register the quota with the manager
+		fm.CostQuotaManager.RegisterQuota(tenantID, quotaCfg)
+		quotaCount++
+
+		if quotaCfg.DailyCostLimit > 0 || quotaCfg.MonthlyCostLimit > 0 || len(quotaCfg.Windows) > 0 {
+			log.Printf("Loaded quota for tenant %s: daily=%.2f, monthly=%.2f, windows=%d",
+				tenantID, quotaCfg.DailyCostLimit, quotaCfg.MonthlyCostLimit, len(quotaCfg.Windows))
+		}
+	}
+	if quotaCount == 0 {
+		log.Printf("No tenant quotas configured (all tenants unlimited)")
+	} else {
+		log.Printf("Cost quotas initialized: %d tenants", quotaCount)
+	}
 
 	// 3. Setup compiler and routes
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)

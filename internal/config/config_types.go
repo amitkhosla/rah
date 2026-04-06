@@ -172,6 +172,26 @@ type PricingConfig struct {
 	LogMissingModels bool `json:"log_missing_models,omitempty"  yaml:"log_missing_models,omitempty"`
 }
 
+// TenantQuotaConfig defines cost quota limits for a single tenant.
+// All fields are optional — if missing, tenant is unlimited.
+// Supports both legacy daily/monthly limits and flexible rolling windows.
+type TenantQuotaConfig struct {
+	TenantID         string                 `json:"tenant_id"                    yaml:"tenant_id"`
+	DailyCostLimit   float64                `json:"daily_cost_limit,omitempty"   yaml:"daily_cost_limit,omitempty"`
+	MonthlyCostLimit float64                `json:"monthly_cost_limit,omitempty" yaml:"monthly_cost_limit,omitempty"`
+	Windows          []map[string]interface{} `json:"windows,omitempty"            yaml:"windows,omitempty"`
+}
+
+// QuotasConfig defines cost quota settings for all tenants.
+// All fields are optional — if missing, all tenants are unlimited.
+type QuotasConfig struct {
+	// Tenants is a list of per-tenant quota configurations
+	Tenants []TenantQuotaConfig `json:"tenants,omitempty" yaml:"tenants,omitempty"`
+
+	// LogMissingQuotas: if true, logs a warning when a tenant has no quota configured
+	LogMissingQuotas bool `json:"log_missing_quotas,omitempty" yaml:"log_missing_quotas,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout       GlobalLayout        `json:"layout"             yaml:"layout"`
 	DataStore    DataStoreConfig     `json:"datastore"          yaml:"datastore"`
@@ -179,6 +199,7 @@ type GatewayConfig struct {
 	Cache        CacheConfig         `json:"cache"              yaml:"cache"`
 	LLM          LLMConfig           `json:"llm"                yaml:"llm"`
 	Pricing      PricingConfig       `json:"pricing,omitempty"  yaml:"pricing,omitempty"`
+	Quotas       QuotasConfig        `json:"quotas,omitempty"   yaml:"quotas,omitempty"`
 	Async        AsyncConfig         `json:"async"              yaml:"async"`
 	VectorStores []VectorStoreConfig `json:"vector_stores,omitempty" yaml:"vector_stores,omitempty"`
 	Ingest       IngestConfig        `json:"ingest,omitempty"   yaml:"ingest,omitempty"`

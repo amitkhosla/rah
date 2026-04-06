@@ -1,0 +1,181 @@
+# RAH Gateway - Quota Configuration
+#
+# This file shows how to configure cost quotas for tenants.
+# All quota fields are OPTIONAL — if missing, tenant is unlimited.
+#
+# Quotas support:
+# - Legacy daily/monthly limits (backward compatible)
+# - Flexible rolling windows (hourly, daily, weekly, etc.)
+# - Multiple concurrent windows per tenant
+
+quotas:
+  # List of tenant quota configurations
+  tenants:
+    # Example 1: Premium customer with hourly + daily + weekly limits
+    - tenant_id: acme-corp
+      daily_cost_limit: 1000.0      # Hard limit: $1000 per day
+      monthly_cost_limit: 20000.0   # Hard limit: $20k per month
+      windows:
+        # Hourly rolling window
+        - duration: 1h
+          name: hourly
+          limit: 100.0               # $100 per hour (rolling)
+
+        # Daily rolling window
+        - duration: 24h
+          name: daily
+          limit: 1000.0              # $1000 per day (rolling)
+
+        # Weekly rolling window
+        - duration: 168h             # 7 days
+          name: weekly
+          limit: 5000.0              # $5000 per week (rolling)
+
+    # Example 2: Standard customer with daily limits only
+    - tenant_id: startup-xyz
+      daily_cost_limit: 500.0        # $500 per day
+      monthly_cost_limit: 10000.0    # $10k per month
+      # No flexible windows configured
+
+    # Example 3: Development team (limited hourly usage)
+    - tenant_id: dev-team
+      windows:
+        - duration: 1h
+          name: hourly
+          limit: 50.0                # $50 per hour only
+
+    # Example 4: Unlimited tenant (no limits specified)
+    - tenant_id: enterprise-customer
+      # No limits: this tenant has unlimited usage
+
+  # Log warnings when a tenant has no quota
+  log_missing_quotas: true
+
+# ────────────────────────────────────────────────────────────────────────────────
+# HOW QUOTAS WORK
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# When enforce_cost_budget step executes:
+#
+# 1. Read estimated cost
+# 2. Check tenant's quota:
+#    - Daily limit (if set): used_today + estimated > limit?
+#    - Monthly limit (if set): used_month + estimated > limit?
+#    - Each window (if set): is cost within rolling window?
+# 3. If ANY limit exceeded: return 429 (Payment Required)
+# 4. If allowed: proceed with LLM call
+#
+# After LLM call, record_cost step:
+# 1. Read actual cost
+# 2. Update all windows:
+#    - Reset daily counter if 24h expired
+#    - Reset monthly counter if 30d expired
+#    - Update rolling windows based on Duration
+# 3. Update metrics for learning
+
+# ────────────────────────────────────────────────────────────────────────────────
+# QUOTA LEVELS (PRECEDENCE)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# When checking budget, enforced in order:
+#
+# 1. Flexible Windows (checked first)
+#    Each window has independent rolling duration
+#    All windows must allow the request
+#
+# 2. Daily Limit (checked second)
+#    Fixed calendar window (resets every 24 hours)
+#    Only checked if daily_cost_limit > 0
+#
+# 3. Monthly Limit (checked third)
+#    Fixed calendar window (resets every 30 days)
+#    Only checked if monthly_cost_limit > 0
+#
+# Request is DENIED if ANY limit is exceeded
+
+# ────────────────────────────────────────────────────────────────────────────────
+# WINDOW TYPES EXAMPLES
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# Hourly (rolling):
+#   - duration: 1h
+#     limit: 100.0
+#   Resets every hour (rolling window)
+#
+# Daily (rolling):
+#   - duration: 24h
+#     limit: 1000.0
+#   Resets every 24 hours from now
+#
+# Weekly (rolling):
+#   - duration: 168h
+#     limit: 5000.0
+#   Resets every 7 days from now
+#
+# Monthly (rolling):
+#   - duration: 720h
+#     limit: 20000.0
+#   Resets approximately every 30 days from now
+
+# ────────────────────────────────────────────────────────────────────────────────
+# BEHAVIOR WHEN QUOTA EXCEEDED
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# When enforce_cost_budget step runs and budget is exceeded:
+#
+# 1. Request is IMMEDIATELY REJECTED
+# 2. HTTP Response: 429 (Payment Required)
+# 3. LLM call is NOT made (save cost)
+# 4. Error logged with:
+#    - Tenant ID
+#    - Exceeded window name (if flexible)
+#    - Current usage
+#    - Remaining budget
+#
+# Example logs:
+#   "enforce_cost_budget: acme-corp exceeded daily limit (1000 > 950)"
+#   "enforce_cost_budget: dev-team exceeded hourly window (60 > 50)"
+
+# ────────────────────────────────────────────────────────────────────────────────
+# MINIMAL SETUP (NO QUOTAS)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# If you don't configure any quotas:
+#
+# quotas:
+#   tenants: []
+#
+# The gateway will:
+# 1. Log: "No tenant quotas configured (all tenants unlimited)"
+# 2. All enforce_cost_budget checks will pass
+# 3. Cost will still be tracked and recorded
+# 4. Admin API still available for cost visibility
+
+# ────────────────────────────────────────────────────────────────────────────────
+# QUOTA RESET TIMES
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# For legacy daily/monthly limits:
+# - Daily: resets at 00:00 UTC (or every 24h from first usage)
+# - Monthly: resets on 1st of month (or every 30d from first usage)
+#
+# For flexible windows:
+# - All windows are ROLLING (not calendar-based)
+# - Reset time = usage time + duration
+#
+# Example: hourly window at 2:30 PM resets at 3:30 PM
+
+# ────────────────────────────────────────────────────────────────────────────────
+# API ACCESS
+# ────────────────────────────────────────────────────────────────────────────────
+#
+# Check quota status via admin API:
+#
+#   curl -H "X-Admin-Token: secret" \
+#     http://localhost:8080/api/v1/costs/acme-corp
+#
+# Response includes:
+# - daily_used, daily_remaining
+# - monthly_used, monthly_remaining
+# - windows[]: status of each flexible window
+# - quota_exceeded: boolean
