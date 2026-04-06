@@ -6,6 +6,7 @@ package pricing
 import (
 	"fmt"
 	"log"
+	"rah/internal/config"
 	"sync"
 	"time"
 )
@@ -113,7 +114,7 @@ func (pm *PricingManager) GetPricing() map[string]PricingInfo {
 	return result
 }
 
-// bootstrapPricing loads all hardcoded pricing data
+// bootstrapPricing loads all hardcoded pricing data as fallback
 func (pm *PricingManager) bootstrapPricing() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -140,7 +141,83 @@ func (pm *PricingManager) bootstrapPricing() {
 	}
 
 	pm.lastFetch = time.Now()
-	log.Printf("Bootstrap complete: loaded %d models", len(pm.cache))
+	log.Printf("Bootstrap complete: loaded %d models from hardcoded defaults", len(pm.cache))
+}
+
+// LoadFromConfig loads pricing from the GatewayConfig's Pricing section
+// This overrides bootstrapped defaults. If config has no pricing, bootstrapped defaults remain.
+// Graceful: if pricing config is empty or missing, gateway continues to work.
+func (pm *PricingManager) LoadFromConfig(pricingCfg config.PricingConfig) error {
+	if len(pricingCfg.Models) == 0 {
+		// No explicit pricing in config, use bootstrapped defaults
+		log.Printf("No explicit pricing in config, using bootstrapped defaults")
+		return nil
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	loadedCount := 0
+	for _, modelPricing := range pricingCfg.Models {
+		if modelPricing.Model == "" {
+			continue
+		}
+
+		price := PricingInfo{
+			InputCostPer1MTok:  modelPricing.CostPerInputToken,
+			OutputCostPer1MTok: modelPricing.CostPerOutputToken,
+			LastUpdated:        time.Now().Format("2006-01-02 15:04:05 UTC"),
+			Source:             "config",
+			Cached:             true,
+		}
+
+		pm.cache[modelPricing.Model] = price
+		loadedCount++
+	}
+
+	log.Printf("Loaded %d pricing entries from config (merged with %d bootstrapped)", loadedCount, len(pm.cache)-loadedCount)
+	return nil
+}
+
+// LoadFromLLMConfig extracts pricing from individual LLMModelConfig entries
+// This is a second-level fallback: per-model pricing defined in the llm.models section
+// Example: llm.models[0].cost_per_input_token = 5.0
+func (pm *PricingManager) LoadFromLLMConfig(llmCfg config.LLMConfig) error {
+	if len(llmCfg.Models) == 0 {
+		return nil
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	loadedCount := 0
+	for _, modelCfg := range llmCfg.Models {
+		if modelCfg.Alias == "" {
+			continue
+		}
+
+		// Only use if both costs are specified
+		if modelCfg.CostPerInputToken > 0 && modelCfg.CostPerOutputToken > 0 {
+			price := PricingInfo{
+				InputCostPer1MTok:  modelCfg.CostPerInputToken,
+				OutputCostPer1MTok: modelCfg.CostPerOutputToken,
+				LastUpdated:        time.Now().Format("2006-01-02 15:04:05 UTC"),
+				Source:             "llm_config",
+				Cached:             true,
+			}
+
+			// Only override if not already set from pricing config
+			if _, exists := pm.cache[modelCfg.Alias]; !exists {
+				pm.cache[modelCfg.Alias] = price
+				loadedCount++
+			}
+		}
+	}
+
+	if loadedCount > 0 {
+		log.Printf("Loaded %d pricing entries from llm.models[] section", loadedCount)
+	}
+	return nil
 }
 
 // ForceRefresh immediately refreshes all pricing
