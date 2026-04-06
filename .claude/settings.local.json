@@ -13,7 +13,9 @@
       "Bash(ls -la /d/GoLand/rah/*.exe)",
       "Bash(ls D:/GoLand/rah/internal/datastore/*.go)",
       "Bash(ls:*)",
-      "mcp__dev-tool__list_symbols"
+      "mcp__dev-tool__list_symbols",
+      "mcp__dev-tool__show_file",
+      "mcp__dev-tool__grep_code"
     ]
   }
 }

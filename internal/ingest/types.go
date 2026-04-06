@@ -20,6 +20,7 @@ const (
 	KindCacheHit      EventKind = "cache_hit"
 	KindCacheMiss     EventKind = "cache_miss"
 	KindHistoryTrim   EventKind = "history_trim"
+	KindCostRecord    EventKind = "cost_record"
 	KindCustom        EventKind = "custom"
 )
 
