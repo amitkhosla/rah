@@ -352,11 +352,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// Returns 403 if the tenant is blocked; 429 if the rate is exceeded.
 		// Optional quota group map in step.Input: {"1": "free_rl", "2": "pro_rl"}
 		// Keys are group IDs (uint8), values are rate limit config names.
+		// Set "emit_quota_headers": "true" to send X-RateLimit-* headers to callers.
 		var quotaGroupRLIds []uint16
 		if len(step.Input) > 0 && c.RegMgr != nil {
 			quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, quotaGroupRLIds))
+		emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
+		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, quotaGroupRLIds, emitQuotaHeaders))
 
 	case "assign_quota_group":
 		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.

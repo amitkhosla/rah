@@ -21,12 +21,17 @@ var immutableStartupDomains = map[config.DataDomain]struct{}{
 	config.DomainFlows:          {},
 }
 
+// StoreWrapFn is an optional transform applied to every store after creation.
+// Typically used to wrap stores with EventingStore for ingest event emission.
+type StoreWrapFn func(domain config.DataDomain, store datastore.KeyValueStore) datastore.KeyValueStore
+
 // DataStoreManager keeps the active data-store topology selected per customer.
 type DataStoreManager struct {
 	mu            sync.RWMutex
 	active        config.DataStoreConfig
 	registryStore map[config.DataDomain]datastore.KeyValueStore
 	resolver      secrets.Resolver // nil when no secrets manager is configured
+	wrapFn        StoreWrapFn      // optional; applied to each store at creation and on SetStoreWrapper
 }
 
 // NewDataStoreManager builds a DataStoreManager from the given config.
@@ -37,7 +42,7 @@ func NewDataStoreManager(ctx context.Context, initial config.DataStoreConfig, re
 		return nil, err
 	}
 
-	stores, err := buildDomainStores(ctx, initial, resolver)
+	stores, err := buildDomainStores(ctx, initial, resolver, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +73,7 @@ func (m *DataStoreManager) Update(ctx context.Context, cfg config.DataStoreConfi
 		return err
 	}
 
-	stores, err := buildDomainStores(ctx, cfg, m.resolver)
+	stores, err := buildDomainStores(ctx, cfg, m.resolver, m.wrapFn)
 	if err != nil {
 		return err
 	}
@@ -94,7 +99,7 @@ func (m *DataStoreManager) Close() {
 	}
 }
 
-func buildDomainStores(ctx context.Context, cfg config.DataStoreConfig, resolver secrets.Resolver) (map[config.DataDomain]datastore.KeyValueStore, error) {
+func buildDomainStores(ctx context.Context, cfg config.DataStoreConfig, resolver secrets.Resolver, wrapFn StoreWrapFn) (map[config.DataDomain]datastore.KeyValueStore, error) {
 	stores := make(map[config.DataDomain]datastore.KeyValueStore, len(cfg.Bindings))
 	for domain := range cfg.Bindings {
 		storeCfg, err := cfg.ResolveStore(domain)
@@ -110,9 +115,24 @@ func buildDomainStores(ctx context.Context, cfg config.DataStoreConfig, resolver
 		if err != nil {
 			return nil, err
 		}
+		if wrapFn != nil {
+			store = wrapFn(domain, store)
+		}
 		stores[domain] = store
 	}
 	return stores, nil
+}
+
+// SetStoreWrapper installs a wrapper applied to every store on creation.
+// It also retroactively wraps all currently-active stores.
+// Safe to call after NewDataStoreManager (e.g. once the ingest pipeline is ready).
+func (m *DataStoreManager) SetStoreWrapper(fn StoreWrapFn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.wrapFn = fn
+	for domain, store := range m.registryStore {
+		m.registryStore[domain] = fn(domain, store)
+	}
 }
 
 // resolveStoreCredentials returns a copy of storeCfg with Username and Password

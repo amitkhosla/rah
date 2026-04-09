@@ -223,6 +223,16 @@ func main() {
 		log.Printf("No tenant quotas configured (all tenants unlimited)")
 	} else {
 		log.Printf("Cost quotas initialized: %d tenants", quotaCount)
+	// 2c. Wire ingest eventing into all datastore domains.
+	// Every successful Put/Delete/MultiPut emits a KindDBPut or KindDBDelete event.
+	// The instance fingerprint is stamped as Model so consumers can skip events
+	// emitted by this instance (prevents write-emit-consume-write cascade loops).
+	instanceFingerprint := fm.TxIDGen.Fingerprint()
+	if ingestPipeline != nil {
+		dataStoreMgr.SetStoreWrapper(func(domain config.DataDomain, store datastore.KeyValueStore) datastore.KeyValueStore {
+			return datastore.WrapWithEventing(store, ingestPipeline, string(domain), instanceFingerprint)
+		})
+		log.Printf("[ingest] datastore eventing enabled for all domains")
 	}
 
 	// 3. Setup compiler and routes
@@ -294,6 +304,56 @@ func main() {
 
 		// CacheManager IS the OpFlusher — it decides L1 vs backend based on config.
 		fm.CacheExec = cacheMgr
+
+		// Wire cache invalidation via the ingest eventing pipeline.
+		// Emit side A — Put: every successful in-memory Put emits KindCacheInvalidate
+		// so other instances tombstone their stale L1 slab entries.
+		// Emit side B — Invalidate: explicit cache deletes also propagate so that
+		// instances that never held the key don't need to act, but those that do
+		// will remove it.
+		// Self-invalidation is prevented by stamping instanceFingerprint as Model
+		// and skipping events where Model == this instance's fingerprint on consume.
+		if ingestPipeline != nil {
+			emitInvalidate := func(tenantID uint16, key []byte) {
+				n := ingestPipeline.NumSinksForKind(ingest.KindCacheInvalidate)
+				if n == 0 {
+					return
+				}
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				e := ingest.Event{
+					Kind:        ingest.KindCacheInvalidate,
+					TenantID:    tenantID,
+					TxID:        string(keyCopy),
+					Model:       instanceFingerprint,
+					TimestampNs: time.Now().UnixNano(),
+				}
+				ingestPipeline.Emit(e)
+			}
+
+			// Subscribe to in-memory Puts.
+			cacheMgr.Subscribe(func(ev cache.WriteEvent) {
+				emitInvalidate(ev.TenantID, ev.Key)
+			})
+
+			// Subscribe to explicit Invalidate calls (e.g. management API cache flush).
+			cacheMgr.OnInvalidate = func(tenantID uint16, key []byte) {
+				emitInvalidate(tenantID, key)
+			}
+
+			// Consume side: read KindCacheInvalidate events from configured sources
+			// and remove the entry from this instance's L1 slab.
+			// Use InvalidateLocal to avoid re-emitting (which would create a cascade).
+			ingest.StartConsumers(gatewayCtx, cfgMgr.Gateway().Ingest, func(e ingest.Event) {
+				if e.Kind != ingest.KindCacheInvalidate {
+					return
+				}
+				if e.Model == instanceFingerprint {
+					return // skip our own events — we already hold the new value
+				}
+				_ = cacheMgr.InvalidateLocal(e.TenantID, []byte(e.TxID))
+			})
+		}
 	} else {
 		log.Printf("Cache disabled (cache.disabled=true in config)")
 	}
@@ -466,6 +526,43 @@ func main() {
 		}
 		// Wire AFTER restore so startup reads don't write back what was just read.
 		regMgr.SetStore(regStore)
+
+		// Wire cross-instance registry sync via the ingest consumer.
+		// When another instance writes a tenant or rate-limit config, it emits
+		// KindDBPut/KindDBDelete with SessionID == "tenant_registry". We apply
+		// those changes to the local in-memory registry WITHOUT re-persisting
+		// (which would emit another event and create a cascade loop).
+		// The self-guard is handled by the instance fingerprint in Model — we
+		// skip events that we emitted ourselves.
+		if ingestPipeline != nil {
+			const registryDomain = string(config.DomainTenantRegistry)
+			// Scoped key prefix produced by EventingStore/BuildScopedKey.
+			// Format: tenant:__global__:tenant_registry:{rawKey}
+			scopedPrefix := "tenant:" + string(control.GlobalTenant) + ":" + registryDomain + ":"
+			ingest.StartConsumers(gatewayCtx, cfgMgr.Gateway().Ingest, func(e ingest.Event) {
+				if e.Model == instanceFingerprint {
+					return // skip events we emitted
+				}
+				rawKey := e.TxID
+				if len(rawKey) <= len(scopedPrefix) || rawKey[:len(scopedPrefix)] != scopedPrefix {
+					return // not a registry domain event
+				}
+				rawKey = rawKey[len(scopedPrefix):]
+				switch e.Kind {
+				case ingest.KindDBPut:
+					if e.SessionID != registryDomain {
+						return
+					}
+					regMgr.ApplyStorePut(rawKey, e.Payload())
+				case ingest.KindDBDelete:
+					if e.SessionID != registryDomain {
+						return
+					}
+					regMgr.ApplyStoreDelete(rawKey)
+				}
+			})
+			log.Printf("[Registry] cross-instance sync consumer started")
+		}
 	}
 
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)

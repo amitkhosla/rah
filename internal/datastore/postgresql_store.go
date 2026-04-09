@@ -145,6 +145,66 @@ func (s *postgresqlStore) ListKeys(ctx context.Context, tenant Tenant, prefix st
 	return keys, rows.Err()
 }
 
+// MultiGet fetches multiple keys in a single round-trip using ANY($1).
+// Missing keys are simply absent from the result map; no error is returned for them.
+func (s *postgresqlStore) MultiGet(ctx context.Context, tenant Tenant, keys []string) (map[string][]byte, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	fullKeys := make([]string, len(keys))
+	for i, k := range keys {
+		fk, err := BuildScopedKey(tenant, s.domain, k)
+		if err != nil {
+			return nil, err
+		}
+		fullKeys[i] = fk
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT full_key, value FROM kv_entries WHERE full_key = ANY($1)`,
+		fullKeys,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	prefix, _ := BuildScopedPrefix(tenant, s.domain, "")
+	result := make(map[string][]byte, len(keys))
+	for rows.Next() {
+		var fullKey string
+		var value []byte
+		if err := rows.Scan(&fullKey, &value); err != nil {
+			return nil, err
+		}
+		result[strings.TrimPrefix(fullKey, prefix)] = value
+	}
+	return result, rows.Err()
+}
+
+// MultiPut writes all key-value pairs in a single round-trip using unnest + upsert.
+func (s *postgresqlStore) MultiPut(ctx context.Context, tenant Tenant, kvs map[string][]byte) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	fullKeys := make([]string, 0, len(kvs))
+	values := make([][]byte, 0, len(kvs))
+	for k, v := range kvs {
+		fk, err := BuildScopedKey(tenant, s.domain, k)
+		if err != nil {
+			return err
+		}
+		fullKeys = append(fullKeys, fk)
+		values = append(values, v)
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO kv_entries(full_key, value)
+		 SELECT * FROM unnest($1::text[], $2::bytea[])
+		 ON CONFLICT(full_key) DO UPDATE SET value = EXCLUDED.value`,
+		fullKeys, values,
+	)
+	return err
+}
+
 func (s *postgresqlStore) Kind() string { return "postgresql" }
 func (s *postgresqlStore) Name() string { return s.name }
 
