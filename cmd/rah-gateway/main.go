@@ -15,6 +15,7 @@ import (
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/observability"
+	"rah/internal/quota"
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
 	"rah/internal/router"
@@ -153,6 +154,75 @@ func main() {
 		}
 	}
 
+	// 2c. Pricing Manager — initialize before compiler
+	// Loads pricing from config, with fallback to hardcoded defaults
+	// 2d. Cost pricing & metrics
+	// Note: Cost events are emitted via ingest pipeline to external analytics service.
+	// Pricing data is optional; if not configured, cost calculation defaults to zero-cost.
+	// Token metrics tracking (for learning) is handled by analytics service, not gateway.
+
+	// 2e. Cost Quotas
+	// Load tenant quotas from config
+	log.Printf("Loading cost quotas...")
+	quotasConfig := cfgMgr.Gateway().Quotas
+	quotaCount := 0
+	for _, tenantQuota := range quotasConfig.Tenants {
+		tenantID := tenantQuota.TenantID
+		if tenantID == "" {
+			continue
+		}
+
+		// Build QuotaConfig from TenantQuotaConfig
+		quotaCfg := quota.CostQuotaConfig{
+			DailyCostLimit:   tenantQuota.DailyCostLimit,
+			MonthlyCostLimit: tenantQuota.MonthlyCostLimit,
+		}
+
+		// Parse flexible windows if provided
+		// Windows format: [{"duration": "1h", "limit": 100.0}, ...]
+		for _, window := range tenantQuota.Windows {
+			if durationStr, ok := window["duration"].(string); ok {
+				duration, err := time.ParseDuration(durationStr)
+				if err != nil {
+					log.Printf("Warning: invalid window duration for tenant %s: %s", tenantID, durationStr)
+					continue
+				}
+
+				limitVal := window["limit"]
+				limit := 0.0
+				switch v := limitVal.(type) {
+				case float64:
+					limit = v
+				case int:
+					limit = float64(v)
+				}
+
+				windowName, _ := window["name"].(string)
+				if windowName == "" {
+					windowName = durationStr
+				}
+
+				quotaCfg.Windows = append(quotaCfg.Windows, quota.QuotaWindow{
+					Duration: duration,
+					Name:     windowName,
+					Limit:    limit,
+				})
+			}
+		}
+
+		// Register the quota with the manager
+		fm.CostQuotaManager.RegisterQuota(tenantID, quotaCfg)
+		quotaCount++
+
+		if quotaCfg.DailyCostLimit > 0 || quotaCfg.MonthlyCostLimit > 0 || len(quotaCfg.Windows) > 0 {
+			log.Printf("Loaded quota for tenant %s: daily=%.2f, monthly=%.2f, windows=%d",
+				tenantID, quotaCfg.DailyCostLimit, quotaCfg.MonthlyCostLimit, len(quotaCfg.Windows))
+		}
+	}
+	if quotaCount == 0 {
+		log.Printf("No tenant quotas configured (all tenants unlimited)")
+	} else {
+		log.Printf("Cost quotas initialized: %d tenants", quotaCount)
 	// 2c. Wire ingest eventing into all datastore domains.
 	// Every successful Put/Delete/MultiPut emits a KindDBPut or KindDBDelete event.
 	// The instance fingerprint is stamped as Model so consumers can skip events
@@ -548,6 +618,16 @@ func main() {
 	if credReg != nil {
 		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
 	}
+
+	// ─── Cost Tracking API Routes ───────────────────────────────────────
+	// Requires admin token in X-Admin-Token header or Authorization: Bearer
+	adminToken := os.Getenv("ADMIN_TOKEN")
+	if adminToken == "" {
+		log.Printf("Warning: ADMIN_TOKEN environment variable not set. Cost tracking endpoints will deny all access.")
+	}
+	RegisterCostRoutes(mux, fm.CostQuotaManager, adminToken)
+	log.Printf("Cost tracking endpoints registered at /api/v1/costs*")
+
 	mcpReg := mcpreg.NewRegistry()
 	compiler.MCPRegistry = mcpReg
 	compiler.GatewayBase = fmt.Sprintf("http://localhost:%d", *port)

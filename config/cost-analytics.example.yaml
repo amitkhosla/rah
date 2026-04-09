@@ -1,0 +1,259 @@
+# ============================================================================
+# RAH Gateway - Cost Analytics Configuration Example
+# ============================================================================
+#
+# This configuration demonstrates how to route cost events to an external
+# analytics service instead of storing cost history in the gateway.
+#
+# Architecture:
+#   Gateway (enforce quota + emit events)
+#         ↓
+#   Ingest Pipeline (routes cost_record events)
+#         ↓
+#   Configured Sinks:
+#     - HTTP endpoint to analytics service (primary)
+#     - S3/file archive (optional backup)
+#     - stdout (optional for debugging)
+#
+# Key Concepts:
+#   - Gateway enforces quotas locally (in-memory, fast)
+#   - Cost events are emitted AFTER response sent (deferred)
+#   - Analytics service consumes events and provides query APIs
+#   - No cost history stored in gateway process
+#
+# ============================================================================
+
+# Gateway-level settings
+layout:
+  max_apis: 100
+
+# Data storage (unchanged)
+datastore:
+  domains: {}
+
+# Secrets (unchanged)
+secrets:
+  providers: []
+
+# Cache (unchanged)
+cache:
+  disabled: true
+
+# LLM models with pricing tiers
+# Pricing is used for cost calculation; cost events are emitted after LLM call
+llm:
+  models:
+    - alias: gpt-4o
+      provider: openai
+      adapter: openai
+      base_url: https://api.openai.com/v1
+      api_key_ref: env:OPENAI_API_KEY
+      cost_per_input_token: 5.0      # USD per 1M tokens
+      cost_per_output_token: 15.0    # USD per 1M tokens
+      capabilities:
+        max_context_tokens: 128000
+
+    - alias: claude-opus
+      provider: anthropic
+      adapter: anthropic
+      base_url: https://api.anthropic.com
+      api_key_ref: env:ANTHROPIC_API_KEY
+      cost_per_input_token: 15.0     # USD per 1M tokens
+      cost_per_output_token: 75.0    # USD per 1M tokens
+      capabilities:
+        max_context_tokens: 200000
+
+# Cost quotas - enforced locally in gateway
+# These prevent expensive requests from proceeding if tenant is over budget
+quotas:
+  tenants:
+    # Unlimited tenant (no quota checks)
+    - tenant_id: demo-unlimited
+      display_name: Demo (Unlimited)
+
+    # Daily quota: $100/day
+    - tenant_id: startup-daily
+      display_name: Startup Plan
+      daily_cost_limit: 100.0
+
+    # Daily ($500) + monthly ($5000) combined limits
+    - tenant_id: enterprise-monthly
+      display_name: Enterprise Plan
+      daily_cost_limit: 500.0
+      monthly_cost_limit: 5000.0
+
+    # Flexible windows: hourly ($20), daily ($200), monthly ($2000)
+    - tenant_id: partner-custom
+      display_name: Custom Partner
+      windows:
+        - name: hourly
+          duration: 1h
+          limit: 20.0
+        - name: daily
+          duration: 24h
+          limit: 200.0
+        - name: monthly
+          duration: 720h
+          limit: 2000.0
+
+# ============================================================================
+# Ingestion Pipeline - Routes cost events to analytics service
+# ============================================================================
+#
+# Cost events (kind: cost_record) are emitted AFTER the HTTP response is sent.
+# This ensures cost tracking doesn't block request handling.
+#
+# Event structure (JSON):
+# {
+#   "tenant_id": 1,
+#   "kind": "cost_record",
+#   "model": "gpt-4o",
+#   "ts_ns": 1680000000000000000,
+#   "payload": {
+#     "tenant_key": "startup-daily",
+#     "cost": 0.087,
+#     "model": "gpt-4o",
+#     "timestamp_ns": 1680000000000000000
+#   }
+# }
+#
+ingest:
+  enabled: true
+
+  # Fanout workers - distributes events to sink workers
+  fanout_workers: 2
+
+  # Event kind routing - where each event type goes
+  kinds:
+    # Cost events route to analytics service + archive
+    - kind: cost_record
+      ring_size: 131072           # Ring buffer size (128K events)
+      priority: 5                 # Lower than LLM events
+      sinks:
+        - analytics_http          # Primary: real-time analytics
+        - cost_archive            # Backup: S3 archive
+
+    # LLM events (unchanged)
+    - kind: llm_request
+      ring_size: 262144
+      priority: 1
+      sinks:
+        - observability_service
+
+    - kind: llm_response
+      ring_size: 262144
+      priority: 1
+      sinks:
+        - observability_service
+
+  # Sink configurations
+  sinks:
+    # Primary sink: HTTP endpoint to analytics service
+    # This receives cost events in real-time for immediate processing
+    - name: analytics_http
+      kind: http
+      url: "{{ env 'ANALYTICS_SERVICE_URL' }}/api/ingest"
+      format: ndjson                    # Newline-delimited JSON
+      timeout_ms: 5000
+      min_workers: 2                    # Min concurrent workers
+      max_workers: 4                    # Max concurrent workers
+      sink_queue_size: 16384            # Events buffered before backpressure
+      max_batch_items: 256              # Flush when batch has 256 events
+      max_batch_bytes: 1048576          # Or 1MB of data
+      flush_ms: 200                     # Or 200ms timeout
+      backpressure_timeout_sec: 30      # Timeout if endpoint is slow
+
+    # Backup sink: S3 archive for long-term cost analysis
+    # Routes to same bucket as events but with date-based prefix
+    - name: cost_archive
+      kind: s3
+      bucket: cost-events-archive
+      prefix: "gateway/{{ env 'GATEWAY_ID' }}/{{ date }}/cost_record"
+      format: ndjson
+      min_workers: 1
+      max_workers: 2
+      max_batch_items: 1000
+      max_batch_bytes: 10485760         # 10 MB batches
+      flush_ms: 5000                    # Flush every 5s
+
+    # Optional: stdout for debugging
+    # Uncomment to see cost events in gateway logs
+    # - name: cost_stdout
+    #   kind: stdout
+    #   format: json
+
+# Async work (unchanged)
+async:
+  enabled: false
+
+# ============================================================================
+# Analytics Service Setup (External)
+# ============================================================================
+#
+# The gateway now routes cost events to an external service via HTTP.
+# This analytics service is responsible for:
+#
+# 1. Consuming cost events from the ingest sink
+# 2. Storing in time-series DB (InfluxDB, Prometheus, TimescaleDB, etc.)
+# 3. Providing query APIs:
+#    - GET /costs/{tenantId}?from=...&to=...
+#    - GET /costs/{tenantId}/by-model
+#    - GET /costs/gateway-total (admin)
+# 4. Computing derived metrics:
+#    - Cost trends (daily, hourly)
+#    - Per-model breakdown
+#    - Tenant usage patterns
+#    - Savings from smart model routing
+#
+# Environment variables needed:
+#   ANALYTICS_SERVICE_URL=http://analytics:8082
+#   GATEWAY_ID=gateway-1                          # For S3 prefix
+#
+# Example analytics service (pseudocode):
+#
+# POST /api/ingest
+#   Body: NDJSON stream of cost events
+#   Returns: 202 Accepted
+#   Stores in: time-series DB
+#
+# GET /costs/{tenantId}?from=1680000000&to=1680086400
+#   Returns:
+#   {
+#     "tenant_id": "startup-daily",
+#     "period": {"from": 1680000000, "to": 1680086400},
+#     "total_cost": 87.23,
+#     "events": [
+#       {"timestamp": 1680001000, "cost": 0.087, "model": "gpt-4o"},
+#       {"timestamp": 1680002000, "cost": 0.125, "model": "claude-opus"}
+#     ]
+#   }
+#
+# ============================================================================
+
+# Gateway behavior notes:
+#
+# 1. NO cost history stored in gateway memory
+#    - Cost quota manager tracks spent amounts for enforcement
+#    - Cost event history is emitted to external service
+#
+# 2. Cost events emitted AFTER response sent
+#    - Uses AfterResponse hook for deferred emission
+#    - Doesn't block request latency
+#    - "best effort" - slow sink doesn't fail request
+#
+# 3. Graceful degradation
+#    - If analytics service is unavailable: events dropped (non-blocking)
+#    - If pricing config is missing: zero-cost fallback
+#    - If quotas are missing: unlimited (no enforcement)
+#    - Gateway continues operating in all scenarios
+#
+# 4. Multi-tenant isolation
+#    - Each cost event includes tenant_id
+#    - Quota enforcement is per-tenant
+#    - Analytics service isolates data per tenant
+#
+# 5. Operational considerations
+#    - Monitor HTTP sink backpressure (timeout_ms)
+#    - Archive to S3 for compliance/audit
+#    - Run analytics service with time-series DB
+#    - Expose cost APIs only to authorized clients

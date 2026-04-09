@@ -376,6 +376,33 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.AssignQuotaGroup(srcSlot, groupMap))
 
+	case "enforce_cost_budget":
+		// Opt-in cost budget enforcement. Must be placed explicitly in the flow.
+		// Reads estimated cost from IntSlot and checks against tenant quota.
+		// Returns 429 if budget exceeded.
+		// step.KeyIdentifier: slot name containing estimated cost (fixed-point: value/1e9 = cost in $)
+		costSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.EnforceCostBudget(c.fm.CostQuotaManager, costSlot))
+
+	case "record_cost":
+		// Records actual cost after LLM call completes.
+		// Reads actual cost from IntSlot and updates tenant quota.
+		// Also emits a cost event to the ingest pipeline (deferred, after response sent).
+		// step.KeyIdentifier: slot name containing actual cost (fixed-point: value/1e9 = cost in $)
+		costSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		cfg := steps.RecordCostConfig{
+			QuotaManager:   c.fm.CostQuotaManager,
+			IngestPipeline: c.IngestPipeline,
+			CostSlot:       costSlot,
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RecordCost(cfg))
+
 	case "bind_client_ip":
 		// Extracts the real client IP (X-Forwarded-For → X-Real-IP → RemoteAddr)
 		// and stores it in the named slot.
