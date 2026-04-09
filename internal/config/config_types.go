@@ -256,14 +256,31 @@ type IngestKindConfig struct {
 	Sinks     []string `json:"sinks"                  yaml:"sinks"`               // names from IngestSinkConfig.Name
 }
 
+// IngestSourceKind identifies the backend type for an event source (consumer side).
+type IngestSourceKind string
+
+const IngestSourceRedisStream IngestSourceKind = "redis_stream"
+
+// IngestSourceConfig describes one event source — the read side of the pipeline.
+// Sources are consumed by background goroutines that call registered handlers.
+type IngestSourceConfig struct {
+	Kind      IngestSourceKind `json:"kind"                  yaml:"kind"`
+	DSN       string           `json:"dsn,omitempty"         yaml:"dsn,omitempty"`          // Redis URL e.g. redis://localhost:6379
+	Stream    string           `json:"stream_name,omitempty" yaml:"stream_name,omitempty"` // Redis stream key
+	TimeoutMs int              `json:"timeout_ms,omitempty"  yaml:"timeout_ms,omitempty"`  // XREAD block timeout; default 5000
+	// Events filters which kinds are forwarded to handlers. Empty = all kinds.
+	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+}
+
 // IngestConfig is the gateway-level configuration for the ingestion pipeline.
 // All behavior is driven by config — main.go makes one call to NewPipelineFromConfig.
 type IngestConfig struct {
-	Enabled                bool               `json:"enabled"                            yaml:"enabled"`
-	FanoutWorkers          int                `json:"fanout_workers,omitempty"           yaml:"fanout_workers,omitempty"`           // goroutines draining rings; default 2
-	BackpressureTimeoutSec int                `json:"backpressure_timeout_sec,omitempty" yaml:"backpressure_timeout_sec,omitempty"` // default 30
-	Kinds                  []IngestKindConfig `json:"kinds,omitempty"                    yaml:"kinds,omitempty"`
-	Sinks                  []IngestSinkConfig `json:"sinks,omitempty"                    yaml:"sinks,omitempty"`
+	Enabled                bool                 `json:"enabled"                            yaml:"enabled"`
+	FanoutWorkers          int                  `json:"fanout_workers,omitempty"           yaml:"fanout_workers,omitempty"`           // goroutines draining rings; default 2
+	BackpressureTimeoutSec int                  `json:"backpressure_timeout_sec,omitempty" yaml:"backpressure_timeout_sec,omitempty"` // default 30
+	Kinds                  []IngestKindConfig   `json:"kinds,omitempty"                    yaml:"kinds,omitempty"`
+	Sinks                  []IngestSinkConfig   `json:"sinks,omitempty"                    yaml:"sinks,omitempty"`
+	Sources                []IngestSourceConfig `json:"sources,omitempty"                  yaml:"sources,omitempty"` // consumer/read side
 }
 
 type ResourceLimit struct {
