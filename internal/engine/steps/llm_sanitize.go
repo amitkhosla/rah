@@ -251,7 +251,7 @@ type CompressPromptConfig struct {
 // CompressPrompt returns an instruction that calls an LLM to summarise the
 // prompt when it exceeds TargetTokens, writing the compressed text back in-place.
 func CompressPrompt(cfg CompressPromptConfig) engine.Instruction {
-	adapter, err := NewAdapter(cfg.ModelConfig.Adapter)
+	adapter, err := NewAdapter(cfg.ModelConfig)
 	if err != nil {
 		return engine.Instruction{
 			Name: "compress_prompt[bad_adapter]",

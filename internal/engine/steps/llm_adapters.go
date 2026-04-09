@@ -22,10 +22,12 @@ type ProviderAdapter interface {
 	AuthHeader(apiKey string) (name, value string)
 }
 
-// NewAdapter returns the ProviderAdapter for the given adapter kind.
-// Returns an error if the adapter is unknown.
-func NewAdapter(kind config.LLMProviderAdapter) (ProviderAdapter, error) {
-	switch kind {
+// NewAdapter returns the ProviderAdapter for the given model config.
+// For AdapterCustom, auth header behaviour is driven by cfg.AuthHeaderName
+// and cfg.AuthHeaderPrefix — no code change needed to add new providers.
+// Returns an error if the adapter kind is unknown.
+func NewAdapter(cfg config.LLMModelConfig) (ProviderAdapter, error) {
+	switch cfg.Adapter {
 	case config.AdapterAnthropic:
 		return &anthropicAdapter{}, nil
 	case config.AdapterOpenAI:
@@ -34,8 +36,20 @@ func NewAdapter(kind config.LLMProviderAdapter) (ProviderAdapter, error) {
 		return &geminiAdapter{}, nil
 	case config.AdapterOllama:
 		return &ollamaAdapter{}, nil
+	case config.AdapterDeepSeek:
+		return &deepSeekAdapter{}, nil
+	case config.AdapterCustom:
+		headerName := cfg.AuthHeaderName
+		if headerName == "" {
+			headerName = "Authorization"
+		}
+		headerPrefix := cfg.AuthHeaderPrefix
+		if headerPrefix == "" {
+			headerPrefix = "Bearer "
+		}
+		return &customAdapter{authHeaderName: headerName, authHeaderPrefix: headerPrefix}, nil
 	default:
-		return nil, fmt.Errorf("unknown LLM adapter: %q", kind)
+		return nil, fmt.Errorf("unknown LLM adapter: %q", cfg.Adapter)
 	}
 }
 
@@ -406,4 +420,118 @@ func (o *ollamaAdapter) Endpoint(baseURL, _ string) string {
 
 func (o *ollamaAdapter) AuthHeader(_ string) (string, string) {
 	return "", "" // Ollama typically runs locally without auth
+}
+
+// ── DeepSeek ─────────────────────────────────────────────────────────────────
+// DeepSeek exposes an OpenAI-compatible endpoint; reuses OpenAI wire types.
+
+type deepSeekAdapter struct{}
+
+func (d *deepSeekAdapter) Marshal(req LLMRequest) ([]byte, error) {
+	msgs := make([]openAIReqMessage, 0, len(req.Messages)+1)
+	if req.System != "" {
+		msgs = append(msgs, openAIReqMessage{Role: "system", Content: req.System})
+	}
+	for _, m := range req.Messages {
+		if m.Role == RoleSystem {
+			continue
+		}
+		msgs = append(msgs, openAIReqMessage{Role: string(m.Role), Content: m.Content})
+	}
+	return json.Marshal(openAIRequest{
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		Messages:  msgs,
+	})
+}
+
+func (d *deepSeekAdapter) Unmarshal(body []byte) (LLMResponse, error) {
+	var resp openAIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return LLMResponse{}, fmt.Errorf("deepseek: unmarshal: %w", err)
+	}
+	if resp.Error != nil {
+		return LLMResponse{}, fmt.Errorf("deepseek: api error: %s", resp.Error.Message)
+	}
+	var text, finishReason string
+	if len(resp.Choices) > 0 {
+		text = resp.Choices[0].Message.Content
+		finishReason = resp.Choices[0].FinishReason
+	}
+	return LLMResponse{
+		Content:      text,
+		StopReason:   finishReason,
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+	}, nil
+}
+
+func (d *deepSeekAdapter) Endpoint(baseURL, _ string) string {
+	if baseURL == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	return strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+}
+
+func (d *deepSeekAdapter) AuthHeader(apiKey string) (string, string) {
+	return "Authorization", "Bearer " + apiKey
+}
+
+// ── Custom (OpenAI-compatible wire, config-driven auth) ───────────────────────
+// Use adapter: custom for any OpenAI-compatible provider without code changes:
+//   HuggingFace TGI, vLLM, LM Studio, Groq, Together AI, Fireworks, etc.
+//
+// auth_header_name defaults to "Authorization"; auth_header_prefix defaults to "Bearer ".
+// Example for x-api-key style: auth_header_name: "x-api-key", auth_header_prefix: ""
+
+type customAdapter struct {
+	authHeaderName   string
+	authHeaderPrefix string
+}
+
+func (c *customAdapter) Marshal(req LLMRequest) ([]byte, error) {
+	msgs := make([]openAIReqMessage, 0, len(req.Messages)+1)
+	if req.System != "" {
+		msgs = append(msgs, openAIReqMessage{Role: "system", Content: req.System})
+	}
+	for _, m := range req.Messages {
+		if m.Role == RoleSystem {
+			continue
+		}
+		msgs = append(msgs, openAIReqMessage{Role: string(m.Role), Content: m.Content})
+	}
+	return json.Marshal(openAIRequest{
+		Model:     req.Model,
+		MaxTokens: req.MaxTokens,
+		Messages:  msgs,
+	})
+}
+
+func (c *customAdapter) Unmarshal(body []byte) (LLMResponse, error) {
+	var resp openAIResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return LLMResponse{}, fmt.Errorf("custom: unmarshal: %w", err)
+	}
+	if resp.Error != nil {
+		return LLMResponse{}, fmt.Errorf("custom: api error: %s", resp.Error.Message)
+	}
+	var text, finishReason string
+	if len(resp.Choices) > 0 {
+		text = resp.Choices[0].Message.Content
+		finishReason = resp.Choices[0].FinishReason
+	}
+	return LLMResponse{
+		Content:      text,
+		StopReason:   finishReason,
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+	}, nil
+}
+
+func (c *customAdapter) Endpoint(baseURL, _ string) string {
+	return strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+}
+
+func (c *customAdapter) AuthHeader(apiKey string) (string, string) {
+	return c.authHeaderName, c.authHeaderPrefix + apiKey
 }

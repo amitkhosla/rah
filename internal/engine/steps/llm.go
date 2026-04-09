@@ -79,7 +79,7 @@ type llmCallParams struct {
 // resolveCallParams derives call parameters from a model config and API key.
 // Called both at bake time (pre-resolve) and at runtime (dynamic model override).
 func resolveCallParams(modelCfg config.LLMModelConfig, apiKey string) (llmCallParams, error) {
-	adapter, err := NewAdapter(modelCfg.Adapter)
+	adapter, err := NewAdapter(modelCfg)
 	if err != nil {
 		return llmCallParams{}, err
 	}

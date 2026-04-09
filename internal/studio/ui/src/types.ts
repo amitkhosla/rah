@@ -190,7 +190,7 @@ export interface ModelCapabilities {
   supported_tool_formats?: string[]
 }
 
-export type LLMAdapter = 'anthropic' | 'openai' | 'gemini' | 'ollama'
+export type LLMAdapter = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'deepseek' | 'custom'
 
 export interface LLMModel {
   alias: string
@@ -200,6 +200,9 @@ export interface LLMModel {
   api_key_ref?: string
   max_tokens?: number
   capabilities: ModelCapabilities
+  // Only used when adapter === 'custom'. Defaults: name="Authorization", prefix="Bearer "
+  auth_header_name?: string
+  auth_header_prefix?: string
 }
 
 // ── MCP ───────────────────────────────────────────────────────────

@@ -27,6 +27,12 @@ const (
 	AdapterOpenAI    LLMProviderAdapter = "openai"
 	AdapterGemini    LLMProviderAdapter = "gemini"
 	AdapterOllama    LLMProviderAdapter = "ollama"
+	AdapterDeepSeek  LLMProviderAdapter = "deepseek"
+	// AdapterCustom uses the OpenAI-compatible wire format with auth headers
+	// driven entirely by AuthHeaderName and AuthHeaderPrefix in LLMModelConfig.
+	// Use this for any OpenAI-compatible provider (HuggingFace TGI, vLLM,
+	// LM Studio, Groq, Together AI, etc.) without requiring a code change.
+	AdapterCustom LLMProviderAdapter = "custom"
 )
 
 // ModelCapabilities declares what a model supports and its hard limits.
@@ -54,6 +60,12 @@ type LLMModelConfig struct {
 	Capabilities         ModelCapabilities  `json:"capabilities"                   yaml:"capabilities"`
 	CostPerInputToken    float64            `json:"cost_per_input_token,omitempty" yaml:"cost_per_input_token,omitempty"`
 	CostPerOutputToken   float64            `json:"cost_per_output_token,omitempty" yaml:"cost_per_output_token,omitempty"`
+	// AuthHeaderName and AuthHeaderPrefix are used only when Adapter == "custom".
+	// AuthHeaderName is the HTTP header to set (default: "Authorization").
+	// AuthHeaderPrefix is prepended to the API key value (default: "Bearer ").
+	// Example: AuthHeaderName="x-api-key", AuthHeaderPrefix="" → x-api-key: <key>
+	AuthHeaderName   string `json:"auth_header_name,omitempty"   yaml:"auth_header_name,omitempty"`
+	AuthHeaderPrefix string `json:"auth_header_prefix,omitempty" yaml:"auth_header_prefix,omitempty"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
