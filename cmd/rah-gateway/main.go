@@ -223,6 +223,7 @@ func main() {
 		log.Printf("No tenant quotas configured (all tenants unlimited)")
 	} else {
 		log.Printf("Cost quotas initialized: %d tenants", quotaCount)
+	}
 	// 2c. Wire ingest eventing into all datastore domains.
 	// Every successful Put/Delete/MultiPut emits a KindDBPut or KindDBDelete event.
 	// The instance fingerprint is stamped as Model so consumers can skip events

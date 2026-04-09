@@ -12,6 +12,12 @@ import type {
   UpsertTenantRequest,
   UpsertRateLimitRequest,
   CredentialListResponse,
+  AIEnvelope,
+  LLMModel,
+  MCPServer,
+  MCPPingResult,
+  APIToolDef,
+  VirtualMCPServer,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -115,4 +121,98 @@ export function deleteCredential(alias: string, name: string): Promise<void> {
   return request<void>(`/api/tenants/${encodeURIComponent(alias)}/credentials/${encodeURIComponent(name)}`, {
     method: 'DELETE',
   })
+}
+
+// ── AI helpers ─────────────────────────────────────────────────────
+
+// Unwraps the { ok, data, error } envelope returned by all /api/ai/* routes.
+async function aiReq<T>(url: string, options?: RequestInit): Promise<T> {
+  const env = await request<AIEnvelope<T>>(url, options)
+  if (!env.ok) throw new Error(env.error ?? 'AI request failed')
+  return env.data as T
+}
+
+const AI_JSON = { 'content-type': 'application/json' }
+
+// ── LLM Models ─────────────────────────────────────────────────────
+
+export function listLLMModels(): Promise<LLMModel[]> {
+  return aiReq<LLMModel[]>('/api/ai/llm/models')
+}
+
+export function upsertLLMModel(model: LLMModel): Promise<LLMModel> {
+  return aiReq<LLMModel>('/api/ai/llm/models', {
+    method: 'POST',
+    headers: AI_JSON,
+    body: JSON.stringify(model),
+  })
+}
+
+export function deleteLLMModel(alias: string): Promise<void> {
+  return aiReq<void>(`/api/ai/llm/models/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+}
+
+// ── MCP Servers (external) ──────────────────────────────────────────
+
+export function listMCPServers(): Promise<MCPServer[]> {
+  return aiReq<MCPServer[]>('/api/ai/mcp/servers')
+}
+
+export function upsertMCPServer(srv: MCPServer): Promise<MCPServer> {
+  return aiReq<MCPServer>('/api/ai/mcp/servers', {
+    method: 'POST',
+    headers: AI_JSON,
+    body: JSON.stringify(srv),
+  })
+}
+
+export function deleteMCPServer(alias: string): Promise<void> {
+  return aiReq<void>(`/api/ai/mcp/servers/${encodeURIComponent(alias)}`, { method: 'DELETE' })
+}
+
+export function pingMCPServer(alias: string): Promise<MCPPingResult> {
+  return aiReq<MCPPingResult>(`/api/ai/mcp/servers/${encodeURIComponent(alias)}/ping`, { method: 'POST' })
+}
+
+export function probeMCPTools(alias: string): Promise<unknown[]> {
+  return aiReq<unknown[]>(`/api/ai/mcp/servers/${encodeURIComponent(alias)}/tools`)
+}
+
+// ── API Tools ──────────────────────────────────────────────────────
+
+export function listAPITools(): Promise<APIToolDef[]> {
+  return aiReq<APIToolDef[]>('/api/ai/tools/apis')
+}
+
+export function upsertAPITool(tool: APIToolDef): Promise<APIToolDef> {
+  return aiReq<APIToolDef>('/api/ai/tools/apis', {
+    method: 'POST',
+    headers: AI_JSON,
+    body: JSON.stringify(tool),
+  })
+}
+
+export function deleteAPITool(name: string): Promise<void> {
+  return aiReq<void>(`/api/ai/tools/apis/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+// ── Virtual MCP Servers ────────────────────────────────────────────
+
+export function listVirtualMCPServers(tenantId = 0): Promise<VirtualMCPServer[]> {
+  return aiReq<VirtualMCPServer[]>(`/api/ai/mcp/virtual${tenantId ? `?tenant_id=${tenantId}` : ''}`)
+}
+
+export function upsertVirtualMCPServer(def: VirtualMCPServer): Promise<VirtualMCPServer> {
+  return aiReq<VirtualMCPServer>('/api/ai/mcp/virtual', {
+    method: 'POST',
+    headers: AI_JSON,
+    body: JSON.stringify(def),
+  })
+}
+
+export function deleteVirtualMCPServer(name: string, tenantId = 0): Promise<void> {
+  return aiReq<void>(
+    `/api/ai/mcp/virtual/${encodeURIComponent(name)}${tenantId ? `?tenant_id=${tenantId}` : ''}`,
+    { method: 'DELETE' },
+  )
 }

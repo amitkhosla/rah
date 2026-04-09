@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rah-gateway.fullname" . }}-config
+  labels:
+    {{- include "rah-gateway.labels" . | nindent 4 }}
+data:
+  gateway.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
+    {{- if .Values.extraConfig }}
+    {{- .Values.extraConfig | nindent 4 }}
+    {{- end }}

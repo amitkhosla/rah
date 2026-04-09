@@ -1,0 +1,53 @@
+# RAH Gateway — local Docker Compose configuration
+# Mounted read-only at /app/gateway.yaml inside the container.
+# Redis/PG addresses are overridden via environment variables
+# (RAH_REDIS_ADDR, RAH_PG_DSN) set in docker-compose.yml.
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "redis:6379"   # service name from docker-compose
+        pool_size: 16
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address:  "postgres:5432"   # service name from docker-compose
+        username: "gateway"
+        password: "devpassword"
+        database: "gateway"
+
+  bindings:
+    api_definitions: "postgres_primary"
+    flows:           "postgres_primary"
+    tenant_data:     "postgres_primary"
+    rate_limit:      "postgres_primary"
+    customer_data:   "postgres_primary"
+    instances:       "postgres_primary"
+    credentials:     "postgres_primary"
+    async_jobs:      "postgres_primary"
+    ai_config:       "postgres_primary"
+    mcp_tools:       "postgres_primary"
+    cache:           "redis_primary"
+
+cache:
+  mem_budget_mb: 64
+  tenant_limit_mb: 8
+  backend:
+    kind: memory
+
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout_ms: 30000
+  write_timeout_ms: 30000
+
+log:
+  level: info
+  format: json

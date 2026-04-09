@@ -15,7 +15,16 @@
       "Bash(ls:*)",
       "mcp__dev-tool__list_symbols",
       "mcp__dev-tool__show_file",
-      "mcp__dev-tool__grep_code"
+      "mcp__dev-tool__grep_code",
+      "Bash(sort -k2)",
+      "Bash(wc -l /d/GoLand/rah/internal/studio/ui/src/components/*.tsx)",
+      "Bash(/tmp/package_summary.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(python3 -c \":*)",
+      "Bash(go tool:*)",
+      "Bash(awk 'NR>=630 && NR<=650' cmd/rah-gateway/main.go)",
+      "Bash(curl -s http://localhost:8080 -o /dev/null -w \"%{http_code}\")",
+      "Bash(curl -s http://localhost:8092 -o /dev/null -w \"%{http_code}\")"
     ]
   }
 }

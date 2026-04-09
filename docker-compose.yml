@@ -1,0 +1,91 @@
+version: "3.9"
+
+# Local development stack: RAH gateway + Redis + PostgreSQL
+# Usage:
+#   docker compose up -d          # start all
+#   docker compose logs -f gateway # tail gateway logs
+#   docker compose down -v         # stop + delete volumes
+
+services:
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── RAH Gateway ───────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Build for current machine architecture — fast local iteration
+      target: runtime
+    image: rah-gateway:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Data plane
+      - "8081:8081"   # Management plane
+    volumes:
+      # Mount local config file — edit gateway.yaml and restart to reload
+      - ./deploy/docker/gateway-local.yaml:/app/gateway.yaml:ro
+    environment:
+      # Override individual config values via env (config loader reads these)
+      RAH_REDIS_ADDR: redis:6379
+      RAH_PG_DSN: "postgres://gateway:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/gateway?sslmode=disable"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── RAH Studio (optional UI) ──────────────────────────────────────────────
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: rah-gateway:local
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/rah-studio"]
+    command: ["-gateway", "http://gateway:8081", "-port", "3000"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+    profiles:
+      - studio  # Only starts with: docker compose --profile studio up
+
+volumes:
+  postgres_data:

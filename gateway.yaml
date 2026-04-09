@@ -1,0 +1,39 @@
+# RAH Gateway Configuration
+# Start with: go run ./cmd/rah-gateway -config gateway.yaml
+
+datastore:
+  stores:
+    # ── Redis (hot-path / ephemeral) ──────────────────────────────────────────
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "localhost:6379"
+        pool_size: 32
+
+    # ── PostgreSQL (persistent / control-plane) ───────────────────────────────
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address:  "localhost:5432"
+        username: "postgres"
+        password: "2hi2@HI@"
+        database: "gateway"
+
+  # Logical domain → store binding
+  # Required: api_definitions, flows, tenant_data, cache
+  bindings:
+    api_definitions: "postgres_primary"   # compiled API + path definitions
+    flows:           "postgres_primary"   # compiled instruction sets
+    tenant_data:     "postgres_primary"   # aliases, service URLs, identifiers
+    rate_limit:      "postgres_primary"   # named rate limit configs + counters
+    customer_data:   "postgres_primary"   # arbitrary per-tenant data
+    instances:       "postgres_primary"   # live gateway instance registry
+    credentials:     "postgres_primary"   # credential mappings
+    async_jobs:      "postgres_primary"   # async job state
+    ai_config:       "postgres_primary"   # LLM model catalog + MCP registry
+    mcp_tools:       "postgres_primary"   # virtual MCP server definitions
+    cache:           "redis_primary"      # request-level response cache (hot path)

@@ -12,6 +12,88 @@ interface Props {
   onSaveFlow: () => void
 }
 
+// ── Visual Mode recipe definitions ───────────────────────────────
+interface VisualRecipe {
+  title: string
+  wraps: string        // action type this maps to
+  description: string
+}
+
+interface VisualGroup {
+  label: string
+  icon: string
+  recipes: VisualRecipe[]
+}
+
+const VISUAL_GROUPS: VisualGroup[] = [
+  {
+    label: 'INFERENCE',
+    icon: '🧠',
+    recipes: [
+      { title: 'Call LLM',        wraps: 'llm_call',            description: 'Send a prompt to an AI model' },
+      { title: 'Stream Response', wraps: 'llm_call',            description: 'Stream tokens to client via SSE' },
+      { title: 'Route to Model',  wraps: 'route_llm',           description: 'Conditionally route to different models' },
+    ],
+  },
+  {
+    label: 'KNOWLEDGE',
+    icon: '📚',
+    recipes: [
+      { title: 'Search Vector Store', wraps: 'vector_search',        description: 'Find relevant content by semantic similarity' },
+      { title: 'Embed Text',          wraps: 'embed_text',           description: 'Convert text to vector embedding' },
+      { title: 'Chunk Document',      wraps: 'chunk_text',           description: 'Split document into overlapping chunks' },
+      { title: 'Semantic Cache',      wraps: 'semantic_cache_get',   description: 'Check cache before calling LLM' },
+    ],
+  },
+  {
+    label: 'MEMORY',
+    icon: '💾',
+    recipes: [
+      { title: 'Load History', wraps: 'load_history', description: 'Load conversation history from cache' },
+      { title: 'Save History', wraps: 'save_history', description: 'Save conversation history to cache' },
+      { title: 'Trim History', wraps: 'trim_history', description: 'Remove oldest messages when context full' },
+    ],
+  },
+  {
+    label: 'TOOLS & AGENTS',
+    icon: '🔧',
+    recipes: [
+      { title: 'Call MCP Tool',      wraps: 'mcp_call_tool',   description: 'Call a specific tool on an MCP server' },
+      { title: 'Execute Agent Plan', wraps: 'execute_plan',    description: 'Run LLM-generated multi-step tool plan' },
+      { title: 'Parse Tool Calls',   wraps: 'parse_tool_calls',description: 'Extract tool calls from LLM response' },
+      { title: 'Serve as MCP',       wraps: 'serve_mcp',       description: 'Expose this flow as an MCP server endpoint' },
+    ],
+  },
+  {
+    label: 'SECURITY',
+    icon: '🔒',
+    recipes: [
+      { title: 'Validate Token',  wraps: 'token_validation', description: 'Validate JWT or API key' },
+      { title: 'Check Rate Limit',wraps: 'check_rate_limit', description: 'Enforce request rate limits' },
+      { title: 'Load Credential', wraps: 'load_credential',  description: 'Fetch a stored credential' },
+    ],
+  },
+  {
+    label: 'ROUTING & FLOW',
+    icon: '🔀',
+    recipes: [
+      { title: 'If / Else',         wraps: 'if',        description: 'Branch based on a condition' },
+      { title: 'Call Another Flow', wraps: 'call',      description: 'Execute a sub-flow' },
+      { title: 'HTTP Request',      wraps: 'http_call', description: 'Call an external HTTP endpoint' },
+      { title: 'Return Response',   wraps: 'return',    description: 'Return a value and exit flow' },
+    ],
+  },
+  {
+    label: 'DATA',
+    icon: '📊',
+    recipes: [
+      { title: 'Extract Field',  wraps: 'extract',           description: 'Extract a field from request/response' },
+      { title: 'Set Response',   wraps: 'set_response_body', description: 'Set the response body' },
+      { title: 'Lookup Tenant',  wraps: 'registry_lookup',   description: 'Resolve tenant from request header' },
+    ],
+  },
+]
+
 // ── Switch case helpers ───────────────────────────────────────────
 type SwitchCase = { match: string; flow: string }
 
@@ -40,6 +122,7 @@ export default function FlowDesigner({
   const [dragOver, setDragOver]   = useState(false)
   const [expanded, setExpanded]   = useState<Set<number>>(new Set())
   const [justSaved, setJustSaved] = useState(false)
+  const [mode, setMode]           = useState<'visual' | 'expert'>('visual')
 
   // map: block-type → { fieldKey → FieldDef }
   const fieldMap = useMemo<Record<string, Record<string, FieldDef>>>(() =>
@@ -48,6 +131,29 @@ export default function FlowDesigner({
     ),
     [blocks],
   )
+
+  // map: block-type → PaletteBlock (for visual mode drag payload lookup)
+  const blockByType = useMemo<Record<string, PaletteBlock>>(() =>
+    Object.fromEntries(blocks.map(b => [b.type, b])),
+    [blocks],
+  )
+
+  // Build a PaletteBlock drag-payload from a visual recipe
+  function recipeToBlock(recipe: VisualRecipe): PaletteBlock {
+    const existing = blockByType[recipe.wraps]
+    if (existing) return existing
+    // Fallback for actions not in schema
+    return {
+      type: recipe.wraps,
+      title: recipe.title,
+      description: recipe.description,
+      category: 'visual',
+      capability: '',
+      supports_nested: false,
+      defaults: {},
+      fields: [],
+    }
+  }
 
   // Synthetic call-blocks for each saved flow
   const callFieldDefs = useMemo(() => blocks.find(b => b.type === 'call')?.fields ?? [], [blocks])
@@ -277,46 +383,122 @@ export default function FlowDesigner({
       <div className="panel">
         <div className="panel-header">Instruction Palette</div>
         <div className="panel-body">
-          <input
-            className="input"
-            placeholder="filter by name or category"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-          />
-          <div className="block-list">
-            {filteredSaved.length > 0 && (
-              <>
-                <div className="palette-section-label">My Flows</div>
-                {filteredSaved.map(b => (
+          {/* Mode toggle */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+            <button
+              style={{
+                flex: 1,
+                padding: '6px 0',
+                borderRadius: 8,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 700,
+                background: mode === 'visual' ? 'var(--accent)' : '#27406b',
+                color: mode === 'visual' ? '#031427' : 'var(--muted)',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              onClick={() => setMode('visual')}
+            >
+              Visual {mode === 'visual' ? '●' : '○'}
+            </button>
+            <button
+              style={{
+                flex: 1,
+                padding: '6px 0',
+                borderRadius: 8,
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 700,
+                background: mode === 'expert' ? 'var(--accent)' : '#27406b',
+                color: mode === 'expert' ? '#031427' : 'var(--muted)',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              onClick={() => setMode('expert')}
+            >
+              Expert {mode === 'expert' ? '●' : '○'}
+            </button>
+          </div>
+
+          {mode === 'expert' ? (
+            /* ── Expert mode: original searchable block list ── */
+            <>
+              <input
+                className="input"
+                placeholder="filter by name or category"
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+              />
+              <div className="block-list">
+                {filteredSaved.length > 0 && (
+                  <>
+                    <div className="palette-section-label">My Flows</div>
+                    {filteredSaved.map(b => (
+                      <div
+                        key={`saved-${b.title}`}
+                        className="block block-saved"
+                        draggable
+                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(b))}
+                      >
+                        <strong>{b.title}</strong>
+                        <div className="sub">call · {b.description}</div>
+                      </div>
+                    ))}
+                    <div className="palette-section-label" style={{ marginTop: 8 }}>Instructions</div>
+                  </>
+                )}
+                {filteredBlocks.length === 0 && filteredSaved.length === 0 && (
+                  <span className="hint">No blocks match.</span>
+                )}
+                {filteredBlocks.map(b => (
                   <div
-                    key={`saved-${b.title}`}
-                    className="block block-saved"
+                    key={b.type}
+                    className="block"
                     draggable
                     onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(b))}
                   >
                     <strong>{b.title}</strong>
-                    <div className="sub">call · {b.description}</div>
+                    <div className="sub">{b.category} · {b.capability}</div>
+                    <div className="sub" style={{ marginTop: 2, opacity: 0.75 }}>{b.description}</div>
                   </div>
                 ))}
-                <div className="palette-section-label" style={{ marginTop: 8 }}>Instructions</div>
-              </>
-            )}
-            {filteredBlocks.length === 0 && filteredSaved.length === 0 && (
-              <span className="hint">No blocks match.</span>
-            )}
-            {filteredBlocks.map(b => (
-              <div
-                key={b.type}
-                className="block"
-                draggable
-                onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(b))}
-              >
-                <strong>{b.title}</strong>
-                <div className="sub">{b.category} · {b.capability}</div>
-                <div className="sub" style={{ marginTop: 2, opacity: 0.75 }}>{b.description}</div>
               </div>
-            ))}
-          </div>
+            </>
+          ) : (
+            /* ── Visual mode: grouped recipe blocks ── */
+            <div className="block-list">
+              {VISUAL_GROUPS.map(group => (
+                <div key={group.label}>
+                  <div
+                    className="palette-section-label"
+                    style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+                  >
+                    <span>{group.icon}</span>
+                    <span>{group.label}</span>
+                  </div>
+                  {group.recipes.map(recipe => {
+                    const payload = recipeToBlock(recipe)
+                    return (
+                      <div
+                        key={`${group.label}-${recipe.wraps}-${recipe.title}`}
+                        className="block"
+                        draggable
+                        onDragStart={e =>
+                          e.dataTransfer.setData('application/json', JSON.stringify(payload))
+                        }
+                      >
+                        <strong>{recipe.title}</strong>
+                        <div className="sub" style={{ marginTop: 2, opacity: 0.75 }}>
+                          {recipe.description}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
