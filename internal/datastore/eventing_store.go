@@ -14,19 +14,26 @@ import (
 // supports MultiGet/MultiPut those are used; otherwise it falls back to
 // sequential single-key operations. This lets every domain store be used
 // uniformly via the BatchStore interface regardless of backend.
+//
+// sourceID (instance fingerprint) is stamped as Model on every emitted event.
+// Consumers compare Model to their own fingerprint and skip events they emitted,
+// preventing the write-emit-consume-write loop when multiple instances share
+// the same store.
 type EventingStore struct {
 	inner    KeyValueStore
 	pipeline *ingest.Pipeline
 	domain   string
+	sourceID string // instance fingerprint; Model field in emitted events
 }
 
 // WrapWithEventing returns an EventingStore wrapping store.
+// sourceID should be the instance fingerprint (e.g. fm.TxIDGen.Fingerprint()).
 // If pipeline is nil the original store is returned unchanged (no overhead).
-func WrapWithEventing(store KeyValueStore, pipeline *ingest.Pipeline, domain string) KeyValueStore {
+func WrapWithEventing(store KeyValueStore, pipeline *ingest.Pipeline, domain, sourceID string) KeyValueStore {
 	if pipeline == nil {
 		return store
 	}
-	return &EventingStore{inner: store, pipeline: pipeline, domain: domain}
+	return &EventingStore{inner: store, pipeline: pipeline, domain: domain, sourceID: sourceID}
 }
 
 // ── KeyValueStore ────────────────────────────────────────────────────────────
@@ -132,7 +139,7 @@ func (s *EventingStore) emitPut(tenant Tenant, key string, value []byte) {
 	}
 	e := ingest.Event{
 		Kind:        ingest.KindDBPut,
-		Model:       s.inner.Name(),
+		Model:       s.sourceID,
 		SessionID:   s.domain,
 		TxID:        fk,
 		TimestampNs: time.Now().UnixNano(),
@@ -152,7 +159,7 @@ func (s *EventingStore) emitDelete(tenant Tenant, key string) {
 	}
 	e := ingest.Event{
 		Kind:        ingest.KindDBDelete,
-		Model:       s.inner.Name(),
+		Model:       s.sourceID,
 		SessionID:   s.domain,
 		TxID:        fk,
 		TimestampNs: time.Now().UnixNano(),

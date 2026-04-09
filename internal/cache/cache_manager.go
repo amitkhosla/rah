@@ -91,6 +91,11 @@ type CacheManager struct {
 
 	// Cleaner lifecycle (shared stop signal for all background goroutines).
 	cleanerStop chan struct{}
+
+	// OnInvalidate is called synchronously when Invalidate is called on this
+	// instance. Set by main.go to emit KindCacheInvalidate to other instances.
+	// Must not block; nil = no-op.
+	OnInvalidate func(tenantID uint16, key []byte)
 }
 
 type tenantCounter struct {
@@ -649,6 +654,26 @@ func (cm *CacheManager) Submit(batch rctx.Batch) {
 // Stats returns the current global memory usage in bytes.
 func (cm *CacheManager) Stats() uint64 {
 	return cm.globalUsed.Load()
+}
+
+// Invalidate removes (tenantID, key) from the L1 index and deletes it from
+// the backend, then calls OnInvalidate so the caller can propagate the
+// deletion to other instances via the ingest pipeline.
+// Safe to call when the entry does not exist — both operations are no-ops.
+func (cm *CacheManager) Invalidate(tenantID uint16, key []byte) error {
+	cm.deleteKey(tenantID, key)
+	if cm.OnInvalidate != nil {
+		cm.OnInvalidate(tenantID, key)
+	}
+	return cm.backend.Delete(tenantID, key)
+}
+
+// InvalidateLocal removes (tenantID, key) from the L1 index and deletes it
+// from the backend WITHOUT calling OnInvalidate. Use this when consuming a
+// remote invalidation event to avoid a cascade loop.
+func (cm *CacheManager) InvalidateLocal(tenantID uint16, key []byte) error {
+	cm.deleteKey(tenantID, key)
+	return cm.backend.Delete(tenantID, key)
 }
 
 // deleteKey removes the index entry for (tenantID, key). Used in tests.

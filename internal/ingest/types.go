@@ -22,6 +22,11 @@ const (
 	KindHistoryTrim   EventKind = "history_trim"
 	KindCustom        EventKind = "custom"
 
+	// KindCacheInvalidate is emitted after every successful in-memory cache Put.
+	// TenantID = tenant, TxID = cache key string, Model = emitting instance ID.
+	// Consumers call Invalidate on their local L1 slab, skipping events they emitted.
+	KindCacheInvalidate EventKind = "cache_invalidate"
+
 	// KindDBPut is emitted after any successful Put/MultiPut/PutWithTTL to a
 	// datastore domain. SessionID = domain, TxID = full scoped key,
 	// Model = store name, Payload = written value bytes.
@@ -124,6 +129,50 @@ func (e *Event) releasePayload() {
 	if e.payloadHeap != nil {
 		e.payloadHeap.release()
 	}
+}
+
+// UnmarshalJSON restores an Event from the canonical wire format produced by
+// MarshalJSON. Payload is stored back as inline bytes (up to inlinePayloadMax)
+// or heap-allocated; ref count is set to 1 (single consumer path).
+func (e *Event) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		TenantID     uint16          `json:"tenant_id"`
+		APIID        uint32          `json:"api_id"`
+		Kind         EventKind       `json:"kind"`
+		Model        string          `json:"model,omitempty"`
+		SessionID    string          `json:"session_id,omitempty"`
+		TxID         string          `json:"tx_id,omitempty"`
+		TimestampNs  int64           `json:"ts_ns"`
+		DurationNs   int64           `json:"duration_ns,omitempty"`
+		InputTokens  int32           `json:"input_tokens,omitempty"`
+		OutputTokens int32           `json:"output_tokens,omitempty"`
+		Payload      json.RawMessage `json:"payload,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	e.TenantID = w.TenantID
+	e.APIID = w.APIID
+	e.Kind = w.Kind
+	e.Model = w.Model
+	e.SessionID = w.SessionID
+	e.TxID = w.TxID
+	e.TimestampNs = w.TimestampNs
+	e.DurationNs = w.DurationNs
+	e.InputTokens = w.InputTokens
+	e.OutputTokens = w.OutputTokens
+	if len(w.Payload) > 0 {
+		// Payload is stored as a JSON string (escaped bytes) or raw JSON.
+		// Re-materialise as raw bytes for the consumer.
+		var raw []byte
+		if json.Unmarshal(w.Payload, &raw) != nil {
+			// Not a JSON string — use the raw message bytes directly.
+			raw = []byte(w.Payload)
+		}
+		e.SetPayload(raw, 1)
+	}
+	return nil
 }
 
 // MarshalJSON produces the canonical JSON representation of an Event.
