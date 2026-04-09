@@ -3,8 +3,10 @@ package registry
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"hash/maphash"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -996,4 +998,287 @@ func nextPow2(n uint32) uint32 {
 	n |= n >> 16
 	n++
 	return n
+}
+
+// ─── Remote event application ──────────────────────────────────────────────────
+
+// ApplyStorePut applies a raw key-value pair received from a remote KindDBPut
+// ingest event to the in-memory registry state WITHOUT persisting back to the
+// store. rawKey is the unstored/domain-unscoped key as written by
+// TenantRegistryStore (e.g. "tenant:acme:url:primary", "rl:default").
+//
+// Call this from the ingest consumer that handles KindDBPut events for the
+// tenant_registry domain so that changes made on one gateway instance are
+// reflected in the local in-memory TenantRegistry on all other instances.
+func (m *RegistryManager) ApplyStorePut(rawKey string, value []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	switch {
+	case strings.HasPrefix(rawKey, tenantKeyPrefix):
+		// "tenant:{primaryAlias}:..."
+		rest := strings.TrimPrefix(rawKey, tenantKeyPrefix)
+
+		if strings.HasSuffix(rest, aliasSuffix) {
+			// "tenant:{primaryAlias}:aliases" → JSON []string
+			primary := strings.TrimSuffix(rest, aliasSuffix)
+			var aliases []string
+			if json.Unmarshal(value, &aliases) != nil || len(aliases) == 0 {
+				return
+			}
+			reg := m.activeOrEmpty()
+			tID, reg := m.resolveOrCreateTenant(reg, primary)
+			for _, a := range aliases[1:] {
+				if _, exists := m.aliasMap[a]; !exists {
+					m.aliasMap[a] = tID
+				}
+			}
+			m.ensureTenantRecord(tID)
+			rec := m.tenantData[tID]
+			rec.Aliases = append(rec.Aliases[:0], aliases...)
+			reg.Aliases = m.rebuildAliasTable()
+			State.Active.Store(reg)
+			return
+		}
+
+		if idx := strings.Index(rest, urlPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(urlPropPrefix):]
+			m.applyURLProp(primary, propKey, string(value))
+			return
+		}
+		if idx := strings.Index(rest, idPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(idPropPrefix):]
+			m.applyIDProp(primary, propKey, string(value))
+			return
+		}
+		if idx := strings.Index(rest, metaPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(metaPropPrefix):]
+			m.applyMetaProp(primary, propKey, string(value))
+			return
+		}
+
+	case strings.HasPrefix(rawKey, rateLimitPrefix):
+		// "rl:{name}" → JSON storedRateLimitConfig
+		name := strings.TrimPrefix(rawKey, rateLimitPrefix)
+		var stored storedRateLimitConfig
+		if json.Unmarshal(value, &stored) != nil {
+			return
+		}
+		cfg := RateLimitConfig{
+			PerSec:      stored.PerSec,
+			PerMin:      stored.PerMin,
+			BurstFactor: stored.BurstFactor,
+		}
+		// Reuse the normal upsert logic but rely on the fact that m.store is
+		// already set to nil during a "suppress" path, OR call the internal
+		// helper that skips persist. Since the mutex is held we inline it.
+		if id, exists := m.rateLimitNames[name]; exists {
+			reg := m.activeOrEmpty()
+			if int(id) < len(reg.RateLimitConfigs) {
+				reg.RateLimitConfigs[id] = cfg
+			}
+			State.Active.Store(reg)
+			return
+		}
+		m.nextRLConfigID++
+		id := m.nextRLConfigID
+		m.rateLimitNames[name] = id
+		reg := m.activeOrEmpty()
+		needed := int(id) + 1
+		if needed > len(reg.RateLimitConfigs) {
+			grown := make([]RateLimitConfig, needed)
+			copy(grown, reg.RateLimitConfigs)
+			reg.RateLimitConfigs = grown
+		}
+		reg.RateLimitConfigs[id] = cfg
+		State.Active.Store(reg)
+	}
+}
+
+// applyURLProp sets a single service URL for primaryAlias without persisting.
+// Must be called under the manager mutex.
+func (m *RegistryManager) applyURLProp(primary, key, value string) {
+	reg := m.activeOrEmpty()
+	tID, reg := m.resolveOrCreateTenant(reg, primary)
+	kID, reg := m.resolveOrCreateURLKey(reg, key)
+	vID := m.internValue(reg, []byte(value))
+	idx := uint32(tID)*reg.URLs.Stride + uint32(kID)
+	atomic.StoreUint32(&reg.URLs.Matrix[idx], vID)
+	reg.Aliases = m.rebuildAliasTable()
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.ServiceURLs == nil {
+		rec.ServiceURLs = make(map[string]string)
+	}
+	rec.ServiceURLs[key] = value
+	State.Active.Store(reg)
+}
+
+// applyIDProp sets a single identifier for primaryAlias without persisting.
+// Must be called under the manager mutex.
+func (m *RegistryManager) applyIDProp(primary, key, value string) {
+	reg := m.activeOrEmpty()
+	tID, reg := m.resolveOrCreateTenant(reg, primary)
+	kID, reg := m.resolveOrCreateIDKey(reg, key)
+	vID := m.internValue(reg, []byte(value))
+	idx := uint32(tID)*reg.IDs.Stride + uint32(kID)
+	atomic.StoreUint32(&reg.IDs.Matrix[idx], vID)
+	reg.Aliases = m.rebuildAliasTable()
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.Identifiers == nil {
+		rec.Identifiers = make(map[string]string)
+	}
+	rec.Identifiers[key] = value
+	State.Active.Store(reg)
+}
+
+// applyMetaProp sets a single metadata value for primaryAlias without persisting.
+// Must be called under the manager mutex.
+func (m *RegistryManager) applyMetaProp(primary, key, value string) {
+	reg := m.activeOrEmpty()
+	tID, reg := m.resolveOrCreateTenant(reg, primary)
+	kID, reg := m.resolveOrCreateMetaKey(reg, key)
+	vID := m.internValue(reg, []byte(value))
+	idx := uint32(tID)*reg.Meta.Stride + uint32(kID)
+	atomic.StoreUint32(&reg.Meta.Matrix[idx], vID)
+	reg.Aliases = m.rebuildAliasTable()
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.Metadata == nil {
+		rec.Metadata = make(map[string]string)
+	}
+	rec.Metadata[key] = value
+	State.Active.Store(reg)
+}
+
+// ApplyStoreDelete applies a raw key deletion received from a remote
+// KindDBDelete ingest event to the in-memory registry state WITHOUT persisting.
+// rawKey follows the same format as ApplyStorePut.
+//
+// For individual property keys (url/id/meta) no in-memory removal is performed
+// because the PropStore matrix stores value IDs (0 = absent) — we zero the slot.
+// For tenant aliases keys, the entire tenant record is removed from memory.
+// For rate limit keys, the config slot is zeroed.
+func (m *RegistryManager) ApplyStoreDelete(rawKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	switch {
+	case strings.HasPrefix(rawKey, tenantKeyPrefix):
+		rest := strings.TrimPrefix(rawKey, tenantKeyPrefix)
+
+		if strings.HasSuffix(rest, aliasSuffix) {
+			// Deleting the aliases key means the whole tenant is gone.
+			primary := strings.TrimSuffix(rest, aliasSuffix)
+			tID, found := m.aliasMap[primary]
+			if !found {
+				return
+			}
+			for a, id := range m.aliasMap {
+				if id == tID {
+					delete(m.aliasMap, a)
+				}
+			}
+			reg := m.activeOrEmpty()
+			zeroRow := func(store *PropStore, tid uint16) {
+				if store.Stride == 0 {
+					return
+				}
+				start := uint32(tid) * store.Stride
+				if start+store.Stride > uint32(len(store.Matrix)) {
+					return
+				}
+				for i := uint32(0); i < store.Stride; i++ {
+					atomic.StoreUint32(&store.Matrix[start+i], 0)
+				}
+			}
+			zeroRow(&reg.URLs, tID)
+			zeroRow(&reg.IDs, tID)
+			zeroRow(&reg.Meta, tID)
+			State.FreeSlots = append(State.FreeSlots, tID)
+			reg.Aliases = m.rebuildAliasTable()
+			State.Active.Store(reg)
+			delete(m.tenantData, tID)
+			m.removeSortedTenantID(tID)
+			return
+		}
+
+		// Individual property delete: zero the matrix slot.
+		if idx := strings.Index(rest, urlPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(urlPropPrefix):]
+			if tID, ok := m.aliasMap[primary]; ok {
+				reg := m.activeOrEmpty()
+				if kID, ok := m.lookupURLKeyID(reg, propKey); ok {
+					slot := uint32(tID)*reg.URLs.Stride + uint32(kID)
+					atomic.StoreUint32(&reg.URLs.Matrix[slot], 0)
+					State.Active.Store(reg)
+				}
+				if rec := m.tenantData[tID]; rec != nil {
+					delete(rec.ServiceURLs, propKey)
+				}
+			}
+			return
+		}
+		if idx := strings.Index(rest, idPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(idPropPrefix):]
+			if tID, ok := m.aliasMap[primary]; ok {
+				reg := m.activeOrEmpty()
+				if kID, ok := m.lookupIDKeyID(reg, propKey); ok {
+					slot := uint32(tID)*reg.IDs.Stride + uint32(kID)
+					atomic.StoreUint32(&reg.IDs.Matrix[slot], 0)
+					State.Active.Store(reg)
+				}
+				if rec := m.tenantData[tID]; rec != nil {
+					delete(rec.Identifiers, propKey)
+				}
+			}
+			return
+		}
+		if idx := strings.Index(rest, metaPropPrefix); idx >= 0 {
+			primary, propKey := rest[:idx], rest[idx+len(metaPropPrefix):]
+			if tID, ok := m.aliasMap[primary]; ok {
+				reg := m.activeOrEmpty()
+				if kID, ok := m.lookupMetaKeyID(reg, propKey); ok {
+					slot := uint32(tID)*reg.Meta.Stride + uint32(kID)
+					atomic.StoreUint32(&reg.Meta.Matrix[slot], 0)
+					State.Active.Store(reg)
+				}
+				if rec := m.tenantData[tID]; rec != nil {
+					delete(rec.Metadata, propKey)
+				}
+			}
+			return
+		}
+
+	case strings.HasPrefix(rawKey, rateLimitPrefix):
+		// Zero out the config slot (can't shrink slice safely without re-bake).
+		name := strings.TrimPrefix(rawKey, rateLimitPrefix)
+		if id, ok := m.rateLimitNames[name]; ok {
+			delete(m.rateLimitNames, name)
+			reg := m.activeOrEmpty()
+			if int(id) < len(reg.RateLimitConfigs) {
+				reg.RateLimitConfigs[id] = RateLimitConfig{}
+			}
+			State.Active.Store(reg)
+		}
+	}
+}
+
+// lookupURLKeyID returns the KeyID for propKey in the URLs PropStore, if known.
+// Must be called under the manager mutex.
+func (m *RegistryManager) lookupURLKeyID(reg *TenantRegistry, propKey string) (uint16, bool) {
+	return findKeyID(reg.URLs.Keys, reg.URLs.StringPool, propKey)
+}
+
+// lookupIDKeyID returns the KeyID for propKey in the IDs PropStore, if known.
+func (m *RegistryManager) lookupIDKeyID(reg *TenantRegistry, propKey string) (uint16, bool) {
+	return findKeyID(reg.IDs.Keys, reg.IDs.StringPool, propKey)
+}
+
+// lookupMetaKeyID returns the KeyID for propKey in the Meta PropStore, if known.
+func (m *RegistryManager) lookupMetaKeyID(reg *TenantRegistry, propKey string) (uint16, bool) {
+	return findKeyID(reg.Meta.Keys, reg.Meta.StringPool, propKey)
 }
