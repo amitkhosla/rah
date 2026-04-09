@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+.github
+
+# IDE / editor
+.idea
+.vscode
+*.iml
+
+# Build outputs
+bin/
+dist/
+*.exe
+*.out
+*.test
+*.prof
+*.log
+
+# Test artifacts
+icache2/
+icache.test.exe
+merged_output.txt
+output.log
+data.csv
+benchmark.bat
+rah.zip
+
+# Documentation (not needed in image)
+docs/
+examples/
+
+# Node/Studio UI build dependencies (large; not needed for gateway binary)
+internal/studio/ui/node_modules/
+
+# Local config (use -v mount or ConfigMap in k8s)
+gateway.yaml
+
+# Claude/memory files
+.claude/
+claude.md
+CLAUDE.md
+memory/

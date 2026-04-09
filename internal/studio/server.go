@@ -179,6 +179,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tenants/", s.tenantsMgmtProxy)
 	mux.HandleFunc("/api/rate-limit-configs", s.rateLimitConfigsMgmtProxy)
 	mux.HandleFunc("/api/rate-limit-configs/", s.rateLimitConfigsMgmtProxy)
+	mux.HandleFunc("/api/ai/", s.aiMgmtProxy)
+	mux.HandleFunc("/api/ai", s.aiMgmtProxy)
+	mux.HandleFunc("/mcp", s.MCPHandler)
 
 	// Serve the React SPA from the embedded ui/dist directory.
 	// Any path that doesn't match a real file falls back to index.html
@@ -797,6 +800,11 @@ func (s *Server) tenantsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 
 // rateLimitConfigsMgmtProxy forwards /api/rate-limit-configs[/...] → /rate-limit-configs[/...].
 func (s *Server) rateLimitConfigsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// aiMgmtProxy forwards /api/ai[/...] → /ai[/...] on the management server.
+func (s *Server) aiMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 

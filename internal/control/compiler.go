@@ -396,10 +396,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return err
 		}
+		modelSlot := -1
+		if ms, ok := step.Input["model_slot"]; ok && ms != "" {
+			if s, err2 := c.getSlot(ms); err2 == nil {
+				modelSlot = s
+			}
+		}
 		cfg := steps.RecordCostConfig{
 			QuotaManager:   c.fm.CostQuotaManager,
 			IngestPipeline: c.IngestPipeline,
 			CostSlot:       costSlot,
+			ModelSlot:      modelSlot,
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.RecordCost(cfg))
 

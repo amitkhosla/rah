@@ -1,0 +1,16 @@
+apiVersion: v2
+name: rah-gateway
+description: RAH — Reconfigurable API + AI + Agentic Gateway
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - api-gateway
+  - ai-gateway
+  - llm
+  - agentic
+home: https://github.com/YOUR_ORG/rah
+sources:
+  - https://github.com/YOUR_ORG/rah
+maintainers:
+  - name: RAH Team

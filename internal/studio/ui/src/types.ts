@@ -1,4 +1,4 @@
-export type TabId = 'flows' | 'apis' | 'deploy' | 'gateway' | 'tenants' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'ai' | 'deploy' | 'gateway' | 'tenants' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
@@ -86,6 +86,7 @@ export interface ApiDef {
   name: string
   path: string
   method: string
+  flow_name: string
 }
 
 // ── Request bodies ────────────────────────────────────────────────
@@ -171,6 +172,82 @@ export interface UpsertRateLimitRequest {
   per_sec: number
   per_min: number
   burst_factor: number
+}
+
+// ── AI / LLM ──────────────────────────────────────────────────────
+
+export interface AIEnvelope<T> {
+  ok: boolean
+  data?: T
+  error?: string
+}
+
+export interface ModelCapabilities {
+  max_context_tokens?: number
+  max_system_prompt_tokens?: number
+  max_history_turns?: number
+  supported_features?: string[]
+  supported_tool_formats?: string[]
+}
+
+export type LLMAdapter = 'anthropic' | 'openai' | 'gemini' | 'ollama'
+
+export interface LLMModel {
+  alias: string
+  provider: string
+  adapter: LLMAdapter
+  base_url?: string
+  api_key_ref?: string
+  max_tokens?: number
+  capabilities: ModelCapabilities
+}
+
+// ── MCP ───────────────────────────────────────────────────────────
+
+export type MCPTransport = 'http' | 'sse' | 'stdio'
+
+export interface MCPServer {
+  alias: string
+  transport: MCPTransport
+  url?: string
+  command?: string[]
+  api_key_ref?: string
+  timeout_ms?: number
+}
+
+export interface MCPPingResult {
+  alias: string
+  reachable: boolean
+  status_code?: number
+  latency_ms: number
+  error?: string
+}
+
+export type ToolSourceKind = 'api_tool' | 'mcp_tool' | 'mcp_all'
+
+export interface APIToolDef {
+  name: string
+  description: string
+  input_schema?: Record<string, unknown>
+  path: string
+  method: string
+  auth_kind?: string
+  auth_header?: string
+  auth_key_ref?: string
+}
+
+export interface ToolSource {
+  kind: ToolSourceKind
+  api_tool?: APIToolDef
+  server_alias?: string
+  tool_name?: string
+}
+
+export interface VirtualMCPServer {
+  name: string
+  description?: string
+  tenant_id?: number
+  sources: ToolSource[]
 }
 
 // ── Credentials ───────────────────────────────────────────────────

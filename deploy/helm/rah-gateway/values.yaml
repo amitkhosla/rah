@@ -1,0 +1,173 @@
+## RAH Gateway — Helm values
+## Defaults target the cheapest ARM instances:
+##   AWS  t4g.micro  (2 vCPU, 1 GB RAM, ~$3.07/mo)
+##   GCP  e2-micro   (2 vCPU, 1 GB RAM, ~$6.11/mo)
+##   Azure B2ats v2  (2 vCPU, 1 GB RAM, ~$3.79/mo)
+##
+## For production bump replicaCount and resources.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/YOUR_ORG/rah-gateway
+  pullPolicy: IfNotPresent
+  # Overridden by CI/CD with the release tag, e.g. "v0.1.0"
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+## ── Service accounts ──────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+## ── Ports ─────────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  dataPlanePort: 8080
+  managementPort: 8081
+
+## ── Ingress (optional) ────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+## ── Resources ─────────────────────────────────────────────────────────────────
+## Sized for t4g.micro / e2-micro.  RAH idles at <20 MB RSS.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+## ── Node selection ────────────────────────────────────────────────────────────
+## Uncomment the relevant block to pin to ARM nodes.
+
+nodeSelector: {}
+# AWS Graviton (t4g, m7g, c7g):
+#   kubernetes.io/arch: arm64
+#   node.kubernetes.io/instance-type: t4g.micro
+
+# GCP Tau T2A / e2:
+#   kubernetes.io/arch: arm64
+
+# Azure Ampere Altra (Bpsv2, Bpsv5):
+#   kubernetes.io/arch: arm64
+#   agentpool: arm
+
+tolerations: []
+affinity: {}
+
+## ── Autoscaling ───────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+## ── Pod disruption budget ─────────────────────────────────────────────────────
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+## ── Health probes ─────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /health
+    port: management
+  initialDelaySeconds: 15
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: management
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+## ── Gateway configuration ─────────────────────────────────────────────────────
+## Inline gateway.yaml content rendered into a ConfigMap.
+## Override individual values here; full structure mirrors gateway.yaml.
+config:
+  server:
+    port: 8080
+    management_port: 8081
+    read_timeout_ms: 30000
+    write_timeout_ms: 30000
+
+  cache:
+    mem_budget_mb: 64
+    tenant_limit_mb: 8
+    backend:
+      kind: memory
+
+  log:
+    level: info
+    format: json
+
+  datastore:
+    stores: {}   # populated via extraConfig or secret values
+    bindings: {}
+
+## Extra raw YAML merged into the rendered gateway.yaml ConfigMap.
+## Use this for datastore connections, LLM models, ingest sinks, etc.
+## Example:
+##   extraConfig: |
+##     datastore:
+##       stores:
+##         redis_primary:
+##           name: redis_primary
+##           kind: redis
+##           enabled: true
+##           connection:
+##             address: "redis:6379"
+extraConfig: ""
+
+## ── Secrets ───────────────────────────────────────────────────────────────────
+## Mount an existing Secret as environment variables.
+## The gateway reads RAH_REDIS_ADDR and RAH_PG_DSN from env.
+existingSecret: ""
+
+## Or supply values directly (creates a new Secret).
+secretEnv: {}
+# RAH_REDIS_ADDR: "redis:6379"
+# RAH_PG_DSN: "postgres://gw:pass@pg:5432/gateway?sslmode=disable"
+
+## ── Extra environment variables ───────────────────────────────────────────────
+extraEnv: []
+# - name: MY_VAR
+#   value: "my-value"
+
+## ── Extra volumes / mounts ────────────────────────────────────────────────────
+extraVolumes: []
+extraVolumeMounts: []
+
+## ── Pod annotations / labels ──────────────────────────────────────────────────
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

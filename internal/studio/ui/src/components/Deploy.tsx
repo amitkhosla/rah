@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
 import { deploy, fetchTargets } from '../api'
-import type { ApiDef, DeployRecord, FlowStep, ReleaseRecord, Target } from '../types'
+import type { ApiDef, DeployRecord, ReleaseRecord, SavedFlow, Target } from '../types'
 
 interface Props {
-  steps: FlowStep[]
+  savedFlows: SavedFlow[]
   apis: ApiDef[]
-  flowName: string
 }
 
 function csvToArray(s: string): string[] {
@@ -18,19 +17,19 @@ function formatTime(t: { T: string } | string): string {
   try { return new Date(raw).toLocaleString() } catch { return raw }
 }
 
-export default function Deploy({ steps, apis, flowName }: Props) {
-  const [targets, setTargets] = useState<Target[]>([])
-  const [history, setHistory] = useState<DeployRecord[]>([])
+export default function Deploy({ savedFlows, apis }: Props) {
+  const [targets,  setTargets]  = useState<Target[]>([])
+  const [history,  setHistory]  = useState<DeployRecord[]>([])
   const [releases, setReleases] = useState<ReleaseRecord[]>([])
-  const [loadErr, setLoadErr] = useState('')
+  const [loadErr,  setLoadErr]  = useState('')
 
-  const [releaseId, setReleaseId] = useState('')
-  const [instrVersion, setInstrVersion] = useState('')
-  const [apiVersionsRaw, setApiVersionsRaw] = useState('')
-  const [levels, setLevels] = useState('')
-  const [targetNames, setTargetNames] = useState('')
+  const [releaseId,     setReleaseId]     = useState('')
+  const [instrVersion,  setInstrVersion]  = useState('')
+  const [apiVersionsRaw,setApiVersionsRaw]= useState('')
+  const [levels,        setLevels]        = useState('')
+  const [targetNames,   setTargetNames]   = useState('')
 
-  const [status, setStatus] = useState('')
+  const [status,    setStatus]    = useState('')
   const [statusErr, setStatusErr] = useState(false)
   const [deploying, setDeploying] = useState(false)
 
@@ -48,6 +47,10 @@ export default function Deploy({ steps, apis, flowName }: Props) {
 
   useEffect(() => { void load() }, [])
 
+  // Derive the set of flows referenced by the current API list
+  const usedFlowNames  = [...new Set(apis.map(a => a.flow_name).filter(Boolean))]
+  const flowsMissing   = usedFlowNames.filter(n => !savedFlows.find(f => f.name === n)?.steps.length)
+
   function parseApiVersions(): Record<string, string> {
     const t = apiVersionsRaw.trim()
     if (!t) return {}
@@ -55,29 +58,45 @@ export default function Deploy({ steps, apis, flowName }: Props) {
   }
 
   async function handleReleaseDeploy() {
-    if (apis.length === 0) { setStatusErr(true); setStatus('Add APIs in the API Definition tab first.'); return }
-    const name = flowName.trim()
-    if (!name) { setStatusErr(true); setStatus('Set a flow name in the Flow Designer tab first.'); return }
+    if (apis.length === 0) {
+      setStatusErr(true); setStatus('No APIs defined — add endpoints in the APIs tab.'); return
+    }
+    if (usedFlowNames.length === 0) {
+      setStatusErr(true); setStatus('APIs have no flow assignments.'); return
+    }
+    if (flowsMissing.length > 0) {
+      setStatusErr(true)
+      setStatus(`Flow(s) have no steps yet: ${flowsMissing.join(', ')} — open Flow Designer to build them.`)
+      return
+    }
+
     let apiVersions: Record<string, string> = {}
     try { apiVersions = parseApiVersions() } catch {
       setStatusErr(true); setStatus('api_versions must be valid JSON'); return
     }
-    setDeploying(true)
-    setStatus('')
-    setStatusErr(false)
+
+    setDeploying(true); setStatus(''); setStatusErr(false)
     try {
-      const payload = {
-        sync_uuid: `ui-${Date.now()}`,
-        flows: [{ name, instructions: steps, action: 'upsert' as const }],
-        apis: apis.map(a => ({ name: a.name, path: a.path, flow_name: name, action: 'upsert' as const })),
-      }
+      // Build payload: one entry per used flow (with its steps), every API with its own flow_name
+      const flowsPayload = usedFlowNames.map(name => {
+        const saved = savedFlows.find(f => f.name === name)
+        return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
+      })
+      const apisPayload = apis.map(a => ({
+        name: a.name, path: a.path, flow_name: a.flow_name, action: 'upsert' as const,
+      }))
+
       const res = await deploy({
-        release_id: releaseId.trim() || undefined,
+        release_id:              releaseId.trim() || undefined,
         instruction_set_version: instrVersion.trim() || undefined,
-        api_versions: Object.keys(apiVersions).length ? apiVersions : undefined,
-        levels: csvToArray(levels),
-        target_names: csvToArray(targetNames),
-        payload,
+        api_versions:            Object.keys(apiVersions).length ? apiVersions : undefined,
+        levels:                  csvToArray(levels),
+        target_names:            csvToArray(targetNames),
+        payload: {
+          sync_uuid: `ui-${Date.now()}`,
+          flows:     flowsPayload,
+          apis:      apisPayload,
+        },
       })
       setStatus(`Release ${res.release_id} deployed to ${res.results.length} target(s).`)
       setStatusErr(false)
@@ -93,13 +112,11 @@ export default function Deploy({ steps, apis, flowName }: Props) {
   async function handleDeployExisting() {
     const rid = releaseId.trim()
     if (!rid) { setStatusErr(true); setStatus('Enter or select a release ID.'); return }
-    setDeploying(true)
-    setStatus('')
-    setStatusErr(false)
+    setDeploying(true); setStatus(''); setStatusErr(false)
     try {
       const res = await deploy({
-        release_id: rid,
-        levels: csvToArray(levels),
+        release_id:   rid,
+        levels:       csvToArray(levels),
         target_names: csvToArray(targetNames),
       })
       setStatus(`Release ${res.release_id} re-deployed to ${res.results.length} target(s).`)
@@ -115,14 +132,13 @@ export default function Deploy({ steps, apis, flowName }: Props) {
 
   return (
     <div className="two-col">
+
       {/* Targets panel */}
       <div className="panel">
         <div className="panel-header">Targets</div>
         <div className="panel-body">
           {loadErr && <p className="status-err mt8">{loadErr}</p>}
-          {targets.length === 0 && !loadErr && (
-            <p className="hint">No targets loaded yet.</p>
-          )}
+          {targets.length === 0 && !loadErr && <p className="hint">No targets loaded yet.</p>}
           {targets.map(t => (
             <div key={t.name} className="step mt8">
               <strong>{t.name}</strong>
@@ -132,6 +148,7 @@ export default function Deploy({ steps, apis, flowName }: Props) {
               ))}
             </div>
           ))}
+
           <input
             className="input mt12"
             placeholder="levels csv: dev,stage,prod"
@@ -144,6 +161,29 @@ export default function Deploy({ steps, apis, flowName }: Props) {
             value={targetNames}
             onChange={e => setTargetNames(e.target.value)}
           />
+
+          {/* payload summary */}
+          {usedFlowNames.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+                Payload summary
+              </div>
+              {usedFlowNames.map(name => {
+                const count   = apis.filter(a => a.flow_name === name).length
+                const hasSteps = !!savedFlows.find(f => f.name === name)?.steps.length
+                return (
+                  <div key={name} className="hint mt4" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontFamily: 'monospace', color: hasSteps ? 'var(--text)' : '#f97316' }}>
+                      {name}
+                    </span>
+                    <span style={{ color: 'var(--muted)' }}>
+                      {count} API{count !== 1 ? 's' : ''}{!hasSteps ? ' ⚠ no steps' : ''}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -193,15 +233,12 @@ export default function Deploy({ steps, apis, flowName }: Props) {
           <button className="btn muted mt8" onClick={handleDeployExisting} disabled={deploying}>
             Deploy Existing Release
           </button>
-          <button className="btn muted mt8" onClick={load}>
-            Refresh
-          </button>
+          <button className="btn muted mt8" onClick={load}>Refresh</button>
 
           {status && (
             <p className={`mt8 ${statusErr ? 'status-err' : 'status-ok'}`}>{status}</p>
           )}
 
-          {/* History */}
           {history.length > 0 && (
             <div className="mt12">
               <strong style={{ fontSize: 12 }}>Recent deploys</strong>
@@ -218,7 +255,6 @@ export default function Deploy({ steps, apis, flowName }: Props) {
             </div>
           )}
 
-          {/* Releases */}
           {releases.length > 0 && (
             <div className="mt12">
               <strong style={{ fontSize: 12 }}>Releases</strong>

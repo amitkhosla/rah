@@ -26,6 +26,7 @@ type RecordCostConfig struct {
 	QuotaManager   *quota.CostQuotaManager
 	IngestPipeline *ingest.Pipeline // nil = no-op for cost event emission
 	CostSlot       int
+	ModelSlot      int // -1 = not configured; reads model name from ByteSlots[ModelSlot] if >= 0
 }
 
 // EnforceCostBudget checks if a tenant can afford the estimated LLM cost before proceeding.
@@ -148,7 +149,10 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 			// Capture values for closure
 			if cfg.IngestPipeline != nil {
 				capturedCost := actualCost
-				capturedModel := ctx.Model
+				var capturedModel string
+				if cfg.ModelSlot >= 0 && cfg.ModelSlot < len(ctx.ByteSlots) {
+					capturedModel = string(ctx.ByteSlots[cfg.ModelSlot])
+				}
 				capturedTenantKey := tenantKey
 				capturedTenantID := ctx.TenantID
 				capturedTimestamp := time.Now().UnixNano()
