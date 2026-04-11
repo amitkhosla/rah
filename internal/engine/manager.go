@@ -43,6 +43,10 @@ type OpFlusher interface {
 
 type FlowManager struct {
 	State   atomic.Pointer[EngineState]
+	// DraftState holds a compiled but not-yet-live EngineState submitted via
+	// POST /sync?draft=true. Never used by the live router — only /test/execute
+	// reads from it. Nil until a draft is submitted.
+	DraftState atomic.Pointer[EngineState]
 	Pool    sync.Pool
 	Config  config.GlobalLayout
 	SlabMgr *cache.CacheManager

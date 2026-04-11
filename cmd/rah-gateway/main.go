@@ -575,6 +575,38 @@ func main() {
 	}
 	ms.SetDataStore(dataStoreMgr)
 
+	// Cross-instance flow/API sync: when another gateway instance writes to
+	// DomainFlows or DomainAPIDefinitions, re-bootstrap this instance from
+	// the datastore so all pods converge to the same compiled state.
+	if ingestPipeline != nil {
+		flowsDomain := string(config.DomainFlows)
+		apisDomain := string(config.DomainAPIDefinitions)
+		ingest.StartConsumers(gatewayCtx, cfgMgr.Gateway().Ingest, func(e ingest.Event) {
+			if e.Model == instanceFingerprint {
+				return // skip our own writes
+			}
+			if e.Kind != ingest.KindDBPut {
+				return
+			}
+			if e.SessionID != flowsDomain && e.SessionID != apisDomain {
+				return
+			}
+			log.Printf("[sync] cross-instance config change detected (domain=%s), re-bootstrapping", e.SessionID)
+			if err := ms.Bootstrap(gatewayCtx, dataStoreMgr); err != nil {
+				log.Printf("[sync] re-bootstrap failed: %v", err)
+			}
+		})
+	}
+
+	// Start instance heartbeat and config-poll goroutines.
+	instanceSync := control.NewInstanceSync(
+		instanceFingerprint,
+		cfgMgr.Gateway().Instance,
+		dataStoreMgr,
+		ms,
+	)
+	instanceSync.Start(gatewayCtx)
+
 	// Load master key for encrypting credential values stored via the per-tenant API.
 	// Returns NoopEncryptor (passthrough) if no master key is configured — safe to use regardless.
 	encCfg := cfgMgr.Secrets().Encrypted
@@ -598,6 +630,7 @@ func main() {
 	//Control Plane (Management)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
+	mux.HandleFunc("/sync/draft/status", ms.DraftStatusHandler)
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
 	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
 	ts.RegisterHandlers(mux)
@@ -628,6 +661,10 @@ func main() {
 	}
 	RegisterCostRoutes(mux, fm.CostQuotaManager, adminToken)
 	log.Printf("Cost tracking endpoints registered at /api/v1/costs*")
+
+	control.RegisterEnvironmentRoutes(mux, dataStoreMgr)
+	control.RegisterReleaseRoutes(mux, dataStoreMgr, instanceSync)
+	control.RegisterTestRoutes(mux, dataStoreMgr, ms, fm)
 
 	mcpReg := mcpreg.NewRegistry()
 	compiler.MCPRegistry = mcpReg

@@ -125,15 +125,185 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := s.ApplyUnifiedSync(req); err != nil {
-		log.Printf("[Management] sync failed: %v", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	if r.URL.Query().Get("draft") == "true" {
+		if err := s.applyDraftSync(req); err != nil {
+			log.Printf("[Management] draft sync failed: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		if err := s.ApplyUnifiedSync(req); err != nil {
+			log.Printf("[Management] sync failed: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// applyDraftSync compiles req into DraftState without touching the live State.
+// The draft is never routed to — only /test/execute uses it.
+// No datastore persistence and no router registration occur.
+func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
+	oldState := s.FlowManager.State.Load()
+
+	s.mu.RLock()
+	newFlowConfigs := make(map[string][]StepConfig, len(s.flowConfigs))
+	for k, v := range s.flowConfigs {
+		newFlowConfigs[k] = v
+	}
+	newApiConfigs := make(map[string]ApiUpdate, len(s.apiConfigs))
+	for k, v := range s.apiConfigs {
+		newApiConfigs[k] = v
+	}
+	s.mu.RUnlock()
+
+	// 1. Clone Current State (Library & Definitions)
+	newLibrary := make(map[string][]engine.Instruction)
+	for k, v := range oldState.FlowLibrary {
+		newLibrary[k] = v
+	}
+	newDefs := make([]*engine.ApiDefinition, len(oldState.Definitions))
+	copy(newDefs, oldState.Definitions)
+
+	// 2. Update Shared Flows (The Instruction Library)
+	var deletedFlows []string
+	for _, f := range req.Flows {
+		if f.Action == "delete" {
+			delete(newLibrary, f.Name)
+			delete(newFlowConfigs, f.Name)
+			deletedFlows = append(deletedFlows, f.Name)
+			log.Printf("[Draft] Deleted Flow: %s", f.Name)
+		} else {
+			compiled, err := s.Compiler.Compile(f.Instructions)
+			if err != nil {
+				return fmt.Errorf("flow %q: %w", f.Name, err)
+			}
+			newFlowConfigs[f.Name] = f.Instructions
+			newLibrary[f.Name] = compiled
+			log.Printf("[Draft] Compiled Flow: %s (%d instructions)", f.Name, len(newLibrary[f.Name]))
+		}
+	}
+
+	// 3. Update API Routing & Linking
+	for _, a := range req.Apis {
+		id := s.Registry.GetOrAssignId(a.Name)
+		s.Compiler.ResetLocalScope()
+
+		if a.Action == "delete" {
+			if int(id) < len(newDefs) && newDefs[id] != nil {
+				newDefs[id] = nil
+			}
+			delete(newApiConfigs, a.Name)
+		} else {
+			flowCfg, exists := newFlowConfigs[a.FlowName]
+			if !exists {
+				log.Printf("[Draft] Error: API %s references missing flow %s", a.Name, a.FlowName)
+				continue
+			}
+
+			instructions, err := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
+			if err != nil {
+				log.Printf("[Draft] Error compiling API %s: %v", a.Name, err)
+				continue
+			}
+
+			cleanPath := strings.TrimSuffix(a.Path, "/")
+			def := engine.BakeDefinition(id, cleanPath)
+
+			apiRLId := uint16(0)
+			if a.RateLimitName != "" && s.RegMgr != nil {
+				if rlid, ok := s.RegMgr.GetRateLimitConfigId(a.RateLimitName); ok {
+					apiRLId = rlid
+				}
+			}
+			asyncMode := engine.AsyncDisabled
+			switch a.Async {
+			case "allowed":
+				asyncMode = engine.AsyncAllowed
+			case "forced":
+				asyncMode = engine.AsyncForced
+			}
+
+			if len(a.EndpointConfigs) == 0 {
+				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+			} else {
+				for _, ec := range a.EndpointConfigs {
+					epRLId := uint16(0)
+					if ec.RateLimitName != "" && s.RegMgr != nil {
+						if rlid, ok := s.RegMgr.GetRateLimitConfigId(ec.RateLimitName); ok {
+							epRLId = rlid
+						}
+					}
+					method := ec.Method
+					if method == "" {
+						method = "ANY"
+					}
+					epPath := ec.Path
+					if epPath == "" {
+						epPath = "/"
+					}
+					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
+					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId, asyncMode)
+				}
+			}
+
+			if int(id) >= len(newDefs) {
+				expanded := make([]*engine.ApiDefinition, id+1)
+				copy(expanded, newDefs)
+				newDefs = expanded
+			}
+			newDefs[id] = def
+			newApiConfigs[a.Name] = a
+			log.Printf("[Draft] Linked API %s -> Flow %s", cleanPath, a.FlowName)
+		}
+	}
+
+	// 4. Flow reference safety check
+	for _, flowName := range deletedFlows {
+		for apiName, apiCfg := range newApiConfigs {
+			if apiCfg.FlowName == flowName {
+				return fmt.Errorf("cannot delete flow %q: still referenced by API %q — delete the API first", flowName, apiName)
+			}
+		}
+	}
+
+	// 5. Build a draft router (internal use only — never registered with the live router).
+	draftRouter := router.New()
+	for _, d := range newDefs {
+		if d != nil {
+			draftRouter.Add(d.BaseRawPath, d.Id)
+		}
+	}
+
+	// 6. Store in DraftState — does NOT touch FlowManager.State.
+	s.FlowManager.DraftState.Store(&engine.EngineState{
+		Router:      draftRouter,
+		Definitions: newDefs,
+		FlowLibrary: newLibrary,
+	})
+
+	log.Printf("[Draft] Sync Complete. Stored in DraftState (not live).")
+	return nil
+}
+
+// DraftStatusHandler handles GET /sync/draft/status.
+// Returns whether a draft EngineState is currently loaded.
+func (s *ManagementServer) DraftStatusHandler(w http.ResponseWriter, r *http.Request) {
+	draft := s.FlowManager.DraftState.Load()
+	w.Header().Set("Content-Type", "application/json")
+	if draft == nil {
+		json.NewEncoder(w).Encode(map[string]any{"draft_loaded": false})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"draft_loaded": true,
+		"flow_count":   len(draft.FlowLibrary),
+		"api_count":    len(draft.Definitions),
+	})
 }
 
 // ApplyUnifiedSync applies a sync payload to the active engine state.

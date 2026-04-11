@@ -22,6 +22,8 @@ const globalCacheTenantID uint16 = 0
 // On miss: ByteSlots[destSlot] is left unchanged (empty if not previously set).
 // Execution always continues to the next instruction — use an `if` step checking
 // whether the dest slot is non-empty to branch on hit vs miss.
+// In test mode, the test namespace is checked first so test-mode writes are
+// visible within the same run; falls back to the live cache on miss.
 func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_get",
@@ -29,6 +31,13 @@ func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 			key := ctx.ByteSlots[keySlot]
 			if len(key) == 0 {
 				return s.PC + 1
+			}
+			if ctx.TestMode {
+				testKey := append([]byte("__test__"+ctx.TestRunID+":"), key...)
+				if val, ok := store.Get(ctx.TenantID, testKey); ok {
+					ctx.ByteSlots[destSlot] = val
+					return s.PC + 1
+				}
 			}
 			if val, ok := store.Get(ctx.TenantID, key); ok {
 				ctx.ByteSlots[destSlot] = val
@@ -41,6 +50,8 @@ func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 // CachePut queues a cache PUT into the per-request op buffer (async, fire-and-forget).
 // The actual write is dispatched in a later batch_flush instruction or at request end.
 // Skipped silently if key or value slot is empty.
+// In test mode the write is namespaced under __test__{TestRunID}: so it never
+// pollutes the live cache; cleanup can delete by prefix.
 func CachePut(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_put",
@@ -48,7 +59,12 @@ func CachePut(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 			key := ctx.ByteSlots[keySlot]
 			val := ctx.ByteSlots[valueSlot]
 			if len(key) > 0 && len(val) > 0 {
-				rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
+				if ctx.TestMode {
+					testKey := append([]byte("__test__"+ctx.TestRunID+":"), key...)
+					rctx.EmitPut(ctx, testKey, val, rctx.TargetCache, true, ttl)
+				} else {
+					rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
+				}
 			}
 			return s.PC + 1
 		},
@@ -58,6 +74,7 @@ func CachePut(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 // CacheGetGlobal looks up ByteSlots[keySlot] in the shared (tenant-agnostic) namespace.
 // Behaviour is identical to CacheGet except tenantID=0 is used for all lookups,
 // making the entry visible to all tenants.
+// In test mode, the test namespace is checked first; falls back to the live global cache.
 func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_get_global",
@@ -65,6 +82,13 @@ func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction 
 			key := ctx.ByteSlots[keySlot]
 			if len(key) == 0 {
 				return s.PC + 1
+			}
+			if ctx.TestMode {
+				testKey := append([]byte("__test__"+ctx.TestRunID+":"), key...)
+				if val, ok := store.Get(globalCacheTenantID, testKey); ok {
+					ctx.ByteSlots[destSlot] = val
+					return s.PC + 1
+				}
 			}
 			if val, ok := store.Get(globalCacheTenantID, key); ok {
 				ctx.ByteSlots[destSlot] = val
@@ -79,6 +103,7 @@ func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction 
 // The TenantID captured in the StorageOp will be ctx.TenantID at emit time; the flusher must
 // override it to globalCacheTenantID (0) when routing this op to the cache.
 // Skipped silently if key or value slot is empty.
+// In test mode the write is namespaced under __test__{TestRunID}: to avoid polluting live cache.
 func CachePutGlobal(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_put_global",
@@ -89,7 +114,12 @@ func CachePutGlobal(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 				// Temporarily override TenantID so the buffered op targets the global namespace.
 				saved := ctx.TenantID
 				ctx.TenantID = globalCacheTenantID
-				rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
+				if ctx.TestMode {
+					testKey := append([]byte("__test__"+ctx.TestRunID+":"), key...)
+					rctx.EmitPut(ctx, testKey, val, rctx.TargetCache, true, ttl)
+				} else {
+					rctx.EmitPut(ctx, key, val, rctx.TargetCache, true, ttl)
+				}
 				ctx.TenantID = saved
 			}
 			return s.PC + 1

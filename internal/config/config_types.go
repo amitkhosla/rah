@@ -215,6 +215,7 @@ type GatewayConfig struct {
 	Async        AsyncConfig         `json:"async"              yaml:"async"`
 	VectorStores []VectorStoreConfig `json:"vector_stores,omitempty" yaml:"vector_stores,omitempty"`
 	Ingest       IngestConfig        `json:"ingest,omitempty"   yaml:"ingest,omitempty"`
+	Instance     InstanceConfig      `json:"instance,omitempty" yaml:"instance,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────
@@ -310,6 +311,29 @@ type RateLimitPreset struct {
 	RatePerSec  uint32 `json:"rate_per_sec,omitempty" yaml:"rate_per_sec,omitempty"` // max requests/second; 0 = unlimited
 	RatePerMin  uint32 `json:"rate_per_min,omitempty" yaml:"rate_per_min,omitempty"` // max requests/minute; 0 = unlimited
 	BurstFactor uint16 `json:"burst_factor,omitempty" yaml:"burst_factor,omitempty"` // 100 = 1x, 150 = 1.5x, 200 = 2x
+}
+
+// ── Instance / deployment configuration ──────────────────────────────────────
+
+// InstanceConfig identifies this gateway instance and controls config polling.
+// Set in gateway.yaml under the "instance:" key.
+type InstanceConfig struct {
+	// EnvironmentID is the logical environment this instance belongs to (e.g. "prod", "dev").
+	// Instances with the same EnvironmentID share a config_versions stream.
+	EnvironmentID string `json:"environment_id,omitempty" yaml:"environment_id,omitempty"`
+
+	// PollIntervalS is how often (in seconds) this instance polls the DB for a newer
+	// config_version. Default 10. Set to 0 to disable polling (push-only mode).
+	PollIntervalS int `json:"poll_interval_s,omitempty" yaml:"poll_interval_s,omitempty"`
+
+	// HeartbeatIntervalS is how often (in seconds) this instance writes its heartbeat.
+	// Default 10. Instances silent for 3× this interval are considered dead.
+	HeartbeatIntervalS int `json:"heartbeat_interval_s,omitempty" yaml:"heartbeat_interval_s,omitempty"`
+
+	// AcceptDraftExecution allows this instance to serve POST /test/execute requests
+	// against draft instruction sets. Safe to enable on all instances; draft flows
+	// never enter the live router.
+	AcceptDraftExecution bool `json:"accept_draft_execution,omitempty" yaml:"accept_draft_execution,omitempty"`
 }
 
 type GlobalLayout struct {

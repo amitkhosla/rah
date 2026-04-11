@@ -103,6 +103,11 @@ func SetServiceURL(mgr RegistryMutator, name string, srcSlot int) engine.Instruc
 			if len(val) == 0 {
 				return s.PC + 1
 			}
+			if ctx.TestMode {
+				// Suppress registry write in test mode — live registry is read-only.
+				// The side_effects counter in the test runner tracks this.
+				return s.PC + 1
+			}
 			mgr.AddServiceURL(ctx.TenantKey, name, val)
 			return s.PC + 1
 		},
@@ -125,6 +130,11 @@ func SetIdentifier(mgr RegistryMutator, name string, srcSlot int) engine.Instruc
 			if len(val) == 0 {
 				return s.PC + 1
 			}
+			if ctx.TestMode {
+				// Suppress registry write in test mode — live registry is read-only.
+				// The side_effects counter in the test runner tracks this.
+				return s.PC + 1
+			}
 			mgr.AddIdentifier(ctx.TenantKey, name, val)
 			return s.PC + 1
 		},
@@ -145,6 +155,11 @@ func SetMeta(mgr RegistryMutator, name string, srcSlot int) engine.Instruction {
 			}
 			val := ctx.ByteSlots[srcSlot]
 			if len(val) == 0 {
+				return s.PC + 1
+			}
+			if ctx.TestMode {
+				// Suppress registry write in test mode — live registry is read-only.
+				// The side_effects counter in the test runner tracks this.
 				return s.PC + 1
 			}
 			mgr.AddMeta(ctx.TenantKey, name, val)

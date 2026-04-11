@@ -48,6 +48,17 @@ const (
 	DomainAsyncJobs    DataDomain = "async_jobs"   // async job state (status + results)
 	DomainAIConfig     DataDomain = "ai_config"    // runtime LLM model catalog + MCP server registry
 	DomainMCPTools     DataDomain = "mcp_tools"   // virtual MCP server definitions + API tool catalog
+
+	// Deployment infrastructure domains
+	DomainEnvironments     DataDomain = "environments"      // environment definitions (dev/qa/prod)
+	DomainReleases         DataDomain = "releases"          // release bundles (named sets of API+flow versions)
+	DomainConfigVersions   DataDomain = "config_versions"   // versioned compiled configs per environment
+	DomainGatewayInstances DataDomain = "gateway_instances" // live instance heartbeats + current version
+	DomainDeployHistory    DataDomain = "deploy_history"    // deployment audit log
+
+	// Test execution domains
+	DomainTestCases DataDomain = "test_cases" // customer-defined API test cases
+	DomainTestRuns  DataDomain = "test_runs"  // test execution results
 )
 
 var requiredDomains = []DataDomain{
