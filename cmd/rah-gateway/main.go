@@ -15,6 +15,7 @@ import (
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/observability"
+	"rah/internal/pricing"
 	"rah/internal/quota"
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
@@ -240,6 +241,18 @@ func main() {
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
+
+	// Pricing manager — bootstraps from hardcoded defaults, then merges config overrides.
+	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
+	pricingMgr := pricing.NewPricingManager()
+	if err := pricingMgr.LoadFromConfig(cfgMgr.Gateway().Pricing); err != nil {
+		log.Printf("Warning: pricing config load error: %v (using defaults)", err)
+	}
+	if err := pricingMgr.LoadFromLLMConfig(cfgMgr.Gateway().LLM); err != nil {
+		log.Printf("Warning: pricing from llm config error: %v", err)
+	}
+	compiler.PricingManager = pricingMgr
+	log.Printf("Pricing manager ready: %d models in catalog", len(pricingMgr.GetPricing()))
 
 	// CredentialRegistry — optional; requires DomainCredentials in datastore config.
 	var credReg *secrets.CredentialRegistry
@@ -606,6 +619,9 @@ func main() {
 		ms,
 	)
 	instanceSync.Start(gatewayCtx)
+	// Sweep stale test tenants (safety net for crash-interrupted test runs).
+	// Any test tenant older than 10 minutes that wasn't cleaned up by defer is removed.
+	regMgr.StartTestTenantSweep(gatewayCtx, 600)
 
 	// Load master key for encrypting credential values stored via the per-tenant API.
 	// Returns NoopEncryptor (passthrough) if no master key is configured — safe to use regardless.
@@ -633,6 +649,7 @@ func main() {
 	mux.HandleFunc("/sync/draft/status", ms.DraftStatusHandler)
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
 	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
+	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	ts.RegisterHandlers(mux)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
@@ -664,7 +681,7 @@ func main() {
 
 	control.RegisterEnvironmentRoutes(mux, dataStoreMgr)
 	control.RegisterReleaseRoutes(mux, dataStoreMgr, instanceSync)
-	control.RegisterTestRoutes(mux, dataStoreMgr, ms, fm)
+	control.RegisterTestRoutes(mux, dataStoreMgr, ms, fm, cacheMgr)
 
 	mcpReg := mcpreg.NewRegistry()
 	compiler.MCPRegistry = mcpReg

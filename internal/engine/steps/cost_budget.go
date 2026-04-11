@@ -198,66 +198,96 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 	}
 }
 
-// CalculateCost computes the cost from token counts and pricing information.
-// This is a helper step that:
-// 1. Reads input/output token counts from slots
-// 2. Looks up pricing for the model (optional; continues if pricing not found)
-// 3. Calculates: cost = (inputTokens * inputRate + outputTokens * outputRate) / 1M
-// 4. Stores result in cost_slot as fixed-point (multiply by 1e9 to store)
+// CalculateCostConfig holds configuration for the CalculateCost instruction.
+type CalculateCostConfig struct {
+	PricingManager  PricingLookup // nil = zero-cost fallback
+	CostSlot        int           // IntSlot to write result into (fixed-point: value = cost * 1e9)
+	InputTokensSlot int           // IntSlot containing input token count
+	OutputTokensSlot int          // IntSlot containing output token count
+	ModelSlot       int           // ByteSlot containing model ID string; -1 = not configured
+}
+
+// PricingLookup is a narrow interface satisfied by *pricing.PricingManager.
+// Using an interface avoids a direct import of the pricing package from steps
+// (keeps the dependency graph clean; control → steps → interface ← pricing).
+type PricingLookup interface {
+	// GetPriceByModelID returns the per-1M-token rates for a model.
+	// Returns (0, 0, false) when the model is not in the catalog.
+	GetPriceByModelID(modelID string) (inputPer1M, outputPer1M float64, ok bool)
+}
+
+// CalculateCost computes the cost from token counts and a pricing manager lookup.
+// This step:
+// 1. Reads input/output token counts from IntSlots
+// 2. Reads the model ID from ByteSlots[ModelSlot] (if configured)
+// 3. Looks up pricing via PricingManager.GetPriceByModelID (cache-only, ~50ns)
+// 4. Calculates: cost = (inputTokens*inputRate + outputTokens*outputRate) / 1M
+// 5. Stores result as fixed-point int64 in CostSlot: stored = int64(cost * 1e9)
+//
+// Graceful degradation: if PricingManager is nil, model slot is missing, or the
+// model is not in the pricing catalog, cost is set to 0 and execution continues.
 //
 // Usage in a flow:
 //
 //	{"action": "calculate_cost",
-//	 "input_tokens_slot": "in_tokens",
+//	 "key":                "cost_slot",
+//	 "input_tokens_slot":  "in_tokens",
 //	 "output_tokens_slot": "out_tokens",
-//	 "model_slot": "model_name",
-//	 "cost_slot": "result_slot"}
-//
-// If pricing manager is nil or pricing is missing for the model:
-// - Sets cost to 0 (zero-cost fallback)
-// - Logs a warning if configured to do so
-// - Continues execution (doesn't fail)
-//
-// Graceful degradation: gateway continues even without pricing information.
-func CalculateCost(costSlot, inputTokensSlot, outputTokensSlot int) engine.Instruction {
+//	 "model_slot":         "model_name"}
+func CalculateCost(cfg CalculateCostConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "CALCULATE_COST",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			// Validate slot indices
-			if costSlot < 0 || costSlot >= len(ctx.IntSlots) {
+			// Validate IntSlot indices
+			nInt := len(ctx.IntSlots)
+			if cfg.CostSlot < 0 || cfg.CostSlot >= nInt {
 				return s.PC + 1
 			}
-			if inputTokensSlot < 0 || inputTokensSlot >= len(ctx.IntSlots) {
+			if cfg.InputTokensSlot < 0 || cfg.InputTokensSlot >= nInt {
 				return s.PC + 1
 			}
-			if outputTokensSlot < 0 || outputTokensSlot >= len(ctx.IntSlots) {
+			if cfg.OutputTokensSlot < 0 || cfg.OutputTokensSlot >= nInt {
 				return s.PC + 1
 			}
 
 			// Read token counts
-			inputTokens := ctx.IntSlots[inputTokensSlot]
-			outputTokens := ctx.IntSlots[outputTokensSlot]
+			inputTokens := ctx.IntSlots[cfg.InputTokensSlot]
+			outputTokens := ctx.IntSlots[cfg.OutputTokensSlot]
 
 			if inputTokens == 0 && outputTokens == 0 {
-				// No tokens, no cost
-				ctx.IntSlots[costSlot] = 0
+				ctx.IntSlots[cfg.CostSlot] = 0
 				return s.PC + 1
 			}
 
-			// TODO: Integrate with pricing manager to look up rates
-			// The pricing manager will be available in the compiler/flowmanager
-			//
-			// For now: Return 0 (zero-cost fallback)
-			// This allows the gateway to work even without pricing configured.
-			//
-			// The actual implementation will:
-			// 1. Get model from context or slot
-			// 2. Look up pricing: pricingManager.GetPrice(provider, modelID)
-			// 3. If not found: log warning and use zero-cost
-			// 4. Calculate: cost = (inputTokens * inputRate + outputTokens * outputRate) / 1M
-			// 5. Store as fixed-point: int64(cost * 1e9)
+			// Zero-cost fallback when no pricing manager is wired
+			if cfg.PricingManager == nil {
+				ctx.IntSlots[cfg.CostSlot] = 0
+				return s.PC + 1
+			}
 
-			ctx.IntSlots[costSlot] = 0
+			// Resolve model ID from ByteSlot
+			var modelID string
+			if cfg.ModelSlot >= 0 && cfg.ModelSlot < len(ctx.ByteSlots) {
+				modelID = string(ctx.ByteSlots[cfg.ModelSlot])
+			}
+			if modelID == "" {
+				ctx.IntSlots[cfg.CostSlot] = 0
+				return s.PC + 1
+			}
+
+			// Look up pricing (cache-only, never blocks)
+			inputRate, outputRate, ok := cfg.PricingManager.GetPriceByModelID(modelID)
+			if !ok {
+				// Model not in catalog — zero-cost, don't fail the request
+				ctx.IntSlots[cfg.CostSlot] = 0
+				return s.PC + 1
+			}
+
+			// cost = (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000
+			cost := (float64(inputTokens)*inputRate + float64(outputTokens)*outputRate) / 1e6
+
+			// Store as fixed-point: int64(cost * 1e9) so downstream steps can work in integers
+			ctx.IntSlots[cfg.CostSlot] = int64(cost * 1e9)
 			return s.PC + 1
 		},
 	}

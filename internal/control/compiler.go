@@ -38,9 +38,11 @@ type Compiler struct {
 	MCPRegistry    *mcpreg.Registry                    // optional; virtual MCP server and API tool catalog
 	GatewayBase    string                              // base URL for api_tool loopback calls (e.g. "http://localhost:8080")
 	IngestPipeline *ingest.Pipeline                    // optional; enables emit_event steps
-	GlobalTable []engine.Instruction
-	FragmentMap map[string]int16
-	FlowLibrary map[string][]StepConfig
+	PricingManager steps.PricingLookup                 // optional; enables calculate_cost steps
+	GlobalTable  []engine.Instruction
+	FragmentMap  map[string]int16
+	FlowLibrary  map[string][]StepConfig
+	FlowProfiles map[string]FlowProfile // flow name → profile; populated by BakeAll and Compile
 	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
 	// flow. Resolved in a second pass after all flows are compiled.
 	pendingJumps []pendingJump
@@ -53,6 +55,7 @@ func NewCompiler(fm *engine.FlowManager) *Compiler {
 		fm:           fm,
 		GlobalTable:  make([]engine.Instruction, 0, 4096),
 		FragmentMap:  make(map[string]int16),
+		FlowProfiles: make(map[string]FlowProfile),
 		pendingJumps: make([]pendingJump, 0, 8),
 	}
 }
@@ -68,6 +71,7 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 			return fmt.Errorf("flow %q: %w", name, err)
 		}
 		c.GlobalTable = append(c.GlobalTable, c.newReturnStep())
+		c.FlowProfiles[name] = buildFlowProfile(name, flow)
 	}
 
 	// 2. Bake APIs
@@ -409,6 +413,38 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			ModelSlot:      modelSlot,
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.RecordCost(cfg))
+
+	case "calculate_cost":
+		// Computes LLM cost from token counts using the pricing catalog.
+		// key:                slot name for the result (IntSlot, fixed-point: value/1e9 = USD)
+		// input_tokens_slot:  slot name holding input token count
+		// output_tokens_slot: slot name holding output token count
+		// model_slot:         slot name holding the model ID string (ByteSlot)
+		costSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		inputTokensSlot, err := c.getSlot(step.Input["input_tokens_slot"])
+		if err != nil {
+			return err
+		}
+		outputTokensSlot, err := c.getSlot(step.Input["output_tokens_slot"])
+		if err != nil {
+			return err
+		}
+		calcModelSlot := -1
+		if ms := step.Input["model_slot"]; ms != "" {
+			if s, err2 := c.getSlot(ms); err2 == nil {
+				calcModelSlot = s
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CalculateCost(steps.CalculateCostConfig{
+			PricingManager:   c.PricingManager,
+			CostSlot:         costSlot,
+			InputTokensSlot:  inputTokensSlot,
+			OutputTokensSlot: outputTokensSlot,
+			ModelSlot:        calcModelSlot,
+		}))
 
 	case "bind_client_ip":
 		// Extracts the real client IP (X-Forwarded-For → X-Real-IP → RemoteAddr)
@@ -1361,4 +1397,11 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (in
 	c.GlobalTable = append(c.GlobalTable, c.newInternalJump(sharedFlowStartID))
 
 	return entryPoint, nil
+}
+
+// GetFlowProfile returns the profile for a compiled flow by name.
+// Returns the zero FlowProfile and false if the flow has not been compiled yet.
+func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
+	p, ok := c.FlowProfiles[name]
+	return p, ok
 }

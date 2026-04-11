@@ -253,6 +253,21 @@ func (pm *PricingManager) Stop() {
 	close(pm.stopCh)
 }
 
+// GetPriceByModelID looks up pricing directly from the in-memory cache by model ID alone.
+// This is the fast hot-path used by the CalculateCost instruction at request time (~50ns).
+// The cache is pre-populated at startup from hardcoded defaults + config overrides,
+// so the provider name is not needed here.
+// Returns (inputPer1M, outputPer1M, true) on hit, (0, 0, false) on miss.
+func (pm *PricingManager) GetPriceByModelID(modelID string) (inputPer1M, outputPer1M float64, ok bool) {
+	pm.mu.RLock()
+	p, found := pm.cache[modelID]
+	pm.mu.RUnlock()
+	if !found {
+		return 0, 0, false
+	}
+	return p.InputCostPer1MTok, p.OutputCostPer1MTok, true
+}
+
 // CalculateCost computes request cost given tokens and pricing
 func CalculateCost(inputTokens, outputTokens int, pricing PricingInfo) float64 {
 	inputCost := (float64(inputTokens) / 1e6) * pricing.InputCostPer1MTok

@@ -676,6 +676,18 @@ func (cm *CacheManager) InvalidateLocal(tenantID uint16, key []byte) error {
 	return cm.backend.Delete(tenantID, key)
 }
 
+// DeleteTenant evicts all state for tenantID from the cache:
+//  1. Resets the tenant quota counter (deleted from tenantUsage sync.Map).
+//  2. Delegates to the backend to remove all persisted entries for the tenant.
+//
+// In-memory slab entries are NOT swept — they are bounded by test workload
+// size and will be naturally overwritten by the circular buffer. The index
+// entries for the deleted tenant will become harmless misses at read time.
+func (cm *CacheManager) DeleteTenant(tenantID uint16) error {
+	cm.tenantUsage.Delete(tenantID)
+	return cm.backend.DeleteTenant(tenantID)
+}
+
 // deleteKey removes the index entry for (tenantID, key). Used in tests.
 func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 	if isHashLane(key) {

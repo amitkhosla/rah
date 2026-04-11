@@ -494,6 +494,7 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, MCPStepDescriptors()...)
 	base = append(base, ServeMCPStepDescriptors()...)
 	base = append(base, IngestStepDescriptors()...)
+	base = append(base, CostStepDescriptors()...)
 	return base
 }
 
