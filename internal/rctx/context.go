@@ -104,6 +104,15 @@ type Context struct {
 	// Reserved to avoid a structural rewrite when AppKey auth is introduced.
 	CallerID uint32
 
+	// TestMode is true when this context is being executed by the test runner
+	// (POST /test/execute). Steps must NOT write to live cache/registry/datastore;
+	// writes are either suppressed or go to a test-namespaced key.
+	TestMode bool
+	// TestRunID is a unique identifier for this test execution run.
+	// Used as the namespace prefix for test-mode writes: __test__{TestRunID}:{key}
+	// Set by the test runner before Execute() is called.
+	TestRunID string
+
 	// Routing identity — set by the engine at request time, zero cost
 	// (plain struct field assignments).
 	APIRateLimitId      uint16 // rate limit config for this API (set by resolveSubPath)
@@ -327,6 +336,8 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.TenantKey = ""
 	ctx.TenantID = 0
 	ctx.CallerID = 0
+	ctx.TestMode = false
+	ctx.TestRunID = ""
 	ctx.APIRateLimitId = 0
 	ctx.EndpointRateLimitId = 0
 	ctx.EndpointId = 0

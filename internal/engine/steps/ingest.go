@@ -30,6 +30,9 @@ func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 			if cfg.Pipeline == nil {
 				return state.PC + 1
 			}
+			if ctx.TestMode {
+				return state.PC + 1 // suppress ingest emission during test execution
+			}
 
 			// Snapshot event fields from the current context.
 			// Snapshots are cheap value copies; no arena allocation needed.
