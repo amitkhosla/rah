@@ -9,23 +9,32 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // nextAvailableTenantID is a global counter for row allocation.
 // Starts at 1; TenantID 0 is reserved as the "empty slot" sentinel in AliasTable.
 var nextAvailableTenantID uint32 = 1
 
+// Test tenant ID range — reserved for ephemeral test tenants that are never
+// persisted to the datastore and exist only for the lifetime of a test run.
+const (
+	TestTenantRangeStart uint16 = 0xF000
+	TestTenantRangeEnd   uint16 = 0xFFFF
+)
+
 // RegistryManager coordinates the management plane of the gateway.
 // A single Mutex serializes all writes; reads are lock-free via atomic snapshot.
 type RegistryManager struct {
-	mu             sync.Mutex
-	aliasMap       map[string]uint16        // alias → TenantID; management-plane source of truth
-	seed           maphash.Seed             // fixed per-process; used for all AliasTable builds
-	rateLimitNames map[string]uint16        // name → RateLimitConfigId
-	nextRLConfigID uint16                   // auto-increment; starts at 0, gateway default is 0
-	tenantData     map[uint16]*TenantRecord // management-plane mirror; keyed by TenantID
-	tenantIDs      []uint16                 // sorted slice of active TenantIDs; enables cursor pagination
-	store          RegistryDatastore        // optional; nil = no persistence
+	mu               sync.Mutex
+	aliasMap         map[string]uint16        // alias → TenantID; management-plane source of truth
+	seed             maphash.Seed             // fixed per-process; used for all AliasTable builds
+	rateLimitNames   map[string]uint16        // name → RateLimitConfigId
+	nextRLConfigID   uint16                   // auto-increment; starts at 0, gateway default is 0
+	tenantData       map[uint16]*TenantRecord // management-plane mirror; keyed by TenantID
+	tenantIDs        []uint16                 // sorted slice of active TenantIDs; enables cursor pagination
+	store            RegistryDatastore        // optional; nil = no persistence
+	nextTestTenantID uint16                   // next ID to allocate from test range; starts at TestTenantRangeStart
 }
 
 // NewRegistryManager returns an initialized RegistryManager.
@@ -475,6 +484,125 @@ func (m *RegistryManager) DeleteTenant(alias string) {
 	delete(m.tenantData, tID)
 	m.removeSortedTenantID(tID)
 	m.persistDeleteTenant(primaryAlias)
+}
+
+// ─── Test Tenant Support ───────────────────────────────────────────────────────
+
+// RegisterTestTenant allocates an ephemeral test tenant in the reserved ID range
+// (TestTenantRangeStart–TestTenantRangeEnd). The tenant is registered in memory
+// only — it is never persisted to the datastore. The alias is "__test__"+runID.
+// IDs wrap around to TestTenantRangeStart when the range is exhausted.
+func (m *RegistryManager) RegisterTestTenant(runID string) (alias string, tenantID uint16, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	// Initialise the counter on first use.
+	if m.nextTestTenantID == 0 {
+		m.nextTestTenantID = TestTenantRangeStart
+	}
+
+	tID := m.nextTestTenantID
+	// Advance and wrap around within the test range.
+	if m.nextTestTenantID >= TestTenantRangeEnd {
+		m.nextTestTenantID = TestTenantRangeStart
+	} else {
+		m.nextTestTenantID++
+	}
+
+	al := "__test__" + runID
+	m.aliasMap[al] = tID
+	m.insertSortedTenantID(tID)
+
+	now := time.Now().Unix()
+	m.tenantData[tID] = &TenantRecord{
+		Aliases:   []string{al},
+		CreatedAt: now,
+	}
+
+	reg := m.activeOrEmpty()
+
+	// Grow per-tenant slices so the new ID is in-bounds.
+	needed := int(tID) + 1
+	if needed > len(reg.TenantModifiers) {
+		grown := make([]TenantRateLimitModifier, needed)
+		copy(grown, reg.TenantModifiers)
+		reg.TenantModifiers = grown
+	}
+	if needed > len(reg.TenantRateLimits) {
+		grown := make([]*TenantRateLimitTable, needed)
+		copy(grown, reg.TenantRateLimits)
+		reg.TenantRateLimits = grown
+	}
+	if needed > int(reg.MaxTenants) {
+		newMax := uint16(needed + 127)
+		if reg.URLs.Stride > 0 {
+			reg.URLs = expandPropStore(reg.URLs, newMax, reg.URLs.Stride)
+		}
+		if reg.IDs.Stride > 0 {
+			reg.IDs = expandPropStore(reg.IDs, newMax, reg.IDs.Stride)
+		}
+		if reg.Meta.Stride > 0 {
+			reg.Meta = expandPropStore(reg.Meta, newMax, reg.Meta.Stride)
+		}
+		reg.MaxTenants = newMax
+	}
+
+	reg.Aliases = m.rebuildAliasTable()
+	State.Active.Store(reg)
+
+	return al, tID, nil
+}
+
+// DeleteTestTenant removes the ephemeral test tenant identified by runID.
+// It delegates to DeleteTenant using the computed alias "__test__"+runID.
+func (m *RegistryManager) DeleteTestTenant(runID string) error {
+	m.DeleteTenant("__test__" + runID)
+	return nil
+}
+
+// StartTestTenantSweep starts a background goroutine that removes test tenants
+// older than maxAgeSeconds. It checks every 60 seconds and stops when ctx is done.
+func (m *RegistryManager) StartTestTenantSweep(ctx context.Context, maxAgeSeconds int64) {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.sweepExpiredTestTenants(maxAgeSeconds)
+			}
+		}
+	}()
+}
+
+// sweepExpiredTestTenants removes all test tenants whose CreatedAt is older than
+// maxAgeSeconds. Must NOT be called while the manager mutex is held.
+func (m *RegistryManager) sweepExpiredTestTenants(maxAgeSeconds int64) {
+	cutoff := time.Now().Unix() - maxAgeSeconds
+
+	m.mu.Lock()
+	var expiredAliases []string
+	for _, tID := range m.tenantIDs {
+		if tID < TestTenantRangeStart || tID > TestTenantRangeEnd {
+			continue
+		}
+		rec := m.tenantData[tID]
+		if rec == nil || rec.CreatedAt == 0 {
+			continue
+		}
+		if rec.CreatedAt < cutoff && len(rec.Aliases) > 0 {
+			expiredAliases = append(expiredAliases, rec.Aliases[0])
+		}
+	}
+	m.mu.Unlock()
+
+	// DeleteTenant acquires the mutex itself; call outside the lock.
+	for _, al := range expiredAliases {
+		m.DeleteTenant(al)
+	}
 }
 
 // SetRateLimitConfig upserts a rate limit config at the given RateLimitConfigId.

@@ -127,6 +127,17 @@ func (d *diskBackend) Delete(tenantID uint16, key []byte) error {
 	return err
 }
 
+// DeleteTenant removes the entire tenant directory, evicting all cached entries
+// for that tenant. No-op if the tenant directory does not exist.
+func (d *diskBackend) DeleteTenant(tenantID uint16) error {
+	dir := filepath.Join(d.base, strconv.FormatUint(uint64(tenantID), 10))
+	err := os.RemoveAll(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // Sweep walks the cache directory and removes expired entries.
 // Designed to be called from a low-frequency background goroutine (e.g. every 5 min).
 func (d *diskBackend) Sweep() int {

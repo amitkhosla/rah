@@ -185,6 +185,7 @@ type TenantRecord struct {
 	ServiceURLs map[string]string `json:"service_urls,omitempty"`
 	Identifiers map[string]string `json:"identifiers,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   int64             `json:"created_at,omitempty"` // Unix seconds; used for TTL sweep of test tenants
 }
 
 // RateLimitRecord pairs a named rate limit config with its stored values.

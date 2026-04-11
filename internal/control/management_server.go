@@ -184,6 +184,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 			}
 			newFlowConfigs[f.Name] = f.Instructions
 			newLibrary[f.Name] = compiled
+			s.Compiler.FlowProfiles[f.Name] = buildFlowProfile(f.Name, f.Instructions)
 			log.Printf("[Draft] Compiled Flow: %s (%d instructions)", f.Name, len(newLibrary[f.Name]))
 		}
 	}
@@ -343,6 +344,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		if f.Action == "delete" {
 			delete(newLibrary, f.Name)
 			delete(newFlowConfigs, f.Name)
+			delete(s.Compiler.FlowProfiles, f.Name)
 			deletedFlows = append(deletedFlows, f.Name)
 			log.Printf("[Management] Deleted Flow: %s", f.Name)
 			pendingPersist = append(pendingPersist, persistOp{kind: "flow_delete", name: f.Name})
@@ -353,6 +355,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			}
 			newFlowConfigs[f.Name] = f.Instructions
 			newLibrary[f.Name] = compiled
+			s.Compiler.FlowProfiles[f.Name] = buildFlowProfile(f.Name, f.Instructions)
 			log.Printf("[Management] Compiled Flow: %s (%d instructions)", f.Name, len(newLibrary[f.Name]))
 			if data, err := json.Marshal(f.Instructions); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "flow_upsert", name: f.Name, payload: data})
@@ -558,4 +561,28 @@ func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(UnifiedSyncRequest{Flows: flows, Apis: apis})
+}
+
+// FlowProfileHandler handles GET /flows/{name}/profile.
+// Returns the FlowProfile for a compiled flow, or 404 if not found.
+func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Extract flow name from path: /flows/{name}/profile
+	path := strings.TrimPrefix(r.URL.Path, "/flows/")
+	path = strings.TrimSuffix(path, "/profile")
+	name := strings.TrimSpace(path)
+	if name == "" {
+		http.Error(w, "missing flow name", http.StatusBadRequest)
+		return
+	}
+	profile, ok := s.Compiler.GetFlowProfile(name)
+	if !ok {
+		http.Error(w, fmt.Sprintf("flow %q not found", name), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(profile)
 }

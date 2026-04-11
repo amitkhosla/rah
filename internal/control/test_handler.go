@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/rctx"
@@ -153,23 +154,36 @@ func (m *mockResponseWriter) Write(p []byte) (int, error) {
 // TestHandler provides HTTP endpoints for flow test execution, test case
 // management, and test run history.
 type TestHandler struct {
-	dsm *DataStoreManager
-	ms  *ManagementServer
-	fm  *engine.FlowManager
+	dsm      *DataStoreManager
+	ms       *ManagementServer
+	fm       *engine.FlowManager
+	cacheMgr *cache.CacheManager
 }
 
 // NewTestHandler creates a TestHandler backed by the given managers.
-func NewTestHandler(dsm *DataStoreManager, ms *ManagementServer, fm *engine.FlowManager) *TestHandler {
-	return &TestHandler{dsm: dsm, ms: ms, fm: fm}
+// cacheMgr may be nil when the cache is not configured; test tenant cache data
+// will not be purged after a single-execute run in that case.
+func NewTestHandler(dsm *DataStoreManager, ms *ManagementServer, fm *engine.FlowManager, cacheMgr *cache.CacheManager) *TestHandler {
+	return &TestHandler{dsm: dsm, ms: ms, fm: fm, cacheMgr: cacheMgr}
 }
 
 // RegisterTestRoutes registers all /test/* endpoints onto mux.
-func RegisterTestRoutes(mux *http.ServeMux, dsm *DataStoreManager, ms *ManagementServer, fm *engine.FlowManager) {
-	h := NewTestHandler(dsm, ms, fm)
+// cacheMgr may be nil when the cache is not configured; suite runs will still
+// work but tenant cache data will not be purged after the run.
+func RegisterTestRoutes(mux *http.ServeMux, dsm *DataStoreManager, ms *ManagementServer, fm *engine.FlowManager, cacheMgr *cache.CacheManager) {
+	h := NewTestHandler(dsm, ms, fm, cacheMgr)
 	mux.HandleFunc("/test/execute", h.ExecuteHandler)
+	mux.HandleFunc("/test/load/run", h.LoadTestHandler)
 	mux.HandleFunc("/test/cases", h.CasesHandler)
 	mux.HandleFunc("/test/cases/", h.CaseHandler) // handles /test/cases/{id}
 	mux.HandleFunc("/test/runs", h.RunsHandler)
+
+	// Suite endpoints — require RegistryManager for test tenant isolation.
+	regMgr := ms.RegMgr
+	mux.HandleFunc("/test/suites", h.SuitesHandler)
+	mux.HandleFunc("/test/suites/", func(w http.ResponseWriter, r *http.Request) {
+		h.SuiteHandler(w, r, regMgr, cacheMgr)
+	})
 }
 
 // ── ExecuteHandler ─────────────────────────────────────────────────────────────
@@ -204,11 +218,31 @@ func (h *TestHandler) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Allocate an ephemeral test tenant for isolation.
+	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+	var testTenantID uint16
+	if h.ms != nil && h.ms.RegMgr != nil {
+		alias, tID, err := h.ms.RegMgr.RegisterTestTenant(runID)
+		if err == nil {
+			testTenantID = tID
+			_ = alias
+			defer func() {
+				_ = h.ms.RegMgr.DeleteTestTenant(runID)
+				if h.cacheMgr != nil {
+					_ = h.cacheMgr.DeleteTenant(testTenantID)
+				}
+			}()
+		}
+	}
+
 	// Build a synthetic context — not from the pool; test contexts are short-lived.
 	ctx := &rctx.Context{}
 	ctx.InitSlots()
 	ctx.TestMode = true
-	ctx.TestRunID = fmt.Sprintf("%d", time.Now().UnixNano())
+	ctx.TestRunID = runID
+	if testTenantID != 0 {
+		ctx.TenantID = testTenantID
+	}
 
 	method := req.Input.Method
 	if method == "" {

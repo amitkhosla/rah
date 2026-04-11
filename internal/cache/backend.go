@@ -30,6 +30,11 @@ type CacheBackend interface {
 	// Delete removes the entry for (tenantID, key). No-op if absent.
 	Delete(tenantID uint16, key []byte) error
 
+	// DeleteTenant removes all entries belonging to tenantID from the backend.
+	// No-op if the tenant has no entries. Used to evict a test tenant after
+	// a test run completes.
+	DeleteTenant(tenantID uint16) error
+
 	// Sweep scans and removes expired entries. Returns the number deleted.
 	// Called periodically by a background goroutine; may be slow.
 	Sweep() int
@@ -50,5 +55,6 @@ func (noopBackend) Get(_ uint16, _ []byte) ([]byte, uint32, bool)  { return nil,
 func (noopBackend) Set(_ uint16, _ []byte, _ []byte, _ uint32) error { return nil }
 func (noopBackend) SetBatch(_ []BackendEntry) error                  { return nil }
 func (noopBackend) Delete(_ uint16, _ []byte) error                  { return nil }
+func (noopBackend) DeleteTenant(_ uint16) error                      { return nil }
 func (noopBackend) Sweep() int                                       { return 0 }
 func (noopBackend) Close() error                                     { return nil }

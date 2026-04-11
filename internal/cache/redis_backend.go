@@ -127,6 +127,31 @@ func (r *redisBackend) Delete(tenantID uint16, key []byte) error {
 	return r.client.Del(context.Background(), redisKey(tenantID, key)).Err()
 }
 
+// DeleteTenant removes all Redis keys belonging to tenantID by scanning for
+// the tenant-scoped key prefix "rah:c:{tenantID}:*" and deleting in batches.
+// Uses SCAN to avoid blocking the Redis server.
+func (r *redisBackend) DeleteTenant(tenantID uint16) error {
+	ctx := context.Background()
+	pattern := "rah:c:" + strconv.FormatUint(uint64(tenantID), 10) + ":*"
+	var cursor uint64
+	for {
+		keys, next, err := r.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			if err := r.client.Del(ctx, keys...).Err(); err != nil {
+				return err
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return nil
+}
+
 // Sweep is a no-op for Redis: TTL-based eviction is handled by Redis itself.
 func (r *redisBackend) Sweep() int { return 0 }
 
