@@ -59,6 +59,11 @@ const (
 	// Test execution domains
 	DomainTestCases DataDomain = "test_cases" // customer-defined API test cases
 	DomainTestRuns  DataDomain = "test_runs"  // test execution results
+
+	// Observability domains — optional; skip gracefully if not bound
+	DomainObsAccessLog DataDomain = "obs_access_log" // per-request access log entries
+	DomainObsMetrics   DataDomain = "obs_metrics"     // pre-aggregated metric snapshots
+	DomainObsTraces    DataDomain = "obs_traces"       // sampled/error request traces
 )
 
 var requiredDomains = []DataDomain{
