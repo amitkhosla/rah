@@ -351,9 +351,22 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				if activeParams.authName != "" {
 					httpReq.Header.Set(activeParams.authName, activeParams.authValue)
 				}
-				// Anthropic requires API version header
-				if activeCfg.Adapter == config.AdapterAnthropic {
+				// Anthropic and Bedrock (Anthropic models) require the API version header.
+				if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
 					httpReq.Header.Set("anthropic-version", "2023-06-01")
+				}
+				// SigV4 signing for adapters that require request-level signing (e.g. AWS Bedrock).
+				if signer, ok := activeParams.adapter.(RequestSigner); ok {
+					if signErr := signer.SignRequest(httpReq, body, apiKey); signErr != nil {
+						cancel()
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						ctx.ErrorCode = 500
+						msg := "llm_call: request signing failed: " + signErr.Error()
+						ctx.ErrorMsg = ctx.Alloc(len(msg))
+						copy(ctx.ErrorMsg, msg)
+						return engine.StopPlan
+					}
 				}
 
 				resp, doErr := client.Do(httpReq)

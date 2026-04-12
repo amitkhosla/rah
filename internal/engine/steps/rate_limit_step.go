@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -46,11 +47,18 @@ func fmtUint32(ctx *rctx.Context, v uint32) []byte {
 // quotaGroupRLIds is baked at compile time: index = QuotaGroupID (uint8),
 // value = RateLimitConfigId (uint16). Pass nil if quota groups are not used.
 //
+// remoteRL / syncPolicy control distributed enforcement:
+//   - syncPolicy 0 (LOCAL):  use only in-process counters (default, fastest).
+//   - syncPolicy 1 (ASYNC):  local decision first; if allowed, fire-and-forget
+//     INCR to Redis in background for cross-pod visibility.
+//   - syncPolicy 2 (STRICT): call Redis before allowing; each request gets its
+//     own count — NOT all-or-none. Fails-open when Redis is unavailable.
+//
 // Returns 403 if the tenant is blocked; 429 if either window is exceeded.
 // No-ops (passes through) if both limits are 0 (unlimited).
 // When emitQuotaHeaders is true, X-RateLimit-* headers are written to the
 // response for every request (allowed or denied). Retry-After is added on 429.
-func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16, emitQuotaHeaders bool) engine.Instruction {
+func CheckRateLimit(store *engine.CounterStore, remoteRL engine.ExternalRateLimitProvider, syncPolicy uint8, quotaGroupRLIds []uint16, emitQuotaHeaders bool) engine.Instruction {
 	return engine.Instruction{
 		Name: "CHECK_RATE_LIMIT",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -80,6 +88,59 @@ func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16, emitQu
 
 			now := uint32(time.Now().Unix())
 
+			// ── STRICT distributed enforcement (syncPolicy >= 2) ─────────────
+			// Each request increments its own Redis counter independently — no
+			// all-or-none: some concurrent requests may pass, others may fail
+			// depending on the order Redis processes the pipeline entries.
+			if syncPolicy >= 2 && remoteRL != nil {
+				if resolved.PerSec > 0 {
+					bf := resolved.BurstFactor
+					if bf == 0 {
+						bf = 100
+					}
+					effectiveSec := uint32(uint64(resolved.PerSec) * uint64(bf) / 100)
+					if effectiveSec == 0 {
+						effectiveSec = 1
+					}
+					secKey := fmt.Sprintf("rl:%d:%d:%d:s", ctx.TenantID, apiRLId, now)
+					ok, remSec := remoteRL.Check(secKey, effectiveSec, 2)
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+						ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+						ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+					}
+					if !ok {
+						ctx.ResponseStatus = 429
+						if emitQuotaHeaders {
+							ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+						}
+						return -1
+					}
+				}
+
+				if resolved.PerMin > 0 {
+					epochMin := now / 60
+					minKey := fmt.Sprintf("rl:%d:%d:%d:m", ctx.TenantID, apiRLId, epochMin)
+					ok, remMin := remoteRL.Check(minKey, resolved.PerMin, 61)
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+						ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+					}
+					if !ok {
+						ctx.ResponseStatus = 429
+						if emitQuotaHeaders {
+							secsUntilReset := 60 - (now % 60)
+							ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+						}
+						return -1
+					}
+				}
+
+				return s.PC + 1
+			}
+
+			// ── Local fixed-window counters (LOCAL and ASYNC) ─────────────────
+
 			// ── Per-second window ─────────────────────────────────────────────
 			if resolved.PerSec > 0 {
 				bf := resolved.BurstFactor
@@ -106,6 +167,13 @@ func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16, emitQu
 					}
 					return -1
 				}
+
+				// ASYNC: fire-and-forget background INCR for cross-pod visibility.
+				if syncPolicy == 1 && remoteRL != nil {
+					secKey := fmt.Sprintf("rl:%d:%d:%d:s", ctx.TenantID, apiRLId, now)
+					capSec := effectiveSec
+					go func() { remoteRL.Check(secKey, capSec, 2) }()
+				}
 			}
 
 			// ── Per-minute window ─────────────────────────────────────────────
@@ -125,6 +193,13 @@ func CheckRateLimit(store *engine.CounterStore, quotaGroupRLIds []uint16, emitQu
 						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
 					}
 					return -1
+				}
+
+				// ASYNC: fire-and-forget background INCR for cross-pod visibility.
+				if syncPolicy == 1 && remoteRL != nil {
+					minKey := fmt.Sprintf("rl:%d:%d:%d:m", ctx.TenantID, apiRLId, epochMin)
+					capMin := resolved.PerMin
+					go func() { remoteRL.Check(minKey, capMin, 61) }()
 				}
 			}
 

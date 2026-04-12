@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { fetchSchema } from './api'
 import type { ApiDef, ConnStatus, FlowStep, PaletteBlock, SavedFlow, TabId } from './types'
-import FlowDesigner from './components/FlowDesigner'
-import APIsSection  from './components/APIsSection'
-import AISection    from './components/AISection'
-import Deploy       from './components/Deploy'
-import Gateway      from './components/Gateway'
-import Tenants      from './components/Tenants'
-import Settings     from './components/Settings'
-import Dashboard    from './components/Dashboard'
+import FlowDesigner  from './components/FlowDesigner'
+import APIsSection   from './components/APIsSection'
+import AISection     from './components/AISection'
+import Deploy        from './components/Deploy'
+import Gateway       from './components/Gateway'
+import Tenants       from './components/Tenants'
+import Settings      from './components/Settings'
+import Dashboard     from './components/Dashboard'
+import Observability from './components/Observability'
 
 // ── Sidebar structure ────────────────────────────────────────────────
 type NavItem =
@@ -23,8 +24,9 @@ const NAV: NavItem[] = [
   { kind: 'section', label: 'AI' },
   { kind: 'item',    id: 'ai',        label: 'Models / MCP' },
   { kind: 'section', label: 'GATEWAY' },
-  { kind: 'item',    id: 'deploy',    label: 'Deploy' },
-  { kind: 'item',    id: 'gateway',   label: 'Live' },
+  { kind: 'item',    id: 'deploy',        label: 'Deploy' },
+  { kind: 'item',    id: 'gateway',       label: 'Live' },
+  { kind: 'item',    id: 'observability', label: 'Observability' },
   { kind: 'section', label: 'SECURITY' },
   { kind: 'item',    id: 'tenants',   label: 'Tenants' },
   { kind: 'section', label: '' },
@@ -194,6 +196,7 @@ export default function App() {
             }}
           />
         )}
+        {tab === 'observability' && <Observability />}
         {tab === 'tenants'  && <Tenants />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>

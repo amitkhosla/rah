@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"rah/internal/observability"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,9 +22,13 @@ import (
 var uiFS embed.FS
 
 type ServerConfig struct {
-	Targets   []Target `json:"targets"`
-	StoreKind string   `json:"store_kind"`
-	StorePath string   `json:"store_path"`
+	Targets      []Target `json:"targets"`
+	StoreKind    string   `json:"store_kind"`
+	StorePath    string   `json:"store_path"`
+	ObsStoreType string   `json:"obs_store_type,omitempty"` // "memory", "postgres", "redis" — empty = proxy to gateway
+	ObsStoreDSN  string   `json:"obs_store_dsn,omitempty"`  // connection string for postgres/redis
+	ObsMaxLogs   int      `json:"obs_max_logs,omitempty"`   // max access log entries (default 10000)
+	ObsMaxTraces int      `json:"obs_max_traces,omitempty"` // max trace entries (default 500)
 }
 
 type DeployRequest struct {
@@ -131,6 +136,9 @@ type Server struct {
 	history   []DeployRecord
 	seqMu     sync.Mutex
 	seq       uint64
+
+	obsHandler *observability.ObsHandler // nil if proxying to gateway
+	obsWriter  *observability.ObsWriter  // nil if proxying to gateway
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -163,7 +171,30 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 			}
 		}
 	}
-	return &Server{managementBaseURL: parsed, httpClient: http.DefaultClient, targets: targets, store: releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath)}, nil
+	srv := &Server{
+		managementBaseURL: parsed,
+		httpClient:        http.DefaultClient,
+		targets:           targets,
+		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
+	}
+
+	// If an obs store type is configured, create a direct connection to it.
+	if strings.TrimSpace(cfg.ObsStoreType) != "" {
+		params := observability.ObsStoreParams{
+			Type:         cfg.ObsStoreType,
+			DSN:          cfg.ObsStoreDSN,
+			MaxAccessLog: cfg.ObsMaxLogs,
+			MaxTraces:    cfg.ObsMaxTraces,
+		}
+		obsStore := observability.NewObsStoreFromParams(context.Background(), params)
+		// Create a disabled Telemetry for the handler — Studio is read-only, it doesn't generate gateway metrics.
+		tel := observability.New(observability.Config{Enabled: false})
+		srv.obsWriter = observability.NewObsWriter(obsStore, 200, 2*time.Second)
+		srv.obsWriter.Start(context.Background())
+		srv.obsHandler = observability.NewObsHandler(srv.obsWriter, tel)
+	}
+
+	return srv, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -182,6 +213,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	mux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	mux.HandleFunc("/mcp", s.MCPHandler)
+
+	// Observability routes: serve from own store if configured, else proxy to gateway.
+	// Note: APIDetailHandler and TenantDetailHandler strip the /observability/ prefix;
+	// we rewrite the URL path to match what those handlers expect before forwarding.
+	if s.obsHandler != nil {
+		mux.HandleFunc("/api/observability/metrics", s.obsHandler.MetricsHandler)
+		mux.HandleFunc("/api/observability/access-log", s.obsHandler.AccessLogHandler)
+		mux.HandleFunc("/api/observability/traces", s.obsHandler.TracesHandler)
+		mux.HandleFunc("/api/observability/apis", s.obsHandler.APIsHandler)
+		mux.HandleFunc("/api/observability/apis/", func(w http.ResponseWriter, r *http.Request) {
+			// Strip /api prefix so handler sees /observability/apis/{name}
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
+			s.obsHandler.APIDetailHandler(w, r2)
+		})
+		mux.HandleFunc("/api/observability/tenants/", func(w http.ResponseWriter, r *http.Request) {
+			// Strip /api prefix so handler sees /observability/tenants/{alias}
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
+			s.obsHandler.TenantDetailHandler(w, r2)
+		})
+	} else {
+		mux.HandleFunc("/api/observability/", s.obsGatewayProxy)
+	}
 
 	// Serve the React SPA from the embedded ui/dist directory.
 	// Any path that doesn't match a real file falls back to index.html
@@ -805,6 +860,12 @@ func (s *Server) rateLimitConfigsMgmtProxy(w http.ResponseWriter, r *http.Reques
 
 // aiMgmtProxy forwards /api/ai[/...] → /ai[/...] on the management server.
 func (s *Server) aiMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// obsGatewayProxy forwards /api/observability/[...] → /observability/[...] on the management server.
+// Used as fallback when no direct obs store is configured.
+func (s *Server) obsGatewayProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 

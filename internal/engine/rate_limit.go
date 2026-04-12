@@ -270,7 +270,8 @@ func ByteToString(b []byte) string {
 
 func (s *RemoteRateLimitStep) Execute(ctx *rctx.Context) int16 {
 	key := s.resolveKey(ctx)
-	if !s.Provider.Check(key, s.Rule) {
+	limit := s.Rule.FinalLimit()
+	if ok, _ := s.Provider.Check(key, limit, 1); !ok {
 		ctx.ResponseStatus = 429
 		return -1
 	}
@@ -291,7 +292,12 @@ func (s *TokenBucketStep) calculateIndex(ctx *rctx.Context, _ uint32) uint32 {
 	return h % uint32(len(s.Store.Arena))
 }
 
-// Add to engine\rate_limit.go
+// ExternalRateLimitProvider is the interface for cross-pod distributed rate
+// limiting backends (e.g. Redis). Implementations must be safe for concurrent use.
 type ExternalRateLimitProvider interface {
-	Check(key string, rule RateLimitRule) bool
+	// Check atomically increments the counter for key and returns (allowed, remaining).
+	// windowSecs is the TTL for the key if this is the first increment in the window.
+	Check(key string, limit uint32, windowSecs int) (bool, uint32)
+	// Stop shuts down the background flusher goroutine.
+	Stop()
 }

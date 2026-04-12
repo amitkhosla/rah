@@ -64,6 +64,9 @@ const (
 	DomainObsAccessLog DataDomain = "obs_access_log" // per-request access log entries
 	DomainObsMetrics   DataDomain = "obs_metrics"     // pre-aggregated metric snapshots
 	DomainObsTraces    DataDomain = "obs_traces"       // sampled/error request traces
+
+	// Distributed rate limiting — optional; skip gracefully if not bound
+	DomainRateLimitSync DataDomain = "rate_limit_sync" // Redis-backed cross-pod rate limit counters
 )
 
 var requiredDomains = []DataDomain{

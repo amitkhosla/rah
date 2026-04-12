@@ -29,9 +29,11 @@ func main() {
 	targetsFile := flag.String("targets-file", defaultTargetsFile, "Path to JSON file with deployment targets")
 	storeKind := flag.String("store-kind", defaultStoreKind, "Release store kind: memory|file")
 	storePath := flag.String("store-path", defaultStorePath, "Release store path when kind=file")
+	obsStoreType := flag.String("obs-store-type", os.Getenv("RAH_OBS_STORE_TYPE"), "Observability store: memory|postgres|redis (empty = proxy to gateway)")
+	obsStoreDSN := flag.String("obs-store-dsn", os.Getenv("RAH_OBS_STORE_DSN"), "Observability store DSN (postgres full DSN or redis host:port)")
 	flag.Parse()
 
-	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath}
+	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath, ObsStoreType: *obsStoreType, ObsStoreDSN: *obsStoreDSN}
 	if *targetsFile != "" {
 		bytes, err := os.ReadFile(*targetsFile)
 		if err != nil {
