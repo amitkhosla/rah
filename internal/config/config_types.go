@@ -204,18 +204,103 @@ type QuotasConfig struct {
 	LogMissingQuotas bool `json:"log_missing_quotas,omitempty" yaml:"log_missing_quotas,omitempty"`
 }
 
+// ObsAccessLogConfig controls per-request access log capture.
+type ObsAccessLogConfig struct {
+	Enabled       bool           `json:"enabled,omitempty"        yaml:"enabled,omitempty"`
+	SampleRate    float64        `json:"sample_rate,omitempty"    yaml:"sample_rate,omitempty"`    // 0.0–1.0; default 1.0
+	RetentionDays int            `json:"retention_days,omitempty" yaml:"retention_days,omitempty"` // default 7
+	ExtraFields   []ObsExtraField `json:"extra_fields,omitempty"  yaml:"extra_fields,omitempty"`
+}
+
+// ObsExtraField adds a custom column to every access log entry.
+type ObsExtraField struct {
+	Name   string `json:"name"   yaml:"name"`
+	Source string `json:"source" yaml:"source"` // "header" | "query"
+	Key    string `json:"key"    yaml:"key"`
+}
+
+// ObsMetricsConfig controls pre-aggregated metric snapshot writes.
+type ObsMetricsConfig struct {
+	Enabled   bool     `json:"enabled,omitempty"    yaml:"enabled,omitempty"`
+	Windows   []string `json:"windows,omitempty"    yaml:"windows,omitempty"`   // e.g. ["1m","5m","1h"]; default ["1m","5m"]
+	PerAPI    bool     `json:"per_api,omitempty"    yaml:"per_api,omitempty"`   // default true
+	PerTenant bool     `json:"per_tenant,omitempty" yaml:"per_tenant,omitempty"` // default true
+}
+
+// ObsTracesConfig controls sampled full-request trace capture.
+type ObsTracesConfig struct {
+	Enabled           bool    `json:"enabled,omitempty"             yaml:"enabled,omitempty"`
+	SampleRate        float64 `json:"sample_rate,omitempty"         yaml:"sample_rate,omitempty"`         // 0.0–1.0
+	AlwaysTrace5xx    bool    `json:"always_trace_5xx,omitempty"    yaml:"always_trace_5xx,omitempty"`    // default true
+	InstructionTiming bool    `json:"instruction_timing,omitempty"  yaml:"instruction_timing,omitempty"`  // default true
+	RetentionDays     int     `json:"retention_days,omitempty"      yaml:"retention_days,omitempty"`      // default 3
+}
+
+// ObsAPIConfig is a per-API observability override.
+type ObsAPIConfig struct {
+	AccessLog         *bool   `json:"access_log,omitempty"          yaml:"access_log,omitempty"`
+	TracesSampleRate  float64 `json:"traces_sample_rate,omitempty"  yaml:"traces_sample_rate,omitempty"`
+	InstructionTiming *bool   `json:"instruction_timing,omitempty"  yaml:"instruction_timing,omitempty"`
+}
+
+// ObsTenantConfig is a per-tenant observability override.
+type ObsTenantConfig struct {
+	AlwaysTrace      bool    `json:"always_trace,omitempty"        yaml:"always_trace,omitempty"`
+	TracesSampleRate float64 `json:"traces_sample_rate,omitempty"  yaml:"traces_sample_rate,omitempty"`
+}
+
+// ObsExportConfig controls push to external observability systems.
+type ObsExportConfig struct {
+	Prometheus ObsPrometheusConfig `json:"prometheus,omitempty" yaml:"prometheus,omitempty"`
+	OTEL       ObsOTELConfig       `json:"otel,omitempty"       yaml:"otel,omitempty"`
+	Webhook    ObsWebhookConfig    `json:"webhook,omitempty"    yaml:"webhook,omitempty"`
+}
+
+// ObsPrometheusConfig enables the /metrics scrape endpoint.
+type ObsPrometheusConfig struct {
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// ObsOTELConfig enables OpenTelemetry export.
+type ObsOTELConfig struct {
+	Enabled     bool   `json:"enabled,omitempty"      yaml:"enabled,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"     yaml:"endpoint,omitempty"`    // gRPC endpoint e.g. "localhost:4317"
+	Insecure    bool   `json:"insecure,omitempty"     yaml:"insecure,omitempty"`
+	ServiceName string `json:"service_name,omitempty" yaml:"service_name,omitempty"`
+}
+
+// ObsWebhookConfig enables push to an arbitrary HTTP endpoint.
+type ObsWebhookConfig struct {
+	Enabled        bool              `json:"enabled,omitempty"          yaml:"enabled,omitempty"`
+	URL            string            `json:"url,omitempty"              yaml:"url,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"          yaml:"headers,omitempty"`
+	BatchSize      int               `json:"batch_size,omitempty"       yaml:"batch_size,omitempty"`       // default 100
+	FlushIntervalS int               `json:"flush_interval_s,omitempty" yaml:"flush_interval_s,omitempty"` // default 10
+}
+
+// ObservabilityConfig is the top-level observability configuration block.
+type ObservabilityConfig struct {
+	AccessLog ObsAccessLogConfig         `json:"access_log,omitempty" yaml:"access_log,omitempty"`
+	Metrics   ObsMetricsConfig           `json:"metrics,omitempty"    yaml:"metrics,omitempty"`
+	Traces    ObsTracesConfig            `json:"traces,omitempty"     yaml:"traces,omitempty"`
+	APIs      map[string]ObsAPIConfig    `json:"apis,omitempty"       yaml:"apis,omitempty"`
+	Tenants   map[string]ObsTenantConfig `json:"tenants,omitempty"    yaml:"tenants,omitempty"`
+	Export    ObsExportConfig            `json:"export,omitempty"     yaml:"export,omitempty"`
+}
+
 type GatewayConfig struct {
-	Layout       GlobalLayout        `json:"layout"             yaml:"layout"`
-	DataStore    DataStoreConfig     `json:"datastore"          yaml:"datastore"`
-	Secrets      SecretsConfig       `json:"secrets"            yaml:"secrets"`
-	Cache        CacheConfig         `json:"cache"              yaml:"cache"`
-	LLM          LLMConfig           `json:"llm"                yaml:"llm"`
-	Pricing      PricingConfig       `json:"pricing,omitempty"  yaml:"pricing,omitempty"`
-	Quotas       QuotasConfig        `json:"quotas,omitempty"   yaml:"quotas,omitempty"`
-	Async        AsyncConfig         `json:"async"              yaml:"async"`
-	VectorStores []VectorStoreConfig `json:"vector_stores,omitempty" yaml:"vector_stores,omitempty"`
-	Ingest       IngestConfig        `json:"ingest,omitempty"   yaml:"ingest,omitempty"`
-	Instance     InstanceConfig      `json:"instance,omitempty" yaml:"instance,omitempty"`
+	Layout          GlobalLayout        `json:"layout"                   yaml:"layout"`
+	DataStore       DataStoreConfig     `json:"datastore"                yaml:"datastore"`
+	Secrets         SecretsConfig       `json:"secrets"                  yaml:"secrets"`
+	Cache           CacheConfig         `json:"cache"                    yaml:"cache"`
+	LLM             LLMConfig           `json:"llm"                      yaml:"llm"`
+	Pricing         PricingConfig       `json:"pricing,omitempty"        yaml:"pricing,omitempty"`
+	Quotas          QuotasConfig        `json:"quotas,omitempty"         yaml:"quotas,omitempty"`
+	Async           AsyncConfig         `json:"async"                    yaml:"async"`
+	VectorStores    []VectorStoreConfig `json:"vector_stores,omitempty"  yaml:"vector_stores,omitempty"`
+	Ingest          IngestConfig        `json:"ingest,omitempty"         yaml:"ingest,omitempty"`
+	Observability   ObservabilityConfig `json:"observability,omitempty"  yaml:"observability,omitempty"`
+	Instance        InstanceConfig      `json:"instance,omitempty"       yaml:"instance,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

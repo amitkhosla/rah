@@ -88,6 +88,35 @@ func main() {
 		log.Fatalf("invalid data store config: %v", err)
 	}
 
+	// Build observability persistence store.
+	// Default: NoopObsStore when no obs domain is bound.
+	var obsStore observability.ObsStore = observability.NoopObsStore{}
+	if dataStoreMgr.IsConfigured(config.DomainObsAccessLog) {
+		storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog)
+		if err == nil {
+			switch storeCfg.Kind {
+			case config.StorePostgreSQL:
+				if s, serr := observability.NewPostgresObsStore(storeCfg.Connection.Address); serr == nil {
+					obsStore = s
+					log.Printf("observability: using PostgreSQL store")
+				} else {
+					log.Printf("observability: PostgreSQL store failed: %v", serr)
+				}
+			case config.StoreRedis, config.StoreDragonFly:
+				obsCtx, obsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if s, serr := observability.NewRedisObsStore(obsCtx, storeCfg.Connection.Address, storeCfg.Connection.Password, storeCfg.Connection.PoolSize); serr == nil {
+					obsStore = s
+					log.Printf("observability: using Redis store")
+				} else {
+					log.Printf("observability: Redis store failed: %v", serr)
+				}
+				obsCancel()
+			}
+		}
+	}
+	obsWriter := observability.NewObsWriter(obsStore, 200, 2*time.Second)
+	obsWriter.Start(gatewayCtx)
+
 	bootstrapCtx := gatewayCtx
 
 	if dataStoreMgr.IsConfigured(config.DomainAPIDefinitions) {
@@ -508,6 +537,23 @@ func main() {
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesRx),
 			)
 
+			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
+			obsWriter.WriteAccessLog(observability.AccessLogRecord{
+				TimestampNs: time.Now().UnixNano(),
+				ApiName:     registry.GetNameByID(ctx.ApiId),
+				TenantID:    ctx.TenantID,
+				TenantKey:   ctx.TenantKey,
+				Method:      req.Method,
+				Path:        req.URL.Path,
+				Status:      ctx.ResponseStatus,
+				TotalMs:     float64(total.Nanoseconds()) / 1e6,
+				GatewayMs:   float64(gateway.Nanoseconds()) / 1e6,
+				UpstreamMs:  float64(upstreamNs) / 1e6,
+				TTFBMs:      float64(ttfbNs) / 1e6,
+				ReqBytes:    req.ContentLength,
+				ResBytes:    ctx.Timing.ClientBytesSent,
+			})
+
 			if ctx.ShouldReturnToPool() {
 				// ReturnContext releases borrowed arena blocks and slot extensions
 				// back to their pools before returning the context itself.
@@ -652,6 +698,11 @@ func main() {
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	ts.RegisterHandlers(mux)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
+	observability.RegisterObsRoutes(mux, obsWriter, obs)
+	obsCfg := cfgMgr.Gateway().Observability
+	if obsCfg.Export.Prometheus.Enabled {
+		mux.Handle("/metrics", observability.PrometheusHandler(obs))
+	}
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
 		// Reports cumulative overflow counts since process start.
 		// Non-zero ArenaOverflows indicates ArenaInlineSize needs tuning.
