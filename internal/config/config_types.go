@@ -33,6 +33,11 @@ const (
 	// Use this for any OpenAI-compatible provider (HuggingFace TGI, vLLM,
 	// LM Studio, Groq, Together AI, etc.) without requiring a code change.
 	AdapterCustom LLMProviderAdapter = "custom"
+	// AdapterBedrock uses AWS SigV4 signing for AWS Bedrock (Anthropic Claude family).
+	// BaseURL = AWS region (e.g. "us-east-1") or a full Bedrock endpoint URL.
+	// APIKeyRef = "ACCESS_KEY_ID:SECRET_ACCESS_KEY" or "ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN".
+	// Alias = Bedrock model ID e.g. "anthropic.claude-3-5-sonnet-20241022-v2:0".
+	AdapterBedrock LLMProviderAdapter = "bedrock"
 )
 
 // ModelCapabilities declares what a model supports and its hard limits.
@@ -204,6 +209,16 @@ type QuotasConfig struct {
 	LogMissingQuotas bool `json:"log_missing_quotas,omitempty" yaml:"log_missing_quotas,omitempty"`
 }
 
+// ObsStoreConfig selects the persistence backend for observability data.
+// type "memory" is the default and requires no external infrastructure.
+// type "postgres" or "redis" require the obs_access_log domain to be bound
+// in the datastores section.
+type ObsStoreConfig struct {
+	Type         string `json:"type,omitempty"          yaml:"type,omitempty"`          // "memory" (default) | "postgres" | "redis"
+	MaxAccessLog int    `json:"max_access_log,omitempty" yaml:"max_access_log,omitempty"` // memory only; default 10000
+	MaxTraces    int    `json:"max_traces,omitempty"     yaml:"max_traces,omitempty"`     // memory only; default 500
+}
+
 // ObsAccessLogConfig controls per-request access log capture.
 type ObsAccessLogConfig struct {
 	Enabled       bool           `json:"enabled,omitempty"        yaml:"enabled,omitempty"`
@@ -280,6 +295,7 @@ type ObsWebhookConfig struct {
 
 // ObservabilityConfig is the top-level observability configuration block.
 type ObservabilityConfig struct {
+	Store     ObsStoreConfig             `json:"store,omitempty"      yaml:"store,omitempty"`
 	AccessLog ObsAccessLogConfig         `json:"access_log,omitempty" yaml:"access_log,omitempty"`
 	Metrics   ObsMetricsConfig           `json:"metrics,omitempty"    yaml:"metrics,omitempty"`
 	Traces    ObsTracesConfig            `json:"traces,omitempty"     yaml:"traces,omitempty"`

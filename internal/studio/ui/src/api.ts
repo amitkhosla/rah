@@ -216,3 +216,38 @@ export function deleteVirtualMCPServer(name: string, tenantId = 0): Promise<void
     { method: 'DELETE' },
   )
 }
+
+// ── Observability ──────────────────────────────────────────────────
+
+export async function fetchObsMetrics(apiName?: string): Promise<any> {
+  const params = apiName ? `?api=${encodeURIComponent(apiName)}` : ''
+  const r = await fetch(`/api/observability/metrics${params}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function fetchObsAccessLog(params?: { api?: string; tenant?: string; status?: number; limit?: number }): Promise<any> {
+  const q = new URLSearchParams()
+  if (params?.api) q.set('api', params.api)
+  if (params?.tenant) q.set('tenant', params.tenant)
+  if (params?.status) q.set('status', String(params.status))
+  if (params?.limit) q.set('limit', String(params.limit))
+  const r = await fetch(`/api/observability/access-log?${q}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function fetchObsApis(): Promise<any> {
+  const r = await fetch('/api/observability/apis')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function fetchObsTraces(params?: { api?: string; limit?: number }): Promise<any> {
+  const q = new URLSearchParams()
+  if (params?.api) q.set('api', params.api)
+  if (params?.limit) q.set('limit', String(params.limit))
+  const r = await fetch(`/api/observability/traces?${q}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}

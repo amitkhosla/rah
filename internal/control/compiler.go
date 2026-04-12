@@ -362,7 +362,11 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
 		}
 		emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
-		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, quotaGroupRLIds, emitQuotaHeaders))
+		syncPolicy := uint8(0)
+		if c.fm.RemoteRL != nil {
+			syncPolicy = c.fm.DistRLPolicy
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
 
 	case "assign_quota_group":
 		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.

@@ -48,6 +48,8 @@ func NewAdapter(cfg config.LLMModelConfig) (ProviderAdapter, error) {
 			headerPrefix = "Bearer "
 		}
 		return &customAdapter{authHeaderName: headerName, authHeaderPrefix: headerPrefix}, nil
+	case config.AdapterBedrock:
+		return newBedrockAdapter(cfg.BaseURL), nil
 	default:
 		return nil, fmt.Errorf("unknown LLM adapter: %q", cfg.Adapter)
 	}

@@ -29,14 +29,16 @@ type PricingManager struct {
 	ttl       time.Duration
 	lastFetch time.Time
 	stopCh    chan struct{}
+	fetcher   *PricingFetcher
 }
 
 // NewPricingManager creates a pricing manager with auto-refresh
 func NewPricingManager() *PricingManager {
 	pm := &PricingManager{
-		cache:  make(map[string]PricingInfo),
-		ttl:    time.Hour,  // Refresh hourly
-		stopCh: make(chan struct{}),
+		cache:   make(map[string]PricingInfo),
+		ttl:     time.Hour, // Refresh hourly
+		stopCh:  make(chan struct{}),
+		fetcher: NewPricingFetcher(10 * time.Second),
 	}
 
 	// Bootstrap from hardcoded data
@@ -228,7 +230,30 @@ func (pm *PricingManager) ForceRefresh() {
 	pm.mu.Unlock()
 }
 
-// backgroundRefresh periodically invalidates the cache
+// mergeFetchedPricing merges newly fetched pricing into the cache.
+// Entries whose Source is "config" or "llm_config" are never overwritten —
+// operator-supplied pricing always takes precedence.
+func (pm *PricingManager) mergeFetchedPricing(incoming map[string]PricingInfo) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	merged := 0
+	for modelID, info := range incoming {
+		existing, exists := pm.cache[modelID]
+		if exists && (existing.Source == "config" || existing.Source == "llm_config") {
+			// Config/llm_config entries are authoritative — skip.
+			continue
+		}
+		pm.cache[modelID] = info
+		merged++
+	}
+	pm.lastFetch = time.Now()
+	log.Printf("Pricing refresh complete: merged %d models from litellm-community (total catalog: %d)", merged, len(pm.cache))
+}
+
+// backgroundRefresh periodically fetches fresh pricing from LiteLLM and merges it
+// into the cache. Config/llm_config overrides are never overwritten.
+// On fetch failure the existing cache is retained (graceful degradation).
 func (pm *PricingManager) backgroundRefresh() {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
@@ -236,10 +261,13 @@ func (pm *PricingManager) backgroundRefresh() {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("Pricing cache TTL expired, will refresh on next request")
-			pm.mu.Lock()
-			pm.lastFetch = time.Time{}  // Mark cache as stale
-			pm.mu.Unlock()
+			log.Println("Pricing TTL expired — fetching fresh data from litellm-community")
+			all, err := pm.fetcher.FetchFromLiteLLM()
+			if err != nil {
+				log.Printf("Warning: pricing background refresh failed: %v — keeping existing cache", err)
+				continue
+			}
+			pm.mergeFetchedPricing(all)
 
 		case <-pm.stopCh:
 			log.Println("Pricing manager stopped")

@@ -68,6 +68,12 @@ type FlowManager struct {
 	CacheExec OpFlusher
 	// RegistryExec dispatches buffered registry PUT ops. Nil = no batching.
 	RegistryExec OpFlusher
+	// RemoteRL is the distributed rate limit provider (e.g. Redis-backed).
+	// Nil when distributed rate limiting is not configured — falls back to local counters.
+	RemoteRL ExternalRateLimitProvider
+	// DistRLPolicy controls cross-pod rate limit enforcement:
+	// 0 = LOCAL (in-memory only), 1 = ASYNC (local decision + background sync), 2 = STRICT (Redis before allow).
+	DistRLPolicy uint8
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {

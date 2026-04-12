@@ -24,6 +24,8 @@ import (
 	"rah/internal/vectorstore"
 	"sync/atomic"
 	"time"
+
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // domainScopedKV adapts DataStoreManager to the RegistryStoreBackend interface,
@@ -88,32 +90,24 @@ func main() {
 		log.Fatalf("invalid data store config: %v", err)
 	}
 
-	// Build observability persistence store.
-	// Default: NoopObsStore when no obs domain is bound.
-	var obsStore observability.ObsStore = observability.NoopObsStore{}
-	if dataStoreMgr.IsConfigured(config.DomainObsAccessLog) {
-		storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog)
-		if err == nil {
-			switch storeCfg.Kind {
-			case config.StorePostgreSQL:
-				if s, serr := observability.NewPostgresObsStore(storeCfg.Connection.Address); serr == nil {
-					obsStore = s
-					log.Printf("observability: using PostgreSQL store")
-				} else {
-					log.Printf("observability: PostgreSQL store failed: %v", serr)
-				}
-			case config.StoreRedis, config.StoreDragonFly:
-				obsCtx, obsCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if s, serr := observability.NewRedisObsStore(obsCtx, storeCfg.Connection.Address, storeCfg.Connection.Password, storeCfg.Connection.PoolSize); serr == nil {
-					obsStore = s
-					log.Printf("observability: using Redis store")
-				} else {
-					log.Printf("observability: Redis store failed: %v", serr)
-				}
-				obsCancel()
-			}
+	// Build observability store from config.
+	obsCfg := cfgMgr.Gateway().Observability
+	obsStoreParams := observability.ObsStoreParams{
+		Type:         obsCfg.Store.Type,
+		MaxAccessLog: obsCfg.Store.MaxAccessLog,
+		MaxTraces:    obsCfg.Store.MaxTraces,
+	}
+	// For postgres/redis: resolve connection from domain binding.
+	if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog); err == nil {
+		obsStoreParams.DSN = storeCfg.Connection.Address
+		obsStoreParams.Password = storeCfg.Connection.Password
+		obsStoreParams.PoolSize = storeCfg.Connection.PoolSize
+		// If type is not explicitly set but a binding exists, infer type from store kind.
+		if obsStoreParams.Type == "" {
+			obsStoreParams.Type = string(storeCfg.Kind)
 		}
 	}
+	obsStore := observability.NewObsStoreFromParams(gatewayCtx, obsStoreParams)
 	obsWriter := observability.NewObsWriter(obsStore, 200, 2*time.Second)
 	obsWriter.Start(gatewayCtx)
 
@@ -399,6 +393,28 @@ func main() {
 		}
 	} else {
 		log.Printf("Cache disabled (cache.disabled=true in config)")
+	}
+
+	// Distributed rate limiting via Redis — optional; requires DomainRateLimitSync binding.
+	// Fails gracefully: if Redis is not configured or unavailable at startup, the gateway
+	// falls back to local in-memory counters with no impact on request processing.
+	if rlCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainRateLimitSync); err == nil {
+		rlClient := goredis.NewClient(&goredis.Options{
+			Addr:     rlCfg.Connection.Address,
+			Password: rlCfg.Connection.Password,
+			PoolSize: rlCfg.Connection.PoolSize,
+		})
+		if rlProvider, err := engine.NewRedisRateLimitProvider(gatewayCtx, rlClient); err == nil {
+			fm.RemoteRL = rlProvider
+			fm.DistRLPolicy = 2 // STRICT by default; cross-pod enforcement via Redis
+			log.Printf("[rate-limit] distributed rate limiting enabled via Redis (%s)", rlCfg.Connection.Address)
+			defer rlProvider.Stop()
+		} else {
+			log.Printf("[rate-limit] Redis rate limit provider init failed: %v — using local counters", err)
+			_ = rlClient.Close()
+		}
+	} else {
+		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) — using local counters")
 	}
 
 	// Initialize vector stores — optional; controlled by [vector_stores] in config.
@@ -699,7 +715,6 @@ func main() {
 	ts.RegisterHandlers(mux)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	observability.RegisterObsRoutes(mux, obsWriter, obs)
-	obsCfg := cfgMgr.Gateway().Observability
 	if obsCfg.Export.Prometheus.Enabled {
 		mux.Handle("/metrics", observability.PrometheusHandler(obs))
 	}
@@ -729,6 +744,9 @@ func main() {
 	}
 	RegisterCostRoutes(mux, fm.CostQuotaManager, adminToken)
 	log.Printf("Cost tracking endpoints registered at /api/v1/costs*")
+
+	pricing.RegisterPricingRoutes(mux, pricingMgr)
+	log.Printf("Pricing endpoints registered at /pricing and /pricing/refresh")
 
 	control.RegisterEnvironmentRoutes(mux, dataStoreMgr)
 	control.RegisterReleaseRoutes(mux, dataStoreMgr, instanceSync)
