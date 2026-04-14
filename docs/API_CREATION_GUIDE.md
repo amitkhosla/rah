@@ -92,6 +92,7 @@ path.<name>     → path segment, e.g. path.id  (from /v1/users/{id})
 | `http_call`           | Proxy to upstream URL                                              |
 | `registry_lookup`     | Tenant/config lookup by key                                        |
 | `token_validation`    | JWT validation (see `TOKEN_VALIDATION.md`)                         |
+| `ip_restriction`      | Allow/deny requests by CIDR ranges (client IP policy)              |
 | `to_lower`            | Lowercase a slot value                                             |
 | `to_upper`            | Uppercase a slot value                                             |
 | `substring`           | Extract substring from a slot                                      |
