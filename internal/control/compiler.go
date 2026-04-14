@@ -459,6 +459,24 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindClientIP(destSlot))
 
+	case "ip_restriction":
+		// Enforces allow/deny CIDR policy for the resolved client IP.
+		// Optional key_identifier can point to a slot containing a pre-resolved IP
+		// (e.g. from bind_client_ip) and takes precedence over source resolution.
+		cfg, err := steps.ParseIPRestrictionConfig(step.Input)
+		if err != nil {
+			return fmt.Errorf("ip_restriction: %w", err)
+		}
+		sourceSlot := -1
+		if name := strings.TrimSpace(step.KeyIdentifier); name != "" {
+			slot, slotErr := c.getSlot(name)
+			if slotErr != nil {
+				return fmt.Errorf("ip_restriction: key_identifier %q: %w", name, slotErr)
+			}
+			sourceSlot = slot
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.IPRestriction(cfg, sourceSlot))
+
 	case "token_validation":
 		tokenSlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {

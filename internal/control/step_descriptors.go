@@ -149,6 +149,15 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("key_identifier", "Store as", "Slot name to store the client IP string in (e.g. client_ip)", "client_ip"),
 			},
 		},
+		{
+			Type: "ip_restriction", Title: "IP Restriction", Category: "network", Capability: "access-control",
+			Description: "Allow or deny requests based on CIDR ranges. Returns configured status/body when blocked.",
+			Defaults: map[string]string{"input": `{"mode":"allow","cidrs":"10.0.0.0/8","source":"header.X-Forwarded-For","on_violation_status":"403","on_violation_body":"ip not allowed"}`},
+			Fields: []StepField{
+				sf("key_identifier", "IP slot (optional)", "Optional slot with pre-resolved client IP (from bind_client_ip). If set, it overrides source resolution.", "client_ip"),
+				sf("input", "Config (JSON)", `mode: allow|deny, cidrs: comma-separated CIDRs, source: header.X-Forwarded-For|header.X-Real-IP|remote_addr, on_violation_status: 4xx/5xx, on_violation_body: response text`, `{"mode":"allow","cidrs":"10.0.0.0/8,192.168.0.0/16","source":"header.X-Forwarded-For","on_violation_status":"403","on_violation_body":"ip not allowed"}`),
+			},
+		},
 
 		// ── AI / LLM ─────────────────────────────────────────────────────────────
 		{
