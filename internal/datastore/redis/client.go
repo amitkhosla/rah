@@ -62,7 +62,7 @@ func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, 
 	switch topology {
 	case TopologySingle:
 		c := goredis.NewClient(&goredis.Options{
-			Addr:            cfg.Connection.Address,
+			Addr:            cfg.Connection.EffectiveAddress(),
 			Username:        username,
 			Password:        password,
 			DB:              dbIndexFrom(cfg),
@@ -161,8 +161,8 @@ func nodeAddrs(cfg config.StoreConfig) []string {
 	if len(cfg.Connection.ClusterAddrs) > 0 {
 		return cfg.Connection.ClusterAddrs
 	}
-	if cfg.Connection.Address != "" {
-		return []string{cfg.Connection.Address}
+	if addr := cfg.Connection.EffectiveAddress(); addr != "" {
+		return []string{addr}
 	}
 	return nil
 }

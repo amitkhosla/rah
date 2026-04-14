@@ -402,8 +402,15 @@ func (fm *FlowManager) resolveSubPath(
 			for strPos < pathLen && relPath[strPos] != '/' {
 				strPos++
 			}
-			slot := curr.ParamSlot
-			ctx.ByteSlots[slot] = relPath[start:strPos]
+			// Store offsets into ctx.Path (not relPath) so BindPath can slice ctx.Path.
+			// BindPath reads ctx.Match.Params[N] and writes to ctx.ByteSlots[slot],
+			// matching the same pattern as BindHeader/BindQuery.
+			if ctx.Match.ParamCount < len(ctx.Match.Params) {
+				absStart := uint32(baseLen + start)
+				absEnd := uint32(baseLen + strPos)
+				ctx.Match.Params[ctx.Match.ParamCount] = rctx.ParamOffset{Start: absStart, End: absEnd}
+				ctx.Match.ParamCount++
+			}
 			currIdx = curr.ParamChildIdx
 			if strPos < pathLen && relPath[strPos] == '/' {
 				strPos++

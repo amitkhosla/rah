@@ -1322,6 +1322,13 @@ func (c *Compiler) varRefsInFlow(flow []StepConfig, frags map[string][]StepConfi
 func (c *Compiler) releaseDeadSlots(stepIdx int, lastUse map[string]int) {
 	for name, last := range lastUse {
 		if last == stepIdx {
+			// Path param slots must not be recycled: BakeSubRouter (called after
+			// bakeFlow) calls getSlot("path.X") and must get the same index that
+			// bakeFlow allocated, so the compiled instructions and the sub-router
+			// node agree on which ByteSlot the runtime BindPath instruction writes to.
+			if strings.HasPrefix(name, "path.") {
+				continue
+			}
 			if slot, ok := c.slotMap[name]; ok {
 				c.freeSlots = append(c.freeSlots, slot)
 				delete(c.slotMap, name)

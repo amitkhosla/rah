@@ -71,6 +71,15 @@ type LLMModelConfig struct {
 	// Example: AuthHeaderName="x-api-key", AuthHeaderPrefix="" → x-api-key: <key>
 	AuthHeaderName   string `json:"auth_header_name,omitempty"   yaml:"auth_header_name,omitempty"`
 	AuthHeaderPrefix string `json:"auth_header_prefix,omitempty" yaml:"auth_header_prefix,omitempty"`
+	// ProviderParams holds provider-specific request fields that are merged into
+	// the wire-format JSON body at call time. Keys and values are provider-defined.
+	// Examples:
+	//   OpenAI:    {"service_tier": "flex"}
+	//   Anthropic: {"thinking": {"type": "enabled", "budget_tokens": 5000}}
+	//   Gemini:    {"safetySettings": [...]}
+	// These are merged at the top level of the provider's request JSON, so they
+	// can override or extend any field the adapter normally produces.
+	ProviderParams map[string]any `json:"provider_params,omitempty" yaml:"provider_params,omitempty"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
@@ -304,6 +313,56 @@ type ObservabilityConfig struct {
 	Export    ObsExportConfig            `json:"export,omitempty"     yaml:"export,omitempty"`
 }
 
+// AdminUserConfig is one entry in the seed user list (loaded from gateway.yaml).
+// AdminUserConfig is one seed user entry in gateway.yaml.
+// PasswordHash must be a bcrypt hash — generate it via POST /admin/users/hash.
+type AdminUserConfig struct {
+	Username     string `json:"username"      yaml:"username"`
+	PasswordHash string `json:"password_hash" yaml:"password_hash"`
+	// Role must match a role defined in AdminConfig.Roles, or one of the
+	// built-in defaults: "admin" (full access) or "readonly" (GET only).
+	Role string `json:"role" yaml:"role"`
+}
+
+// RoleConfig defines a named role and the set of requests it is allowed to make.
+//
+// Permission format: "METHOD:path" where METHOD is an HTTP verb or "*" for any,
+// and path is an exact path, a prefix ending in "/*", or "*" for any path.
+//
+// Examples:
+//   - "*"                  — allow everything
+//   - "GET:*"              — allow all GET requests
+//   - "POST:/sync"         — allow POST to exactly /sync
+//   - "GET:/observability/*" — allow GET to any path under /observability/
+//   - "*:/admin/*"         — allow any method under /admin/
+type RoleConfig struct {
+	Name        string   `json:"name"                  yaml:"name"`
+	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Permissions []string `json:"permissions"           yaml:"permissions"`
+}
+
+// AdminConfig controls authentication and role-based access for the management
+// plane (:8081) and optionally the gateway plane (:8080).
+//
+// When Enabled is false (the default) all endpoints are open — suitable for
+// development or internal-only deployments. Set Enabled: true to enforce
+// HTTP Basic Auth with role-based permission checks.
+type AdminConfig struct {
+	// Enabled turns on Basic Auth enforcement. Default: false (open access).
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Realm is the WWW-Authenticate realm string. Default "RAH".
+	Realm string `json:"realm,omitempty" yaml:"realm,omitempty"`
+	// RequireGatewayAuth, when true, also protects :8080 gateway traffic.
+	// Default false — gateway flows handle their own auth via validate_token steps.
+	RequireGatewayAuth bool `json:"require_gateway_auth,omitempty" yaml:"require_gateway_auth,omitempty"`
+	// Roles defines custom roles. Built-in roles "admin" ("*") and "readonly"
+	// ("GET:*") are always available and can be overridden here.
+	Roles []RoleConfig `json:"roles,omitempty" yaml:"roles,omitempty"`
+	// Users is the seed list loaded at startup and merged with datastore users.
+	// Config takes precedence — change a hash here to reset a password.
+	Users []AdminUserConfig `json:"users,omitempty" yaml:"users,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout          GlobalLayout        `json:"layout"                   yaml:"layout"`
 	DataStore       DataStoreConfig     `json:"datastore"                yaml:"datastore"`
@@ -317,6 +376,7 @@ type GatewayConfig struct {
 	Ingest          IngestConfig        `json:"ingest,omitempty"         yaml:"ingest,omitempty"`
 	Observability   ObservabilityConfig `json:"observability,omitempty"  yaml:"observability,omitempty"`
 	Instance        InstanceConfig      `json:"instance,omitempty"       yaml:"instance,omitempty"`
+	Admin           AdminConfig         `json:"admin,omitempty"          yaml:"admin,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

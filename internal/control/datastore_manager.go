@@ -135,10 +135,24 @@ func (m *DataStoreManager) SetStoreWrapper(fn StoreWrapFn) {
 	}
 }
 
-// resolveStoreCredentials returns a copy of storeCfg with Username and Password
-// resolved through the secrets manager. All other fields are unchanged.
+// resolveStoreCredentials returns a copy of storeCfg with credentials resolved
+// through the secrets manager. All other fields are unchanged.
+//
+// Resolution order (highest precedence first):
+//  1. UsernameRef / PasswordRef — explicit secret references (env:, enc:, vault:, etc.)
+//     Resolved value is written into Username / Password.
+//  2. Username / Password — may themselves be secret references (same scheme support)
+//     or inline plaintext (no scheme prefix → passed through unchanged).
 func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, resolver secrets.Resolver) (config.StoreConfig, error) {
-	if storeCfg.Connection.Username != "" {
+	// Resolve UsernameRef first — overrides Username if set.
+	if storeCfg.Connection.UsernameRef != "" {
+		val, err := resolver.Resolve(ctx, storeCfg.Connection.UsernameRef)
+		if err != nil {
+			return storeCfg, fmt.Errorf("resolving username_ref for store %q: %w", storeCfg.Name, err)
+		}
+		storeCfg.Connection.Username = string(val)
+		clear(val)
+	} else if storeCfg.Connection.Username != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.Username)
 		if err != nil {
 			return storeCfg, fmt.Errorf("resolving username for store %q: %w", storeCfg.Name, err)
@@ -146,7 +160,16 @@ func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, r
 		storeCfg.Connection.Username = string(val)
 		clear(val)
 	}
-	if storeCfg.Connection.Password != "" {
+
+	// Resolve PasswordRef first — overrides Password if set.
+	if storeCfg.Connection.PasswordRef != "" {
+		val, err := resolver.Resolve(ctx, storeCfg.Connection.PasswordRef)
+		if err != nil {
+			return storeCfg, fmt.Errorf("resolving password_ref for store %q: %w", storeCfg.Name, err)
+		}
+		storeCfg.Connection.Password = string(val)
+		clear(val)
+	} else if storeCfg.Connection.Password != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.Password)
 		if err != nil {
 			return storeCfg, fmt.Errorf("resolving password for store %q: %w", storeCfg.Name, err)
@@ -154,6 +177,7 @@ func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, r
 		storeCfg.Connection.Password = string(val)
 		clear(val)
 	}
+
 	return storeCfg, nil
 }
 

@@ -18,31 +18,31 @@ type MetricSnapshot struct {
 
 // AccessLogRecord is a single persisted access log entry.
 type AccessLogRecord struct {
-	TimestampNs int64
-	ApiName     string
-	TenantID    uint16
-	TenantKey   string
-	Method      string
-	Path        string
-	Status      int
-	TotalMs     float64
-	GatewayMs   float64
-	UpstreamMs  float64
-	TTFBMs      float64
-	ReqBytes    int64
-	ResBytes    int64
-	Extra       map[string]string // customer-configured extra fields
+	TimestampNs int64             `json:"timestamp_ns"`
+	ApiName     string            `json:"api_name"`
+	TenantID    uint16            `json:"tenant_id"`
+	TenantKey   string            `json:"tenant_key"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Status      int               `json:"status"`
+	TotalMs     float64           `json:"total_ms"`
+	GatewayMs   float64           `json:"gateway_ms"`
+	UpstreamMs  float64           `json:"upstream_ms"`
+	TTFBMs      float64           `json:"ttfb_ms"`
+	ReqBytes    int64             `json:"req_bytes"`
+	ResBytes    int64             `json:"res_bytes"`
+	Extra       map[string]string `json:"extra,omitempty"` // customer-configured extra fields
 }
 
 // TraceRecord is a persisted request trace (sampled or error).
 type TraceRecord struct {
-	TraceID   uint64
-	Timestamp int64  // unix seconds
-	ApiName   string
-	TenantID  uint16
-	Status    int
-	TotalMs   float64
-	Payload   []byte // JSON-encoded RequestTrace
+	TraceID   uint64  `json:"trace_id"`
+	Timestamp int64   `json:"timestamp"` // unix seconds
+	ApiName   string  `json:"api_name"`
+	TenantID  uint16  `json:"tenant_id"`
+	Status    int     `json:"status"`
+	TotalMs   float64 `json:"total_ms"`
+	Payload   []byte  `json:"payload,omitempty"` // JSON-encoded RequestTrace
 }
 
 // AccessLogFilter filters access log queries.

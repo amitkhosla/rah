@@ -294,6 +294,7 @@ export default function AIModels() {
   const [err, setErr]           = useState('')
   const [showForm, setShowForm] = useState(false)
   const [form, setForm]         = useState<LLMModel>(blankModel())
+  const [providerParamsJson, setProviderParamsJson] = useState('')
   const [saving, setSaving]     = useState(false)
   const [saveMsg, setSaveMsg]   = useState('')
   const [saveMsgErr, setSaveMsgErr] = useState(false)
@@ -309,6 +310,7 @@ export default function AIModels() {
 
   function applyPreset(p: Preset) {
     setForm({ ...p.model })
+    setProviderParamsJson(p.model.provider_params ? JSON.stringify(p.model.provider_params, null, 2) : '')
     setShowForm(true)
   }
 
@@ -322,12 +324,18 @@ export default function AIModels() {
 
   async function handleSave() {
     if (!form.alias.trim()) { setSaveMsgErr(true); setSaveMsg('Alias is required'); return }
+    let providerParams: Record<string, any> | undefined
+    if (providerParamsJson.trim()) {
+      try { providerParams = JSON.parse(providerParamsJson) }
+      catch { setSaveMsgErr(true); setSaveMsg('Provider params: invalid JSON'); return }
+    }
     setSaving(true); setSaveMsg(''); setSaveMsgErr(false)
     try {
-      await upsertLLMModel(form)
+      await upsertLLMModel({ ...form, provider_params: providerParams })
       setSaveMsg(`Model "${form.alias}" saved.`)
       setSaveMsgErr(false)
       setForm(blankModel())
+      setProviderParamsJson('')
       setShowForm(false)
       await load()
     } catch (e) {
@@ -449,6 +457,22 @@ export default function AIModels() {
               </Field>
             </div>
 
+            <div style={{ marginTop: 12 }}>
+              <Field
+                label="Provider Params (JSON)"
+                hint='Provider-specific fields merged into the request body. e.g. {"service_tier":"flex"} for OpenAI, {"thinking":{"type":"enabled","budget_tokens":5000}} for Anthropic'
+              >
+                <textarea
+                  className="input"
+                  value={providerParamsJson}
+                  placeholder={'{\n  "service_tier": "flex"\n}'}
+                  onChange={e => setProviderParamsJson(e.target.value)}
+                  rows={4}
+                  style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                />
+              </Field>
+            </div>
+
             <div style={{ marginTop: 16, display: 'flex', gap: 10, alignItems: 'center' }}>
               <button className="btn" style={{ width: 'auto', padding: '0 24px' }}
                 onClick={handleSave} disabled={saving}>
@@ -517,7 +541,7 @@ export default function AIModels() {
                 <button
                   className="btn muted"
                   style={{ width: 'auto', padding: '3px 12px', marginTop: 0, fontSize: 12 }}
-                  onClick={() => { setForm({ ...m }); setShowForm(true) }}
+                  onClick={() => { setForm({ ...m }); setProviderParamsJson(m.provider_params ? JSON.stringify(m.provider_params, null, 2) : ''); setShowForm(true) }}
                 >
                   Edit
                 </button>
