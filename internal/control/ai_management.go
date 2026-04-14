@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"rah/internal/config"
+	"rah/internal/engine/steps"
 	"rah/internal/mcpreg"
 	"strconv"
 	"strings"
@@ -54,7 +55,11 @@ func writeAIError(w http.ResponseWriter, status int, msg string) {
 // dsm is optional: when non-nil and the DomainAIConfig domain is configured,
 // mutations are persisted so they survive gateway restarts.
 // mcpReg is the in-memory registry for virtual MCP servers and API tools.
-func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(), dsm *DataStoreManager, mcpReg *mcpreg.Registry) {
+func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(), dsm *DataStoreManager, mcpReg *mcpreg.Registry, secretsMgr ...steps.SecretLoader) {
+	var sm steps.SecretLoader
+	if len(secretsMgr) > 0 {
+		sm = secretsMgr[0]
+	}
 	// Bootstrap persisted AI config before wiring handlers — this merges
 	// runtime-added models/servers on top of the file-based config.
 	if dsm != nil && dsm.IsConfigured(config.DomainAIConfig) {
@@ -82,18 +87,28 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
-	// DELETE /ai/llm/models/{slug}  — note trailing slash to match sub-paths.
+	// Sub-path routes for individual LLM models — note trailing slash to match sub-paths.
 	mux.HandleFunc("/ai/llm/models/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		slug := strings.TrimPrefix(r.URL.Path, "/ai/llm/models/")
-		if slug == "" {
+		tail := strings.TrimPrefix(r.URL.Path, "/ai/llm/models/")
+		if tail == "" {
 			writeAIError(w, http.StatusBadRequest, "slug required in path")
 			return
 		}
-		llmDeleteModelHandler(w, r, cfgMgr, slug, rebake, dsm)
+
+		// Dispatch on suffix: {alias}/test or bare {alias} (DELETE).
+		switch {
+		case strings.HasSuffix(tail, "/test"):
+			alias := strings.TrimSuffix(tail, "/test")
+			llmTestModelHandler(w, r, cfgMgr, alias, sm)
+
+		default:
+			// bare alias — only DELETE is supported.
+			if r.Method != http.MethodDelete {
+				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			llmDeleteModelHandler(w, r, cfgMgr, tail, rebake, dsm)
+		}
 	})
 
 	// MCP server routes.

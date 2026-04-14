@@ -194,6 +194,9 @@ export type LLMAdapter = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'deepsee
 
 export interface LLMModel {
   alias: string
+  // model_id is the actual identifier sent to the provider API (e.g. "gpt-4o-2024-08-06").
+  // Defaults to alias when empty, allowing friendly aliases while pinning to exact model versions.
+  model_id?: string
   provider: string
   adapter: LLMAdapter
   base_url?: string
@@ -206,6 +209,21 @@ export interface LLMModel {
   // Provider-specific fields merged into the wire-format request body at call time.
   // Examples: {"service_tier":"flex"} for OpenAI, {"thinking":{"type":"enabled","budget_tokens":5000}} for Anthropic
   provider_params?: Record<string, any>
+}
+
+export interface LLMTestResult {
+  response: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface LLMTestDebug {
+  endpoint: string
+  model_id_sent: string
+  http_status: number
+  response_body: string
+  latency_ms?: number
 }
 
 // ── MCP ───────────────────────────────────────────────────────────

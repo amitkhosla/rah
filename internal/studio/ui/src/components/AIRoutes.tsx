@@ -1,746 +1,629 @@
 import { useState, useEffect } from 'react'
-import { listLLMModels } from '../api'
-import type { FlowStep, LLMModel } from '../types'
+import { listLLMModels, syncFlows } from '../api'
+import type { SyncStep } from '../api'
+import type { LLMModel } from '../types'
 
-// ── Pattern definitions ──────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
-type PatternId = 'llm_proxy' | 'rag' | 'chat_history' | 'streaming'
-
-interface PatternDef {
-  id: PatternId
-  title: string
-  subtitle: string
-  description: string
-  icon: string
-}
-
-const PATTERNS: PatternDef[] = [
-  {
-    id: 'llm_proxy',
-    title: 'LLM Proxy',
-    subtitle: 'Simple AI endpoint',
-    description: 'Route requests directly to an LLM. Minimal setup — pick a model, set a system prompt, go.',
-    icon: 'Z',
-  },
-  {
-    id: 'rag',
-    title: 'RAG Pipeline',
-    subtitle: 'Retrieval-augmented generation',
-    description: 'Embed the user query, retrieve relevant chunks from a vector store, then call the LLM with enriched context.',
-    icon: 'S',
-  },
-  {
-    id: 'chat_history',
-    title: 'Chat with History',
-    subtitle: 'Conversational AI with memory',
-    description: 'Load conversation history per session, call the LLM with context, and persist the updated history.',
-    icon: 'C',
-  },
-  {
-    id: 'streaming',
-    title: 'Streaming Response',
-    subtitle: 'Real-time token streaming via SSE',
-    description: 'Stream LLM output token-by-token using Server-Sent Events. Best for chat UIs that need instant feedback.',
-    icon: 'P',
-  },
-]
-
-const PATTERN_ICONS: Record<PatternId, string> = {
-  llm_proxy: '&#x26A1;',
-  rag: '&#x1F50D;',
-  chat_history: '&#x1F4AC;',
-  streaming: '&#x1F4E1;',
-}
-
-// ── Config field types ───────────────────────────────────────────────────────
-
-interface LLMProxyConfig {
+interface RoutingRule {
+  id: string
+  operator: '>' | '<' | '>=' | '<='
+  threshold: number
   model: string
-  system_prompt: string
-  max_tokens: string
 }
 
-interface RAGConfig {
+interface ProxyConfig {
+  endpoint: string
+  inputField: string
   model: string
-  system_prompt: string
-  vector_store: string
-  top_k: string
+  fallbackChain: string[]
+  systemPrompt: string
+  maxTokens: string
+  temperature: string
 }
 
-interface ChatHistoryConfig {
-  model: string
-  system_prompt: string
-  max_history_turns: string
-  cache_key_field: string
+interface RouterConfig {
+  endpoint: string
+  inputField: string
+  systemPrompt: string
+  routingRules: RoutingRule[]
+  defaultModel: string
+  fallbackChain: string[]
+  historyEnabled: boolean
+  sessionHeader: string
+  maxTurns: string
 }
 
-interface StreamingConfig {
-  model: string
-  system_prompt: string
-}
+type Mode = 'proxy' | 'router'
 
-type PatternConfig = LLMProxyConfig | RAGConfig | ChatHistoryConfig | StreamingConfig
+// ── Step builders ────────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIGS: Record<PatternId, PatternConfig> = {
-  llm_proxy: {
-    model: '',
-    system_prompt: 'You are a helpful assistant.',
-    max_tokens: '1024',
-  },
-  rag: {
-    model: '',
-    system_prompt: 'You are a helpful assistant. Use the provided context to answer questions.',
-    vector_store: '',
-    top_k: '5',
-  },
-  chat_history: {
-    model: '',
-    system_prompt: 'You are a helpful assistant.',
-    max_history_turns: '10',
-    cache_key_field: 'session_id',
-  },
-  streaming: {
-    model: '',
-    system_prompt: 'You are a helpful assistant.',
-  },
-}
+function buildProxySteps(cfg: ProxyConfig): SyncStep[] {
+  const steps: SyncStep[] = []
 
-// ── Step compiler ────────────────────────────────────────────────────────────
+  // 1. Bind request body field → prompt slot
+  steps.push({ action: 'bind_body', key: cfg.inputField || 'message', as: 'var.prompt' })
 
-function compileSteps(patternId: PatternId, config: PatternConfig): FlowStep[] {
-  switch (patternId) {
-    case 'llm_proxy': {
-      const c = config as LLMProxyConfig
-      return [
-        { action: 'load_llm_key', model: c.model },
-        { action: 'sanitize_prompt' },
-        { action: 'check_context_fit', model: c.model },
-        {
-          action: 'llm_call',
-          model: c.model,
-          system_prompt: c.system_prompt,
-          ...(c.max_tokens ? { max_tokens: c.max_tokens } : {}),
-        },
-        { action: 'format_response' },
-      ]
-    }
-    case 'rag': {
-      const c = config as RAGConfig
-      return [
-        { action: 'load_llm_key', model: c.model },
-        { action: 'embed_text', model: c.model },
-        { action: 'vector_search', store: c.vector_store, top_k: c.top_k },
-        { action: 'sanitize_prompt' },
-        { action: 'check_context_fit', model: c.model },
-        { action: 'llm_call', model: c.model, system_prompt: c.system_prompt },
-        { action: 'format_response' },
-      ]
-    }
-    case 'chat_history': {
-      const c = config as ChatHistoryConfig
-      return [
-        { action: 'load_llm_key', model: c.model },
-        { action: 'load_history', key_slot: c.cache_key_field, max_turns: c.max_history_turns },
-        { action: 'check_context_fit', model: c.model },
-        { action: 'llm_call', model: c.model, system_prompt: c.system_prompt },
-        { action: 'save_history', key_slot: c.cache_key_field },
-        { action: 'format_response' },
-      ]
-    }
-    case 'streaming': {
-      const c = config as StreamingConfig
-      return [
-        { action: 'load_llm_key', model: c.model },
-        { action: 'sanitize_prompt' },
-        { action: 'llm_call', model: c.model, system_prompt: c.system_prompt, stream: 'true' },
-        { action: 'send_sse_event' },
-      ]
-    }
+  // 2. Set system prompt as constant (if provided)
+  if (cfg.systemPrompt.trim()) {
+    steps.push({ action: 'set_const', value: cfg.systemPrompt.trim(), as: 'var.system' })
   }
+
+  // 3. LLM call
+  const llmInput: Record<string, string> = {
+    model: cfg.model,
+    max_tokens: cfg.maxTokens || '2000',
+    temperature: cfg.temperature || '0.7',
+  }
+  if (cfg.systemPrompt.trim()) llmInput.system_slot = 'var.system'
+  if (cfg.fallbackChain.length > 0) llmInput.fallback_chain = cfg.fallbackChain.join(',')
+
+  steps.push({
+    action: 'llm_call',
+    key_identifier: 'var.prompt',
+    as: 'var.reply',
+    input: llmInput,
+  })
+
+  // 4. Respond
+  steps.push({ action: 'respond', key_identifier: 'var.reply' })
+
+  return steps
 }
 
-// ── Shared sub-components ────────────────────────────────────────────────────
+function buildRouterSteps(cfg: RouterConfig): SyncStep[] {
+  const steps: SyncStep[] = []
+
+  // 1. Bind request body field → prompt slot
+  steps.push({ action: 'bind_body', key: cfg.inputField || 'message', as: 'var.prompt' })
+
+  // 2. System prompt constant (if provided)
+  if (cfg.systemPrompt.trim()) {
+    steps.push({ action: 'set_const', value: cfg.systemPrompt.trim(), as: 'var.system' })
+  }
+
+  // 3. Bind session header for history
+  if (cfg.historyEnabled) {
+    steps.push({ action: 'bind_header', key: cfg.sessionHeader || 'X-Session-Id', as: 'var.session' })
+    steps.push({ action: 'load_history', key_identifier: 'var.session', as: 'var.history' })
+  }
+
+  // 4. Check context fit (estimates total token count including history)
+  const ctxInput: Record<string, string> = { model: cfg.defaultModel, total_slot: 'var.total_tok' }
+  if (cfg.historyEnabled) ctxInput.history_slot = 'var.history'
+  steps.push({
+    action: 'check_context_fit',
+    key_identifier: 'var.prompt',
+    as: 'var.ctx_fits',
+    input: ctxInput,
+  })
+
+  // 5. Route LLM — build rules JSON from routing rule table
+  // Rules are evaluated in order; first match wins.
+  // We generate: [{condition:"token_count > N","model":"alias"}, ..., {condition:"true","model":"default"}]
+  const rulesArr = cfg.routingRules.map(r => ({
+    condition: `token_count ${r.operator} ${r.threshold}`,
+    model: r.model,
+  }))
+  // Always append a catch-all "true" rule for the default model
+  rulesArr.push({ condition: 'true', model: cfg.defaultModel })
+
+  steps.push({
+    action: 'route_llm',
+    as: 'var.model',
+    input: {
+      rules: JSON.stringify(rulesArr),
+      default: cfg.defaultModel,
+      token_slot: 'var.total_tok',
+    },
+  })
+
+  // 6. LLM call — uses the model selected by route_llm (model_slot), with fallback
+  const llmInput: Record<string, string> = {
+    model: cfg.defaultModel,        // baked fallback (route_llm overrides at runtime)
+    model_slot: 'var.model',        // runtime model from route_llm
+    max_tokens: '2000',
+  }
+  if (cfg.systemPrompt.trim()) llmInput.system_slot = 'var.system'
+  if (cfg.historyEnabled) llmInput.history_slot = 'var.history'
+  if (cfg.fallbackChain.length > 0) llmInput.fallback_chain = cfg.fallbackChain.join(',')
+
+  steps.push({
+    action: 'llm_call',
+    key_identifier: 'var.prompt',
+    as: 'var.reply',
+    input: llmInput,
+  })
+
+  // 7. Persist history
+  if (cfg.historyEnabled) {
+    steps.push({
+      action: 'append_message',
+      key_identifier: 'var.prompt',
+      as: 'var.history',
+      input: { role: 'user', max_turns: cfg.maxTurns || '20' },
+    })
+    steps.push({
+      action: 'append_message',
+      key_identifier: 'var.reply',
+      as: 'var.history',
+      input: { role: 'assistant' },
+    })
+    steps.push({ action: 'save_history', key_identifier: 'var.session', source: 'var.history' })
+  }
+
+  // 8. Respond
+  steps.push({ action: 'respond', key_identifier: 'var.reply' })
+
+  return steps
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function ModelSelect({
   value,
   onChange,
   models,
-  loading,
+  placeholder = '— select model —',
 }: {
   value: string
   onChange: (v: string) => void
   models: LLMModel[]
-  loading: boolean
+  placeholder?: string
 }) {
   return (
     <select className="input" value={value} onChange={e => onChange(e.target.value)}>
-      {loading ? (
-        <option value="">Loading models...</option>
-      ) : models.length === 0 ? (
-        <option value="">No models registered</option>
-      ) : (
-        <>
-          <option value="">— select model —</option>
-          {models.map(m => (
-            <option key={m.alias} value={m.alias}>
-              {m.alias} ({m.provider})
-            </option>
-          ))}
-        </>
-      )}
+      <option value="">{placeholder}</option>
+      {models.map(m => (
+        <option key={m.alias} value={m.alias}>
+          {m.alias} ({m.provider})
+        </option>
+      ))}
     </select>
   )
 }
 
-function FieldRow({
-  label,
-  desc,
-  children,
-}: {
-  label: string
-  desc?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="field-row">
-      <span className="field-label">{label}</span>
-      {children}
-      {desc && <span className="field-desc">{desc}</span>}
-    </div>
-  )
-}
-
-// ── Config forms per pattern ─────────────────────────────────────────────────
-
-function LLMProxyForm({
-  config,
+function FallbackChainEditor({
+  chain,
   onChange,
   models,
-  loadingModels,
 }: {
-  config: LLMProxyConfig
-  onChange: (c: LLMProxyConfig) => void
+  chain: string[]
+  onChange: (c: string[]) => void
   models: LLMModel[]
-  loadingModels: boolean
 }) {
-  return (
-    <>
-      <FieldRow label="Model" desc="The LLM to call for every request.">
-        <ModelSelect
-          value={config.model}
-          onChange={v => onChange({ ...config, model: v })}
-          models={models}
-          loading={loadingModels}
-        />
-      </FieldRow>
-      <FieldRow label="System Prompt">
-        <textarea
-          className="input"
-          value={config.system_prompt}
-          onChange={e => onChange({ ...config, system_prompt: e.target.value })}
-          placeholder="You are a helpful assistant."
-        />
-      </FieldRow>
-      <FieldRow label="Max Tokens" desc="Maximum tokens the model may generate per response.">
-        <input
-          type="number"
-          className="input"
-          value={config.max_tokens}
-          min={1}
-          onChange={e => onChange({ ...config, max_tokens: e.target.value })}
-          placeholder="1024"
-        />
-      </FieldRow>
-    </>
-  )
-}
+  const [adding, setAdding] = useState('')
+  const available = models.filter(m => !chain.includes(m.alias))
 
-function RAGForm({
-  config,
-  onChange,
-  models,
-  loadingModels,
-}: {
-  config: RAGConfig
-  onChange: (c: RAGConfig) => void
-  models: LLMModel[]
-  loadingModels: boolean
-}) {
-  return (
-    <>
-      <FieldRow label="Model">
-        <ModelSelect
-          value={config.model}
-          onChange={v => onChange({ ...config, model: v })}
-          models={models}
-          loading={loadingModels}
-        />
-      </FieldRow>
-      <FieldRow label="System Prompt">
-        <textarea
-          className="input"
-          value={config.system_prompt}
-          onChange={e => onChange({ ...config, system_prompt: e.target.value })}
-        />
-      </FieldRow>
-      <FieldRow label="Vector Store Name" desc="Name of the registered vector store to search.">
-        <input
-          type="text"
-          className="input"
-          value={config.vector_store}
-          onChange={e => onChange({ ...config, vector_store: e.target.value })}
-          placeholder="e.g. my_knowledge_base"
-        />
-      </FieldRow>
-      <FieldRow label="Top K" desc="Number of document chunks to retrieve.">
-        <input
-          type="number"
-          className="input"
-          value={config.top_k}
-          min={1}
-          onChange={e => onChange({ ...config, top_k: e.target.value })}
-          placeholder="5"
-        />
-      </FieldRow>
-    </>
-  )
-}
-
-function ChatHistoryForm({
-  config,
-  onChange,
-  models,
-  loadingModels,
-}: {
-  config: ChatHistoryConfig
-  onChange: (c: ChatHistoryConfig) => void
-  models: LLMModel[]
-  loadingModels: boolean
-}) {
-  return (
-    <>
-      <FieldRow label="Model">
-        <ModelSelect
-          value={config.model}
-          onChange={v => onChange({ ...config, model: v })}
-          models={models}
-          loading={loadingModels}
-        />
-      </FieldRow>
-      <FieldRow label="System Prompt">
-        <textarea
-          className="input"
-          value={config.system_prompt}
-          onChange={e => onChange({ ...config, system_prompt: e.target.value })}
-        />
-      </FieldRow>
-      <FieldRow label="Max History Turns" desc="How many previous turns to include in the prompt.">
-        <input
-          type="number"
-          className="input"
-          value={config.max_history_turns}
-          min={1}
-          onChange={e => onChange({ ...config, max_history_turns: e.target.value })}
-          placeholder="10"
-        />
-      </FieldRow>
-      <FieldRow
-        label="Cache Key Field"
-        desc="Request field used as the history cache key (e.g. session_id)."
-      >
-        <input
-          type="text"
-          className="input"
-          value={config.cache_key_field}
-          onChange={e => onChange({ ...config, cache_key_field: e.target.value })}
-          placeholder="session_id"
-        />
-      </FieldRow>
-    </>
-  )
-}
-
-function StreamingForm({
-  config,
-  onChange,
-  models,
-  loadingModels,
-}: {
-  config: StreamingConfig
-  onChange: (c: StreamingConfig) => void
-  models: LLMModel[]
-  loadingModels: boolean
-}) {
-  return (
-    <>
-      <FieldRow label="Model">
-        <ModelSelect
-          value={config.model}
-          onChange={v => onChange({ ...config, model: v })}
-          models={models}
-          loading={loadingModels}
-        />
-      </FieldRow>
-      <FieldRow label="System Prompt" desc="LLM output will stream token-by-token via SSE.">
-        <textarea
-          className="input"
-          value={config.system_prompt}
-          onChange={e => onChange({ ...config, system_prompt: e.target.value })}
-        />
-      </FieldRow>
-    </>
-  )
-}
-
-// ── Step badge in result panel ───────────────────────────────────────────────
-
-function StepBadge({ step }: { step: FlowStep }) {
-  const { action, ...params } = step
-  const paramParts = Object.entries(params)
-    .filter(([, v]) => v !== '')
-    .map(([k, v]) => `${k}: ${v}`)
-  return (
-    <div className="step" style={{ marginBottom: 6 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span
-          style={{
-            background: 'rgba(87,181,255,0.15)',
-            border: '1px solid rgba(87,181,255,0.35)',
-            borderRadius: 5,
-            padding: '2px 8px',
-            fontSize: 12,
-            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-            color: 'var(--accent)',
-            fontWeight: 700,
-            flexShrink: 0,
-          }}
-        >
-          {action}
-        </span>
-        {paramParts.length > 0 && (
-          <span
-            className="hint"
-            style={{ fontSize: 11, whiteSpace: 'normal', lineHeight: 1.5, color: 'var(--muted)' }}
-          >
-            {paramParts.join('  ·  ')}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Pattern card ─────────────────────────────────────────────────────────────
-
-function PatternCard({
-  pattern,
-  selected,
-  onClick,
-}: {
-  pattern: PatternDef
-  selected: boolean
-  onClick: () => void
-}) {
-  const iconMap: Record<PatternId, string> = {
-    llm_proxy: '\u26A1',
-    rag: '\uD83D\uDD0D',
-    chat_history: '\uD83D\uDCAC',
-    streaming: '\uD83D\uDCE1',
+  function add() {
+    if (adding && !chain.includes(adding)) {
+      onChange([...chain, adding])
+      setAdding('')
+    }
   }
+
   return (
-    <div
-      onClick={onClick}
-      style={{
-        background: selected ? 'rgba(87,181,255,0.08)' : 'var(--block-bg)',
-        border: selected ? '2px solid var(--accent)' : '1px solid var(--border-hi)',
-        borderRadius: 10,
-        padding: '14px 16px',
-        cursor: 'pointer',
-        transition: 'background 0.15s, border-color 0.15s',
-        userSelect: 'none',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <span style={{ fontSize: 20, lineHeight: 1 }}>{iconMap[pattern.id]}</span>
-        <div>
-          <div
-            style={{
-              fontWeight: 700,
-              fontSize: 14,
-              color: selected ? 'var(--accent)' : 'var(--text)',
-            }}
-          >
-            {pattern.title}
+    <div>
+      {/* Current chain */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {chain.length === 0 && (
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>No fallback — add models below</span>
+        )}
+        {chain.map((alias, i) => (
+          <div key={alias} style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            background: 'var(--step-bg)', border: '1px solid var(--border-hi)',
+            borderRadius: 6, padding: '3px 10px', fontSize: 12,
+          }}>
+            <span style={{ color: 'var(--muted)', marginRight: 2 }}>{i + 1}.</span>
+            <span style={{ fontWeight: 600 }}>{alias}</span>
+            <button
+              type="button"
+              onClick={() => onChange(chain.filter((_, j) => j !== i))}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 14, lineHeight: 1, padding: '0 2px' }}
+            >×</button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>{pattern.subtitle}</div>
-        </div>
+        ))}
       </div>
-      <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.55 }}>
-        {pattern.description}
+      {/* Add picker */}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <select className="input" style={{ flex: 1 }} value={adding} onChange={e => setAdding(e.target.value)}>
+          <option value="">+ add fallback model…</option>
+          {available.map(m => <option key={m.alias} value={m.alias}>{m.alias} ({m.provider})</option>)}
+        </select>
+        <button className="btn" type="button" onClick={add} disabled={!adding}
+          style={{ width: 'auto', padding: '0 14px', flexShrink: 0, opacity: adding ? 1 : 0.4 }}>
+          Add
+        </button>
       </div>
     </div>
   )
 }
 
-// ── Main export ──────────────────────────────────────────────────────────────
+function RoutingRuleRow({
+  rule,
+  onChange,
+  onRemove,
+  models,
+}: {
+  rule: RoutingRule
+  onChange: (r: RoutingRule) => void
+  onRemove: () => void
+  models: LLMModel[]
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+      <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>token_count</span>
+      <select className="input" value={rule.operator}
+        onChange={e => onChange({ ...rule, operator: e.target.value as RoutingRule['operator'] })}
+        style={{ width: 56, flexShrink: 0, padding: '5px 4px' }}>
+        <option value=">">&gt;</option>
+        <option value=">=">&gt;=</option>
+        <option value="<">&lt;</option>
+        <option value="<=">&lt;=</option>
+      </select>
+      <input type="number" className="input" value={rule.threshold} min={0}
+        onChange={e => onChange({ ...rule, threshold: parseInt(e.target.value) || 0 })}
+        style={{ width: 80, flexShrink: 0 }} />
+      <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>→</span>
+      <div style={{ flex: 1 }}>
+        <ModelSelect value={rule.model} onChange={v => onChange({ ...rule, model: v })} models={models} />
+      </div>
+      <button type="button" onClick={onRemove}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
+        ×
+      </button>
+    </div>
+  )
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, color: 'var(--muted)',
+      textTransform: 'uppercase', marginTop: 18, marginBottom: 8, paddingBottom: 4,
+      borderBottom: '1px solid var(--border)' }}>
+      {children}
+    </div>
+  )
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      {children}
+      {hint && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>{hint}</div>}
+    </div>
+  )
+}
+
+function StepPreview({ steps }: { steps: SyncStep[] }) {
+  return (
+    <div style={{ background: 'var(--input-bg)', border: '1px solid var(--border-hi)',
+      borderRadius: 6, padding: '10px 12px', maxHeight: 200, overflowY: 'auto' }}>
+      {steps.map((s, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 12, fontFamily: 'monospace' }}>
+          <span style={{ color: 'var(--muted)', minWidth: 18, textAlign: 'right', flexShrink: 0 }}>{i + 1}</span>
+          <span style={{ color: 'var(--accent)', fontWeight: 700, flexShrink: 0 }}>{s.action}</span>
+          <span style={{ color: 'var(--muted)', wordBreak: 'break-all' }}>
+            {[
+              s.key_identifier && `from:${s.key_identifier}`,
+              s.as && `→ ${s.as}`,
+              s.key && `key:${s.key}`,
+              s.input?.model && `model:${s.input.model}`,
+              s.input?.model_slot && `model_slot:${s.input.model_slot}`,
+              s.input?.fallback_chain && `fallback:${s.input.fallback_chain}`,
+              s.input?.history_slot && `history:${s.input.history_slot}`,
+              s.input?.role && `role:${s.input.role}`,
+            ].filter(Boolean).join('  ')}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
+const DEFAULT_PROXY: ProxyConfig = {
+  endpoint: '/chat',
+  inputField: 'message',
+  model: '',
+  fallbackChain: [],
+  systemPrompt: 'You are a helpful assistant.',
+  maxTokens: '2000',
+  temperature: '0.7',
+}
+
+const DEFAULT_ROUTER: RouterConfig = {
+  endpoint: '/ai/chat',
+  inputField: 'message',
+  systemPrompt: 'You are a helpful assistant.',
+  routingRules: [
+    { id: '1', operator: '>', threshold: 8000, model: '' },
+    { id: '2', operator: '>', threshold: 2000, model: '' },
+  ],
+  defaultModel: '',
+  fallbackChain: [],
+  historyEnabled: false,
+  sessionHeader: 'X-Session-Id',
+  maxTurns: '20',
+}
 
 export default function AIRoutes() {
-  const [selectedPattern, setSelectedPattern] = useState<PatternId | null>(null)
-  const [configs, setConfigs] = useState<Record<PatternId, PatternConfig>>({
-    ...DEFAULT_CONFIGS,
-  })
-  const [flowName, setFlowName] = useState('')
-  const [generatedSteps, setGeneratedSteps] = useState<FlowStep[] | null>(null)
-  const [copied, setCopied] = useState(false)
-
+  const [mode, setMode] = useState<Mode>('proxy')
+  const [proxy, setProxy] = useState<ProxyConfig>(DEFAULT_PROXY)
+  const [router, setRouter] = useState<RouterConfig>(DEFAULT_ROUTER)
+  const [flowName, setFlowName] = useState('my-llm-proxy')
   const [models, setModels] = useState<LLMModel[]>([])
-  const [loadingModels, setLoadingModels] = useState(false)
-  const [modelError, setModelError] = useState<string | null>(null)
+  const [loadingModels, setLoadingModels] = useState(true)
+
+  const [deploying, setDeploying] = useState(false)
+  const [deployResult, setDeployResult] = useState<{ ok: boolean; msg: string } | null>(null)
 
   useEffect(() => {
-    setLoadingModels(true)
     listLLMModels()
-      .then(data => {
-        setModels(data)
-        setModelError(null)
-      })
-      .catch(err => setModelError(String(err)))
+      .then(setModels)
+      .catch(() => {})
       .finally(() => setLoadingModels(false))
   }, [])
 
-  function updateConfig(id: PatternId, next: PatternConfig) {
-    setConfigs(prev => ({ ...prev, [id]: next }))
-    setGeneratedSteps(null)
+  useEffect(() => {
+    setFlowName(mode === 'proxy' ? 'my-llm-proxy' : 'my-smart-router')
+    setDeployResult(null)
+  }, [mode])
+
+  function addRoutingRule() {
+    setRouter(r => ({
+      ...r,
+      routingRules: [...r.routingRules, { id: Date.now().toString(), operator: '>', threshold: 1000, model: '' }],
+    }))
   }
 
-  function handleSelectPattern(id: PatternId) {
-    setSelectedPattern(id)
-    setGeneratedSteps(null)
-    setCopied(false)
+  function updateRoutingRule(id: string, updated: RoutingRule) {
+    setRouter(r => ({ ...r, routingRules: r.routingRules.map(rr => rr.id === id ? updated : rr) }))
   }
 
-  function handleGenerate() {
-    if (!selectedPattern) return
-    const steps = compileSteps(selectedPattern, configs[selectedPattern])
-    setGeneratedSteps(steps)
-    setCopied(false)
+  function removeRoutingRule(id: string) {
+    setRouter(r => ({ ...r, routingRules: r.routingRules.filter(rr => rr.id !== id) }))
   }
 
-  function handleCopy() {
-    if (!generatedSteps) return
-    const payload = { name: flowName.trim(), steps: generatedSteps }
-    navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2200)
-    })
+  async function handleDeploy() {
+    const name = flowName.trim()
+    if (!name) return
+    const endpoint = (mode === 'proxy' ? proxy.endpoint : router.endpoint).trim()
+    if (!endpoint) return
+
+    const steps = mode === 'proxy' ? buildProxySteps(proxy) : buildRouterSteps(router)
+
+    const payload = {
+      sync_uuid: Math.random().toString(36).slice(2),
+      flows: [{ name, instructions: steps, action: 'upsert' as const }],
+      apis: [{ name: name + '-api', path: endpoint, flow_name: name, action: 'upsert' as const }],
+    }
+
+    setDeploying(true)
+    setDeployResult(null)
+    try {
+      await syncFlows(payload)
+      setDeployResult({ ok: true, msg: `Deployed! Call: POST ${endpoint}  (body: {"${mode === 'proxy' ? proxy.inputField : router.inputField}": "..."})` })
+    } catch (e) {
+      setDeployResult({ ok: false, msg: String(e) })
+    } finally {
+      setDeploying(false)
+    }
   }
 
-  const canGenerate = selectedPattern !== null && flowName.trim().length > 0
+  const steps = mode === 'proxy' ? buildProxySteps(proxy) : buildRouterSteps(router)
+  const canDeploy = flowName.trim().length > 0 &&
+    (mode === 'proxy' ? proxy.endpoint.trim() && proxy.model : router.endpoint.trim() && router.defaultModel)
 
-  const activePatternDef = selectedPattern
-    ? PATTERNS.find(p => p.id === selectedPattern)
-    : null
+  // ── Render ─────────────────────────────────────────────────────────
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-      {/* ── Step 1: Pattern picker ── */}
+      {/* ── Mode picker ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        {([
+          {
+            id: 'proxy' as Mode,
+            icon: '⚡',
+            title: 'LLM Proxy',
+            subtitle: 'Simple AI endpoint',
+            desc: 'Route requests to one model with optional fallback chain. Minimal setup — pick a model and go.',
+          },
+          {
+            id: 'router' as Mode,
+            icon: '🔀',
+            title: 'Smart Router',
+            subtitle: 'Context-aware routing + history',
+            desc: 'Route to different models based on token count. Optionally load/save conversation history per session.',
+          },
+        ] as const).map(card => (
+          <div key={card.id} onClick={() => setMode(card.id)} style={{
+            background: mode === card.id ? 'rgba(87,181,255,0.08)' : 'var(--block-bg)',
+            border: mode === card.id ? '2px solid var(--accent)' : '1px solid var(--border-hi)',
+            borderRadius: 10, padding: '14px 16px', cursor: 'pointer',
+            transition: 'background 0.15s, border-color 0.15s', userSelect: 'none',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 20 }}>{card.icon}</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: mode === card.id ? 'var(--accent)' : 'var(--text)' }}>{card.title}</div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>{card.subtitle}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.55 }}>{card.desc}</div>
+          </div>
+        ))}
+      </div>
+
+      {loadingModels && (
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>Loading models…</div>
+      )}
+      {!loadingModels && models.length === 0 && (
+        <div className="status-err" style={{ fontSize: 12 }}>
+          No models registered yet. Go to the Models tab to add LLM models first.
+        </div>
+      )}
+
+      {/* ── Config form ── */}
       <div className="panel">
-        <div className="panel-header">Step 1 — Choose a Pattern</div>
+        <div className="panel-header">
+          {mode === 'proxy' ? 'LLM Proxy Configuration' : 'Smart Router Configuration'}
+        </div>
         <div className="panel-body">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {PATTERNS.map(p => (
-              <PatternCard
-                key={p.id}
-                pattern={p}
-                selected={selectedPattern === p.id}
-                onClick={() => handleSelectPattern(p.id)}
-              />
-            ))}
+
+          {/* Endpoint + input field — shared */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+            <Field label="Endpoint path" hint="URL path clients will POST to">
+              <input className="input" value={mode === 'proxy' ? proxy.endpoint : router.endpoint}
+                onChange={e => mode === 'proxy' ? setProxy(p => ({ ...p, endpoint: e.target.value })) : setRouter(r => ({ ...r, endpoint: e.target.value }))}
+                placeholder="/chat" />
+            </Field>
+            <Field label="Body field" hint="JSON key for the user message">
+              <input className="input" value={mode === 'proxy' ? proxy.inputField : router.inputField}
+                onChange={e => mode === 'proxy' ? setProxy(p => ({ ...p, inputField: e.target.value })) : setRouter(r => ({ ...r, inputField: e.target.value }))}
+                placeholder="message" />
+            </Field>
           </div>
 
-          {modelError && (
-            <div className="status-err" style={{ marginTop: 10 }}>
-              Could not load models: {modelError}
+          <Field label="System prompt">
+            <textarea className="input" rows={2}
+              value={mode === 'proxy' ? proxy.systemPrompt : router.systemPrompt}
+              onChange={e => mode === 'proxy' ? setProxy(p => ({ ...p, systemPrompt: e.target.value })) : setRouter(r => ({ ...r, systemPrompt: e.target.value }))}
+              placeholder="You are a helpful assistant." />
+          </Field>
+
+          {/* ── PROXY specific ── */}
+          {mode === 'proxy' && (<>
+            <SectionLabel>Model</SectionLabel>
+
+            <Field label="Primary model" hint="Called on every request.">
+              <ModelSelect value={proxy.model} onChange={v => setProxy(p => ({ ...p, model: v }))} models={models} />
+            </Field>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Field label="Max tokens">
+                <input className="input" type="number" value={proxy.maxTokens} min={1}
+                  onChange={e => setProxy(p => ({ ...p, maxTokens: e.target.value }))} />
+              </Field>
+              <Field label="Temperature">
+                <input className="input" type="number" value={proxy.temperature} min={0} max={2} step={0.1}
+                  onChange={e => setProxy(p => ({ ...p, temperature: e.target.value }))} />
+              </Field>
+            </div>
+
+            <SectionLabel>Fallback chain <span style={{ fontWeight: 400 }}>(tried in order on failure)</span></SectionLabel>
+            <FallbackChainEditor chain={proxy.fallbackChain} onChange={c => setProxy(p => ({ ...p, fallbackChain: c }))} models={models} />
+          </>)}
+
+          {/* ── ROUTER specific ── */}
+          {mode === 'router' && (<>
+            <SectionLabel>Routing rules <span style={{ fontWeight: 400 }}>— evaluated in order, first match wins</span></SectionLabel>
+
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+              Token count is estimated from prompt + history (if enabled). Each rule routes to a specific model when its condition matches.
+            </div>
+
+            {router.routingRules.map(rule => (
+              <RoutingRuleRow key={rule.id} rule={rule} models={models}
+                onChange={updated => updateRoutingRule(rule.id, updated)}
+                onRemove={() => removeRoutingRule(rule.id)} />
+            ))}
+
+            {/* Default (catch-all) row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 120 }}>default (no match)</span>
+              <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>→</span>
+              <div style={{ flex: 1 }}>
+                <ModelSelect value={router.defaultModel} onChange={v => setRouter(r => ({ ...r, defaultModel: v }))} models={models}
+                  placeholder="— select default model —" />
+              </div>
+              <div style={{ width: 32 }} />
+            </div>
+
+            <button className="btn" type="button" onClick={addRoutingRule}
+              style={{ width: 'auto', padding: '0 16px', marginBottom: 8, fontSize: 12 }}>
+              + Add Rule
+            </button>
+
+            <SectionLabel>Fallback chain <span style={{ fontWeight: 400 }}>(on LLM error, try these in order)</span></SectionLabel>
+            <FallbackChainEditor chain={router.fallbackChain} onChange={c => setRouter(r => ({ ...r, fallbackChain: c }))} models={models} />
+
+            <SectionLabel>Conversation history</SectionLabel>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={router.historyEnabled}
+                onChange={e => setRouter(r => ({ ...r, historyEnabled: e.target.checked }))} />
+              <span style={{ fontSize: 13 }}>Enable per-session conversation history</span>
+            </label>
+
+            {router.historyEnabled && (
+              <div style={{ marginLeft: 24 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10, marginBottom: 8 }}>
+                  <Field label="Session ID header" hint="Request header used as the history key">
+                    <input className="input" value={router.sessionHeader}
+                      onChange={e => setRouter(r => ({ ...r, sessionHeader: e.target.value }))}
+                      placeholder="X-Session-Id" />
+                  </Field>
+                  <Field label="Max turns" hint="History turns to keep">
+                    <input className="input" type="number" value={router.maxTurns} min={1}
+                      onChange={e => setRouter(r => ({ ...r, maxTurns: e.target.value }))} />
+                  </Field>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', padding: '6px 10px', background: 'var(--step-bg)', borderRadius: 5 }}>
+                  Requires a datastore configured for history (Redis or PostgreSQL recommended).
+                  Session key is read from <code>{router.sessionHeader || 'X-Session-Id'}</code> header.
+                </div>
+              </div>
+            )}
+          </>)}
+        </div>
+      </div>
+
+      {/* ── Flow name + deploy ── */}
+      <div className="panel">
+        <div className="panel-header">Deploy</div>
+        <div className="panel-body">
+
+          <Field label="Flow name" hint="Internal identifier — lowercase, letters, digits, hyphens">
+            <input className="input" value={flowName} onChange={e => { setFlowName(e.target.value); setDeployResult(null) }}
+              placeholder="my-llm-proxy" />
+          </Field>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+              Generated flow — {steps.length} steps
+            </div>
+            <StepPreview steps={steps} />
+          </div>
+
+          <button className="btn" onClick={handleDeploy} disabled={deploying || !canDeploy}
+            style={{ opacity: canDeploy && !deploying ? 1 : 0.45, cursor: canDeploy && !deploying ? 'pointer' : 'not-allowed' }}>
+            {deploying ? 'Deploying…' : 'Deploy →'}
+          </button>
+
+          {!canDeploy && !deployResult && (
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
+              {mode === 'proxy' ? 'Select a model and set an endpoint to deploy.' : 'Select a default model and set an endpoint to deploy.'}
+            </div>
+          )}
+
+          {deployResult && (
+            <div style={{
+              marginTop: 12, padding: '10px 14px', borderRadius: 6, fontSize: 12,
+              background: deployResult.ok ? 'rgba(34,197,94,0.07)' : 'rgba(239,68,68,0.07)',
+              border: `1px solid ${deployResult.ok ? '#22c55e44' : '#ef444444'}`,
+              color: deployResult.ok ? '#22c55e' : '#ef4444',
+              fontFamily: deployResult.ok ? 'monospace' : 'inherit',
+            }}>
+              {deployResult.msg}
             </div>
           )}
         </div>
       </div>
-
-      {/* ── Step 2: Config form ── */}
-      {selectedPattern && (
-        <div className="panel">
-          <div className="panel-header">
-            Step 2 — Configure
-            {activePatternDef && (
-              <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 6 }}>
-                — {activePatternDef.title}
-              </span>
-            )}
-          </div>
-          <div className="panel-body">
-            {selectedPattern === 'llm_proxy' && (
-              <LLMProxyForm
-                config={configs.llm_proxy as LLMProxyConfig}
-                onChange={c => updateConfig('llm_proxy', c)}
-                models={models}
-                loadingModels={loadingModels}
-              />
-            )}
-            {selectedPattern === 'rag' && (
-              <RAGForm
-                config={configs.rag as RAGConfig}
-                onChange={c => updateConfig('rag', c)}
-                models={models}
-                loadingModels={loadingModels}
-              />
-            )}
-            {selectedPattern === 'chat_history' && (
-              <ChatHistoryForm
-                config={configs.chat_history as ChatHistoryConfig}
-                onChange={c => updateConfig('chat_history', c)}
-                models={models}
-                loadingModels={loadingModels}
-              />
-            )}
-            {selectedPattern === 'streaming' && (
-              <StreamingForm
-                config={configs.streaming as StreamingConfig}
-                onChange={c => updateConfig('streaming', c)}
-                models={models}
-                loadingModels={loadingModels}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── Step 3: Name + Generate ── */}
-      {selectedPattern && (
-        <div className="panel">
-          <div className="panel-header">Step 3 — Name and Generate</div>
-          <div className="panel-body">
-            <span className="field-label">Flow Name</span>
-            <input
-              type="text"
-              className="input"
-              value={flowName}
-              onChange={e => {
-                setFlowName(e.target.value)
-                setGeneratedSteps(null)
-              }}
-              placeholder="e.g. my-chat-api"
-              style={{ marginTop: 4 }}
-            />
-            <span
-              className="field-desc"
-              style={{ display: 'block', marginBottom: 12 }}
-            >
-              This becomes the flow name in the gateway. Use lowercase letters, digits, and hyphens.
-            </span>
-            <button
-              className="btn"
-              disabled={!canGenerate}
-              onClick={handleGenerate}
-              style={{
-                opacity: canGenerate ? 1 : 0.4,
-                cursor: canGenerate ? 'pointer' : 'not-allowed',
-              }}
-            >
-              Generate Flow
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Result panel ── */}
-      {generatedSteps && (
-        <div className="panel">
-          <div
-            className="panel-header"
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-          >
-            <span>
-              Generated Flow
-              {flowName && (
-                <span
-                  style={{
-                    marginLeft: 8,
-                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                    fontSize: 12,
-                    color: 'var(--accent)',
-                  }}
-                >
-                  {flowName}
-                </span>
-              )}
-            </span>
-            <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 400 }}>
-              {generatedSteps.length} instruction{generatedSteps.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-
-          <div className="panel-body">
-            {/* Step list */}
-            <div style={{ marginBottom: 16 }}>
-              {generatedSteps.map((step, i) => (
-                <div
-                  key={i}
-                  style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 4 }}
-                >
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: 'var(--muted)',
-                      minWidth: 18,
-                      paddingTop: 6,
-                      textAlign: 'right',
-                      fontFamily: "'JetBrains Mono', monospace",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {i + 1}
-                  </span>
-                  <div style={{ flex: 1 }}>
-                    <StepBadge step={step} />
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* JSON preview */}
-            <div
-              style={{
-                background: 'var(--input-bg)',
-                border: '1px solid var(--border-hi)',
-                borderRadius: 8,
-                padding: '10px 12px',
-                marginBottom: 10,
-                maxHeight: 280,
-                overflowY: 'auto',
-              }}
-            >
-              <pre
-                className="hint"
-                style={{ fontSize: 11, fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
-              >
-                {JSON.stringify({ name: flowName.trim(), steps: generatedSteps }, null, 2)}
-              </pre>
-            </div>
-
-            {/* Copy button */}
-            <button className="btn" onClick={handleCopy} style={{ marginBottom: 8 }}>
-              {copied ? 'Copied to clipboard!' : 'Copy JSON'}
-            </button>
-
-            {/* Guidance note */}
-            <div className="expansion-note">
-              Take this JSON to the Flow Designer tab to import and deploy it, or post it directly to
-              the /sync API endpoint.
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
