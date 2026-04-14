@@ -20,11 +20,12 @@ type CanonicalMessage struct {
 
 // LLMRequest is the provider-agnostic request sent to any LLM.
 type LLMRequest struct {
-	Messages    []CanonicalMessage
-	System      string  // system prompt (separate from messages; empty = omit)
-	Model       string  // model slug as declared in the catalog
-	MaxTokens   int
-	Temperature float64
+	Messages       []CanonicalMessage
+	System         string         // system prompt (separate from messages; empty = omit)
+	Model          string         // model slug as declared in the catalog
+	MaxTokens      int
+	Temperature    float64
+	ProviderParams map[string]any // provider-specific fields merged into wire-format body
 }
 
 // LLMResponse is the provider-agnostic response from any LLM.

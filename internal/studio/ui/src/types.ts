@@ -203,6 +203,9 @@ export interface LLMModel {
   // Only used when adapter === 'custom'. Defaults: name="Authorization", prefix="Bearer "
   auth_header_name?: string
   auth_header_prefix?: string
+  // Provider-specific fields merged into the wire-format request body at call time.
+  // Examples: {"service_tier":"flex"} for OpenAI, {"thinking":{"type":"enabled","budget_tokens":5000}} for Anthropic
+  provider_params?: Record<string, any>
 }
 
 // ── MCP ───────────────────────────────────────────────────────────

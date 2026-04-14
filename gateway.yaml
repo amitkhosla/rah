@@ -9,8 +9,17 @@ datastore:
       kind: redis
       enabled: true
       connection:
+        # Option A — single address string (host:port)
         address: "localhost:6379"
         pool_size: 32
+        # Option B — explicit host + port (alternative to address)
+        # host: "localhost"
+        # port: 6379
+        # Option C — credentials via secrets manager (env:, enc:, vault:, awssm:, gsm:)
+        # username_ref: "env:REDIS_USER"
+        # password_ref: "env:REDIS_PASS"
+        # Or inline plaintext (dev only):
+        # password: "mysecret"
 
     # ── PostgreSQL (persistent / control-plane) ───────────────────────────────
     postgres_primary:
@@ -18,10 +27,18 @@ datastore:
       kind: postgresql
       enabled: true
       connection:
-        address:  "localhost:5432"
-        username: "postgres"
-        password: "2hi2@HI@"
-        database: "gateway"
+        # Option A — full DSN (recommended for production; credentials embedded in URL)
+        address: "postgres://postgres:2hi2@HI@@localhost:5432/gateway?sslmode=disable"
+        # Option B — explicit fields + secret refs (recommended for secrets management)
+        # host: "localhost"
+        # port: 5432
+        # database: "gateway"
+        # username_ref: "env:PG_USER"          # resolves $PG_USER at startup
+        # password_ref: "env:PG_PASS"          # resolves $PG_PASS at startup
+        # password_ref: "enc:base64ciphertext"  # AES-256-GCM encrypted (needs secrets.encrypted)
+        # password_ref: "vault://secret/pg#password"  # HashiCorp Vault
+        # password_ref: "awssm://my/secret"    # AWS Secrets Manager
+        # password_ref: "gsm://projects/p/secrets/s/versions/latest"  # Google Secret Manager
 
   # Logical domain → store binding
   # Required: api_definitions, flows, tenant_data, cache

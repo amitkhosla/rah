@@ -294,11 +294,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 
 			// 3. Build canonical request
 			req := LLMRequest{
-				Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
-				System:      systemContent,
-				Model:       activeCfg.Alias,
-				MaxTokens:   maxTokens,
-				Temperature: cfg.Temperature,
+				Messages:       []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
+				System:         systemContent,
+				Model:          activeCfg.Alias,
+				MaxTokens:      maxTokens,
+				Temperature:    cfg.Temperature,
+				ProviderParams: activeCfg.ProviderParams,
 			}
 
 			// 4. Token limit check (reject — no truncation)
@@ -315,8 +316,11 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 			}
 
-			// 5. Marshal to provider wire format
+			// 5. Marshal to provider wire format, then merge any provider-specific params
 			body, marshalErr := activeParams.adapter.Marshal(req)
+			if marshalErr == nil && len(req.ProviderParams) > 0 {
+				body, marshalErr = mergeProviderParams(body, req.ProviderParams)
+			}
 			if marshalErr != nil {
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -633,4 +637,20 @@ func llmBackoff(attempt int) time.Duration {
 		}
 	}
 	return d
+}
+
+
+// mergeProviderParams merges extra provider-specific fields into an already-marshalled
+// JSON body. The base JSON is decoded into a map, params are overlaid (overriding any
+// existing key), and the result is re-marshalled. This is the single merge point for
+// all adapters — no per-adapter changes needed when new params are added.
+func mergeProviderParams(base []byte, params map[string]any) ([]byte, error) {
+	var m map[string]any
+	if err := json.Unmarshal(base, &m); err != nil {
+		return base, err
+	}
+	for k, v := range params {
+		m[k] = v
+	}
+	return json.Marshal(m)
 }

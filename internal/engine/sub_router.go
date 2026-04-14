@@ -32,7 +32,6 @@ type SubRouteNode struct {
 	// Dynamic Path Parameter Handling
 	HasParamChild bool
 	ParamChildIdx uint32
-	ParamSlot     uint8
 
 	// Method handling via bitmask
 	// Each bit corresponds to method index.

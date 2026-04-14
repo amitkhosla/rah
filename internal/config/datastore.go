@@ -1,9 +1,16 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"slices"
 )
+
+// CredentialResolver resolves secret references at startup.
+// *secrets.Manager satisfies this interface.
+type CredentialResolver interface {
+	ResolveString(ctx context.Context, ref string) (string, error)
+}
 
 // StoreKind identifies the backend technology selected by customer.
 type StoreKind string
@@ -67,6 +74,10 @@ const (
 
 	// Distributed rate limiting — optional; skip gracefully if not bound
 	DomainRateLimitSync DataDomain = "rate_limit_sync" // Redis-backed cross-pod rate limit counters
+
+	// Admin users and roles — optional; skip gracefully if not bound
+	DomainAdminUsers DataDomain = "admin_users" // admin user records (bcrypt hashes + roles)
+	DomainAdminRoles DataDomain = "admin_roles" // admin role definitions (name + permissions)
 )
 
 var requiredDomains = []DataDomain{
@@ -79,13 +90,34 @@ var requiredDomains = []DataDomain{
 // StoreConnection captures connection details across all backend kinds.
 // Redis/Dragonfly-specific fields (Topology, SentinelMaster, ClusterAddrs, PoolSize)
 // are ignored by all other store implementations.
+//
+// Credential resolution order (highest precedence first):
+//
+//  1. UsernameRef / PasswordRef — resolved via the secrets manager at startup
+//     (supports env:, enc:, vault:, awssm:, gsm: schemes and plain literals).
+//  2. Username / Password — inline plaintext (fine for dev; avoid in production).
+//
+// Connection address resolution order:
+//
+//  1. Address — full DSN (postgres://…), host:port, or URI — used as-is.
+//  2. Host + Port — if Address is empty, these are combined into host:port.
 type StoreConnection struct {
-	Address  string            `json:"address,omitempty"  yaml:"address,omitempty"`  // host:port, URI, or DSN endpoint
+	Address  string            `json:"address,omitempty"  yaml:"address,omitempty"`  // full DSN, host:port, or URI
+	Host     string            `json:"host,omitempty"     yaml:"host,omitempty"`     // explicit host (used when Address is empty)
+	Port     int               `json:"port,omitempty"     yaml:"port,omitempty"`     // explicit port (used when Address is empty)
 	Path     string            `json:"path,omitempty"     yaml:"path,omitempty"`     // local path for disk-based stores
 	Database string            `json:"database,omitempty" yaml:"database,omitempty"` // logical DB/keyspace name or index
-	Username string            `json:"username,omitempty" yaml:"username,omitempty"`
-	Password string            `json:"password,omitempty" yaml:"password,omitempty"`
-	Params   map[string]string `json:"params,omitempty"   yaml:"params,omitempty"` // backend-specific overflow options
+	Username string            `json:"username,omitempty" yaml:"username,omitempty"` // inline plaintext username
+	Password string            `json:"password,omitempty" yaml:"password,omitempty"` // inline plaintext password
+
+	// UsernameRef and PasswordRef accept any reference supported by the secrets
+	// manager: "env:MY_VAR", "$MY_VAR", "enc:base64...", "vault://...", etc.
+	// When set, the resolved value overwrites Username/Password before the store
+	// connection is opened. Plain literals (no scheme prefix) are passed through.
+	UsernameRef string `json:"username_ref,omitempty" yaml:"username_ref,omitempty"`
+	PasswordRef string `json:"password_ref,omitempty" yaml:"password_ref,omitempty"`
+
+	Params map[string]string `json:"params,omitempty" yaml:"params,omitempty"` // backend-specific overflow options
 
 	// Redis / Dragonfly topology
 	Topology       string   `json:"topology,omitempty"        yaml:"topology,omitempty"`         // single (default) | sentinel | cluster
@@ -123,6 +155,44 @@ type StoreConnection struct {
 	// "" or "0" = go-redis default (512ms). "-1" = no backoff (retry immediately).
 	// Use a Go duration string: "100ms", "512ms".
 	MaxRetryBackoff string `json:"max_retry_backoff,omitempty" yaml:"max_retry_backoff,omitempty"`
+}
+
+// ResolveCredentials resolves UsernameRef and PasswordRef via the supplied
+// secret resolver and writes the results into Username and Password.
+// Call this at startup before opening any store connections.
+// If r is nil, or the Ref fields are empty, this is a no-op.
+func (c *StoreConnection) ResolveCredentials(ctx context.Context, r CredentialResolver) error {
+	if r == nil {
+		return nil
+	}
+	if c.UsernameRef != "" {
+		val, err := r.ResolveString(ctx, c.UsernameRef)
+		if err != nil {
+			return fmt.Errorf("resolve username_ref %q: %w", c.UsernameRef, err)
+		}
+		c.Username = val
+	}
+	if c.PasswordRef != "" {
+		val, err := r.ResolveString(ctx, c.PasswordRef)
+		if err != nil {
+			return fmt.Errorf("resolve password_ref %q: %w", c.PasswordRef, err)
+		}
+		c.Password = val
+	}
+	return nil
+}
+
+// EffectiveAddress returns the address to use for the store connection.
+// If Address is set, it is returned unchanged.
+// Otherwise Host and Port are combined as "host:port" (or just "host" if Port is 0).
+func (c *StoreConnection) EffectiveAddress() string {
+	if c.Address != "" {
+		return c.Address
+	}
+	if c.Host != "" && c.Port > 0 {
+		return fmt.Sprintf("%s:%d", c.Host, c.Port)
+	}
+	return c.Host
 }
 
 // StoreConfig defines a single named backend instance.

@@ -19,7 +19,6 @@ import (
 	"rah/internal/quota"
 	"rah/internal/rctx"
 	tenantregistry "rah/internal/registry"
-	"rah/internal/router"
 	"rah/internal/secrets"
 	"rah/internal/vectorstore"
 	"sync/atomic"
@@ -90,6 +89,9 @@ func main() {
 		log.Fatalf("invalid data store config: %v", err)
 	}
 
+	adminUserStore := control.NewAdminUserStore(gatewayCtx, dataStoreMgr, cfgMgr.Gateway().Admin)
+	log.Printf("admin user store initialised with %d user(s)", len(adminUserStore.List()))
+
 	// Build observability store from config.
 	obsCfg := cfgMgr.Gateway().Observability
 	obsStoreParams := observability.ObsStoreParams{
@@ -155,7 +157,6 @@ func main() {
 	// captures a nil pointer. Names are populated at sync time via
 	// ApplyUnifiedSync → registry.GetOrAssignId, and resolved post-response via
 	// registry.GetNameByID with no hot-path cost.
-	r := router.New()
 	fm := engine.NewFlowManager(12000, cfg)
 	obs := observability.NewFromEnv()
 	accessLog := observability.NewAccessLogger(8192)
@@ -467,8 +468,6 @@ func main() {
 		})
 	}
 
-	setupRoutes(r, fm, compiler)
-
 	// 4. The Unified Hot-Path Handler
 	go func() {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -534,8 +533,9 @@ func main() {
 
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
+			apiName := registry.GetNameByID(ctx.ApiId)
 			accessLog.Snapshot(
-				registry.GetNameByID(ctx.ApiId),
+				apiName,
 				ctx.ApiId,
 				ctx.TenantKey,
 				ctx.TenantID,
@@ -556,7 +556,7 @@ func main() {
 			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
 				TimestampNs: time.Now().UnixNano(),
-				ApiName:     registry.GetNameByID(ctx.ApiId),
+				ApiName:     apiName,
 				TenantID:    ctx.TenantID,
 				TenantKey:   ctx.TenantKey,
 				Method:      req.Method,
@@ -579,7 +579,11 @@ func main() {
 
 		addr := fmt.Sprintf(":%d", *port)
 		log.Printf("Rah Gateway listening on %s\n", addr)
-		log.Fatal(http.ListenAndServe(addr, handler))
+		var gwHandler http.Handler = handler
+		if cfgMgr.Gateway().Admin.RequireGatewayAuth {
+			gwHandler = adminUserStore.Middleware(handler)
+		}
+		log.Fatal(http.ListenAndServe(addr, gwHandler))
 	}()
 
 	ts := tenantregistry.NewTenantServer(regMgr)
@@ -764,47 +768,10 @@ func main() {
 	}, dataStoreMgr, mcpReg)
 	log.Printf("MCPReg initialized; virtual MCP server routes available at /ai/mcp/virtual")
 
+	control.RegisterAdminUserRoutes(mux, adminUserStore)
+	log.Printf("Admin user endpoints registered at /admin/users")
+
 	log.Printf("Management API running on %d", *mPort)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), mux))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), adminUserStore.Middleware(mux)))
 }
 
-func setupRoutes(r *router.RahRouter, fm *engine.FlowManager, compiler *control.Compiler) {
-	state := fm.State.Load()
-	state.Router = r
-
-	// --- API 1: Public Hello ---
-	p1Instructions := []engine.Instruction{
-		{
-			Name: "HelloStep",
-			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				ctx.Write([]byte("Welcome to Rah Gateway"))
-				return s.PC + 1
-			},
-		},
-	}
-
-	def1 := engine.BakeDefinition(1, "/v1/hello")
-	compiler.BakeSubRouter(def1, "/", "GET", p1Instructions, true, 0, 0, engine.AsyncDisabled)
-
-	state.Definitions[1] = def1
-	state.Router.Add(def1.BaseRawPath, 1)
-
-	// --- API 2: Secure User Data with Path Params ---
-	p2Instructions := []engine.Instruction{
-		{
-			Name: "ShowProfile",
-			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				userId := ctx.ByteSlots[0]
-				ctx.Write([]byte("User Profile for ID: "))
-				ctx.Write(userId)
-				return s.PC + 1
-			},
-		},
-	}
-
-	def2 := engine.BakeDefinition(2, "/v1/user")
-	compiler.BakeSubRouter(def2, "/{id}/profile", "GET", p2Instructions, true, 0, 0, engine.AsyncDisabled)
-
-	state.Definitions[2] = def2
-	state.Router.Add(def2.BaseRawPath, 2)
-}

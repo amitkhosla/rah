@@ -2,6 +2,7 @@ package control
 
 import (
 	"rah/internal/engine"
+	"rah/internal/engine/steps"
 	"strings"
 )
 
@@ -52,6 +53,13 @@ func (c *Compiler) BakeSubRouter(
 
 	currIdx := uint32(0)
 
+	// Collect BindPath instructions for each {param} in URL order.
+	// These are prepended to the plan so they run before the flow steps,
+	// exactly like BindHeader/BindQuery. paramIdx matches the order
+	// resolveSubPath encounters params during radix traversal.
+	var pathBindings []engine.Instruction
+	paramIdx := 0
+
 	for i, seg := range segments {
 		isLast := i == len(segments)-1
 
@@ -59,6 +67,11 @@ func (c *Compiler) BakeSubRouter(
 
 			paramName := seg[1 : len(seg)-1]
 			slot, _ := c.getSlot("path." + paramName)
+
+			// Emit a BindPath instruction: reads ctx.Match.Params[paramIdx] (populated
+			// by resolveSubPath) and writes to ctx.ByteSlots[slot].
+			pathBindings = append(pathBindings, steps.BindPath(paramIdx, slot))
+			paramIdx++
 
 			newNode := engine.SubRouteNode{
 				PrefixLen: uint16(len(seg)),
@@ -69,7 +82,6 @@ func (c *Compiler) BakeSubRouter(
 
 			def.SubArena[currIdx].HasParamChild = true
 			def.SubArena[currIdx].ParamChildIdx = newIdx
-			def.SubArena[currIdx].ParamSlot = uint8(slot)
 
 			currIdx = newIdx
 
@@ -90,6 +102,12 @@ func (c *Compiler) BakeSubRouter(
 				isStrict,
 			)
 		}
+	}
+
+	// Prepend BindPath instructions to the endpoint plan so they run before
+	// any flow step, matching the header/query binding pattern.
+	if len(pathBindings) > 0 {
+		def.Endpoints[epIdx].Plan = append(pathBindings, def.Endpoints[epIdx].Plan...)
 	}
 
 	return 0

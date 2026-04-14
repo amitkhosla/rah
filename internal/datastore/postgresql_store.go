@@ -58,12 +58,24 @@ func newPostgreSQLStore(cfg config.StoreConfig, domain string) (KeyValueStore, e
 }
 
 func buildConnString(cfg config.StoreConnection) string {
-	addr := strings.TrimSpace(cfg.Address)
+	addr := strings.TrimSpace(cfg.EffectiveAddress())
+	// Full DSN / URL — pass through directly
 	if strings.HasPrefix(addr, "postgres://") || strings.HasPrefix(addr, "postgresql://") {
 		return addr
 	}
-	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s",
-		addr, cfg.Username, cfg.Password, cfg.Database)
+	// host:port format — split and pass separately
+	host := addr
+	port := ""
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		host = addr[:i]
+		port = addr[i+1:]
+	}
+	if port != "" {
+		return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			host, port, cfg.Username, cfg.Password, cfg.Database)
+	}
+	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, cfg.Username, cfg.Password, cfg.Database)
 }
 
 func (s *postgresqlStore) ensureSchema(ctx context.Context) error {

@@ -119,8 +119,11 @@ func (m *MemObsStore) QueryAccessLog(_ context.Context, f AccessLogFilter) ([]Ac
 		if f.TenantKey != "" && entry.TenantKey != f.TenantKey {
 			continue
 		}
-		if f.Status >= 500 && entry.Status < 500 {
-			continue
+		if f.Status > 0 {
+			bucket := (f.Status / 100) * 100
+			if entry.Status < bucket || entry.Status >= bucket+100 {
+				continue
+			}
 		}
 		tsS := entry.TimestampNs / 1_000_000_000
 		if f.FromUnixS > 0 && tsS < f.FromUnixS {
