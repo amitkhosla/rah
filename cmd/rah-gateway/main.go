@@ -765,7 +765,7 @@ func main() {
 				log.Printf("[AI] rebake failed: %v", err)
 			}
 		}()
-	}, dataStoreMgr, mcpReg)
+	}, dataStoreMgr, mcpReg, secretsMgr)
 	log.Printf("MCPReg initialized; virtual MCP server routes available at /ai/mcp/virtual")
 
 	control.RegisterAdminUserRoutes(mux, adminUserStore)

@@ -14,6 +14,8 @@ import type {
   CredentialListResponse,
   AIEnvelope,
   LLMModel,
+  LLMTestResult,
+  LLMTestDebug,
   MCPServer,
   MCPPingResult,
   APIToolDef,
@@ -152,6 +154,29 @@ export function deleteLLMModel(alias: string): Promise<void> {
   return aiReq<void>(`/api/ai/llm/models/${encodeURIComponent(alias)}`, { method: 'DELETE' })
 }
 
+// LLMTestResponse is the full envelope from the test endpoint.
+// On failure it includes a debug object with endpoint, model_id_sent, http_status, response_body.
+export interface LLMTestResponse {
+  ok: boolean
+  data?: LLMTestResult
+  error?: string
+  debug?: LLMTestDebug
+}
+
+export async function testLLMModel(
+  alias: string,
+  prompt = 'Say OK',
+  maxTokens = 10,
+): Promise<LLMTestResponse> {
+  // Use raw request — we want the full envelope including debug on failure,
+  // not just the error string that aiReq() would throw.
+  const env = await request<LLMTestResponse>(
+    `/api/ai/llm/models/${encodeURIComponent(alias)}/test`,
+    { method: 'POST', headers: AI_JSON, body: JSON.stringify({ prompt, max_tokens: maxTokens }) },
+  )
+  return env
+}
+
 // ── MCP Servers (external) ──────────────────────────────────────────
 
 export function listMCPServers(): Promise<MCPServer[]> {
@@ -215,6 +240,38 @@ export function deleteVirtualMCPServer(name: string, tenantId = 0): Promise<void
     `/api/ai/mcp/virtual/${encodeURIComponent(name)}${tenantId ? `?tenant_id=${tenantId}` : ''}`,
     { method: 'DELETE' },
   )
+}
+
+// ── Flow sync (deploy flows + API endpoints directly) ──────────────
+
+export interface SyncStep {
+  action: string
+  key_identifier?: string
+  as?: string
+  key?: string
+  source?: string
+  value?: string
+  condition?: string
+  input?: Record<string, string>
+  [k: string]: unknown
+}
+
+export interface SyncPayload {
+  sync_uuid: string
+  flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' }>
+  apis: Array<{ name: string; path: string; flow_name: string; action: 'upsert' }>
+}
+
+export async function syncFlows(payload: SyncPayload): Promise<void> {
+  const res = await fetch('/api/sync', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => `HTTP ${res.status}`)
+    throw new Error(text || `HTTP ${res.status}`)
+  }
 }
 
 // ── Observability ──────────────────────────────────────────────────

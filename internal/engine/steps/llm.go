@@ -293,10 +293,14 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			}
 
 			// 3. Build canonical request
+			wireModel := activeCfg.ModelID
+			if wireModel == "" {
+				wireModel = activeCfg.Alias
+			}
 			req := LLMRequest{
 				Messages:       []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
 				System:         systemContent,
-				Model:          activeCfg.Alias,
+				Model:          wireModel,
 				MaxTokens:      maxTokens,
 				Temperature:    cfg.Temperature,
 				ProviderParams: activeCfg.ProviderParams,
@@ -509,10 +513,14 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 
 				fbEndpointHost := extractUpstreamHost(fbParams.endpoint)
+				fbWireModel := fb.ModelConfig.ModelID
+				if fbWireModel == "" {
+					fbWireModel = fb.ModelConfig.Alias
+				}
 				fbReq := LLMRequest{
 					Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
 					System:      systemContent,
-					Model:       fb.ModelConfig.Alias,
+					Model:       fbWireModel,
 					MaxTokens:   maxTokens,
 					Temperature: cfg.Temperature,
 				}

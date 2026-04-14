@@ -45,10 +45,17 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		return fmt.Errorf("llm_call: model %q not found in LLM catalog", modelSlug)
 	}
 
-	// API key: step.Input["api_key"] overrides catalog APIKeyRef
-	apiKey := step.Input["api_key"]
-	if apiKey == "" {
-		apiKey = modelCfg.APIKeyRef
+	// API key: step.Input["api_key"] overrides catalog APIKeyRef.
+	// The resolved value is passed through the secrets manager so that
+	// references like "env:OPENAI_KEY" or "file:///run/secrets/key" are
+	// resolved to their plaintext value at bake time.
+	rawKey := step.Input["api_key"]
+	if rawKey == "" {
+		rawKey = modelCfg.APIKeyRef
+	}
+	apiKey, err := c.resolveAPIKey(rawKey)
+	if err != nil {
+		return fmt.Errorf("llm_call: %w", err)
 	}
 
 	// System prompt slot (optional)
@@ -165,7 +172,10 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			if !found {
 				return fmt.Errorf("llm_call: fallback_chain entry %q not found in LLM catalog", alias)
 			}
-			fbKey := mc.APIKeyRef
+			fbKey, err := c.resolveAPIKey(mc.APIKeyRef)
+			if err != nil {
+				return fmt.Errorf("llm_call: fallback_chain %q: %w", alias, err)
+			}
 			fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
 		}
 	}
@@ -183,9 +193,13 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		if !found {
 			return fmt.Errorf("llm_call: fallback_model %q not found in LLM catalog", singleFallback)
 		}
-		fbKey := step.Input["fallback_api_key"]
-		if fbKey == "" {
-			fbKey = mc.APIKeyRef
+		rawFbKey := step.Input["fallback_api_key"]
+		if rawFbKey == "" {
+			rawFbKey = mc.APIKeyRef
+		}
+		fbKey, err := c.resolveAPIKey(rawFbKey)
+		if err != nil {
+			return fmt.Errorf("llm_call: fallback_model %q: %w", singleFallback, err)
 		}
 		fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
 	}

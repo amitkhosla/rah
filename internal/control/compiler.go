@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"rah/internal/config"
 	"rah/internal/engine"
@@ -46,6 +47,23 @@ type Compiler struct {
 	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
 	// flow. Resolved in a second pass after all flows are compiled.
 	pendingJumps []pendingJump
+}
+
+// resolveAPIKey resolves a credential reference (e.g. "env:OPENAI_KEY", "file:///run/secrets/key")
+// through the secrets manager if one is configured. Literal values (no scheme prefix) are returned
+// as-is, matching the secrets manager's own passthrough behaviour for non-prefixed strings.
+// If no secrets manager is configured the raw ref is returned unchanged.
+func (c *Compiler) resolveAPIKey(ref string) (string, error) {
+	if ref == "" || c.SecretsMgr == nil {
+		return ref, nil
+	}
+	val, err := c.SecretsMgr.Resolve(context.Background(), ref)
+	if err != nil {
+		return "", fmt.Errorf("resolving api_key_ref %q: %w", ref, err)
+	}
+	s := string(val)
+	clear(val)
+	return s, nil
 }
 
 func NewCompiler(fm *engine.FlowManager) *Compiler {
