@@ -194,6 +194,17 @@ export default function App() {
               })
               setTab('flows')
             }}
+            onLoadApi={(api) => {
+              setApis(prev => {
+                const idx = prev.findIndex(a => a.name === api.name)
+                if (idx >= 0) {
+                  const updated = [...prev]
+                  updated[idx] = api
+                  return updated
+                }
+                return [...prev, api]
+              })
+            }}
           />
         )}
         {tab === 'observability' && <Observability />}

@@ -291,6 +291,7 @@ export interface GatewayFlow {
 export interface GatewayApi {
   name: string
   path: string
+  method: string
   flow_name: string
   action: string
 }

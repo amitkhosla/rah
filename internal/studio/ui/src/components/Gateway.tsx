@@ -4,13 +4,41 @@ import type { FlowStep, GatewayState } from '../types'
 
 interface GatewayProps {
   onLoadFlow?: (name: string, steps: FlowStep[]) => void
+  onLoadApi?: (api: { name: string; path: string; method: string; flow_name: string }) => void
 }
 
-export default function Gateway({ onLoadFlow }: GatewayProps) {
+const METHOD_COLOR: Record<string, string> = {
+  GET:    '#22c55e',
+  POST:   '#3b82f6',
+  PUT:    '#f97316',
+  PATCH:  '#eab308',
+  DELETE: '#ef4444',
+}
+
+function MethodBadge({ method }: { method: string }) {
+  const m = method || 'ANY'
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700,
+      padding: '1px 6px', borderRadius: 4,
+      color: '#fff',
+      background: METHOD_COLOR[m] ?? '#64748b',
+      minWidth: 40, textAlign: 'center',
+      display: 'inline-block',
+      marginRight: 8,
+      letterSpacing: 0.4,
+    }}>
+      {m}
+    </span>
+  )
+}
+
+export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
   const [state, setState] = useState<GatewayState | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expandedFlow, setExpandedFlow] = useState<string | null>(null)
+  const [expandedApi, setExpandedApi] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -21,6 +49,17 @@ export default function Gateway({ onLoadFlow }: GatewayProps) {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const findFlow = (name: string) => state?.flows.find(f => f.name === name)
+
+  const scrollToFlow = (name: string) => {
+    setExpandedFlow(name)
+    // Small delay to allow expansion before scrolling
+    setTimeout(() => {
+      const el = document.getElementById(`flow-${name}`)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 50)
+  }
 
   return (
     <div className="two-col">
@@ -39,7 +78,9 @@ export default function Gateway({ onLoadFlow }: GatewayProps) {
             <span className="hint">No flows deployed yet.</span>
           )}
           {state && state.flows.map(f => (
-            <div key={f.name} className="block">
+            <div key={f.name} id={`flow-${f.name}`} className="block" style={{
+              borderLeft: expandedFlow === f.name ? '3px solid var(--accent)' : '3px solid transparent'
+            }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <strong>{f.name}</strong>
                 <div style={{ display: 'flex', gap: '6px' }}>
@@ -96,13 +137,95 @@ export default function Gateway({ onLoadFlow }: GatewayProps) {
           {!loading && !error && state && state.apis.length === 0 && (
             <span className="hint">No APIs registered yet.</span>
           )}
-          {state && state.apis.map(a => (
-            <div key={a.name} className="block">
-              <strong>{a.name}</strong>
-              <div className="sub">{a.path}</div>
-              <div className="sub">flow: {a.flow_name}</div>
-            </div>
-          ))}
+          {state && state.apis.map(a => {
+            const flow = findFlow(a.flow_name)
+            return (
+              <div key={a.name} className="block">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                      <MethodBadge method={a.method} />
+                      <strong>{a.name}</strong>
+                    </div>
+                    <div className="sub" style={{ marginTop: 4 }}>{a.path}</div>
+                    <div className="sub" style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+                      flow: {a.flow_name}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {onLoadApi && onLoadFlow && flow && (
+                      <button
+                        className="btn"
+                        title="Load this API and its flow into the editor"
+                        onClick={() => {
+                          onLoadFlow(flow.name, flow.instructions)
+                          onLoadApi({
+                            name: a.name,
+                            path: a.path,
+                            method: a.method || 'ANY',
+                            flow_name: a.flow_name
+                          })
+                        }}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    <button
+                      className="btn muted"
+                      disabled={!flow}
+                      title={!flow ? "Associated flow not found" : "View flow logic"}
+                      onClick={() => scrollToFlow(a.flow_name)}
+                    >
+                      View Flow
+                    </button>
+                    <button
+                      className="btn muted"
+                      disabled={!flow}
+                      onClick={() => setExpandedApi(expandedApi === a.name ? null : a.name)}
+                    >
+                      {expandedApi === a.name ? 'Hide Steps' : 'Expand Steps'}
+                    </button>
+                  </div>
+                </div>
+                {expandedApi === a.name && flow && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '12px',
+                    background: 'rgba(0,0,0,0.2)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <span className="hint" style={{ fontWeight: 600, color: 'var(--accent)' }}>
+                        Instructions for flow: {flow.name}
+                      </span>
+                    </div>
+                    {flow.instructions.map((step, i) => {
+                      const params = Object.entries(step).filter(([k]) => k !== 'action')
+                      return (
+                        <div key={i} className="step" style={{
+                          marginBottom: '6px',
+                          background: 'var(--panel)',
+                          padding: '6px 10px',
+                          borderRadius: '4px'
+                        }}>
+                          <strong style={{ color: 'var(--accent)' }}>{i + 1}. {step.action}</strong>
+                          {params.map(([k, v]) => (
+                            <div key={k} className="sub" style={{ paddingLeft: '12px', fontSize: '11px' }}>
+                              <span style={{ color: 'var(--muted)' }}>{k}:</span> <span>{String(v)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                    <div className="hint" style={{ marginTop: '8px', fontSize: '10px', fontStyle: 'italic' }}>
+                      To modify this logic: Click "Edit" above → Modify in Designer → Go to "Deploy" tab to push changes.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
