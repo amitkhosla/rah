@@ -11,6 +11,18 @@ func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (noopWriter) WriteHeader(statusCode int)  {}
 func (noopWriter) Header() http.Header         { return make(http.Header) }
 
+type captureWriter struct {
+	status      int
+	headerCalls int
+}
+
+func (w *captureWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *captureWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
+	w.headerCalls++
+}
+func (w *captureWriter) Header() http.Header { return make(http.Header) }
+
 func TestMarkDetachedFromPool(t *testing.T) {
 	ctx := &Context{}
 	ctx.Reset(noopWriter{})
@@ -52,5 +64,28 @@ func TestClientBytesSentStreamingAndBuffered(t *testing.T) {
 	ctx.Finalize()
 	if ctx.Timing.ClientBytesSent != 5 {
 		t.Fatalf("buffered finalize bytes = %d, want 5", ctx.Timing.ClientBytesSent)
+	}
+}
+
+func TestFinalizeWritesStatusWithoutBody(t *testing.T) {
+	w := &captureWriter{}
+	ctx := &Context{}
+	ctx.Reset(w)
+
+	// Simulate an instruction that marks unauthorized and stops without writing a body.
+	ctx.ResponseStatus = http.StatusUnauthorized
+	ctx.IsBuffered = false
+	ctx.ResponseBuffer = nil
+
+	ctx.Finalize()
+
+	if w.status != http.StatusUnauthorized {
+		t.Fatalf("final status = %d, want %d", w.status, http.StatusUnauthorized)
+	}
+	if w.headerCalls != 1 {
+		t.Fatalf("WriteHeader called %d times, want 1", w.headerCalls)
+	}
+	if !ctx.headerSent {
+		t.Fatalf("headerSent should be true after finalize")
 	}
 }

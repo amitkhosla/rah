@@ -234,18 +234,21 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 // Finalize handles the "Last Mile" of the response.
 // If data was buffered, it flushes it to the wire in one go.
 func (ctx *Context) Finalize() {
-	if ctx.IsBuffered && !ctx.headerSent {
-		if ctx.Timing.FirstByteSentNs == 0 {
-			ctx.Timing.FirstByteSentNs = nanotime()
-		}
-		ctx.flushResponseHeaders()
-		ctx.Writer.WriteHeader(ctx.ResponseStatus)
+	if ctx.headerSent {
+		return
+	}
+	if ctx.Timing.FirstByteSentNs == 0 {
+		ctx.Timing.FirstByteSentNs = nanotime()
+	}
+	ctx.flushResponseHeaders()
+	ctx.Writer.WriteHeader(ctx.ResponseStatus)
+	if ctx.IsBuffered && len(ctx.ResponseBuffer) > 0 {
 		n, _ := ctx.Writer.Write(ctx.ResponseBuffer)
 		if n > 0 {
 			ctx.Timing.ClientBytesSent += int64(n)
 		}
-		ctx.headerSent = true
 	}
+	ctx.headerSent = true
 }
 
 // InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers

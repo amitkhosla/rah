@@ -202,103 +202,130 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow }: Prop
       {/* ── Right main: APIs for selected flow ───────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', background: 'var(--bg)' }}>
 
+        {/* Top: Global Add Endpoint (Always visible) */}
+        <div style={{
+          padding: '20px',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--panel)',
+          flexShrink: 0
+        }}>
+          <Section label="Add New Endpoint">
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: '0 0 90px' }}>
+                <div className="hint" style={{ fontSize: 10, marginBottom: 4 }}>Method</div>
+                <select
+                  className="input"
+                  value={addMethod}
+                  onChange={e => setAddMethod(e.target.value)}
+                  style={{ width: '100%', marginTop: 0 }}
+                >
+                  {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ flex: 2, minWidth: 180 }}>
+                <div className="hint" style={{ fontSize: 10, marginBottom: 4 }}>Path</div>
+                <input
+                  className="input"
+                  placeholder="/v1/orders"
+                  value={addPath}
+                  onChange={e => setAddPath(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAddApi()}
+                  style={{ width: '100%', marginTop: 0 }}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div className="hint" style={{ fontSize: 10, marginBottom: 4 }}>Name</div>
+                <input
+                  className="input"
+                  placeholder="list_orders"
+                  value={addName}
+                  onChange={e => setAddName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAddApi()}
+                  style={{ width: '100%', marginTop: 0 }}
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <div className="hint" style={{ fontSize: 10, marginBottom: 4 }}>Target Flow</div>
+                <select
+                  className="input"
+                  value={selectedFlow}
+                  onChange={e => setSelectedFlow(e.target.value)}
+                  style={{ width: '100%', marginTop: 0 }}
+                >
+                  <option value="">-- select flow --</option>
+                  {flowNames.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '0 20px', marginTop: 0, height: 38 }}
+                disabled={!addName.trim() || !addPath.trim() || !selectedFlow}
+                onClick={handleAddApi}
+              >
+                Add
+              </button>
+            </div>
+          </Section>
+        </div>
+
         {!selectedFlow ? (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 40 }}>
             <span style={{ fontSize: 28, opacity: 0.25 }}>⇠</span>
-            <p className="hint">Select a flow to manage its endpoints.</p>
+            <p className="hint" style={{ textAlign: 'center' }}>
+              Select a flow from the sidebar to view its existing endpoints,<br />
+              or use the form above to register a new one.
+            </p>
           </div>
         ) : (
           <>
-            {/* header */}
+            {/* list header */}
             <div style={{
               padding: '12px 20px',
               borderBottom: '1px solid var(--border)',
               background: 'var(--panel)',
               display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
             }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Endpoints</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Mapped Endpoints</span>
               <span style={{ color: 'var(--muted)', fontSize: 13 }}>→</span>
               <span style={{ color: 'var(--accent)', fontFamily: 'monospace', fontSize: 13 }}>{selectedFlow}</span>
               <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-                ({currentApis.length} endpoint{currentApis.length !== 1 ? 's' : ''})
+                ({currentApis.length})
               </span>
-              {flows.find(f => f.name === selectedFlow)?.steps.length === 0 && (
-                <span style={{
-                  marginLeft: 'auto', fontSize: 11, color: '#f97316',
-                  background: 'rgba(249,115,22,0.12)', borderRadius: 5, padding: '2px 8px',
-                }}>
-                  ⚠ flow has no steps — open Flow Designer to build it
-                </span>
-              )}
             </div>
 
             <div style={{ padding: 20, flex: 1 }}>
-
               {/* API list */}
-              {currentApis.length === 0 && (
-                <p className="hint" style={{ marginBottom: 16 }}>No endpoints mapped to this flow yet.</p>
-              )}
-              <div style={{ marginBottom: 24 }}>
-                {currentApis.map(a => {
-                  const gi = apis.indexOf(a)
-                  return (
-                    <div key={gi} className="step" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px' }}>
-                      <MethodBadge method={a.method} />
-                      <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 13 }}>{a.path}</span>
-                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>{a.name}</span>
-                      <button
-                        className="btn muted"
-                        style={{ width: 'auto', padding: '3px 10px', marginTop: 0, fontSize: 12 }}
-                        onClick={() => handleRemove(gi)}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* Add endpoint */}
-              <Section label="Add Endpoint">
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                  <select
-                    className="input"
-                    value={addMethod}
-                    onChange={e => setAddMethod(e.target.value)}
-                    style={{ width: 90, marginTop: 0 }}
-                  >
-                    {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => (
-                      <option key={m}>{m}</option>
-                    ))}
-                  </select>
-                  <input
-                    className="input"
-                    placeholder="/path  e.g. /v1/orders"
-                    value={addPath}
-                    onChange={e => setAddPath(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleAddApi()}
-                    style={{ flex: 2, minWidth: 180, marginTop: 0 }}
-                  />
-                  <input
-                    className="input"
-                    placeholder="name  e.g. list_orders"
-                    value={addName}
-                    onChange={e => setAddName(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleAddApi()}
-                    style={{ flex: 1, minWidth: 120, marginTop: 0 }}
-                  />
-                  <button
-                    className="btn"
-                    style={{ width: 'auto', padding: '0 20px', marginTop: 0 }}
-                    onClick={handleAddApi}
-                  >
-                    Add
-                  </button>
+              {currentApis.length === 0 ? (
+                <p className="hint">No endpoints mapped to this flow yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {currentApis.map(a => {
+                    const gi = apis.indexOf(a)
+                    return (
+                      <div key={gi} className="step" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px' }}>
+                        <MethodBadge method={a.method} />
+                        <span style={{ flex: 1, fontFamily: 'monospace', fontSize: 13 }}>{a.path}</span>
+                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>{a.name}</span>
+                        <button
+                          className="btn muted"
+                          style={{ width: 'auto', padding: '3px 10px', marginTop: 0, fontSize: 12 }}
+                          onClick={() => handleRemove(gi)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
-              </Section>
+              )}
 
-              {/* OpenAPI import */}
-              <Section label="Import from OpenAPI" style={{ marginTop: 24 }}>
+              {/* OpenAPI import (scoped to selected flow) */}
+              <Section label="Import from OpenAPI" style={{ marginTop: 40 }}>
+                <p className="hint" style={{ marginBottom: 12 }}>Import multiple endpoints directly into <strong>{selectedFlow}</strong>.</p>
                 <textarea
                   className="input"
                   placeholder="Paste OpenAPI spec (JSON or YAML)…"
@@ -318,7 +345,6 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow }: Prop
                   <p className={`mt8 ${importErr ? 'status-err' : 'status-ok'}`}>{importMsg}</p>
                 )}
               </Section>
-
             </div>
           </>
         )}
