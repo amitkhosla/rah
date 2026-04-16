@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -99,8 +100,17 @@ func main() {
 		MaxAccessLog: obsCfg.Store.MaxAccessLog,
 		MaxTraces:    obsCfg.Store.MaxTraces,
 	}
-	// For postgres/redis: resolve connection from domain binding.
-	if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog); err == nil {
+	// For postgres/redis: resolve connection from observability domain bindings.
+	// Try traces first, then access log as a fallback.
+	if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsTraces); err == nil {
+		obsStoreParams.DSN = storeCfg.Connection.Address
+		obsStoreParams.Password = storeCfg.Connection.Password
+		obsStoreParams.PoolSize = storeCfg.Connection.PoolSize
+		// If type is not explicitly set but a binding exists, infer type from store kind.
+		if obsStoreParams.Type == "" {
+			obsStoreParams.Type = string(storeCfg.Kind)
+		}
+	} else if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog); err == nil {
 		obsStoreParams.DSN = storeCfg.Connection.Address
 		obsStoreParams.Password = storeCfg.Connection.Password
 		obsStoreParams.PoolSize = storeCfg.Connection.PoolSize
@@ -159,6 +169,20 @@ func main() {
 	// registry.GetNameByID with no hot-path cost.
 	fm := engine.NewFlowManager(12000, cfg)
 	obs := observability.NewFromEnv()
+	// Prefer explicit gateway config for observability trace controls.
+	// This overrides env defaults from NewFromEnv and keeps runtime behavior
+	// aligned with gateway.yaml observability.traces settings.
+	traceMode := obsCfg.Traces.Enabled
+	traceSampleRate := obsCfg.Traces.SampleRate
+	if traceSampleRate < 0 {
+		traceSampleRate = 0
+	}
+	if traceSampleRate > 1 {
+		traceSampleRate = 1
+	}
+	instructionTiming := obsCfg.Traces.InstructionTiming
+	obs.UpdateConfig(&traceMode, &traceSampleRate, &instructionTiming, nil, nil, nil, nil)
+	alwaysTrace5xx := obsCfg.Traces.AlwaysTrace5xx
 	accessLog := observability.NewAccessLogger(8192)
 	registry := control.NewNameRegistry()
 
@@ -499,7 +523,9 @@ func main() {
 			ctx.Obs = obs
 			ctx.Timing.StartNs = reqStart.UnixNano()
 
-			if obs.ShouldTrace() {
+			isSampledTrace := obs.ShouldTrace()
+			shouldStartTrace := isSampledTrace || alwaysTrace5xx
+			if shouldStartTrace {
 				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
 				ctx.Trace = &trace
 			}
@@ -508,17 +534,23 @@ func main() {
 			ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
 
 			// C. Delegate Execution to FlowManager
+			processStarted := time.Now()
 			fm.ProcessRequest(ctx, req)
+			processDuration := time.Since(processStarted)
 
 			// D. Finalize: flush buffered response — client receives data here.
+			finalizeStarted := time.Now()
 			ctx.Finalize()
+			finalizeDuration := time.Since(finalizeStarted)
 
 			// D2. After-response hooks: run deferred ingest events now that
 			// the response is committed. These are non-blocking channel sends
 			// so they complete in nanoseconds; no latency impact on the caller.
+			afterHooksStarted := time.Now()
 			for _, fn := range ctx.AfterResponse {
 				fn()
 			}
+			afterHooksDuration := time.Since(afterHooksStarted)
 
 			// E. Post-response: snapshot for async access log and observability.
 			// Client has already received the response — none of this adds latency.
@@ -534,6 +566,7 @@ func main() {
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
 			apiName := registry.GetNameByID(ctx.ApiId)
+			accessLogSnapshotStarted := time.Now()
 			accessLog.Snapshot(
 				apiName,
 				ctx.ApiId,
@@ -545,15 +578,25 @@ func main() {
 				req.ContentLength, ctx.Timing.ClientBytesSent,
 				req,
 			)
+			accessLogSnapshotDuration := time.Since(accessLogSnapshotStarted)
 
-			obs.FinishRequest(ctx.Trace, ctx.ResponseStatus, total, gateway, upstream,
+			shouldPersistTrace := ctx.Trace != nil && (isSampledTrace || (alwaysTrace5xx && ctx.ResponseStatus >= 500))
+			var traceForTelemetry *observability.RequestTrace
+			if shouldPersistTrace {
+				traceForTelemetry = ctx.Trace
+			}
+
+			obsFinishStarted := time.Now()
+			obs.FinishRequest(traceForTelemetry, ctx.ResponseStatus, total, gateway, upstream,
 				int(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
 				ctx.Timing.ClientBytesSent,
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesTx),
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesRx),
 			)
+			obsFinishDuration := time.Since(obsFinishStarted)
 
 			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
+			accessLogEnqueueStarted := time.Now()
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
 				TimestampNs: time.Now().UnixNano(),
 				ApiName:     apiName,
@@ -569,6 +612,57 @@ func main() {
 				ReqBytes:    req.ContentLength,
 				ResBytes:    ctx.Timing.ClientBytesSent,
 			})
+			accessLogEnqueueDuration := time.Since(accessLogEnqueueStarted)
+
+			if shouldPersistTrace {
+				appendGatewayPhase := func(name string, d time.Duration, note string) {
+					if d <= 0 {
+						return
+					}
+					ev := observability.InstructionEvent{Name: name, PC: -1, DurationNs: d.Nanoseconds()}
+					if note != "" {
+						ev.Output = []observability.KV{{K: "note", V: note}}
+					}
+					ctx.Obs.AppendInstructionEvent(ctx.Trace, ev)
+				}
+				appendGatewayPhase("GATEWAY_PHASE_PROCESS_REQUEST", processDuration, "time in flow manager request execution")
+				appendGatewayPhase("GATEWAY_PHASE_FINALIZE_RESPONSE", finalizeDuration, "time flushing buffered response to client")
+				appendGatewayPhase("GATEWAY_PHASE_AFTER_RESPONSE_HOOKS", afterHooksDuration, "time running deferred hooks")
+				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_SNAPSHOT", accessLogSnapshotDuration, "time building in-memory access log snapshot")
+				appendGatewayPhase("GATEWAY_PHASE_TELEMETRY_FINISH", obsFinishDuration, "time updating telemetry counters/export queue")
+				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_ENQUEUE", accessLogEnqueueDuration, "time enqueueing persistent access log write")
+
+				totalNs := total.Nanoseconds()
+				var attributedNs int64
+				for _, e := range ctx.Trace.Instructions {
+					if e.DurationNs > 0 {
+						attributedNs += e.DurationNs
+					}
+				}
+				if residualNs := totalNs - attributedNs; residualNs > 0 {
+					ctx.Trace.Instructions = append(ctx.Trace.Instructions, observability.InstructionEvent{
+						Name:       "GATEWAY_PHASE_RESIDUAL",
+						PC:         -1,
+						DurationNs: residualNs,
+						Output:     []observability.KV{{K: "note", V: "unattributed remainder after explicit phase instrumentation"}},
+					})
+				}
+
+				payload, err := json.Marshal(ctx.Trace)
+				if err != nil {
+					log.Printf("[obs] marshal trace payload failed trace_id=%d: %v", ctx.Trace.Summary.TraceID, err)
+				} else {
+					obsWriter.WriteTrace(gatewayCtx, observability.TraceRecord{
+						TraceID:   ctx.Trace.Summary.TraceID,
+						Timestamp: time.Now().Unix(),
+						ApiName:   apiName,
+						TenantID:  ctx.TenantID,
+						Status:    ctx.ResponseStatus,
+						TotalMs:   float64(total.Nanoseconds()) / 1e6,
+						Payload:   payload,
+					})
+				}
+			}
 
 			if ctx.ShouldReturnToPool() {
 				// ReturnContext releases borrowed arena blocks and slot extensions

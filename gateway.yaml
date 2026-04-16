@@ -53,4 +53,17 @@ datastore:
     async_jobs:      "postgres_primary"   # async job state
     ai_config:       "postgres_primary"   # LLM model catalog + MCP registry
     mcp_tools:       "postgres_primary"   # virtual MCP server definitions
+    obs_access_log:  "postgres_primary"   # persisted access logs (Postgres/Timescale)
+    obs_metrics:     "postgres_primary"   # persisted metric snapshots
+    obs_traces:      "postgres_primary"   # persisted request traces
     cache:           "redis_primary"      # request-level response cache (hot path)
+
+observability:
+  store:
+    # use PostgreSQL-compatible backend (works with TimescaleDB)
+    type: postgres
+  traces:
+    enabled: true
+    sample_rate: 1.0
+    always_trace_5xx: true
+    instruction_timing: true

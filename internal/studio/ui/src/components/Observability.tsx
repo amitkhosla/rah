@@ -46,6 +46,22 @@ interface TraceRecord {
   payload?: string
 }
 
+interface TracePayloadEvent {
+  seq?: number
+  name: string
+  duration_ns?: number
+  total_ns?: number
+  status?: number
+}
+
+interface TracePayload {
+  summary?: {
+    duration_ns?: number
+  }
+  instructions?: TracePayloadEvent[]
+  upstreams?: TracePayloadEvent[]
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 function fmtNum(n: number): string {
@@ -59,6 +75,11 @@ function fmtTime(ns: number): string {
   if (!ns) return '—'
   const d = new Date(ns / 1_000_000)
   return d.toLocaleTimeString()
+}
+
+function fmtNsAsMs(ns: number): string {
+  if (!ns || ns <= 0) return '0 ms'
+  return `${(ns / 1_000_000).toFixed(2)} ms`
 }
 
 function statusColor(status: number): string {
@@ -607,7 +628,9 @@ export default function Observability() {
                           {' · '}
                           Tenant: <span style={{ color: 'var(--text)' }}>{trace.tenant_id}</span>
                         </div>
-                        {payload ? (
+                        {payload && typeof payload !== 'string' ? (
+                          <TraceTimeline payload={payload as TracePayload} />
+                        ) : payload ? (
                           <pre style={{
                             margin: 0,
                             padding: '10px 12px',
@@ -634,6 +657,72 @@ export default function Observability() {
           )
         )}
       </div>
+    </div>
+  )
+}
+
+function TraceTimeline({ payload }: { payload: TracePayload }) {
+  const instructionEvents = Array.isArray(payload.instructions) ? payload.instructions : []
+  const upstreamEvents = Array.isArray(payload.upstreams) ? payload.upstreams : []
+  const events = [
+    ...instructionEvents.map((e) => ({
+      kind: 'instruction' as const,
+      label: e.name || 'instruction',
+      durationNs: Number(e.duration_ns ?? 0),
+      seq: Number(e.seq ?? 0),
+      status: undefined as number | undefined,
+    })),
+    ...upstreamEvents.map((e) => ({
+      kind: 'upstream' as const,
+      label: e.name || 'upstream',
+      durationNs: Number(e.total_ns ?? e.duration_ns ?? 0),
+      seq: Number(e.seq ?? 0),
+      status: e.status,
+    })),
+  ].filter(e => e.durationNs >= 0)
+
+  events.sort((a, b) => (a.seq - b.seq) || (b.durationNs - a.durationNs))
+
+  const totalNsFromSummary = Number(payload.summary?.duration_ns ?? 0)
+  const totalNsFromEvents = events.reduce((acc, e) => acc + e.durationNs, 0)
+  const totalNs = totalNsFromSummary > 0 ? totalNsFromSummary : totalNsFromEvents
+  const maxNs = Math.max(...events.map(e => e.durationNs), totalNs, 1)
+
+  if (events.length === 0) {
+    return <div style={{ color: 'var(--muted)' }}>No timeline events available</div>
+  }
+
+  return (
+    <div style={{
+      background: 'var(--bg)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+      padding: '10px 12px',
+    }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+        Timeline • total {fmtNsAsMs(totalNs)}
+      </div>
+
+      {events.map((e, i) => {
+        const widthPct = Math.max(2, (e.durationNs / maxNs) * 100)
+        const color = e.kind === 'upstream' ? '#fbbf24' : '#57b5ff'
+        return (
+          <div key={`${e.kind}-${e.seq}-${i}`} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+              <div style={{ color: 'var(--text)', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {e.seq > 0 ? `${e.seq}. ` : ''}{e.label}
+                {e.kind === 'upstream' && e.status ? ` (${e.status})` : ''}
+              </div>
+              <div style={{ color: 'var(--muted)', fontSize: 11, whiteSpace: 'nowrap' }}>
+                {fmtNsAsMs(e.durationNs)}
+              </div>
+            </div>
+            <div style={{ height: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
+              <div style={{ width: `${widthPct}%`, height: '100%', background: color }} />
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
