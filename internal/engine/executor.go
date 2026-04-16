@@ -63,6 +63,11 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 		var duration time.Duration
 		if shouldMeasure {
 			duration = time.Since(started)
+			// Extremely fast instructions can appear as 0ns on some platforms.
+			// Preserve attribution by recording a minimal non-zero duration.
+			if duration <= 0 {
+				duration = time.Nanosecond
+			}
 			ctx.Obs.RecordInstruction(current.Name, duration)
 		}
 		slot0Len := 0

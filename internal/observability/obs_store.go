@@ -1,6 +1,9 @@
 package observability
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // MetricSnapshot is a pre-aggregated metric record for one time window + dimension.
 type MetricSnapshot struct {
@@ -42,7 +45,7 @@ type TraceRecord struct {
 	TenantID  uint16  `json:"tenant_id"`
 	Status    int     `json:"status"`
 	TotalMs   float64 `json:"total_ms"`
-	Payload   []byte  `json:"payload,omitempty"` // JSON-encoded RequestTrace
+	Payload   json.RawMessage `json:"payload,omitempty"` // JSON-encoded RequestTrace
 }
 
 // AccessLogFilter filters access log queries.
