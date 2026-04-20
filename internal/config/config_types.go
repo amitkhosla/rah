@@ -85,6 +85,18 @@ type LLMModelConfig struct {
 	// These are merged at the top level of the provider's request JSON, so they
 	// can override or extend any field the adapter normally produces.
 	ProviderParams map[string]any `json:"provider_params,omitempty" yaml:"provider_params,omitempty"`
+	// UseCompletionTokens: when true, the OpenAI adapter sends max_completion_tokens
+	// instead of max_tokens. Required for o-series and newer GPT-5+ models that
+	// return "Unsupported parameter: 'max_tokens'" errors.
+	UseCompletionTokens bool `json:"use_completion_tokens,omitempty" yaml:"use_completion_tokens,omitempty"`
+	// EndpointOverride, if non-empty, bypasses the adapter's Endpoint() logic entirely
+	// and POSTs to this exact URL. Use for providers that don't fit standard URL patterns
+	// (e.g. a full Google Generative Language URL with a specific version path).
+	EndpointOverride string `json:"endpoint_override,omitempty" yaml:"endpoint_override,omitempty"`
+	// ExtraHeaders holds additional HTTP headers sent with every request to this model.
+	// These are merged after the adapter's standard auth header, so they can override it.
+	// Example: {"x-custom-header": "value", "x-org-id": "my-org"}
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.

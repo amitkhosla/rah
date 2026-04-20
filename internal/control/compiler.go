@@ -468,6 +468,72 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			ModelSlot:        calcModelSlot,
 		}))
 
+	case "classify_llm":
+		return c.compileClassifyLLM(step)
+
+	case "set_const":
+		// Writes a static string value into a slot at bake time.
+		// value: the literal string to store
+		// as:    slot name
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("set_const: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetConstStep(step.Value, destSlot))
+
+	case "respond":
+		// Writes ByteSlots[key_identifier] as the HTTP response body and stops the flow.
+		// key_identifier: slot name holding the response content
+		srcSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return fmt.Errorf("respond: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RespondStep(srcSlot))
+
+	case "bind_body":
+		// Reads the request body (buffering on first access) and extracts a JSON
+		// field by gjson path into the named slot.
+		// key / key_identifier: gjson path, e.g. "message" or "data.prompt"
+		// as:                   slot name to store the extracted string value
+		jsonPath := step.Key
+		if jsonPath == "" {
+			jsonPath = step.KeyIdentifier
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_body: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindBody(jsonPath, destSlot))
+
+	case "bind_header":
+		// Explicit header binding — equivalent to the auto-discovered header dependency
+		// but usable anywhere in a flow as an explicit step.
+		// key / key_identifier: HTTP header name, e.g. "X-Session-Id"
+		// as:                   slot name
+		headerKey := step.Key
+		if headerKey == "" {
+			headerKey = step.KeyIdentifier
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_header: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindHeader(headerKey, destSlot))
+
+	case "bind_query_param":
+		// Explicit query-param binding.
+		// key / key_identifier: query param name, e.g. "session_id"
+		// as:                   slot name
+		qKey := step.Key
+		if qKey == "" {
+			qKey = step.KeyIdentifier
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_query_param: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindQuery(qKey, destSlot))
+
 	case "bind_client_ip":
 		// Extracts the real client IP (X-Forwarded-For → X-Real-IP → RemoteAddr)
 		// and stores it in the named slot.
@@ -1313,6 +1379,29 @@ func (c *Compiler) varRefsInStep(step StepConfig) []string {
 	for _, n := range names {
 		if n != "" {
 			refs = append(refs, n)
+		}
+	}
+	// Scan step.Input values for slot names (e.g. model_slot: 'var.model',
+	// system_slot: 'var.cls_system', total_slot: 'var.total_tok', etc.).
+	// Without this, slots written by earlier steps are freed prematurely and
+	// re-allocated to different indices before the consuming step runs.
+	// Use substring scan (not just HasPrefix) to catch embedded var. references
+	// such as route_llm rules JSON: "[{\"condition\":\"var.complexity == low\"}]"
+	for _, v := range step.Input {
+		rest := v
+		for {
+			idx := strings.Index(rest, "var.")
+			if idx < 0 {
+				break
+			}
+			rest = rest[idx:]
+			end := strings.IndexAny(rest[4:], " \"'\t\n}],=<>!{()")
+			if end < 0 {
+				refs = append(refs, rest)
+				break
+			}
+			refs = append(refs, rest[:4+end])
+			rest = rest[4+end:]
 		}
 	}
 	// Extract params dest_slot / value_slot variable names.

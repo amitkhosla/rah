@@ -118,10 +118,31 @@ func (f *TextFormatter) Format(events []Event) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ── Raw formatter ─────────────────────────────────────────────────────────────
+
+// RawFormatter writes each event's payload bytes verbatim, appending a newline
+// if the payload doesn't already end with one. Use format: "raw" for log sinks
+// where the payload is already a fully-formatted log line from log.Printf.
+type RawFormatter struct{}
+
+func (RawFormatter) ContentType() string { return "text/plain; charset=utf-8" }
+
+func (RawFormatter) Format(events []Event) ([]byte, error) {
+	var buf bytes.Buffer
+	for i := range events {
+		p := events[i].Payload()
+		buf.Write(p)
+		if len(p) > 0 && p[len(p)-1] != '\n' {
+			buf.WriteByte('\n')
+		}
+	}
+	return buf.Bytes(), nil
+}
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 // NewFormatter creates a Formatter from a format name and optional template string.
-// Valid formats: "ndjson" (default), "json_array", "text".
+// Valid formats: "ndjson" (default), "json_array", "text", "raw".
 // When format is "text", templateStr must be a valid Go text/template.
 func NewFormatter(format, templateStr string) (Formatter, error) {
 	switch format {
@@ -129,6 +150,8 @@ func NewFormatter(format, templateStr string) (Formatter, error) {
 		return NDJSONFormatter{}, nil
 	case "json_array":
 		return JSONArrayFormatter{}, nil
+	case "raw":
+		return RawFormatter{}, nil
 	case "text":
 		if templateStr == "" {
 			return nil, fmt.Errorf("format=text requires a non-empty template string")
@@ -139,6 +162,6 @@ func NewFormatter(format, templateStr string) (Formatter, error) {
 		}
 		return &TextFormatter{tmpl: tmpl}, nil
 	default:
-		return nil, fmt.Errorf("unknown format %q (valid: ndjson, json_array, text)", format)
+		return nil, fmt.Errorf("unknown format %q (valid: ndjson, json_array, text, raw)", format)
 	}
 }

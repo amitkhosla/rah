@@ -1,6 +1,8 @@
 package observability
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -86,6 +88,7 @@ type UpstreamEvent struct {
 	Attempt           int    `json:"attempt"`
 	Host              string `json:"host"`
 	URL               string `json:"url"`
+	Model             string `json:"model,omitempty"`
 	Status            int    `json:"status"`
 	Err               string `json:"err,omitempty"`
 	ConnReused        bool   `json:"conn_reused"`
@@ -237,6 +240,13 @@ func New(cfg Config) *Telemetry {
 		cfg.MetricQueueSize = 4096
 	}
 	t := &Telemetry{cfg: cfg, instr: make(map[string]*counter), upstream: make(map[string]*counter), tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	// Seed trace counter from crypto/rand so IDs are unique per process instance
+	// and never collide with rows from a previous container run in Postgres.
+	// Same approach as rctx.TxIDGenerator — entropy-seeded, not time-based.
+	var seed [8]byte
+	if _, err := rand.Read(seed[:]); err == nil {
+		t.traceID.Store(binary.LittleEndian.Uint64(seed[:]))
+	}
 	t.traceMode.Store(cfg.TraceMode)
 	t.sampleRate10k.Store(uint32(cfg.SampleRate * 10000))
 	t.instrEnabled.Store(cfg.InstructionTimingEnabled)

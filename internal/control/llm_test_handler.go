@@ -97,13 +97,21 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 		wireModelID = model.Alias
 	}
 
-	endpoint := adapter.Endpoint(model.BaseURL, wireModelID)
+	// EndpointOverride bypasses adapter URL logic entirely.
+	// {model} in the override is replaced with the resolved model ID.
+	endpoint := model.EndpointOverride
+	if endpoint != "" {
+		endpoint = strings.ReplaceAll(endpoint, "{model}", wireModelID)
+	} else {
+		endpoint = adapter.Endpoint(model.BaseURL, wireModelID)
+	}
 	authName, authValue := adapter.AuthHeader(apiKey)
 
 	llmReq := steps.LLMRequest{
-		Messages:  []steps.CanonicalMessage{{Role: steps.RoleUser, Content: prompt}},
-		Model:     wireModelID,
-		MaxTokens: maxTokens,
+		Messages:            []steps.CanonicalMessage{{Role: steps.RoleUser, Content: prompt}},
+		Model:               wireModelID,
+		MaxTokens:           maxTokens,
+		UseCompletionTokens: model.UseCompletionTokens,
 	}
 
 	// Marshal to provider wire format.
@@ -126,8 +134,8 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 		}
 	}
 
-	log.Printf("[llm-test] alias=%q model_id=%q endpoint=%s prompt=%q max_tokens=%d",
-		alias, wireModelID, endpoint, prompt, maxTokens)
+	log.Printf("[llm-test] alias=%q model_id=%q endpoint=%s prompt=%q max_tokens=%d request_body=%s",
+		alias, wireModelID, endpoint, prompt, maxTokens, reqBody)
 
 	// POST to provider with 30s timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -144,6 +152,9 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 	}
 	if model.Adapter == config.AdapterAnthropic || model.Adapter == config.AdapterBedrock {
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
+	}
+	for k, v := range model.ExtraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
 	start := time.Now()
@@ -178,6 +189,7 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 				"endpoint":       endpoint,
 				"model_id_sent":  wireModelID,
 				"http_status":    resp.StatusCode,
+				"request_body":   string(reqBody),
 				"response_body":  body,
 				"latency_ms":     latencyMs,
 			},

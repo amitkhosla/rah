@@ -26,6 +26,9 @@ type LLMRequest struct {
 	MaxTokens      int
 	Temperature    float64
 	ProviderParams map[string]any // provider-specific fields merged into wire-format body
+	// UseCompletionTokens: when true the OpenAI adapter sends max_completion_tokens
+	// instead of max_tokens. Required for o-series and newer GPT-5+ models.
+	UseCompletionTokens bool
 }
 
 // LLMResponse is the provider-agnostic response from any LLM.

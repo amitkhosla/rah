@@ -209,6 +209,16 @@ export interface LLMModel {
   // Provider-specific fields merged into the wire-format request body at call time.
   // Examples: {"service_tier":"flex"} for OpenAI, {"thinking":{"type":"enabled","budget_tokens":5000}} for Anthropic
   provider_params?: Record<string, any>
+  // When true, the OpenAI adapter sends max_completion_tokens instead of max_tokens.
+  // Required for o-series and newer GPT-5+ models.
+  use_completion_tokens?: boolean
+  cost_per_input_token?: number   // USD per 1M input tokens
+  cost_per_output_token?: number  // USD per 1M output tokens
+  // Bypasses the adapter's URL construction entirely — the request is POSTed to this exact URL.
+  // Use for models like Gemma where the model ID is embedded in the path.
+  endpoint_override?: string
+  // Additional HTTP headers sent with every request to this model (merged after auth header).
+  extra_headers?: Record<string, string>
 }
 
 export interface LLMTestResult {

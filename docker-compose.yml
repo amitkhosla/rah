@@ -1,50 +1,20 @@
-version: "3.9"
-
-# Local development stack: RAH gateway + Redis + PostgreSQL
+# Local development stack: RAH gateway + Studio
+# Redis and PostgreSQL are expected to already be running externally.
+# Update deploy/docker/gateway-local.yaml with your actual Redis/PG addresses.
+#
 # Usage:
-#   docker compose up -d          # start all
-#   docker compose logs -f gateway # tail gateway logs
-#   docker compose down -v         # stop + delete volumes
+#   docker compose up -d              # start gateway
+#   docker compose --profile studio up -d  # + Studio UI on :3000
+#   docker compose logs -f gateway    # tail gateway logs
+#   docker compose down               # stop
 
 services:
-
-  # ── Redis ─────────────────────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # ── PostgreSQL ─────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: gateway
-      POSTGRES_USER: gateway
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   # ── RAH Gateway ───────────────────────────────────────────────────────────
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
-      # Build for current machine architecture — fast local iteration
       target: runtime
     image: rah-gateway:local
     restart: unless-stopped
@@ -52,19 +22,15 @@ services:
       - "8080:8080"   # Data plane
       - "8081:8081"   # Management plane
     volumes:
-      # Mount local config file — edit gateway.yaml and restart to reload
       - ./deploy/docker/gateway-local.yaml:/app/gateway.yaml:ro
     environment:
-      # Override individual config values via env (config loader reads these)
-      RAH_REDIS_ADDR: redis:6379
-      RAH_PG_DSN: "postgres://gateway:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/gateway?sslmode=disable"
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
+      # API keys — values read from your host environment or a .env file
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health 2>/dev/null || exit 1"]
+      test: ["CMD", "/usr/local/bin/rah-gateway", "-health", "-mport", "8081"]
       interval: 15s
       timeout: 5s
       start_period: 15s
@@ -74,18 +40,14 @@ services:
   studio:
     build:
       context: .
-      dockerfile: Dockerfile
-      target: runtime
-    image: rah-gateway:local
+      dockerfile: Dockerfile.studio
+    image: rah-studio:local
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/rah-studio"]
-    command: ["-gateway", "http://gateway:8081", "-port", "3000"]
+    command: ["-gateway-management-url", "http://gateway:8081", "-port", "8092"]
     ports:
-      - "3000:3000"
+      - "8092:8092"
     depends_on:
       - gateway
     profiles:
-      - studio  # Only starts with: docker compose --profile studio up
-
-volumes:
-  postgres_data:
+      - studio

@@ -3,7 +3,6 @@ package engine
 import (
 	"rah/internal/observability"
 	"rah/internal/rctx"
-	"strconv"
 	"time"
 )
 
@@ -26,6 +25,16 @@ type ExecutionState struct {
 	// slotValueThreshold overrides rctx.SlotValueThreshold when non-zero.
 	// Set by FlowManager from Config.SlotValueThreshold; 0 means use default.
 	slotValueThreshold int
+
+	TraceAttrs     [16][2]string
+	traceAttrCount int8
+}
+
+func (s *ExecutionState) AddTraceAttr(k, v string) {
+	if s.traceAttrCount < int8(len(s.TraceAttrs)) {
+		s.TraceAttrs[s.traceAttrCount] = [2]string{k, v}
+		s.traceAttrCount++
+	}
 }
 
 // InstructionFunc represents the logic of a single instruction.
@@ -70,17 +79,20 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 			}
 			ctx.Obs.RecordInstruction(current.Name, duration)
 		}
-		slot0Len := 0
-		if len(ctx.ByteSlots) > 0 {
-			slot0Len = len(ctx.ByteSlots[0])
-		}
 		if shouldMeasure && ctx.Trace != nil && ctx.Obs != nil {
+			var outputKVs []observability.KV
+			if state.traceAttrCount > 0 {
+				outputKVs = make([]observability.KV, 0, int(state.traceAttrCount))
+				for i := int8(0); i < state.traceAttrCount; i++ {
+					outputKVs = append(outputKVs, observability.KV{K: state.TraceAttrs[i][0], V: state.TraceAttrs[i][1]})
+				}
+			}
+			state.traceAttrCount = 0
 			ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
 				Name:       current.Name,
 				PC:         state.PC,
 				DurationNs: duration.Nanoseconds(),
-				Input:      []observability.KV{{K: "response_status", V: strconv.Itoa(ctx.ResponseStatus)}, {K: "slot0_len", V: strconv.Itoa(slot0Len)}},
-				Output:     []observability.KV{{K: "next_pc", V: strconv.Itoa(int(pc))}},
+				Output:     outputKVs,
 			})
 		}
 

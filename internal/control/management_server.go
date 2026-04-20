@@ -30,6 +30,11 @@ type ManagementServer struct {
 	// gateway can restore its state on restart. Leave nil (or use SetDataStore)
 	// when a central orchestrator owns persistence and RAH only reads on boot.
 	dataStore *DataStoreManager
+
+	// LLMProvider, if set, is called before each compile to refresh the
+	// compiler's model catalog. Wire this to cfgMgr.LLM so that models
+	// registered via the UI are visible to the compiler at sync time.
+	LLMProvider func() config.LLMConfig
 }
 
 // NewManagementServer initializes the server with the required compiler and manager.
@@ -309,6 +314,12 @@ func (s *ManagementServer) DraftStatusHandler(w http.ResponseWriter, r *http.Req
 
 // ApplyUnifiedSync applies a sync payload to the active engine state.
 func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
+	// Refresh the compiler's LLM catalog so models registered via the UI
+	// (stored in Postgres, not gateway.yaml) are visible during bake.
+	if s.LLMProvider != nil {
+		s.Compiler.LLMCfg = s.LLMProvider()
+	}
+
 	oldState := s.FlowManager.State.Load()
 
 	s.mu.RLock()

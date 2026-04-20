@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +34,7 @@ type LLMCallConfig struct {
 	OnExceed     string                           // "reject" (default) — return 413 when prompt exceeds context
 	ModelSlot    int                              // >= 0: read model slug from ByteSlots at runtime
 	ModelCatalog map[string]config.LLMModelConfig // full catalog for runtime lookup
+	CatalogKeys  map[string]string               // pre-resolved API keys for catalog entries (alias → literal key)
 
 	// APIKeySlot: if >= 0, read the API key at request time from ctx.ByteSlots[APIKeySlot]
 	// instead of using the baked-in APIKey string. Allows per-tenant key injection.
@@ -54,6 +58,11 @@ type LLMCallConfig struct {
 	// the primary model exhausts all retries. Each entry is resolved at bake time.
 	// An empty chain means no fallback.
 	FallbackChain []FallbackEntry
+
+	// FallbackByModel maps a model alias to its pre-baked fallback entry chain.
+	// When a model is selected at runtime via ModelSlot, its chain from this map
+	// overrides FallbackChain for that specific routing decision. Resolved at bake time.
+	FallbackByModel map[string][]FallbackEntry
 
 	// ModelConfigSlot: if >= 0, read a JSON-encoded LLMModelConfig from
 	// ctx.ByteSlots[ModelConfigSlot] at runtime and use it instead of the
@@ -83,7 +92,18 @@ func resolveCallParams(modelCfg config.LLMModelConfig, apiKey string) (llmCallPa
 	if err != nil {
 		return llmCallParams{}, err
 	}
-	endpoint := adapter.Endpoint(modelCfg.BaseURL, modelCfg.Alias)
+	// EndpointOverride bypasses all adapter URL logic.
+	// {model} in the override is replaced with the resolved model ID.
+	wireModelID := modelCfg.ModelID
+	if wireModelID == "" {
+		wireModelID = modelCfg.Alias
+	}
+	endpoint := modelCfg.EndpointOverride
+	if endpoint != "" {
+		endpoint = strings.ReplaceAll(endpoint, "{model}", wireModelID)
+	} else {
+		endpoint = adapter.Endpoint(modelCfg.BaseURL, wireModelID)
+	}
 	authName, authValue := adapter.AuthHeader(apiKey)
 	return llmCallParams{
 		adapter:   adapter,
@@ -221,6 +241,10 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 			}
 
+			// activeFallback is the fallback chain for this request. Defaults to the baked
+			// chain; overridden per-model by FallbackByModel when model_slot is used.
+			activeFallback := cfg.FallbackChain
+
 			// Dynamic model override from slot
 			activeCfg := cfg.ModelConfig // local copy
 			// Re-resolve params with the (possibly overridden) API key.
@@ -237,10 +261,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				slug := string(ctx.ByteSlots[cfg.ModelSlot])
 				if mc, ok := cfg.ModelCatalog[slug]; ok {
 					activeCfg = mc
-					// Resolve API key: prefer runtime slot key, then catalog ref, then baked key.
+					// Resolve API key: prefer runtime slot key, then pre-resolved catalog key,
+					// then baked key. CatalogKeys holds keys resolved at bake time so we never
+					// pass a raw "env:FOO" ref as a literal key to the provider.
 					dynKey := apiKey // already set to runtime slot key or baked key above
-					if mc.APIKeyRef != "" {
-						dynKey = mc.APIKeyRef
+					if resolved, ok2 := cfg.CatalogKeys[slug]; ok2 && resolved != "" {
+						dynKey = resolved
 					}
 					rp, rpErr := resolveCallParams(mc, dynKey)
 					if rpErr != nil {
@@ -254,6 +280,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					}
 					activeParams = rp
 					activeEndpointHost = extractUpstreamHost(rp.endpoint)
+					// Per-model fallback chain: overrides the baked FallbackChain.
+					if len(cfg.FallbackByModel) > 0 {
+						if chain, ok := cfg.FallbackByModel[slug]; ok {
+							activeFallback = chain
+						}
+					}
 				} else {
 					ctx.ResponseStatus = 500
 					ctx.Failed = true
@@ -298,12 +330,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				wireModel = activeCfg.Alias
 			}
 			req := LLMRequest{
-				Messages:       []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
-				System:         systemContent,
-				Model:          wireModel,
-				MaxTokens:      maxTokens,
-				Temperature:    cfg.Temperature,
-				ProviderParams: activeCfg.ProviderParams,
+				Messages:            []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
+				System:              systemContent,
+				Model:               wireModel,
+				MaxTokens:           maxTokens,
+				Temperature:         cfg.Temperature,
+				ProviderParams:      activeCfg.ProviderParams,
+				UseCompletionTokens: activeCfg.UseCompletionTokens,
 			}
 
 			// 4. Token limit check (reject — no truncation)
@@ -340,6 +373,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			attempts := maxRetries + 1
 
 			var lastStatus int
+			var lastErrBody []byte // last provider error response body, for final exhaustion response
 			for attempt := 1; attempt <= attempts; attempt++ {
 				start := time.Now()
 
@@ -362,6 +396,10 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				// Anthropic and Bedrock (Anthropic models) require the API version header.
 				if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
 					httpReq.Header.Set("anthropic-version", "2023-06-01")
+				}
+				// Extra headers defined on the model config — applied last so they can override defaults.
+				for k, v := range activeCfg.ExtraHeaders {
+					httpReq.Header.Set(k, v)
 				}
 				// SigV4 signing for adapters that require request-level signing (e.g. AWS Bedrock).
 				if signer, ok := activeParams.adapter.(RequestSigner); ok {
@@ -396,13 +434,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						time.Sleep(llmBackoff(attempt))
 						continue
 					}
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: upstream error"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					// All retries exhausted — break to try fallback chain below.
+					lastStatus = 502
+					break
 				}
 
 				respBody, readErr := io.ReadAll(resp.Body)
@@ -418,6 +452,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
 						Status: resp.StatusCode, TotalNs: elapsed.Nanoseconds(),
 						BytesSent: int64(len(body)), BytesReceived: int64(len(respBody)),
+						Model: activeCfg.Alias,
 					})
 				}
 
@@ -426,13 +461,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						time.Sleep(llmBackoff(attempt))
 						continue
 					}
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: response read failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					// All retries exhausted — break to try fallback chain below.
+					lastStatus = 502
+					break
 				}
 
 				// Retry on rate-limit or transient server errors
@@ -441,23 +472,24 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						time.Sleep(llmBackoff(attempt))
 						continue
 					}
-					ctx.ResponseStatus = resp.StatusCode
-					ctx.Failed = true
-					ctx.ErrorCode = int16(resp.StatusCode)
-					msg := "llm_call: provider error"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					// All retries exhausted — break to try fallback chain below.
+					lastStatus = resp.StatusCode
+					break
 				}
 
 				if resp.StatusCode != http.StatusOK {
-					ctx.ResponseStatus = resp.StatusCode
-					ctx.Failed = true
-					ctx.ErrorCode = int16(resp.StatusCode)
-					msg := "llm_call: unexpected status"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
+					// Capture provider error in trace regardless of what happens next.
+					errSnip := string(respBody)
+					if len(errSnip) > 500 {
+						errSnip = errSnip[:500] + "…"
+					}
+					state.AddTraceAttr("provider_error", errSnip)
+					state.AddTraceAttr("provider_status", fmt.Sprintf("%d", resp.StatusCode))
+					// Break to fallback chain — a 4xx may be model-specific (bad key,
+					// unsupported param, quota) and a different model may succeed.
+					lastStatus = resp.StatusCode
+					lastErrBody = respBody
+					break
 				}
 
 				// 7. Unmarshal response
@@ -493,11 +525,44 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					ctx.ByteSlots[cfg.StopReasonSlot] = sr
 				}
 
+				// Emit LLM trace attributes
+				{
+					alias := activeCfg.Alias
+					state.AddTraceAttr("model", alias)
+					if activeCfg.ModelID != alias {
+						state.AddTraceAttr("model_id", activeCfg.ModelID)
+					}
+					state.AddTraceAttr("input_tokens", strconv.Itoa(llmResp.InputTokens))
+					state.AddTraceAttr("output_tokens", strconv.Itoa(llmResp.OutputTokens))
+					if activeCfg.CostPerInputToken > 0 || activeCfg.CostPerOutputToken > 0 {
+						cost := float64(llmResp.InputTokens)/1e6*activeCfg.CostPerInputToken +
+							float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
+						state.AddTraceAttr("cost_usd", fmt.Sprintf("%.6f", cost))
+					}
+					promptSnip := promptContent
+					if len(promptSnip) > 300 {
+						promptSnip = promptSnip[:300] + "…"
+					}
+					state.AddTraceAttr("prompt", promptSnip)
+					if systemContent != "" {
+						sysSnip := systemContent
+						if len(sysSnip) > 200 {
+							sysSnip = sysSnip[:200] + "…"
+						}
+						state.AddTraceAttr("system", sysSnip)
+					}
+					respSnip := llmResp.Content
+					if len(respSnip) > 500 {
+						respSnip = respSnip[:500] + "…"
+					}
+					state.AddTraceAttr("response", respSnip)
+				}
+
 				return state.PC + 1
 			}
 
 			// --- fallback chain: walk each entry until one succeeds ---
-			for chainIdx, fb := range cfg.FallbackChain {
+			for chainIdx, fb := range activeFallback {
 				if ctx.Obs != nil {
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
 						Host:    "llm_fallback",
@@ -551,6 +616,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 				if fb.ModelConfig.Adapter == config.AdapterAnthropic {
 					fbHttpReq.Header.Set("anthropic-version", "2023-06-01")
+				}
+				for k, v := range fb.ModelConfig.ExtraHeaders {
+					fbHttpReq.Header.Set(k, v)
 				}
 
 				fbResp, fbDoErr := fbClient.Do(fbHttpReq)
@@ -618,7 +686,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// All retries and fallback chain exhausted
+			// All retries and fallback chain exhausted.
 			ctx.ResponseStatus = lastStatus
 			if ctx.ResponseStatus == 0 {
 				ctx.ResponseStatus = 502
@@ -628,6 +696,11 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			msg := "llm_call: all retries exhausted"
 			ctx.ErrorMsg = ctx.Alloc(len(msg))
 			copy(ctx.ErrorMsg, msg)
+			// Return the last provider error body to the caller so they see what failed.
+			if len(lastErrBody) > 0 {
+				ctx.ResponseBuffer = append(ctx.ResponseBuffer[:0], lastErrBody...)
+				ctx.IsBuffered = true
+			}
 			return engine.StopPlan
 		},
 	}

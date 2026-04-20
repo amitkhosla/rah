@@ -156,9 +156,10 @@ type openAIReqMessage struct {
 }
 
 type openAIRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	Messages  []openAIReqMessage `json:"messages"`
+	Model               string             `json:"model"`
+	MaxTokens           *int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`
+	Messages            []openAIReqMessage `json:"messages"`
 }
 
 type openAIResponse struct {
@@ -188,11 +189,16 @@ func (o *openAIAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		}
 		msgs = append(msgs, openAIReqMessage{Role: string(m.Role), Content: m.Content})
 	}
-	return json.Marshal(openAIRequest{
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		Messages:  msgs,
-	})
+	r := openAIRequest{Model: req.Model, Messages: msgs}
+	if req.MaxTokens > 0 {
+		n := req.MaxTokens
+		if req.UseCompletionTokens {
+			r.MaxCompletionTokens = &n // o-series / gpt-5+ require this field name
+		} else {
+			r.MaxTokens = &n
+		}
+	}
+	return json.Marshal(r)
 }
 
 func (o *openAIAdapter) Unmarshal(body []byte) (LLMResponse, error) {
@@ -223,7 +229,11 @@ func (o *openAIAdapter) Endpoint(baseURL, _ string) string {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
-	return strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+	// Strip any trailing /v1 or /v1/ the caller may have included in base_url
+	// to avoid double-path like https://api.openai.com/v1/v1/chat/completions.
+	base := strings.TrimRight(baseURL, "/")
+	base = strings.TrimSuffix(base, "/v1")
+	return base + "/v1/chat/completions"
 }
 
 func (o *openAIAdapter) AuthHeader(apiKey string) (string, string) {
@@ -298,7 +308,15 @@ func (g *geminiAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		}
 	}
 	if system != "" {
-		gr.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
+		// Gemma models do not support systemInstruction — prepend as user turn instead.
+		if strings.Contains(strings.ToLower(req.Model), "gemma") {
+			gr.Contents = append([]geminiContent{
+				{Role: "user", Parts: []geminiPart{{Text: system}}},
+				{Role: "model", Parts: []geminiPart{{Text: "Understood."}}},
+			}, gr.Contents...)
+		} else {
+			gr.SystemInstruction = &geminiContent{Parts: []geminiPart{{Text: system}}}
+		}
 	}
 	if req.MaxTokens > 0 || req.Temperature > 0 {
 		gr.GenerationConfig = &geminiGenConfig{
@@ -335,9 +353,18 @@ func (g *geminiAdapter) Unmarshal(body []byte) (LLMResponse, error) {
 
 func (g *geminiAdapter) Endpoint(baseURL, modelSlug string) string {
 	if baseURL == "" {
-		baseURL = "https://generativelanguage.googleapis.com"
+		return "https://generativelanguage.googleapis.com/v1/models/" + modelSlug + ":generateContent"
 	}
-	return strings.TrimRight(baseURL, "/") + "/v1beta/models/" + modelSlug + ":generateContent"
+	base := strings.TrimRight(baseURL, "/")
+	// Vertex AI: base_url includes full path up to /models, just append model + action.
+	// e.g. https://us-central1-aiplatform.googleapis.com/v1/projects/ID/locations/us-central1/publishers/google/models
+	if strings.Contains(base, "aiplatform.googleapis.com") {
+		return base + "/" + modelSlug + ":generateContent"
+	}
+	// For Google Generative Language API, base_url already includes the version
+	// (e.g. https://generativelanguage.googleapis.com/v1beta).
+	// Just append the models path — don't add /v1/ again.
+	return base + "/models/" + modelSlug + ":generateContent"
 }
 
 func (g *geminiAdapter) AuthHeader(apiKey string) (string, string) {
@@ -440,11 +467,12 @@ func (d *deepSeekAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		}
 		msgs = append(msgs, openAIReqMessage{Role: string(m.Role), Content: m.Content})
 	}
-	return json.Marshal(openAIRequest{
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		Messages:  msgs,
-	})
+	r := openAIRequest{Model: req.Model, Messages: msgs}
+	if req.MaxTokens > 0 {
+		n := req.MaxTokens
+		r.MaxTokens = &n
+	}
+	return json.Marshal(r)
 }
 
 func (d *deepSeekAdapter) Unmarshal(body []byte) (LLMResponse, error) {
@@ -483,6 +511,12 @@ func (d *deepSeekAdapter) AuthHeader(apiKey string) (string, string) {
 // Use adapter: custom for any OpenAI-compatible provider without code changes:
 //   HuggingFace TGI, vLLM, LM Studio, Groq, Together AI, Fireworks, etc.
 //
+// base_url is the FULL endpoint URL. Use {model} as a placeholder for the model ID.
+// Examples:
+//   https://api.groq.com/openai/v1/chat/completions
+//   http://localhost:8080/v1/chat/completions
+//   https://my-proxy.internal/llm/{model}/chat
+//
 // auth_header_name defaults to "Authorization"; auth_header_prefix defaults to "Bearer ".
 // Example for x-api-key style: auth_header_name: "x-api-key", auth_header_prefix: ""
 
@@ -502,11 +536,12 @@ func (c *customAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		}
 		msgs = append(msgs, openAIReqMessage{Role: string(m.Role), Content: m.Content})
 	}
-	return json.Marshal(openAIRequest{
-		Model:     req.Model,
-		MaxTokens: req.MaxTokens,
-		Messages:  msgs,
-	})
+	r := openAIRequest{Model: req.Model, Messages: msgs}
+	if req.MaxTokens > 0 {
+		n := req.MaxTokens
+		r.MaxTokens = &n
+	}
+	return json.Marshal(r)
 }
 
 func (c *customAdapter) Unmarshal(body []byte) (LLMResponse, error) {
@@ -530,8 +565,10 @@ func (c *customAdapter) Unmarshal(body []byte) (LLMResponse, error) {
 	}, nil
 }
 
-func (c *customAdapter) Endpoint(baseURL, _ string) string {
-	return strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+func (c *customAdapter) Endpoint(baseURL, modelSlug string) string {
+	// base_url is the full endpoint URL template.
+	// {model} is replaced with the actual model ID, allowing per-model routing paths.
+	return strings.ReplaceAll(baseURL, "{model}", modelSlug)
 }
 
 func (c *customAdapter) AuthHeader(apiKey string) (string, string) {

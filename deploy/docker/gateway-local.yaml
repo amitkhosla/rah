@@ -1,7 +1,11 @@
 # RAH Gateway — local Docker Compose configuration
 # Mounted read-only at /app/gateway.yaml inside the container.
-# Redis/PG addresses are overridden via environment variables
-# (RAH_REDIS_ADDR, RAH_PG_DSN) set in docker-compose.yml.
+#
+# Redis is running in Docker — use host.docker.internal to reach host-exposed
+# ports from inside a container (works on Docker Desktop for Windows/Mac).
+# If Redis is on a named Docker network, use its container name instead.
+#
+# PostgreSQL: replace the DSN below with your actual connection string.
 
 datastore:
   stores:
@@ -10,7 +14,10 @@ datastore:
       kind: redis
       enabled: true
       connection:
-        address: "redis:6379"   # service name from docker-compose
+        # host.docker.internal resolves to the host machine from inside Docker Desktop.
+        # Use this if your Redis container exposes port 6379 on the host.
+        # If Redis is on the same Docker network, use its container name (e.g. "redis:6379").
+        address: "host.docker.internal:6379"
         pool_size: 16
 
     postgres_primary:
@@ -18,10 +25,9 @@ datastore:
       kind: postgresql
       enabled: true
       connection:
-        address:  "postgres:5432"   # service name from docker-compose
-        username: "gateway"
-        password: "devpassword"
-        database: "gateway"
+        # Replace with your actual Postgres DSN.
+        # host.docker.internal reaches the host machine from inside Docker Desktop.
+        address: "postgres://postgres:2hi2@HI@@host.docker.internal:5432/gateway?sslmode=disable"
 
   bindings:
     api_definitions: "postgres_primary"
@@ -34,6 +40,9 @@ datastore:
     async_jobs:      "postgres_primary"
     ai_config:       "postgres_primary"
     mcp_tools:       "postgres_primary"
+    obs_access_log:  "postgres_primary"
+    obs_metrics:     "postgres_primary"
+    obs_traces:      "postgres_primary"
     cache:           "redis_primary"
 
 cache:
@@ -48,6 +57,13 @@ server:
   read_timeout_ms: 30000
   write_timeout_ms: 30000
 
-log:
-  level: info
-  format: json
+observability:
+  traces:
+    enabled: true
+    sample_rate: 1.0          # capture every request
+    always_trace_5xx: true
+    instruction_timing: true  # per-instruction durations in trace view
+
+# No ingest log sink in Docker — container logs go to stdout/stderr.
+# Use: docker compose logs -f gateway
+# (File log sink is configured in gateway.yaml for local direct runs.)

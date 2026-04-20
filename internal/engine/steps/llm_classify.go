@@ -55,6 +55,22 @@ func ClassifyLLM(cfg ClassifyLLMConfig) engine.Instruction {
 				}
 			}
 
+			if cfg.CallConfig.ResultSlot >= 0 {
+				classifyRaw := ctx.ByteSlots[cfg.CallConfig.ResultSlot]
+				if len(classifyRaw) > 0 {
+					snip := string(classifyRaw)
+					if len(snip) > 500 {
+						snip = snip[:500] + "…"
+					}
+					state.AddTraceAttr("classifier_output", snip)
+				}
+			}
+			for key, slot := range cfg.Mapping {
+				if slot >= 0 && slot < len(ctx.ByteSlots) && len(ctx.ByteSlots[slot]) > 0 {
+					state.AddTraceAttr("cls_"+key, string(ctx.ByteSlots[slot]))
+				}
+			}
+
 			return pc
 		},
 	}

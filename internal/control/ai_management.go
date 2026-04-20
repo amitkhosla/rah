@@ -27,6 +27,7 @@ type aiResponse struct {
 const (
 	aiKeyLLMModels  = "llm_models"
 	aiKeyMCPServers = "mcp_servers"
+	aiKeyRoutes     = "ai_routes" // Studio UI route configs (opaque JSON array)
 )
 
 // persistenceKeys used in the DomainMCPTools datastore domain.
@@ -157,6 +158,56 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 			}
 			alias := tail
 			mcpDeleteServerHandler(w, r, cfgMgr, alias, rebake, dsm)
+		}
+	})
+
+	// Studio UI route configs — GET returns the saved JSON array, PUT replaces it.
+	// The payload is opaque to the gateway (arbitrary JSON) so no Go struct is needed.
+	mux.HandleFunc("/ai/routes", func(w http.ResponseWriter, r *http.Request) {
+		if dsm == nil || !dsm.IsConfigured(config.DomainAIConfig) {
+			switch r.Method {
+			case http.MethodGet:
+				writeAIOK(w, json.RawMessage("[]"))
+			case http.MethodPut:
+				writeAIError(w, http.StatusServiceUnavailable, "ai_config datastore not configured")
+			default:
+				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+			return
+		}
+		ctx := r.Context()
+		switch r.Method {
+		case http.MethodGet:
+			raw, ok, err := dsm.GetGlobal(ctx, config.DomainAIConfig, aiKeyRoutes)
+			if err != nil || !ok {
+				writeAIOK(w, json.RawMessage("[]"))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// Wrap in standard envelope
+			w.Write([]byte(`{"ok":true,"data":`))
+			w.Write(raw)
+			w.Write([]byte(`}`))
+		case http.MethodPut:
+			body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+			if err != nil {
+				writeAIError(w, http.StatusBadRequest, "read body: "+err.Error())
+				return
+			}
+			// Validate it's a JSON array
+			var check json.RawMessage
+			if err := json.Unmarshal(body, &check); err != nil {
+				writeAIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+				return
+			}
+			if err := dsm.PutGlobal(ctx, config.DomainAIConfig, aiKeyRoutes, body); err != nil {
+				writeAIError(w, http.StatusInternalServerError, "persist: "+err.Error())
+				return
+			}
+			writeAIOK(w, nil)
+		default:
+			writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	})
 
@@ -553,6 +604,16 @@ func loadPersistedAIConfig(cfgMgr *config.Manager, dsm *DataStoreManager) error 
 	}
 
 	return nil
+}
+
+// LoadPersistedAIConfig is the exported version of loadPersistedAIConfig.
+// Call this before Bootstrap so the compiler sees UI-registered LLM models
+// when it compiles flows that reference them (e.g. classify_llm steps).
+func LoadPersistedAIConfig(cfgMgr *config.Manager, dsm *DataStoreManager) error {
+	if dsm == nil || !dsm.IsConfigured(config.DomainAIConfig) {
+		return nil
+	}
+	return loadPersistedAIConfig(cfgMgr, dsm)
 }
 
 // ─── MCPReg handlers ──────────────────────────────────────────────────────────

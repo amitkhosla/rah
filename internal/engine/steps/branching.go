@@ -2,6 +2,10 @@ package steps
 
 import (
 	"bytes"
+	"io"
+	"strings"
+
+	"github.com/tidwall/gjson"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"unsafe"
@@ -76,6 +80,52 @@ func BindQuery(key string, slot int) engine.Instruction {
 			} else {
 				ctx.ByteSlots[slot] = nil
 			}
+			return state.PC + 1
+		},
+	}
+}
+
+// BindBody reads the request body (buffering it on first call) and extracts a
+// JSON field into the given ByteSlot. If the field is absent the slot is set
+// to nil (falsy).
+//
+// jsonPath may contain "||"-separated alternatives (e.g.
+// "messages.#(role==\"user\").content||message"). The first path that resolves
+// to a non-empty string wins. This lets a single step handle both Anthropic
+// wire format (messages array) and simple {"message":"..."} bodies without
+// requiring callers to know which format is incoming.
+func BindBody(jsonPath string, slot int) engine.Instruction {
+	paths := strings.Split(jsonPath, "||")
+	return engine.Instruction{
+		Name: "BIND_BODY",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			// Buffer the request body on first access (idempotent: body is already
+			// drained into ctx.RequestBuffer after the first BindBody call in a flow).
+			body := ctx.RequestBuffer
+			if len(body) == 0 && ctx.Request != nil && ctx.Request.Body != nil {
+				data, err := io.ReadAll(io.LimitReader(ctx.Request.Body, 4<<20))
+				if err != nil || len(data) == 0 {
+					ctx.ByteSlots[slot] = nil
+					return state.PC + 1
+				}
+				ctx.RequestBuffer = data
+				body = data
+			}
+			if len(body) == 0 {
+				ctx.ByteSlots[slot] = nil
+				return state.PC + 1
+			}
+			for _, p := range paths {
+				res := gjson.GetBytes(body, strings.TrimSpace(p))
+				if res.Exists() && res.String() != "" {
+					str := res.String()
+					s := ctx.Alloc(len(str))
+					copy(s, str)
+					ctx.ByteSlots[slot] = s
+					return state.PC + 1
+				}
+			}
+			ctx.ByteSlots[slot] = nil
 			return state.PC + 1
 		},
 	}

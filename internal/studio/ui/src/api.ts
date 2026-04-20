@@ -252,6 +252,8 @@ export interface SyncStep {
   source?: string
   value?: string
   condition?: string
+  then?: string   // for "if" action: name of the sub-flow to run when condition is true
+  else?: string   // for "if" action: name of the sub-flow to run when condition is false
   input?: Record<string, string>
   [k: string]: unknown
 }
@@ -260,6 +262,17 @@ export interface SyncPayload {
   sync_uuid: string
   flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' }>
   apis: Array<{ name: string; path: string; flow_name: string; action: 'upsert' }>
+}
+
+export interface GatewaySnapshot {
+  flows: Array<{ name: string; instructions: SyncStep[] }>
+  apis:  Array<{ name: string; path: string; flow_name: string }>
+}
+
+export async function fetchGatewaySnapshot(): Promise<GatewaySnapshot> {
+  const res = await fetch('/api/getAllApis')
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
 }
 
 export async function syncFlows(payload: SyncPayload): Promise<void> {
@@ -271,6 +284,29 @@ export async function syncFlows(payload: SyncPayload): Promise<void> {
   if (!res.ok) {
     const text = await res.text().catch(() => `HTTP ${res.status}`)
     throw new Error(text || `HTTP ${res.status}`)
+  }
+}
+
+// ── AI Route configs (server-side persistence) ─────────────────────
+// Opaque to the gateway — stored/returned as a raw JSON array of SavedRoute objects.
+
+export async function loadRouteConfigs(): Promise<unknown[] | null> {
+  try {
+    return await aiReq<unknown[]>('/api/ai/routes')
+  } catch {
+    return null  // gateway not configured / unavailable — fall back to localStorage
+  }
+}
+
+export async function saveRouteConfigs(routes: unknown[]): Promise<void> {
+  try {
+    await aiReq<null>('/api/ai/routes', {
+      method: 'PUT',
+      headers: AI_JSON,
+      body: JSON.stringify(routes),
+    })
+  } catch {
+    // Non-fatal — localStorage is the fallback
   }
 }
 

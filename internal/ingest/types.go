@@ -36,6 +36,11 @@ const (
 	// KindDBDelete is emitted after any successful Delete from a datastore
 	// domain. SessionID = domain, TxID = full scoped key, Model = store name.
 	KindDBDelete EventKind = "db_delete"
+
+	// KindLog is emitted for gateway process log lines routed through the
+	// ingest pipeline. Payload = the already-formatted log.Printf bytes.
+	// Use format: "raw" on the sink so lines are written verbatim.
+	KindLog EventKind = "log"
 )
 
 // inlinePayloadMax is the threshold below which payload bytes are stored
