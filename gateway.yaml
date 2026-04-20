@@ -58,6 +58,22 @@ datastore:
     obs_traces:      "postgres_primary"   # persisted request traces
     cache:           "redis_primary"      # request-level response cache (hot path)
 
+ingest:
+  enabled: true
+  sinks:
+    - name: log_file
+      kind: file
+      format: raw           # write log lines verbatim (no JSON wrapping)
+      file_path: ./gateway.log
+      file_buf_kb: 64
+      flush_ms: 1000        # flush to disk every second
+  kinds:
+    - kind: log
+      ring_size: 4096
+      allow_drop: true      # never block a request thread for a log write
+      priority: 1
+      sinks: [log_file]
+
 observability:
   store:
     # use PostgreSQL-compatible backend (works with TimescaleDB)

@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"rah/internal/config"
 	"rah/internal/engine/steps"
@@ -56,15 +57,43 @@ func (c *Compiler) compileRouteLLM(step StepConfig) error {
 		catalog[m.Alias] = m
 	}
 
+	// Build ByteSlotMap: for any condition whose LHS is not a built-in keyword,
+	// treat it as a named slot and resolve it. This enables slot-value conditions
+	// such as "var.complexity == high" emitted by classify_llm upstream.
+	byteSlotMap := make(map[string]int)
+	for _, rule := range rules {
+		lhs := conditionLHS(rule.Condition)
+		if lhs == "" || lhs == "token_count" || lhs == "meta" || lhs == "true" {
+			continue
+		}
+		if _, already := byteSlotMap[lhs]; already {
+			continue
+		}
+		if s, slotErr := c.getSlot(lhs); slotErr == nil {
+			byteSlotMap[lhs] = s
+		}
+	}
+
 	cfg := steps.RouteLLMConfig{
 		Rules:        rules,
 		Default:      defaultModel,
 		ResultSlot:   resultSlot,
 		TokenSlot:    tokenSlot,
 		MetaSlot:     metaSlot,
+		ByteSlotMap:  byteSlotMap,
 		ModelCatalog: catalog,
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.RouteLLM(cfg))
 	return nil
+}
+
+// conditionLHS returns the left-hand side token of a routing condition string
+// (the part before the first space), or "" if the condition has no operator.
+func conditionLHS(cond string) string {
+	cond = strings.TrimSpace(cond)
+	if idx := strings.IndexByte(cond, ' '); idx >= 0 {
+		return cond[:idx]
+	}
+	return cond
 }

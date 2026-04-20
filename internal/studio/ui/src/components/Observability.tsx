@@ -52,6 +52,7 @@ interface TracePayloadEvent {
   duration_ns?: number
   total_ns?: number
   status?: number
+  output?: Array<{ k: string; v: string }>
 }
 
 interface TracePayload {
@@ -171,6 +172,8 @@ export default function Observability() {
   const [traces, setTraces] = useState<TraceRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [currentTps, setCurrentTps] = useState<number | null>(null)
+  const prevMetricsRef = useRef<{ total: number; ts: number } | null>(null)
 
   // Filters
   const [apiFilter, setApiFilter] = useState<string>('')
@@ -194,7 +197,16 @@ export default function Observability() {
     try {
       const data = await fetchObsMetrics(apiFilter || undefined)
       const m = data?.metrics as GatewayMetrics | undefined
-      if (m) setMetrics(m)
+      if (m) {
+        setMetrics(m)
+        const now = Date.now()
+        const prev = prevMetricsRef.current
+        if (prev && m.requests_total > prev.total) {
+          const elapsed = (now - prev.ts) / 1000
+          if (elapsed > 0) setCurrentTps((m.requests_total - prev.total) / elapsed)
+        }
+        prevMetricsRef.current = { total: m.requests_total, ts: now }
+      }
     } catch {
       // metrics may be absent; don't error
     }
@@ -348,6 +360,12 @@ export default function Observability() {
           value={avgUpstreamMs === '—' ? '—' : avgUpstreamMs + ' ms'}
           sub="avg across all requests"
           color="#fbbf24"
+        />
+        <StatCard
+          label="Current TPS"
+          value={currentTps !== null ? currentTps.toFixed(1) : '—'}
+          sub="requests/sec (10s window)"
+          color="#34d399"
         />
       </div>
 
@@ -629,7 +647,7 @@ export default function Observability() {
                           Tenant: <span style={{ color: 'var(--text)' }}>{trace.tenant_id}</span>
                         </div>
                         {payload && typeof payload !== 'string' ? (
-                          <TraceTimeline payload={payload as TracePayload} />
+                          <BlockView payload={payload as TracePayload} />
                         ) : payload ? (
                           <pre style={{
                             margin: 0,
@@ -657,6 +675,202 @@ export default function Observability() {
           )
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Block Abstraction ─────────────────────────────────────────────
+//
+// Studio knows what each instruction means because it compiled it.
+// We map raw instruction names → human-readable blocks so customers
+// see "Classify Request" and "Generate Response" instead of
+// "classify_llm" and "llm_call[haiku]".
+
+interface BlockGroup {
+  label: string
+  totalNs: number
+  events: TracePayloadEvent[]
+  headline: Record<string, string>   // merged KVs for headline display
+}
+
+function buildBlockGroups(instructions: TracePayloadEvent[]): BlockGroup[] {
+  if (instructions.length === 0) return []
+
+  const classifySeq = instructions.find(e => e.name === 'classify_llm')?.seq ?? Infinity
+  const llmCallSeq = instructions.find(e => e.name?.startsWith('llm_call'))?.seq ?? Infinity
+
+  const labeled: Array<{ event: TracePayloadEvent; blockLabel: string | null }> = []
+  for (let i = 0; i < instructions.length; i++) {
+    const ev = instructions[i]
+    const name = ev.name ?? ''
+    const seq = ev.seq ?? i
+    let blockLabel: string | null = null
+
+    if (name === 'classify_llm') {
+      blockLabel = 'Classify Request'
+    } else if (name.startsWith('llm_call')) {
+      blockLabel = 'Generate Response'
+    } else if (name === 'route_llm') {
+      blockLabel = seq < classifySeq ? 'Select Classifier' : 'Select Model'
+    } else if (name === 'set_const') {
+      // Fold set_const after route_llm into the same block
+      const prev = labeled.length > 0 ? labeled[labeled.length - 1] : null
+      if (prev?.event.name === 'route_llm') blockLabel = prev.blockLabel
+    } else if (name === 'CHECK_CONTEXT_FIT' || name === 'check_context_fit') {
+      blockLabel = 'Measure Request'
+    } else if (name === 'bind_body' || name === 'bind_header') {
+      blockLabel = 'Extract Request'
+    } else if ((name === 'load_history' || name === 'append_message') && seq < llmCallSeq) {
+      blockLabel = 'Load History'
+    } else if ((name === 'save_history' || name === 'append_message') && seq > llmCallSeq) {
+      blockLabel = 'Save History'
+    } else if (name === 'respond') {
+      blockLabel = 'Return Response'
+    }
+
+    labeled.push({ event: ev, blockLabel })
+  }
+
+  const groups: BlockGroup[] = []
+  for (const { event, blockLabel } of labeled) {
+    if (!blockLabel) continue
+    const last = groups.length > 0 ? groups[groups.length - 1] : null
+    if (last && last.label === blockLabel) {
+      last.events.push(event)
+      last.totalNs += Number(event.duration_ns ?? 0)
+      for (const kv of (event.output ?? [])) { if (kv.v) last.headline[kv.k] = kv.v }
+    } else {
+      const headline: Record<string, string> = {}
+      for (const kv of (event.output ?? [])) { if (kv.v) headline[kv.k] = kv.v }
+      groups.push({ label: blockLabel, totalNs: Number(event.duration_ns ?? 0), events: [event], headline })
+    }
+  }
+
+  return groups
+}
+
+const LONG_VALUE_KEYS = new Set(['classifier_output', 'prompt', 'system', 'response', 'provider_error'])
+const TRUNCATE_AT = 300
+
+function InstructionEventRow({ ev }: { ev: TracePayloadEvent }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const kvs = (ev.output ?? []).filter(o => o.v)
+  return (
+    <div style={{ padding: '4px 8px', fontSize: 11, borderLeft: '2px solid var(--border)', marginBottom: 2 }}>
+      <span style={{ color: 'var(--text)', fontWeight: 500 }}>{ev.name}</span>
+      {' '}
+      <span style={{ color: 'var(--muted)' }}>{fmtNsAsMs(Number(ev.duration_ns ?? 0))}</span>
+      {kvs.map(({ k, v }) => {
+        const str = String(v)
+        const isLong = LONG_VALUE_KEYS.has(k) && str.length > TRUNCATE_AT
+        const isExp = expanded.has(k)
+        return (
+          <div key={k} style={{ marginTop: 2 }}>
+            <span style={{ color: 'var(--muted)' }}>{k}:</span>{' '}
+            <span style={{ color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {isLong && !isExp ? str.slice(0, TRUNCATE_AT) + '…' : str}
+            </span>
+            {isLong && (
+              <button
+                onClick={() => setExpanded(prev => {
+                  const next = new Set(prev)
+                  isExp ? next.delete(k) : next.add(k)
+                  return next
+                })}
+                style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                {isExp ? 'show less' : `show all (${str.length} chars)`}
+              </button>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function BlockView({ payload }: { payload: TracePayload }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const instructions = Array.isArray(payload.instructions) ? payload.instructions : []
+  const groups = buildBlockGroups(instructions)
+  const totalNs = Number(payload.summary?.duration_ns ?? 0)
+
+  // Fallback to raw timeline when no blocks can be identified
+  if (groups.length === 0) return <TraceTimeline payload={payload} />
+
+  function toggle(key: string) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  return (
+    <div style={{ background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)', padding: '10px 12px' }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+        Execution Blocks • total {fmtNsAsMs(totalNs)}
+      </div>
+      {groups.map((group, i) => {
+        const key = `${group.label}:${i}`
+        const isExp = expanded.has(key)
+        const kv = group.headline
+        return (
+          <div key={key} style={{ marginBottom: 4 }}>
+            {/* Block header row */}
+            <div
+              onClick={() => toggle(key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                padding: '5px 8px', borderRadius: 4,
+                background: isExp ? 'rgba(87,181,255,0.07)' : 'transparent',
+              }}
+            >
+              <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 12, userSelect: 'none' }}>
+                {isExp ? '▾' : '▸'}
+              </span>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+                {group.label}
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                {fmtNsAsMs(group.totalNs)}
+              </span>
+              {kv.token_count && (
+                <span style={{ fontSize: 11, color: '#a78bfa', whiteSpace: 'nowrap' }}>{kv.token_count} tok</span>
+              )}
+              {kv.selected_model && (
+                <span style={{ fontSize: 11, color: 'var(--accent)', whiteSpace: 'nowrap' }}>→ {kv.selected_model}</span>
+              )}
+              {kv.model && !kv.selected_model && (
+                <span style={{ fontSize: 11, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{kv.model}</span>
+              )}
+              {(kv.input_tokens || kv.output_tokens) && (
+                <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                  {kv.input_tokens ?? '?'}→{kv.output_tokens ?? '?'} tok
+                </span>
+              )}
+              {kv.cost_usd && (
+                <span style={{ fontSize: 11, color: '#34d399', whiteSpace: 'nowrap' }}>${kv.cost_usd}</span>
+              )}
+              {kv.classifier_output && (
+                <span style={{ fontSize: 11, color: '#fbbf24', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {kv.classifier_output.slice(0, 40)}
+                </span>
+              )}
+            </div>
+
+            {/* Expanded: individual instruction events */}
+            {isExp && (
+              <div style={{ marginLeft: 20, marginTop: 2, marginBottom: 4 }}>
+                {group.events.map((ev, j) => (
+                  <InstructionEventRow key={ev.seq ?? j} ev={ev} />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

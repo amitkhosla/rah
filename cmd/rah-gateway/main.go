@@ -56,7 +56,17 @@ func main() {
 	port := flag.Int("port", 8080, "Gateway Port")
 	mPort := flag.Int("mport", 8081, "Management Port")
 	configPath := flag.String("config", "", "Path to gateway config file (.json or .yaml)")
+	healthCheck := flag.Bool("health", false, "Probe the management /health endpoint and exit 0/1")
 	flag.Parse()
+
+	// Health-check mode: used by Docker HEALTHCHECK. Probes management plane and exits.
+	if *healthCheck {
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", *mPort))
+		if err != nil || resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// 1. Load Configuration
 	var cfgMgr *config.Manager
@@ -198,6 +208,10 @@ func main() {
 			log.Printf("[ingest] pipeline started")
 			defer pipeline.Stop()
 			ingestPipeline = pipeline
+			// Redirect log output through the pipeline so gateway logs are
+			// written to the configured log sink (e.g. a rolling file).
+			// Falls back to stderr automatically if KindLog has no sinks.
+			log.SetOutput(ingest.NewLogWriter(ingestPipeline))
 		} else {
 			log.Printf("[ingest] pipeline disabled (ingest.enabled=false)")
 		}
@@ -740,6 +754,18 @@ func main() {
 	}
 
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
+	// Wire the LLM catalog provider so the compiler always sees models registered
+	// via the UI (stored in Postgres) rather than only the gateway.yaml snapshot.
+	ms.LLMProvider = func() config.LLMConfig { return cfgMgr.LLM() }
+
+	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
+	// so that flows referencing UI-registered models (e.g. classify_llm) compile
+	// successfully. Without this, bootstrap sees an empty LLM catalog and fails
+	// on any flow that uses a model added via the Studio UI.
+	if err := control.LoadPersistedAIConfig(cfgMgr, dataStoreMgr); err != nil {
+		log.Printf("[AI] failed to pre-load persisted ai_config before bootstrap: %v", err)
+	}
+
 	// Bootstrap BEFORE SetDataStore so the bootstrap reads do not trigger
 	// redundant writes back to the store. Registry must be restored first (above)
 	// so named rate limit configs are available when Bootstrap bakes flows.
@@ -805,6 +831,10 @@ func main() {
 
 	//Control Plane (Management)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"ok"}`)
+	})
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
 	mux.HandleFunc("/sync/draft/status", ms.DraftStatusHandler)
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
@@ -864,6 +894,9 @@ func main() {
 
 	control.RegisterAdminUserRoutes(mux, adminUserStore)
 	log.Printf("Admin user endpoints registered at /admin/users")
+
+	control.RegisterAnthropicAdapter(mux, fmt.Sprintf("http://localhost:%d", *port))
+	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
 
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), adminUserStore.Middleware(mux)))

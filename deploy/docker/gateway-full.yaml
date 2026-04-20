@@ -1,0 +1,67 @@
+# RAH Gateway — full Docker Compose configuration (bundled Redis + PostgreSQL).
+# Used by docker-compose.full.yml where Redis and PostgreSQL run as sibling services.
+# Service names "redis" and "postgres" resolve via Docker's internal DNS.
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "redis:6379"
+        pool_size: 16
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address: "postgres://gateway:devpassword@postgres:5432/gateway?sslmode=disable"
+
+  bindings:
+    api_definitions: "postgres_primary"
+    flows:           "postgres_primary"
+    tenant_data:     "postgres_primary"
+    rate_limit:      "postgres_primary"
+    customer_data:   "postgres_primary"
+    instances:       "postgres_primary"
+    credentials:     "postgres_primary"
+    async_jobs:      "postgres_primary"
+    ai_config:       "postgres_primary"
+    mcp_tools:       "postgres_primary"
+    obs_access_log:  "postgres_primary"
+    obs_metrics:     "postgres_primary"
+    obs_traces:      "postgres_primary"
+    cache:           "redis_primary"
+
+cache:
+  mem_budget_mb: 64
+  tenant_limit_mb: 8
+  backend:
+    kind: memory
+
+ingest:
+  enabled: true
+  sinks:
+    - name: log_file
+      kind: file
+      format: raw
+      file_path: /app/logs/gateway.log
+      file_buf_kb: 64
+      flush_ms: 1000
+  kinds:
+    - kind: log
+      ring_size: 4096
+      allow_drop: true
+      priority: 1
+      sinks: [log_file]
+
+observability:
+  store:
+    type: postgres
+  traces:
+    enabled: true
+    sample_rate: 1.0
+    always_trace_5xx: true
+    instruction_timing: true

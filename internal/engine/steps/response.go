@@ -57,3 +57,30 @@ func SetResponseStatusStep(code int) engine.Instruction {
 	}
 }
 
+// SetConstStep writes a static string value (captured at bake time) into a ByteSlot.
+// Use for injecting fixed system prompts, labels, or flags into the slot space.
+func SetConstStep(value string, slot int) engine.Instruction {
+	data := []byte(value) // captured once at bake time — zero runtime allocation
+	return engine.Instruction{
+		Name: "SET_CONST",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.ByteSlots[slot] = data
+			return state.PC + 1
+		},
+	}
+}
+
+// RespondStep writes ByteSlots[src] as the HTTP response body and stops the flow.
+// It is a shorthand for set_response_body + return, commonly used as the last
+// step in a proxy / LLM flow.
+func RespondStep(src int) engine.Instruction {
+	return engine.Instruction{
+		Name: "RESPOND",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.ResponseBuffer = ctx.ByteSlots[src]
+			ctx.IsBuffered = true
+			return engine.StopPlan
+		},
+	}
+}
+

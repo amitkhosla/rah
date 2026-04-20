@@ -11,8 +11,9 @@ import (
 
 // RoutingRule is a single conditional rule that maps a condition to a model slug.
 type RoutingRule struct {
-	Condition string // condition expression (see evaluateRoutingCondition)
-	Model     string // model slug to use when condition matches
+	Condition     string   `json:"condition"`          // condition expression (see evaluateRoutingCondition)
+	Model         string   `json:"model"`              // model slug to use when condition matches
+	FallbackChain []string `json:"fallback,omitempty"` // fallback models if primary fails; consumed by llm_call FallbackByModel
 }
 
 // RouteLLMConfig configures the RouteLLM instruction.
@@ -21,7 +22,8 @@ type RouteLLMConfig struct {
 	Default      string                           // fallback model slug if no rule matches
 	ResultSlot   int                              // ByteSlots index to write resolved model slug
 	TokenSlot    int                              // IntSlots index for token estimate (-1 if unused)
-	MetaSlot     int                              // ByteSlots index for tenant meta value (-1 if unused)
+	MetaSlot     int                              // ByteSlots index for tenant meta value (-1 if unused
+	ByteSlotMap  map[string]int                   // slot name → ByteSlots index for slot-value conditions
 	ModelCatalog map[string]config.LLMModelConfig // for validation only (write slug even if not in catalog)
 }
 
@@ -44,7 +46,7 @@ func RouteLLM(cfg RouteLLMConfig) engine.Instruction {
 			resolved := ""
 
 			for _, rule := range cfg.Rules {
-				if evaluateRoutingCondition(rule.Condition, ctx, cfg.TokenSlot, cfg.MetaSlot) {
+				if evaluateRoutingCondition(rule.Condition, ctx, cfg.TokenSlot, cfg.MetaSlot, cfg.ByteSlotMap) {
 					resolved = rule.Model
 					break
 				}
@@ -62,6 +64,11 @@ func RouteLLM(cfg RouteLLMConfig) engine.Instruction {
 				ctx.ByteSlots[cfg.ResultSlot] = dst
 			}
 
+			state.AddTraceAttr("selected_model", resolved)
+			if cfg.TokenSlot >= 0 && cfg.TokenSlot < len(ctx.IntSlots) {
+				state.AddTraceAttr("token_count", strconv.FormatInt(ctx.IntSlots[cfg.TokenSlot], 10))
+			}
+
 			return state.PC + 1
 		},
 	}
@@ -69,7 +76,12 @@ func RouteLLM(cfg RouteLLMConfig) engine.Instruction {
 
 // evaluateRoutingCondition evaluates a single routing condition string.
 // Returns true if the condition matches, false otherwise (including parse errors).
-func evaluateRoutingCondition(cond string, ctx *rctx.Context, tokenSlot, metaSlot int) bool {
+//
+// Supported LHS tokens:
+//   - "token_count" → IntSlots[tokenSlot]  (requires tokenSlot >= 0)
+//   - "meta"        → ByteSlots[metaSlot]  (requires metaSlot >= 0)
+//   - any other     → looked up in byteSlotMap; uses that ByteSlot value for == / !=
+func evaluateRoutingCondition(cond string, ctx *rctx.Context, tokenSlot, metaSlot int, byteSlotMap map[string]int) bool {
 	cond = strings.TrimSpace(cond)
 	if cond == "" || cond == "true" {
 		return true
@@ -79,7 +91,6 @@ func evaluateRoutingCondition(cond string, ctx *rctx.Context, tokenSlot, metaSlo
 	// Using SplitN with limit allows values containing spaces (e.g. meta == hello world)
 	parts := strings.SplitN(cond, " ", 3)
 	if len(parts) < 3 {
-		// Unrecognized condition format
 		return false
 	}
 
@@ -125,6 +136,18 @@ func evaluateRoutingCondition(cond string, ctx *rctx.Context, tokenSlot, metaSlo
 		}
 
 	default:
+		// Slot-based condition: lhs is a named slot resolved at bake time.
+		if byteSlotMap != nil {
+			if idx, ok := byteSlotMap[lhs]; ok && idx >= 0 && idx < len(ctx.ByteSlots) {
+				slotVal := string(ctx.ByteSlots[idx])
+				switch op {
+				case "==":
+					return slotVal == rhs
+				case "!=":
+					return slotVal != rhs
+				}
+			}
+		}
 		return false
 	}
 }

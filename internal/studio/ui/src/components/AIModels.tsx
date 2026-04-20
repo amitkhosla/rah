@@ -25,10 +25,10 @@ const FLEX_CONFIG: Partial<Record<string, FlexEntry>> = {
     note: 'Async, lower-cost batch routing — OpenAI Flex tier',
   },
   gemini: {
-    key: 'routing_config',
-    value: { managed_decoding: {} },
-    detect: p => p['routing_config'] != null,
-    note: 'Vertex AI managed decoding — lower cost, higher latency',
+    key: 'serviceTier',
+    value: 'flex',
+    detect: p => p['serviceTier'] === 'flex',
+    note: 'Flex tier — lower cost, best-effort latency',
   },
 }
 
@@ -297,7 +297,7 @@ const PRESETS: Preset[] = [
     label: 'GPT-4o',
     model: {
       alias: 'gpt-4o', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
+      api_key_ref: 'llm:openai',
       max_tokens: 4096,
       capabilities: { max_context_tokens: 128000, supported_tool_formats: ['openai-tools'] },
     },
@@ -306,7 +306,7 @@ const PRESETS: Preset[] = [
     label: 'GPT-4o mini',
     model: {
       alias: 'gpt-4o-mini', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
+      api_key_ref: 'llm:openai',
       max_tokens: 4096,
       capabilities: { max_context_tokens: 128000, supported_tool_formats: ['openai-tools'] },
     },
@@ -339,7 +339,7 @@ const PRESETS: Preset[] = [
     label: 'Llama 3 (Ollama)',
     model: {
       alias: 'llama3', provider: 'Meta', adapter: 'ollama',
-      base_url: 'http://localhost:11434/v1', max_tokens: 4096,
+      base_url: 'http://localhost:11434', max_tokens: 4096,
       capabilities: { max_context_tokens: 8192 },
     },
   },
@@ -397,7 +397,7 @@ const PRESETS: Preset[] = [
     label: 'Gemma 3 2B (Ollama)',
     model: {
       alias: 'gemma3:2b', provider: 'Google (Ollama)', adapter: 'ollama',
-      base_url: 'http://localhost:11434/v1', max_tokens: 2048,
+      base_url: 'http://localhost:11434', max_tokens: 2048,
       capabilities: { max_context_tokens: 8192 },
     },
   },
@@ -405,7 +405,7 @@ const PRESETS: Preset[] = [
     label: 'Gemma 3 4B (Ollama)',
     model: {
       alias: 'gemma3:4b', provider: 'Google (Ollama)', adapter: 'ollama',
-      base_url: 'http://localhost:11434/v1', max_tokens: 4096,
+      base_url: 'http://localhost:11434', max_tokens: 4096,
       capabilities: { max_context_tokens: 32768 },
     },
   },
@@ -413,7 +413,7 @@ const PRESETS: Preset[] = [
     label: 'Gemma 2 27B (Ollama)',
     model: {
       alias: 'gemma2:27b', provider: 'Google (Ollama)', adapter: 'ollama',
-      base_url: 'http://localhost:11434/v1', max_tokens: 4096,
+      base_url: 'http://localhost:11434', max_tokens: 4096,
       capabilities: { max_context_tokens: 8192 },
     },
   },
@@ -421,47 +421,110 @@ const PRESETS: Preset[] = [
     label: 'Gemma 3 27B (Ollama)',
     model: {
       alias: 'gemma3:27b', provider: 'Google (Ollama)', adapter: 'ollama',
-      base_url: 'http://localhost:11434/v1', max_tokens: 8192,
+      base_url: 'http://localhost:11434', max_tokens: 8192,
       capabilities: { max_context_tokens: 32768 },
     },
   },
 
-  // ── Gemini 2.5 (Flex) ────────────────────────────────────────────
+  // ── Gemma — Google AI (public API, endpoint_override per model) ─────
+  // The Gemma models use the same Gemini wire format but the model ID is embedded in the URL path.
+  // endpoint_override bypasses adapter URL construction; auth via x-goog-api-key header.
   {
-    label: 'Gemini 2.5 Flash-Lite (Flex)',
+    label: 'Gemma 3 4B IT (Google AI)',
+    model: {
+      alias: 'gemma-3-4b-it', provider: 'Google', adapter: 'gemini',
+      api_key_ref: 'llm:gemini', max_tokens: 4096,
+      endpoint_override: 'https://generativelanguage.googleapis.com/v1beta/models/gemma-3-4b-it:generateContent',
+      capabilities: { max_context_tokens: 32768 },
+    },
+  },
+  {
+    label: 'Gemma 3 12B IT (Google AI)',
+    model: {
+      alias: 'gemma-3-12b-it', provider: 'Google', adapter: 'gemini',
+      api_key_ref: 'llm:gemini', max_tokens: 4096,
+      endpoint_override: 'https://generativelanguage.googleapis.com/v1beta/models/gemma-3-12b-it:generateContent',
+      capabilities: { max_context_tokens: 32768 },
+    },
+  },
+  {
+    label: 'Gemma 3 27B IT (Google AI)',
+    model: {
+      alias: 'gemma-3-27b-it', provider: 'Google', adapter: 'gemini',
+      api_key_ref: 'llm:gemini', max_tokens: 8192,
+      endpoint_override: 'https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent',
+      capabilities: { max_context_tokens: 131072 },
+    },
+  },
+
+  // ── Gemini 2.5 — Google AI (public API, api key) ─────────────────
+  {
+    label: 'Gemini 2.5 Flash-Lite',
     model: {
       alias: 'gemini-2.5-flash-lite', provider: 'Google', adapter: 'gemini',
       api_key_ref: 'llm:gemini', max_tokens: 8192,
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
-      provider_params: { routing_config: { managed_decoding: {} } },
     },
   },
   {
-    label: 'Gemini 2.5 Flash (Flex)',
+    label: 'Gemini 2.5 Flash',
     model: {
       alias: 'gemini-2.5-flash', provider: 'Google', adapter: 'gemini',
       api_key_ref: 'llm:gemini', max_tokens: 16384,
+      capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
+    },
+  },
+  {
+    label: 'Gemini 2.5 Pro',
+    model: {
+      alias: 'gemini-2.5-pro', provider: 'Google', adapter: 'gemini',
+      api_key_ref: 'llm:gemini', max_tokens: 16384,
+      capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
+    },
+  },
+
+  // ── Gemini 2.5 — Vertex AI (managed decoding, routing_config) ────
+  // Set base_url to: https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/publishers/google/models
+  // Auth: use a Google OAuth access token or a Vertex AI API key in api_key_ref.
+  {
+    label: 'Gemini 2.5 Flash-Lite (Vertex AI)',
+    model: {
+      alias: 'gemini-2.5-flash-lite-vertex', provider: 'Google Vertex AI', adapter: 'gemini',
+      base_url: 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/publishers/google/models',
+      api_key_ref: 'llm:vertex', max_tokens: 8192,
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
       provider_params: { routing_config: { managed_decoding: {} } },
     },
   },
   {
-    label: 'Gemini 2.5 Pro (Flex)',
+    label: 'Gemini 2.5 Flash (Vertex AI)',
     model: {
-      alias: 'gemini-2.5-pro', provider: 'Google', adapter: 'gemini',
-      api_key_ref: 'llm:gemini', max_tokens: 16384,
+      alias: 'gemini-2.5-flash-vertex', provider: 'Google Vertex AI', adapter: 'gemini',
+      base_url: 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/publishers/google/models',
+      api_key_ref: 'llm:vertex', max_tokens: 16384,
+      capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
+      provider_params: { routing_config: { managed_decoding: {} } },
+    },
+  },
+  {
+    label: 'Gemini 2.5 Pro (Vertex AI)',
+    model: {
+      alias: 'gemini-2.5-pro-vertex', provider: 'Google Vertex AI', adapter: 'gemini',
+      base_url: 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/publishers/google/models',
+      api_key_ref: 'llm:vertex', max_tokens: 16384,
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
       provider_params: { routing_config: { managed_decoding: {} } },
     },
   },
 
-  // ── OpenAI Flex ──────────────────────────────────────────────────
+  // ── OpenAI (o-series / GPT-5+) ─────────────────────────────────
+  // These models require max_completion_tokens instead of max_tokens.
   {
     label: 'GPT-5 Nano (Flex)',
     model: {
       alias: 'gpt-5-nano', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
-      max_tokens: 8192,
+      api_key_ref: 'llm:openai',
+      max_tokens: 8192, use_completion_tokens: true,
       capabilities: { max_context_tokens: 128000, supported_tool_formats: ['openai-tools'] },
       provider_params: { service_tier: 'flex' },
     },
@@ -470,8 +533,8 @@ const PRESETS: Preset[] = [
     label: 'o4-mini (Flex)',
     model: {
       alias: 'o4-mini', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
-      max_tokens: 65536,
+      api_key_ref: 'llm:openai',
+      max_tokens: 65536, use_completion_tokens: true,
       capabilities: { max_context_tokens: 200000, supported_tool_formats: ['openai-tools'] },
       provider_params: { service_tier: 'flex' },
     },
@@ -480,8 +543,8 @@ const PRESETS: Preset[] = [
     label: 'GPT-5 Mini (Flex)',
     model: {
       alias: 'gpt-5-mini', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
-      max_tokens: 16384,
+      api_key_ref: 'llm:openai',
+      max_tokens: 16384, use_completion_tokens: true,
       capabilities: { max_context_tokens: 128000, supported_tool_formats: ['openai-tools'] },
       provider_params: { service_tier: 'flex' },
     },
@@ -490,8 +553,8 @@ const PRESETS: Preset[] = [
     label: 'GPT-5.1 (Flex)',
     model: {
       alias: 'gpt-5.1', provider: 'OpenAI', adapter: 'openai',
-      base_url: 'https://api.openai.com/v1', api_key_ref: 'llm:openai',
-      max_tokens: 32768,
+      api_key_ref: 'llm:openai',
+      max_tokens: 32768, use_completion_tokens: true,
       capabilities: { max_context_tokens: 128000, supported_tool_formats: ['openai-tools'] },
       provider_params: { service_tier: 'flex' },
     },
@@ -555,6 +618,7 @@ export default function AIModels() {
   const [showForm, setShowForm] = useState(false)
   const [form, setForm]         = useState<LLMModel>(blankModel())
   const [providerParamsJson, setProviderParamsJson] = useState('')
+  const [extraHeadersJson, setExtraHeadersJson]     = useState('')
   const [saving, setSaving]     = useState(false)
   const [saveMsg, setSaveMsg]   = useState('')
   const [saveMsgErr, setSaveMsgErr] = useState(false)
@@ -576,6 +640,7 @@ export default function AIModels() {
   function applyPreset(p: Preset) {
     setForm({ ...p.model })
     setProviderParamsJson(p.model.provider_params ? JSON.stringify(p.model.provider_params, null, 2) : '')
+    setExtraHeadersJson(p.model.extra_headers ? JSON.stringify(p.model.extra_headers, null, 2) : '')
     setShowForm(true)
   }
 
@@ -595,13 +660,19 @@ export default function AIModels() {
       try { providerParams = JSON.parse(providerParamsJson) }
       catch { setSaveMsgErr(true); setSaveMsg('Provider params: invalid JSON'); return }
     }
+    let extraHeaders: Record<string, string> | undefined
+    if (extraHeadersJson.trim()) {
+      try { extraHeaders = JSON.parse(extraHeadersJson) }
+      catch { setSaveMsgErr(true); setSaveMsg('Extra headers: invalid JSON (must be {"Header-Name": "value"})'); return }
+    }
     setSaving(true); setSaveMsg(''); setSaveMsgErr(false)
     try {
-      await upsertLLMModel({ ...form, provider_params: providerParams })
+      await upsertLLMModel({ ...form, provider_params: providerParams, extra_headers: extraHeaders })
       setSaveMsg(`Model "${form.alias}" saved.`)
       setSaveMsgErr(false)
       setForm(blankModel())
       setProviderParamsJson('')
+      setExtraHeadersJson('')
       setShowForm(false)
       await load()
     } catch (e) {
@@ -741,8 +812,16 @@ export default function AIModels() {
                   onChange={v => setField('api_key_ref', v)}
                   adapter={form.adapter} />
               </Field>
-              <Field label="Base URL" hint="Leave blank to use provider default">
-                <input className="input" value={form.base_url ?? ''} placeholder="https://api.openai.com/v1"
+              <Field
+                label={form.adapter === 'custom' ? 'Endpoint URL' : 'Base URL'}
+                hint={form.adapter === 'custom'
+                  ? 'Full endpoint URL — use {model} as a placeholder for the model ID, e.g. https://api.groq.com/openai/v1/chat/completions or https://my-proxy/{model}/chat'
+                  : 'Leave blank to use provider default'}
+              >
+                <input className="input" value={form.base_url ?? ''}
+                  placeholder={form.adapter === 'custom'
+                    ? 'https://api.groq.com/openai/v1/chat/completions'
+                    : 'https://api.openai.com'}
                   onChange={e => setField('base_url', e.target.value)} />
               </Field>
               <Field label="Max Output Tokens" hint="Max tokens in each response">
@@ -760,6 +839,18 @@ export default function AIModels() {
               <Field label="Max History Turns" hint="Max conversation turns to retain (0 = unlimited)">
                 <input className="input" type="number" value={form.capabilities.max_history_turns ?? 0}
                   onChange={e => setCap('max_history_turns', parseInt(e.target.value) || 0)} />
+              </Field>
+              <Field label="Cost per 1M input tokens (USD)" hint="Used to estimate call cost in traces">
+                <input className="input" type="number" step="0.01" min="0"
+                  value={form.cost_per_input_token ?? ''}
+                  onChange={e => setField('cost_per_input_token', parseFloat(e.target.value) || 0)}
+                  placeholder="e.g. 0.25" />
+              </Field>
+              <Field label="Cost per 1M output tokens (USD)" hint="Used to estimate call cost in traces">
+                <input className="input" type="number" step="0.01" min="0"
+                  value={form.cost_per_output_token ?? ''}
+                  onChange={e => setField('cost_per_output_token', parseFloat(e.target.value) || 0)}
+                  placeholder="e.g. 1.25" />
               </Field>
             </div>
 
@@ -862,6 +953,28 @@ export default function AIModels() {
               )
             })()}
 
+            {/* ── Use max_completion_tokens (o-series / GPT-5+) ── */}
+            {(form.adapter === 'openai') && (
+              <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 6,
+                border: `1px solid ${form.use_completion_tokens ? 'var(--accent, #6366f1)' : 'var(--border)'}`,
+                background: form.use_completion_tokens ? 'rgba(99,102,241,0.06)' : 'transparent',
+                display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input
+                  id="use-completion-tokens-toggle"
+                  type="checkbox"
+                  checked={!!form.use_completion_tokens}
+                  onChange={e => setForm(f => ({ ...f, use_completion_tokens: e.target.checked }))}
+                  style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0 }}
+                />
+                <label htmlFor="use-completion-tokens-toggle" style={{ cursor: 'pointer', flex: 1 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>Use max_completion_tokens</span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 8 }}>
+                    Required for o-series (o1, o3, o4-mini) and GPT-5+ models that reject the older max_tokens field
+                  </span>
+                </label>
+              </div>
+            )}
+
             <div style={{ marginTop: 12 }}>
               <Field
                 label="Additional Provider Params (JSON)"
@@ -873,6 +986,33 @@ export default function AIModels() {
                   placeholder={'{\n  "thinking": { "type": "enabled", "budget_tokens": 5000 }\n}'}
                   onChange={e => setProviderParamsJson(e.target.value)}
                   rows={4}
+                  style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                />
+              </Field>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <Field
+                label="Full Endpoint URL (override)"
+                hint="Bypasses all adapter URL construction — the request is POSTed to this exact URL. Use for models like Gemma where the model ID is part of the URL path, or for any provider with a non-standard endpoint."
+              >
+                <input className="input" value={form.endpoint_override ?? ''}
+                  placeholder="https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent"
+                  onChange={e => setForm(f => ({ ...f, endpoint_override: e.target.value || undefined }))} />
+              </Field>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <Field
+                label="Extra Request Headers (JSON)"
+                hint='Additional HTTP headers sent with every request — merged after the auth header. Example: {"x-org-id": "my-org", "x-custom-flag": "1"}'
+              >
+                <textarea
+                  className="input"
+                  value={extraHeadersJson}
+                  placeholder={'{\n  "x-org-id": "my-org"\n}'}
+                  onChange={e => setExtraHeadersJson(e.target.value)}
+                  rows={3}
                   style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
                 />
               </Field>
@@ -942,6 +1082,18 @@ export default function AIModels() {
                   </span>
                 ) : null}
 
+                {/* cost */}
+                {(m.cost_per_input_token || m.cost_per_output_token) ? (
+                  <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }} title="Cost per 1M tokens: input / output">
+                    ${m.cost_per_input_token ?? 0}/${m.cost_per_output_token ?? 0}
+                  </span>
+                ) : null}
+
+                {/* completion tokens badge */}
+                {m.use_completion_tokens && (
+                  <span style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'monospace', border: '1px solid var(--accent)', borderRadius: 3, padding: '1px 4px' }} title="Uses max_completion_tokens">cmplt</span>
+                )}
+
                 {/* api key indicator */}
                 {m.api_key_ref ? (
                   <span style={{ fontSize: 11, color: '#22c55e' }} title={m.api_key_ref}>🔑</span>
@@ -953,7 +1105,7 @@ export default function AIModels() {
                 <button
                   className="btn muted"
                   style={{ width: 'auto', padding: '3px 12px', marginTop: 0, fontSize: 12 }}
-                  onClick={() => { setForm({ ...m }); setProviderParamsJson(m.provider_params ? JSON.stringify(m.provider_params, null, 2) : ''); setShowForm(true) }}
+                  onClick={() => { setForm({ ...m }); setProviderParamsJson(m.provider_params ? JSON.stringify(m.provider_params, null, 2) : ''); setExtraHeadersJson(m.extra_headers ? JSON.stringify(m.extra_headers, null, 2) : ''); setShowForm(true) }}
                 >
                   Edit
                 </button>

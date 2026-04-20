@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -114,10 +115,15 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 	if modelSlotName := step.Input["model_slot"]; modelSlotName != "" {
 		if s, slotErr := c.getSlot(modelSlotName); slotErr == nil {
 			llmCfg.ModelSlot = s
-			// Build catalog map for runtime lookup
+			// Build catalog map for runtime lookup; also pre-resolve API keys so that
+			// the runtime never passes a raw "env:FOO" ref as a literal key to a provider.
 			llmCfg.ModelCatalog = make(map[string]config.LLMModelConfig, len(c.LLMCfg.Models))
+			llmCfg.CatalogKeys = make(map[string]string, len(c.LLMCfg.Models))
 			for _, m := range c.LLMCfg.Models {
 				llmCfg.ModelCatalog[m.Alias] = m
+				if resolvedKey, keyErr := c.resolveAPIKey(m.APIKeyRef); keyErr == nil {
+					llmCfg.CatalogKeys[m.Alias] = resolvedKey
+				}
 			}
 		}
 	}
@@ -205,6 +211,42 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 	}
 
 	llmCfg.FallbackChain = fallbackChain
+
+	// fallback_by_model: optional JSON map of alias → []alias that provides per-model
+	// fallback chains when model_slot is used. Resolved at bake time so all API keys
+	// are available. At runtime, the selected model's chain overrides FallbackChain.
+	// Format: {"gpt-4o-mini":["gemini-flash","claude-haiku"],"claude-opus":["gpt-4o"]}
+	if fbmJSON, ok := step.Input["fallback_by_model"]; ok && fbmJSON != "" {
+		var rawMap map[string][]string
+		if jsonErr := json.Unmarshal([]byte(fbmJSON), &rawMap); jsonErr != nil {
+			return fmt.Errorf("llm_call: fallback_by_model: invalid JSON: %w", jsonErr)
+		}
+		fbm := make(map[string][]steps.FallbackEntry, len(rawMap))
+		for modelAlias, fallbacks := range rawMap {
+			var entries []steps.FallbackEntry
+			for _, fbAlias := range fallbacks {
+				var mc config.LLMModelConfig
+				found := false
+				for _, m := range c.LLMCfg.Models {
+					if m.Alias == fbAlias {
+						mc = m
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("llm_call: fallback_by_model[%q]: %q not found in LLM catalog", modelAlias, fbAlias)
+				}
+				fbKey, fbKeyErr := c.resolveAPIKey(mc.APIKeyRef)
+				if fbKeyErr != nil {
+					return fmt.Errorf("llm_call: fallback_by_model[%q][%q]: %w", modelAlias, fbAlias, fbKeyErr)
+				}
+				entries = append(entries, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+			}
+			fbm[modelAlias] = entries
+		}
+		llmCfg.FallbackByModel = fbm
+	}
 
 	// model_config_slot: optional slot holding a runtime JSON-encoded LLMModelConfig
 	// that overrides the baked model config per request (payload injection).

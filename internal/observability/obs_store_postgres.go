@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS obs_access_log_status_idx ON obs_access_log(status, t
 
 CREATE TABLE IF NOT EXISTS obs_metric_snapshots (
     ts          BIGINT NOT NULL,
-    window      TEXT   NOT NULL,
+    "window"    TEXT   NOT NULL,
     dimension   TEXT   NOT NULL,
     req_total   BIGINT,
     req_5xx     BIGINT,
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS obs_metric_snapshots (
     lat_p99_ms  REAL,
     bytes_in    BIGINT,
     bytes_out   BIGINT,
-    PRIMARY KEY (ts, window, dimension)
+    PRIMARY KEY (ts, "window", dimension)
 );
 CREATE INDEX IF NOT EXISTS obs_metrics_dim_idx ON obs_metric_snapshots(dimension, ts DESC);
 
@@ -159,9 +159,9 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 func (s *postgresObsStore) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO obs_metric_snapshots
-    (ts,window,dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out)
+    (ts,"window",dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-ON CONFLICT (ts, window, dimension) DO UPDATE SET
+ON CONFLICT (ts, "window", dimension) DO UPDATE SET
     req_total  = EXCLUDED.req_total,
     req_5xx    = EXCLUDED.req_5xx,
     lat_p50_ms = EXCLUDED.lat_p50_ms,
@@ -285,7 +285,7 @@ func (s *postgresObsStore) QueryMetrics(ctx context.Context, f MetricsFilter) ([
 	qb := newQueryBuilder()
 
 	if f.Window != "" {
-		qb.add("window = $%d", f.Window)
+		qb.add(`"window" = $%d`, f.Window)
 	}
 	if f.Dimension != "" {
 		// Support prefix-match ("api:", "tenant:") and exact match ("gateway").
@@ -302,7 +302,7 @@ func (s *postgresObsStore) QueryMetrics(ctx context.Context, f MetricsFilter) ([
 		qb.add("ts <= $%d", f.ToUnixS)
 	}
 
-	query := `SELECT ts,window,dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out ` +
+	query := `SELECT ts,"window",dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out ` +
 		`FROM obs_metric_snapshots` + qb.whereClause() + ` ORDER BY ts DESC`
 
 	rows, err := s.pool.Query(ctx, query, qb.args...)

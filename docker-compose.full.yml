@@ -1,0 +1,87 @@
+# Self-contained stack: RAH gateway + Redis + PostgreSQL all in Docker.
+# Use this when you want everything containerised with no external dependencies.
+#
+# Usage:
+#   docker compose -f docker-compose.full.yml up -d
+#   docker compose -f docker-compose.full.yml --profile studio up -d   # + Studio
+#   docker compose -f docker-compose.full.yml logs -f gateway
+#   docker compose -f docker-compose.full.yml down -v   # stop + wipe volumes
+
+services:
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── RAH Gateway ───────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: rah-gateway:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Data plane
+      - "8081:8081"   # Management plane
+    volumes:
+      - ./deploy/docker/gateway-full.yaml:/app/gateway.yaml:ro
+      - gateway_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rah-gateway", "-health", "-mport", "8081"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── RAH Studio (optional UI) ───────────────────────────���──────────────────
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile.studio
+    image: rah-studio:local
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/rah-studio"]
+    command: ["-gateway", "http://gateway:8081", "-port", "3000"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+    profiles:
+      - studio
+
+volumes:
+  postgres_data:
+  gateway_logs:
