@@ -125,36 +125,78 @@ function buildEffectiveClassifierPrompt(cfg: ClassifierRouterConfig): string {
 
 // ── Step builders ─────────────────────────────────────────────────────────────
 
-// aiMessagePath builds a ||‑separated gjson fallback path that accepts both
-// Anthropic wire format (messages array) and a simple flat field.
-// BindBody tries each path left‑to‑right and uses the first non‑empty result.
+// aiMessagePath builds a ||‑separated gjson fallback path that extracts the
+// last user message text for single-value uses (context fit, classify, history).
 function aiMessagePath(inputField: string): string {
   const simple = inputField || 'message'
-  // Try Anthropic/OpenAI messages array first (last user message),
-  // then simple flat field.
   return `messages.#(role=="user").content||${simple}`
+}
+
+// buildParseSteps prepends the raw-body bind + parse_message_format steps that
+// extract the full messages array (multi-turn + content blocks), detected format,
+// and system prompt. Also binds the 'stream' flag for SSE detection.
+// These slots are used by llm_call (messages_slot) and format_response (format_slot, stream_slot).
+function buildParseSteps(out: SyncStep[]) {
+  out.push({ action: 'bind_body', key: '@this', as: 'var.body' })
+  out.push({
+    action: 'parse_message_format',
+    key_identifier: 'var.body',
+    as: 'var.messages',
+    input: { system_slot: 'var.parsed_system', detected_fmt_slot: 'var.fmt' },
+  })
+  out.push({ action: 'bind_body', key: 'stream', as: 'var.stream' })
+}
+
+// buildFormatAndRespondSteps appends format_response + respond, which converts
+// the raw LLM text into the caller's expected wire format (Anthropic/OpenAI/Gemini)
+// and handles SSE streaming for Claude Code / streaming clients.
+function buildFormatAndRespondSteps(
+  out: SyncStep[],
+  primaryModel: string,
+  modelSlot?: string,
+  inputTokensSlot = '0',
+  outputTokensSlot = '1',
+) {
+  const fmtInput: Record<string, string> = {
+    format_slot:        'var.fmt',
+    stop_reason_slot:   'var.stop_reason',
+    stream_slot:        'var.stream',
+    model:              primaryModel,
+    input_tokens_slot:  inputTokensSlot,
+    output_tokens_slot: outputTokensSlot,
+  }
+  if (modelSlot) fmtInput.model_slot = modelSlot
+  out.push({ action: 'format_response', key_identifier: 'var.reply', as: 'var.formatted', input: fmtInput })
+  out.push({ action: 'respond', key_identifier: 'var.formatted' })
 }
 
 function buildProxySteps(cfg: ProxyConfig): SyncStep[] {
   const out: SyncStep[] = []
+  buildParseSteps(out)
+  // Also extract last user message text (needed as fallback if messages_slot is empty)
   out.push({ action: 'bind_body', key: aiMessagePath(cfg.inputField), as: 'var.prompt' })
   if (cfg.systemPrompt.trim()) {
     out.push({ action: 'set_const', value: cfg.systemPrompt.trim(), as: 'var.system' })
   }
   const llmInput: Record<string, string> = {
-    model: cfg.model,
-    max_tokens: cfg.maxTokens || '2000',
-    temperature: cfg.temperature || '0.7',
+    model:              cfg.model,
+    max_tokens:         cfg.maxTokens || '2000',
+    temperature:        cfg.temperature || '0.7',
+    messages_slot:      'var.messages',
+    input_tokens_slot:  '0',
+    output_tokens_slot: '1',
+    stop_reason_slot:   'var.stop_reason',
+    system_slot:        cfg.systemPrompt.trim() ? 'var.system' : 'var.parsed_system',
   }
-  if (cfg.systemPrompt.trim()) llmInput.system_slot = 'var.system'
   if (cfg.fallbackChain.length > 0) llmInput.fallback_chain = cfg.fallbackChain.join(',')
   out.push({ action: 'llm_call', key_identifier: 'var.prompt', as: 'var.reply', input: llmInput })
-  out.push({ action: 'respond', key_identifier: 'var.reply' })
+  buildFormatAndRespondSteps(out, cfg.model)
   return out
 }
 
 function buildRouterSteps(cfg: RouterConfig): SyncStep[] {
   const out: SyncStep[] = []
+  buildParseSteps(out)
   out.push({ action: 'bind_body', key: aiMessagePath(cfg.inputField), as: 'var.prompt' })
   if (cfg.systemPrompt.trim()) {
     out.push({ action: 'set_const', value: cfg.systemPrompt.trim(), as: 'var.system' })
@@ -174,8 +216,16 @@ function buildRouterSteps(cfg: RouterConfig): SyncStep[] {
   out.push({ action: 'route_llm', as: 'var.model', input: { rules: JSON.stringify(rulesArr), default: cfg.defaultModel, token_slot: 'var.total_tok' } })
 
   const fbByModel = buildFallbackByModel(cfg.routingRules, cfg.defaultModel, cfg.defaultFallback)
-  const llmInput: Record<string, string> = { model: cfg.defaultModel, model_slot: 'var.model', max_tokens: '2000' }
-  if (cfg.systemPrompt.trim()) llmInput.system_slot = 'var.system'
+  const llmInput: Record<string, string> = {
+    model:              cfg.defaultModel,
+    model_slot:         'var.model',
+    max_tokens:         '2000',
+    messages_slot:      'var.messages',
+    input_tokens_slot:  '0',
+    output_tokens_slot: '1',
+    stop_reason_slot:   'var.stop_reason',
+    system_slot:        cfg.systemPrompt.trim() ? 'var.system' : 'var.parsed_system',
+  }
   if (cfg.historyEnabled) llmInput.history_slot = 'var.history'
   if (Object.keys(fbByModel).length > 0) llmInput.fallback_by_model = JSON.stringify(fbByModel)
   out.push({ action: 'llm_call', key_identifier: 'var.prompt', as: 'var.reply', input: llmInput })
@@ -185,7 +235,7 @@ function buildRouterSteps(cfg: RouterConfig): SyncStep[] {
     out.push({ action: 'append_message', key_identifier: 'var.reply', as: 'var.history', input: { role: 'assistant' } })
     out.push({ action: 'save_history', key_identifier: 'var.history', as: 'var.session', input: { domain: 'customer_data' } })
   }
-  out.push({ action: 'respond', key_identifier: 'var.reply' })
+  buildFormatAndRespondSteps(out, cfg.defaultModel, 'var.model')
   return out
 }
 
@@ -201,6 +251,7 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
   const field = cfg.classifierField || 'complexity'
   const slotName = `var.${field}`
 
+  buildParseSteps(main)
   main.push({ action: 'bind_body', key: aiMessagePath(cfg.inputField), as: 'var.prompt' })
 
   // Actual LLM system prompt (for the final model, not the classifier) — optional
@@ -269,8 +320,16 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
 
   // Actual LLM call — per-model fallback chains
   const fbByModel = buildFallbackByModel(cfg.modelRules, cfg.defaultModel, cfg.defaultFallback)
-  const llmInput: Record<string, string> = { model: cfg.defaultModel, model_slot: 'var.model', max_tokens: '2000' }
-  if (cfg.actualSystemPrompt.trim()) llmInput.system_slot = 'var.system'
+  const llmInput: Record<string, string> = {
+    model:              cfg.defaultModel,
+    model_slot:         'var.model',
+    max_tokens:         '2000',
+    messages_slot:      'var.messages',
+    input_tokens_slot:  '0',
+    output_tokens_slot: '1',
+    stop_reason_slot:   'var.stop_reason',
+    system_slot:        cfg.actualSystemPrompt.trim() ? 'var.system' : 'var.parsed_system',
+  }
   if (Object.keys(fbByModel).length > 0) llmInput.fallback_by_model = JSON.stringify(fbByModel)
 
   if (cfg.classifierDecideHistory) {
@@ -285,9 +344,11 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
       { action: 'append_message', key_identifier: 'var.prompt', as: 'var.history', input: { role: 'user', max_turns: cfg.maxTurns || '20' } },
       { action: 'append_message', key_identifier: 'var.reply', as: 'var.history', input: { role: 'assistant' } },
       { action: 'save_history', key_identifier: 'var.history', as: 'var.session', input: { domain: 'customer_data' } },
+      { action: 'format_response', key_identifier: 'var.reply', as: 'var.formatted', input: { format_slot: 'var.fmt', stop_reason_slot: 'var.stop_reason', stream_slot: 'var.stream', model: cfg.defaultModel, model_slot: 'var.model', input_tokens_slot: '0', output_tokens_slot: '1' } },
     ]
     const histOffSteps: SyncStep[] = [
       { action: 'llm_call', key_identifier: 'var.prompt', as: 'var.reply', input: llmInput },
+      { action: 'format_response', key_identifier: 'var.reply', as: 'var.formatted', input: { format_slot: 'var.fmt', stop_reason_slot: 'var.stop_reason', stream_slot: 'var.stream', model: cfg.defaultModel, model_slot: 'var.model', input_tokens_slot: '0', output_tokens_slot: '1' } },
     ]
 
     subFlows.push({ name: histOnName,  instructions: histOnSteps  })
@@ -295,6 +356,7 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
 
     // if var.needs_history is non-empty ("yes"), take the history branch
     main.push({ action: 'if', condition: 'var.needs_history', then: histOnName, else: histOffName })
+    main.push({ action: 'respond', key_identifier: 'var.formatted' })
 
   } else if (cfg.historyEnabled) {
     // History always-on (not classifier-driven)
@@ -303,11 +365,11 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
     main.push({ action: 'append_message', key_identifier: 'var.prompt', as: 'var.history', input: { role: 'user', max_turns: cfg.maxTurns || '20' } })
     main.push({ action: 'append_message', key_identifier: 'var.reply', as: 'var.history', input: { role: 'assistant' } })
     main.push({ action: 'save_history', key_identifier: 'var.history', as: 'var.session', input: { domain: 'customer_data' } })
+    buildFormatAndRespondSteps(main, cfg.defaultModel, 'var.model')
   } else {
     main.push({ action: 'llm_call', key_identifier: 'var.prompt', as: 'var.reply', input: llmInput })
+    buildFormatAndRespondSteps(main, cfg.defaultModel, 'var.model')
   }
-
-  main.push({ action: 'respond', key_identifier: 'var.reply' })
   return { main, subFlows }
 }
 
@@ -316,11 +378,22 @@ function buildSmartClassifierSteps(cfg: ClassifierRouterConfig, flowName: string
 function ModelSelect({ value, onChange, models, placeholder = '— select model —' }: {
   value: string; onChange: (v: string) => void; models: LLMModel[]; placeholder?: string
 }) {
+  const selected = models.find(m => m.alias === value)
+  const costHint = selected && (selected.cost_per_input_token || selected.cost_per_output_token)
+    ? `$${selected.cost_per_input_token ?? 0}/$${selected.cost_per_output_token ?? 0} per 1M tok`
+    : null
   return (
-    <select className="input" value={value} onChange={e => onChange(e.target.value)}>
-      <option value="">{placeholder}</option>
-      {models.map(m => <option key={m.alias} value={m.alias}>{m.alias} ({m.provider})</option>)}
-    </select>
+    <div>
+      <select className="input" value={value} onChange={e => onChange(e.target.value)}>
+        <option value="">{placeholder}</option>
+        {models.map(m => <option key={m.alias} value={m.alias}>{m.alias} ({m.provider})</option>)}
+      </select>
+      {costHint && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, paddingLeft: 2 }}>
+          {costHint}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -657,6 +730,9 @@ export default function AIRoutes() {
   const [serverLoaded, setServerLoaded] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState<string | null>(null)
+  const [existingFlowNames, setExistingFlowNames] = useState<string[]>([])
+  const [showExistingFlowPicker, setShowExistingFlowPicker] = useState(false)
+  const [existingFlowSearch, setExistingFlowSearch] = useState('')
 
   // On mount: try to load routes from the gateway (server-side persistence).
   // Falls back to whatever loadRoutes() already returned from localStorage.
@@ -709,6 +785,15 @@ export default function AIRoutes() {
   function setProxy(fn: (p: ProxyConfig) => ProxyConfig) { patchActive({ proxy: fn(proxy) }) }
   function setRouter(fn: (r: RouterConfig) => RouterConfig) { patchActive({ router: fn(router) }) }
   function setClassifier(fn: (c: ClassifierRouterConfig) => ClassifierRouterConfig) { patchActive({ classifier: fn(classifier) }) }
+
+  // Load parent flow names from the gateway for the "use existing flow" picker
+  async function loadExistingFlowNames() {
+    try {
+      const snap = await fetchGatewaySnapshot()
+      const parentNames = new Set(snap.apis.map(a => a.flow_name).filter(Boolean))
+      setExistingFlowNames(snap.flows.filter(f => parentNames.has(f.name)).map(f => f.name))
+    } catch { /* ignore — picker just won't show options */ }
+  }
 
   // Import all AI-looking flows from the gateway into the sidebar
   async function handleImportFromGateway() {
@@ -951,13 +1036,46 @@ export default function AIRoutes() {
 
         {/* Add new route buttons */}
         <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>+ New route</div>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 2 }}>+ New route from template</div>
           {(['proxy', 'router', 'classifier'] as Mode[]).map(m => (
             <button key={m} type="button" onClick={() => addRoute(m)}
               style={{ fontSize: 11, padding: '4px 0', background: 'var(--block-bg)', border: '1px dashed var(--border-hi)', borderRadius: 6, cursor: 'pointer', color: 'var(--muted)', textAlign: 'left', paddingLeft: 8 }}>
               {modeIcons[m]} {modeLabels[m]}
             </button>
           ))}
+          {/* Use existing flow */}
+          <button type="button"
+            onClick={() => { loadExistingFlowNames(); setShowExistingFlowPicker(v => !v); setExistingFlowSearch('') }}
+            style={{ fontSize: 11, padding: '4px 0', background: 'var(--block-bg)', border: '1px dashed var(--accent)', borderRadius: 6, cursor: 'pointer', color: 'var(--accent)', textAlign: 'left', paddingLeft: 8 }}>
+            🔗 Use existing flow…
+          </button>
+          {showExistingFlowPicker && (
+            <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8, background: 'var(--surface)', marginTop: 2 }}>
+              <input className="input" style={{ fontSize: 11, marginBottom: 6 }}
+                placeholder="Search flows…" value={existingFlowSearch}
+                onChange={e => setExistingFlowSearch(e.target.value)} />
+              {existingFlowNames.length === 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>No deployed flows found.</div>
+              )}
+              {existingFlowNames
+                .filter(n => !existingFlowSearch || n.toLowerCase().includes(existingFlowSearch.toLowerCase()))
+                .map(flowName => (
+                  <button key={flowName} type="button"
+                    onClick={() => {
+                      const r = makeRoute('proxy', { flowName, label: flowName })
+                      setRoutes(rs => [...rs, r])
+                      setActiveId(r.id)
+                      setShowExistingFlowPicker(false)
+                      setDeployResult(null)
+                    }}
+                    style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, padding: '3px 4px', borderRadius: 4, color: 'var(--text)' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--block-bg)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'none')}>
+                    {flowName}
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
       </div>
 

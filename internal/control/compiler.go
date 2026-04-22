@@ -490,6 +490,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.RespondStep(srcSlot))
 
+	case "respond_token_count":
+		// Writes {"input_tokens": N} where N is IntSlots[total_slot].
+		// Used to implement the Anthropic /v1/messages/count_tokens endpoint.
+		// input["total_slot"]: named slot holding the token count (from check_context_fit)
+		intSlot := -1
+		if name := step.Input["total_slot"]; name != "" {
+			if s, slotErr := c.getSlot(name); slotErr == nil {
+				intSlot = s
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RespondTokenCountStep(intSlot))
+
 	case "bind_body":
 		// Reads the request body (buffering on first access) and extracts a JSON
 		// field by gjson path into the named slot.

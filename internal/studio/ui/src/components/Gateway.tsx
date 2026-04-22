@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchGatewayApis } from '../api'
+import { fetchGatewayApis, deleteFlow } from '../api'
 import type { FlowStep, GatewayState } from '../types'
 
 interface GatewayProps {
@@ -39,6 +39,7 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
   const [error, setError] = useState('')
   const [expandedFlow, setExpandedFlow] = useState<string | null>(null)
   const [expandedApi, setExpandedApi] = useState<string | null>(null)
+  const [expandedSubFlows, setExpandedSubFlows] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -77,50 +78,92 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
           {!loading && !error && state && state.flows.length === 0 && (
             <span className="hint">No flows deployed yet.</span>
           )}
-          {state && state.flows.map(f => (
-            <div key={f.name} id={`flow-${f.name}`} className="block" style={{
-              borderLeft: expandedFlow === f.name ? '3px solid var(--accent)' : '3px solid transparent'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <strong>{f.name}</strong>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {onLoadFlow && (
-                    <button
-                      className="btn"
-                      title="Load this flow into the Flow Designer for editing"
-                      onClick={() => onLoadFlow(f.name, f.instructions)}
-                    >
-                      Load
+          {state && (() => {
+            // Separate parent flows (referenced by at least one API) from internal sub-flows.
+            const parentNames = new Set(state.apis.map(a => a.flow_name).filter(Boolean))
+            const parentFlows = state.flows.filter(f => parentNames.has(f.name))
+            const subFlows = state.flows.filter(f => !parentNames.has(f.name))
+            // Group sub-flows by their parent (heuristic: sub-flow name starts with parent name + '-').
+            const subFlowsByParent: Record<string, typeof state.flows> = {}
+            for (const sf of subFlows) {
+              const parent = parentFlows.find(p => sf.name.startsWith(p.name + '-'))
+              const key = parent ? parent.name : '__orphan__'
+              subFlowsByParent[key] = [...(subFlowsByParent[key] ?? []), sf]
+            }
+            const renderFlow = (f: typeof state.flows[0], isSubFlow = false, onDelete?: () => void) => (
+              <div key={f.name} id={`flow-${f.name}`} className="block" style={{
+                borderLeft: expandedFlow === f.name ? '3px solid var(--accent)' : '3px solid transparent',
+                marginLeft: isSubFlow ? 16 : 0,
+                opacity: isSubFlow ? 0.85 : 1,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: isSubFlow ? 12 : undefined }}>{f.name}</strong>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {onLoadFlow && !isSubFlow && (
+                      <button className="btn" title="Load this flow into the Flow Designer for editing"
+                        onClick={() => onLoadFlow(f.name, f.instructions)}>Load</button>
+                    )}
+                    <button className="btn muted"
+                      onClick={() => setExpandedFlow(expandedFlow === f.name ? null : f.name)}>
+                      {expandedFlow === f.name ? 'Hide' : 'Steps'}
                     </button>
-                  )}
-                  <button
-                    className="btn muted"
-                    onClick={() => setExpandedFlow(expandedFlow === f.name ? null : f.name)}
-                  >
-                    {expandedFlow === f.name ? 'Hide' : 'Steps'}
-                  </button>
+                    {onDelete && (
+                      <button className="btn" style={{ color: '#ef4444', borderColor: '#ef4444' }}
+                        title="Delete this orphaned flow"
+                        onClick={onDelete}>Delete</button>
+                    )}
+                  </div>
                 </div>
+                <div className="sub">{f.instructions.length} step{f.instructions.length !== 1 ? 's' : ''}</div>
+                {expandedFlow === f.name && (
+                  <div style={{ marginTop: '8px' }}>
+                    {f.instructions.map((step, i) => {
+                      const params = Object.entries(step).filter(([k]) => k !== 'action')
+                      return (
+                        <div key={i} className="step" style={{ marginBottom: '4px' }}>
+                          <strong>{i + 1}. {step.action}</strong>
+                          {params.map(([k, v]) => (
+                            <div key={k} className="sub" style={{ paddingLeft: '12px' }}>
+                              {k}: <span style={{ opacity: 0.8 }}>{String(v)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-              <div className="sub">{f.instructions.length} step{f.instructions.length !== 1 ? 's' : ''}</div>
-              {expandedFlow === f.name && (
-                <div style={{ marginTop: '8px' }}>
-                  {f.instructions.map((step, i) => {
-                    const params = Object.entries(step).filter(([k]) => k !== 'action')
-                    return (
-                      <div key={i} className="step" style={{ marginBottom: '4px' }}>
-                        <strong>{i + 1}. {step.action}</strong>
-                        {params.map(([k, v]) => (
-                          <div key={k} className="sub" style={{ paddingLeft: '12px' }}>
-                            {k}: <span style={{ opacity: 0.8 }}>{String(v)}</span>
-                          </div>
-                        ))}
+            )
+
+            return (
+              <>
+                {parentFlows.map(f => (
+                  <div key={f.name}>
+                    {renderFlow(f)}
+                    {subFlowsByParent[f.name] && (
+                      <div>
+                        <button type="button" className="btn muted" style={{ fontSize: 11, marginLeft: 16, marginBottom: 4 }}
+                          onClick={() => setExpandedSubFlows(expandedSubFlows === f.name ? null : f.name)}>
+                          {expandedSubFlows === f.name ? '▲' : '▼'} {subFlowsByParent[f.name].length} internal sub-flow{subFlowsByParent[f.name].length !== 1 ? 's' : ''}
+                        </button>
+                        {expandedSubFlows === f.name && subFlowsByParent[f.name].map(sf => renderFlow(sf, true))}
                       </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
+                    )}
+                  </div>
+                ))}
+                {subFlowsByParent['__orphan__'] && (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="sub" style={{ marginBottom: 4, color: 'var(--muted)' }}>Orphaned flows (not linked to any API):</div>
+                    {subFlowsByParent['__orphan__'].map(sf => renderFlow(sf, true, () => {
+                      if (confirm(`Delete orphaned flow "${sf.name}"?`)) {
+                        deleteFlow(sf.name).then(load).catch(e => alert(String(e)))
+                      }
+                    }))}
+                  </div>
+                )}
+              </>
+            )
+          })()}
           {state && (
             <div className="hint" style={{ marginTop: '8px' }}>
               Sync UUID: {state.sync_uuid || '(none)'}

@@ -69,7 +69,11 @@ export default function Dashboard({ conn }: DashboardProps) {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  const flowCount = gatewayState?.flows?.length ?? 0
+  // Count only parent flows (flows that have at least one API endpoint pointing to them).
+  // Sub-flows (e.g. "my-route-hist-on", "my-route-hist-off") are internal compiler
+  // artefacts and should not be shown to customers as independent flows.
+  const parentFlowNames = new Set((gatewayState?.apis ?? []).map(a => a.flow_name).filter(Boolean))
+  const flowCount = (gatewayState?.flows ?? []).filter(f => parentFlowNames.has(f.name)).length
   const apiCount = gatewayState?.apis?.length ?? 0
   const syncUUID = gatewayState?.sync_uuid ?? '—'
 

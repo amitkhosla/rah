@@ -171,7 +171,7 @@ func AllStepDescriptors() []StepDescriptor {
 			Fields: []StepField{
 				sf("key_identifier", "Prompt slot", "Slot containing the user prompt text", "var.prompt"),
 				sf("as", "Store as", "Slot to write the LLM text response into", "llm_response"),
-				sf("input", "Config (JSON)", `Keys: model (catalog alias), temperature, max_tokens, timeout_ms, system_slot, api_key, fallback_model (single alias), fallback_chain (comma-sep aliases), fallback_slot (dynamic prioritization), history_slot (stateful conversion), model_config_slot (runtime JSON model config)`, `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000","history_slot":"var.history"}`),
+				sf("input", "Config (JSON)", `Keys: model (catalog alias), temperature, max_tokens, timeout_ms, system_slot, api_key, fallback_model (single alias), fallback_chain (comma-sep aliases), fallback_slot (dynamic prioritization), history_slot (stateful conversion), model_config_slot (runtime JSON model config), messages_slot (multi-turn: JSON []CanonicalMessage from parse_message_format), stop_reason_slot, input_tokens_slot (IntSlot index), output_tokens_slot (IntSlot index)`, `{"model":"claude-sonnet-4-6","temperature":"0.7","max_tokens":"2000","history_slot":"var.history"}`),
 			},
 		},
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"rah/internal/config"
+	"rah/internal/engine"
 	"rah/internal/engine/steps"
 )
 
@@ -181,5 +182,17 @@ func (c *Compiler) compileClassifyLLM(step StepConfig) error {
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.ClassifyLLM(classifyCfg))
+
+	// Register per-model upstream rate limits at bake time for all catalog models.
+	for _, m := range c.LLMCfg.Models {
+		if len(m.RateLimits) > 0 {
+			windows := make([]*engine.UpstreamRateWindow, 0, len(m.RateLimits))
+			for _, rl := range m.RateLimits {
+				windows = append(windows, engine.UpstreamWindowFromWindow(rl.Window, uint32(rl.Limit)))
+			}
+			engine.RegisterUpstreamLimit(m.Alias, windows)
+		}
+	}
+
 	return nil
 }

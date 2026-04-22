@@ -174,3 +174,40 @@ func (m *Manager) DeleteMCPServer(alias string) bool {
 	}
 	return false
 }
+
+// Quotas returns the current quota configuration snapshot.
+func (m *Manager) Quotas() QuotasConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	q := m.gateway.Quotas
+	tenants := make([]TenantQuotaConfig, len(q.Tenants))
+	copy(tenants, q.Tenants)
+	q.Tenants = tenants
+	return q
+}
+
+// UpsertTenantQuota adds or updates the quota entry for a tenant.
+func (m *Manager) UpsertTenantQuota(q TenantQuotaConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, t := range m.gateway.Quotas.Tenants {
+		if t.TenantID == q.TenantID {
+			m.gateway.Quotas.Tenants[i] = q
+			return
+		}
+	}
+	m.gateway.Quotas.Tenants = append(m.gateway.Quotas.Tenants, q)
+}
+
+// DeleteTenantQuota removes the quota entry for a tenant. Returns false if not found.
+func (m *Manager) DeleteTenantQuota(tenantID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, t := range m.gateway.Quotas.Tenants {
+		if t.TenantID == tenantID {
+			m.gateway.Quotas.Tenants = append(m.gateway.Quotas.Tenants[:i], m.gateway.Quotas.Tenants[i+1:]...)
+			return true
+		}
+	}
+	return false
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,9 +43,10 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 
-			_, hasContents := topLevel["contents"]
-			_, hasMessages := topLevel["messages"]
-			_, hasSystem := topLevel["system"]
+			_, hasContents  := topLevel["contents"]
+			_, hasMessages  := topLevel["messages"]
+			_, hasSystem    := topLevel["system"]
+			_, hasMaxTokens := topLevel["max_tokens"] // Anthropic requires max_tokens; OpenAI does not
 
 			var format string
 			switch {
@@ -52,15 +54,18 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 				format = "gemini"
 			case hasMessages && hasSystem:
 				format = "anthropic"
+			case hasMessages && hasMaxTokens:
+				// Anthropic format with no system prompt — max_tokens is required in
+				// the Anthropic API but optional in OpenAI, so its presence is a
+				// reliable signal that the caller is using the Anthropic wire format.
+				format = "anthropic"
 			case hasMessages:
 				format = "openai"
 			default:
-				ctx.ResponseStatus = 400
-				ctx.Failed = true
-				msg := []byte("unknown LLM request format: missing 'contents' or 'messages' key")
-				ctx.ErrorMsg = ctx.Alloc(len(msg))
-				copy(ctx.ErrorMsg, msg)
-				return engine.StopPlan
+				// Not a recognised LLM request format — skip silently.
+				// This allows parse_message_format to be placed in generic flows
+				// where the request body may not be an LLM payload.
+				return state.PC + 1
 			}
 
 			var messages []CanonicalMessage
@@ -68,13 +73,20 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 
 			switch format {
 			case "anthropic":
-				type anthropicMsg struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
+				// Content field can be a plain string or an array of content blocks:
+				// [{"type":"text","text":"..."},{"type":"image",...}]
+				type anthropicContentBlock struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
 				}
+				type anthropicMsg struct {
+					Role    string          `json:"role"`
+					Content json.RawMessage `json:"content"`
+				}
+				// System can also be a string or array of content blocks.
 				var req struct {
-					System   string         `json:"system"`
-					Messages []anthropicMsg `json:"messages"`
+					System   json.RawMessage `json:"system"`
+					Messages []anthropicMsg  `json:"messages"`
 				}
 				if err := json.Unmarshal(body, &req); err != nil {
 					ctx.ResponseStatus = 400
@@ -84,14 +96,51 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 					copy(ctx.ErrorMsg, msg)
 					return engine.StopPlan
 				}
-				systemText = req.System
+				// Resolve system — string or []content_block
+				if len(req.System) > 0 && req.System[0] == '"' {
+					_ = json.Unmarshal(req.System, &systemText)
+				} else if len(req.System) > 0 && req.System[0] == '[' {
+					var blocks []anthropicContentBlock
+					if json.Unmarshal(req.System, &blocks) == nil {
+						for _, b := range blocks {
+							if b.Type == "text" {
+								systemText += b.Text
+							}
+						}
+					}
+				}
+				// Resolve each message — content can be string or []content_block
+				extractAnthropicText := func(raw json.RawMessage) string {
+					if len(raw) == 0 {
+						return ""
+					}
+					if raw[0] == '"' {
+						var s string
+						json.Unmarshal(raw, &s) //nolint:errcheck
+						return s
+					}
+					if raw[0] == '[' {
+						var blocks []anthropicContentBlock
+						if json.Unmarshal(raw, &blocks) == nil {
+							var sb strings.Builder
+							for _, b := range blocks {
+								if b.Type == "text" {
+									sb.WriteString(b.Text)
+								}
+							}
+							return sb.String()
+						}
+					}
+					return string(raw)
+				}
 				messages = make([]CanonicalMessage, 0, len(req.Messages))
 				for _, m := range req.Messages {
+					text := extractAnthropicText(m.Content)
 					switch m.Role {
 					case "user":
-						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: m.Content})
+						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: text})
 					case "assistant":
-						messages = append(messages, CanonicalMessage{Role: RoleAssistant, Content: m.Content})
+						messages = append(messages, CanonicalMessage{Role: RoleAssistant, Content: text})
 					}
 				}
 
@@ -214,6 +263,11 @@ type FormatResponseConfig struct {
 	OutputTokensSlot int // IntSlot: output token count (-1 = 0)
 	FormatSlot       int // ByteSlot: caller's expected format "anthropic"|"openai"|"gemini" (-1 = use Format field)
 	ModelSlot        int // ByteSlot: runtime model slug override (-1 = use Model field)
+
+	// StreamSlot: if >= 0, read from ByteSlots[StreamSlot]; when the value is
+	// "true" or "1", assemble an SSE streaming response instead of plain JSON.
+	// Set to -1 (default) to always return plain JSON.
+	StreamSlot int
 
 	// Bake-time static values (used when corresponding slot < 0)
 	Model  string // model slug
@@ -355,6 +409,98 @@ func mapStopReason(reason, format string) string {
 	}
 }
 
+// assembleAnthropicSSE writes a complete Anthropic streaming response as SSE events to dst.
+// Claude Code (and other clients that send stream:true) expect this format.
+// The entire response is assembled in one buffer — no goroutines needed.
+func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64) []byte {
+	// event: message_start
+	dst = append(dst, "event: message_start\ndata: "...)
+	dst = append(dst, `{"type":"message_start","message":{"id":"msg_`...)
+	dst = appendTxIDHex(dst, txid)
+	dst = append(dst, `","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":`...)
+	dst = strconv.AppendInt(dst, in, 10)
+	dst = append(dst, `,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`...)
+	dst = append(dst, "\n\n"...)
+
+	// event: content_block_start
+	dst = append(dst, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"...)
+
+	// event: ping
+	dst = append(dst, "event: ping\ndata: {\"type\":\"ping\"}\n\n"...)
+
+	// event: content_block_delta
+	dst = append(dst, "event: content_block_delta\ndata: "...)
+	dst = append(dst, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":`...)
+	dst = appendJSONString(dst, content)
+	dst = append(dst, "}}\n\n"...)
+
+	// event: content_block_stop
+	dst = append(dst, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"...)
+
+	// event: message_delta
+	dst = append(dst, "event: message_delta\ndata: "...)
+	dst = append(dst, `{"type":"message_delta","delta":{"stop_reason":`...)
+	dst = appendJSONString(dst, stopReason)
+	dst = append(dst, `,"stop_sequence":null},"usage":{"output_tokens":`...)
+	dst = strconv.AppendInt(dst, out, 10)
+	dst = append(dst, "}}\n\n"...)
+
+	// event: message_stop
+	dst = append(dst, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"...)
+
+	return dst
+}
+
+// assembleOpenAISSE writes an OpenAI-compatible streaming response as SSE events to dst.
+// Format: data: {...}\n\ndata: [DONE]\n\n
+func assembleOpenAISSE(dst []byte, txid [2]uint64, content, finishReason, model string, in, out int64) []byte {
+	// data: role delta (first chunk)
+	dst = append(dst, "data: "...)
+	dst = append(dst, `{"id":"chatcmpl-`...)
+	dst = appendTxIDHex(dst, txid)
+	dst = append(dst, `","object":"chat.completion.chunk","created":`...)
+	dst = strconv.AppendInt(dst, time.Now().Unix(), 10)
+	dst = append(dst, `,"model":`...)
+	dst = appendJSONString(dst, model)
+	dst = append(dst, `,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`...)
+	dst = append(dst, "\n\n"...)
+
+	// data: content delta
+	dst = append(dst, "data: "...)
+	dst = append(dst, `{"id":"chatcmpl-`...)
+	dst = appendTxIDHex(dst, txid)
+	dst = append(dst, `","object":"chat.completion.chunk","created":`...)
+	dst = strconv.AppendInt(dst, time.Now().Unix(), 10)
+	dst = append(dst, `,"model":`...)
+	dst = appendJSONString(dst, model)
+	dst = append(dst, `,"choices":[{"index":0,"delta":{"content":`...)
+	dst = appendJSONString(dst, content)
+	dst = append(dst, `},"finish_reason":null}]}`...)
+	dst = append(dst, "\n\n"...)
+
+	// data: finish chunk with usage
+	dst = append(dst, "data: "...)
+	dst = append(dst, `{"id":"chatcmpl-`...)
+	dst = appendTxIDHex(dst, txid)
+	dst = append(dst, `","object":"chat.completion.chunk","created":`...)
+	dst = strconv.AppendInt(dst, time.Now().Unix(), 10)
+	dst = append(dst, `,"model":`...)
+	dst = appendJSONString(dst, model)
+	dst = append(dst, `,"choices":[{"index":0,"delta":{},"finish_reason":`...)
+	dst = appendJSONString(dst, finishReason)
+	dst = append(dst, `}],"usage":{"prompt_tokens":`...)
+	dst = strconv.AppendInt(dst, in, 10)
+	dst = append(dst, `,"completion_tokens":`...)
+	dst = strconv.AppendInt(dst, out, 10)
+	dst = append(dst, `,"total_tokens":`...)
+	dst = strconv.AppendInt(dst, in+out, 10)
+	dst = append(dst, "}}"...)
+	dst = append(dst, "\n\n"...)
+
+	dst = append(dst, "data: [DONE]\n\n"...)
+	return dst
+}
+
 // assembleAnthropic writes a complete Anthropic Messages API response JSON to dst.
 func assembleAnthropic(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64) []byte {
 	dst = append(dst, `{"id":"msg_`...)
@@ -468,27 +614,54 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 				outputTokens = ctx.IntSlots[cfg.OutputTokensSlot]
 			}
 
-			// 6. Assemble format-specific JSON into a pooled buffer.
+			// 6. Detect streaming request.
+			isStream := false
+			if cfg.StreamSlot >= 0 && cfg.StreamSlot < len(ctx.ByteSlots) {
+				v := ctx.ByteSlots[cfg.StreamSlot]
+				isStream = string(v) == "true" || string(v) == "1"
+			}
+
+			// 7. Assemble format-specific response into a pooled buffer.
 			bufPtr := respBufPool.Get().(*[]byte)
 			buf := (*bufPtr)[:0]
 
-			switch format {
-			case "anthropic":
-				buf = assembleAnthropic(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
-			case "gemini":
-				buf = assembleGemini(buf, content, stopReason, model, inputTokens, outputTokens)
-			default: // "openai" + anything unrecognised
-				buf = assembleOpenAI(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+			if isStream {
+				// SSE streaming — emit format-specific events.
+				// SSE is a transport wrapper; format selects which event schema to use.
+				switch format {
+				case "gemini":
+					// Gemini streaming not yet implemented — fall back to plain JSON.
+					buf = assembleGemini(buf, content, stopReason, model, inputTokens, outputTokens)
+				case "openai":
+					buf = assembleOpenAISSE(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+					ctx.SetResponseHeader([]byte("Content-Type"), []byte("text/event-stream"))
+					ctx.SetResponseHeader([]byte("Cache-Control"), []byte("no-cache"))
+					ctx.SetResponseHeader([]byte("X-Accel-Buffering"), []byte("no"))
+				default: // "anthropic" + anything else
+					buf = assembleAnthropicSSE(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+					ctx.SetResponseHeader([]byte("Content-Type"), []byte("text/event-stream"))
+					ctx.SetResponseHeader([]byte("Cache-Control"), []byte("no-cache"))
+					ctx.SetResponseHeader([]byte("X-Accel-Buffering"), []byte("no"))
+				}
+			} else {
+				switch format {
+				case "anthropic":
+					buf = assembleAnthropic(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+				case "gemini":
+					buf = assembleGemini(buf, content, stopReason, model, inputTokens, outputTokens)
+				default: // "openai" + anything unrecognised
+					buf = assembleOpenAI(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+				}
 			}
 
-			// 7. Copy assembled bytes into the arena (ctx owns the memory).
+			// 8. Copy assembled bytes into the arena (ctx owns the memory).
 			if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 				out := ctx.Alloc(len(buf))
 				copy(out, buf)
 				ctx.ByteSlots[cfg.ResultSlot] = out
 			}
 
-			// 8. Return buffer to pool immediately.
+			// 9. Return buffer to pool immediately.
 			*bufPtr = buf[:0]
 			respBufPool.Put(bufPtr)
 

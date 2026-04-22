@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"rah/internal/engine"
 	"rah/internal/rctx"
+	"strconv"
 )
 
 // EchoRequestStep writes all incoming request headers and query params as a
@@ -66,6 +67,28 @@ func SetConstStep(value string, slot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			ctx.ByteSlots[slot] = data
 			return state.PC + 1
+		},
+	}
+}
+
+// RespondTokenCountStep writes {"input_tokens": N} where N is IntSlots[intSlot].
+// Implements the Anthropic /v1/messages/count_tokens endpoint so callers like
+// Claude Code can check context size without getting a 404.
+func RespondTokenCountStep(intSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "RESPOND_TOKEN_COUNT",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			var n int64
+			if intSlot >= 0 && intSlot < len(ctx.IntSlots) {
+				n = ctx.IntSlots[intSlot]
+			}
+			buf := make([]byte, 0, 32)
+			buf = append(buf, `{"input_tokens":`...)
+			buf = strconv.AppendInt(buf, n, 10)
+			buf = append(buf, '}')
+			ctx.ResponseBuffer = buf
+			ctx.IsBuffered = true
+			return engine.StopPlan
 		},
 	}
 }

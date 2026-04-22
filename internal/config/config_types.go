@@ -97,6 +97,19 @@ type LLMModelConfig struct {
 	// These are merged after the adapter's standard auth header, so they can override it.
 	// Example: {"x-custom-header": "value", "x-org-id": "my-org"}
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	// RateLimits configures proactive provider-facing rate limiting for this model.
+	// The gateway checks local atomic counters before calling the provider and
+	// redirects to the fallback chain if any window is exhausted — avoiding wasted
+	// network round-trips when the provider would return 429.
+	// Up to 4 windows are supported; window values: "second", "minute", "hour", "day".
+	// Example: [{window: "minute", limit: 60}, {window: "day", limit: 1000}]
+	RateLimits []LLMRateLimitWindow `json:"rate_limits,omitempty" yaml:"rate_limits,omitempty"`
+}
+
+// LLMRateLimitWindow defines a single rate limit window for a model.
+type LLMRateLimitWindow struct {
+	Window string `json:"window" yaml:"window"` // "second" | "minute" | "hour" | "day"
+	Limit  int    `json:"limit"  yaml:"limit"`
 }
 
 // LLMConfig is the gateway-level catalog of all usable LLM models.
