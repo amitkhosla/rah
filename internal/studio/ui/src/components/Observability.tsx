@@ -63,6 +63,15 @@ interface TracePayload {
   upstreams?: TracePayloadEvent[]
 }
 
+interface RouterTraceDetails {
+  classifierPrompt?: string
+  classifierSystem?: string
+  classifierResponse?: string
+  finalPrompt?: string
+  finalSystem?: string
+  finalResponse?: string
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 function fmtNum(n: number): string {
@@ -81,6 +90,38 @@ function fmtTime(ns: number): string {
 function fmtNsAsMs(ns: number): string {
   if (!ns || ns <= 0) return '0 ms'
   return `${(ns / 1_000_000).toFixed(2)} ms`
+}
+
+function snip(value?: string, n = 220): string {
+  if (!value) return ''
+  return value.length <= n ? value : value.slice(0, n) + '…'
+}
+
+function kvToMap(kvs?: Array<{ k: string; v: string }>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const kv of kvs ?? []) {
+    if (kv?.k && kv?.v) out[kv.k] = kv.v
+  }
+  return out
+}
+
+function deriveRouterTraceDetails(payload: TracePayload): RouterTraceDetails {
+  const instructions = Array.isArray(payload.instructions) ? payload.instructions : []
+  const classify = instructions.find(e => e.name === 'classify_llm')
+  const llmCalls = instructions.filter(e => e.name?.startsWith('llm_call'))
+  const finalLLM = llmCalls[llmCalls.length - 1]
+
+  const clsKV = kvToMap(classify?.output)
+  const finalKV = kvToMap(finalLLM?.output)
+
+  return {
+    classifierPrompt: clsKV.prompt,
+    classifierSystem: clsKV.system,
+    classifierResponse: clsKV.response || clsKV.classifier_output,
+    finalPrompt: finalKV.prompt,
+    finalSystem: finalKV.system,
+    finalResponse: finalKV.response,
+  }
 }
 
 function statusColor(status: number): string {
@@ -647,7 +688,10 @@ export default function Observability() {
                           Tenant: <span style={{ color: 'var(--text)' }}>{trace.tenant_id}</span>
                         </div>
                         {payload && typeof payload !== 'string' ? (
-                          <BlockView payload={payload as TracePayload} />
+                          <>
+                            <RouterTraceSummary payload={payload as TracePayload} />
+                            <BlockView payload={payload as TracePayload} />
+                          </>
                         ) : payload ? (
                           <pre style={{
                             margin: 0,
@@ -674,6 +718,35 @@ export default function Observability() {
             </div>
           )
         )}
+      </div>
+    </div>
+  )
+}
+
+function RouterTraceSummary({ payload }: { payload: TracePayload }) {
+  const d = deriveRouterTraceDetails(payload)
+  const hasAny = !!(d.classifierPrompt || d.classifierResponse || d.finalPrompt || d.finalResponse)
+  if (!hasAny) return null
+
+  return (
+    <div style={{
+      marginBottom: 10,
+      background: 'var(--bg)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+      padding: '10px 12px',
+      fontSize: 11,
+    }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+        AI Router Details (classifier + final LLM)
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {d.classifierPrompt && <div><span style={{ color: '#a78bfa' }}>Classifier prompt:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierPrompt)}</span></div>}
+        {d.classifierSystem && <div><span style={{ color: '#a78bfa' }}>Classifier system:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierSystem)}</span></div>}
+        {d.classifierResponse && <div><span style={{ color: '#fbbf24' }}>Classifier response:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierResponse)}</span></div>}
+        {d.finalPrompt && <div><span style={{ color: 'var(--accent)' }}>Final LLM prompt:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalPrompt)}</span></div>}
+        {d.finalSystem && <div><span style={{ color: 'var(--accent)' }}>Final LLM system:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalSystem)}</span></div>}
+        {d.finalResponse && <div><span style={{ color: '#34d399' }}>Final LLM response:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalResponse)}</span></div>}
       </div>
     </div>
   )
