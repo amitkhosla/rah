@@ -78,8 +78,15 @@ observability:
   store:
     # use PostgreSQL-compatible backend (works with TimescaleDB)
     type: postgres
+    max_traces: 500000
   traces:
     enabled: true
     sample_rate: 1.0
     always_trace_5xx: true
     instruction_timing: true
+  access_log:
+    enabled: true
+    sample_rate: 1.0
+  info_log:
+    enabled: true
+    fields: [api_id, tenant_id, status, duration_ns, upstream_duration_ns]

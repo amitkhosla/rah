@@ -219,6 +219,10 @@ export interface LLMModel {
   endpoint_override?: string
   // Additional HTTP headers sent with every request to this model (merged after auth header).
   extra_headers?: Record<string, string>
+  // Proactive provider-facing rate limits. Windows: "second" | "minute" | "hour" | "day".
+  // The gateway checks local counters before calling the provider; on exhaustion it
+  // falls through to the fallback chain instead of burning a real API call.
+  rate_limits?: Array<{ window: string; limit: number }>
 }
 
 export interface LLMTestResult {

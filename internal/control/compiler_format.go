@@ -83,6 +83,7 @@ func (c *Compiler) compileFormatResponse(step StepConfig) error {
 		OutputTokensSlot: -1,
 		FormatSlot:       -1,
 		ModelSlot:        -1,
+		StreamSlot:       -1,
 		Format:           step.Input["format"],
 		Model:            step.Input["model"],
 	}
@@ -120,6 +121,14 @@ func (c *Compiler) compileFormatResponse(step StepConfig) error {
 		if idx, convErr := strconv.Atoi(v); convErr == nil && idx >= 0 {
 			cfg.OutputTokensSlot = idx
 		}
+	}
+
+	if v := step.Input["stream_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: stream_slot: %w", slotErr)
+		}
+		cfg.StreamSlot = s
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.FormatResponse(cfg))

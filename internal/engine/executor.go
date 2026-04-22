@@ -26,7 +26,7 @@ type ExecutionState struct {
 	// Set by FlowManager from Config.SlotValueThreshold; 0 means use default.
 	slotValueThreshold int
 
-	TraceAttrs     [16][2]string
+	TraceAttrs     [24][2]string
 	traceAttrCount int8
 }
 

@@ -574,26 +574,71 @@ func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(UnifiedSyncRequest{Flows: flows, Apis: apis})
 }
 
-// FlowProfileHandler handles GET /flows/{name}/profile.
-// Returns the FlowProfile for a compiled flow, or 404 if not found.
+// FlowProfileHandler handles GET /flows/{name}/profile and DELETE /flows/{name}.
+//
+//   - GET  /flows/{name}/profile → returns the FlowProfile for the compiled flow
+//   - DELETE /flows/{name}       → removes an orphaned flow (one with no API pointing to it)
 func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	// Extract flow name from path: /flows/{name}/profile
+	// Extract flow name from path: /flows/{name}[/profile]
 	path := strings.TrimPrefix(r.URL.Path, "/flows/")
-	path = strings.TrimSuffix(path, "/profile")
+	isProfile := strings.HasSuffix(path, "/profile")
+	if isProfile {
+		path = strings.TrimSuffix(path, "/profile")
+	}
 	name := strings.TrimSpace(path)
 	if name == "" {
 		http.Error(w, "missing flow name", http.StatusBadRequest)
 		return
 	}
-	profile, ok := s.Compiler.GetFlowProfile(name)
-	if !ok {
+
+	switch r.Method {
+	case http.MethodDelete:
+		s.deleteFlowHandler(w, name)
+	case http.MethodGet:
+		profile, ok := s.Compiler.GetFlowProfile(name)
+		if !ok {
+			http.Error(w, fmt.Sprintf("flow %q not found", name), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(profile)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// deleteFlowHandler removes an orphaned flow (DELETE /flows/{name}).
+// Refuses if any registered API references this flow as its flow_name.
+func (s *ManagementServer) deleteFlowHandler(w http.ResponseWriter, name string) {
+	s.mu.RLock()
+	_, exists := s.flowConfigs[name]
+	var inUseBy string
+	for apiName, api := range s.apiConfigs {
+		if api.FlowName == name {
+			inUseBy = apiName
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if !exists {
 		http.Error(w, fmt.Sprintf("flow %q not found", name), http.StatusNotFound)
 		return
 	}
+	if inUseBy != "" {
+		http.Error(w, fmt.Sprintf("flow %q is in use by API %q — remove the API first", name, inUseBy), http.StatusConflict)
+		return
+	}
+
+	// Build a sync request with action "delete" for the flow so ApplyUnifiedSync
+	// removes it from the live runtime.
+	req := UnifiedSyncRequest{
+		Flows: []FlowUpdate{{Name: name, Action: "delete"}},
+	}
+	if err := s.ApplyUnifiedSync(req); err != nil {
+		http.Error(w, "runtime sync failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(profile)
+	fmt.Fprintf(w, `{"deleted":%q}`, name)
 }

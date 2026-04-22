@@ -69,6 +69,13 @@ type LLMCallConfig struct {
 	// baked ModelConfig. Allows per-request model config injection from payload.
 	// Set to -1 (default) to use the baked ModelConfig.
 	ModelConfigSlot int
+
+	// MessagesSlot: if >= 0, read JSON-encoded []CanonicalMessage from
+	// ctx.ByteSlots[MessagesSlot] instead of building a single-turn request
+	// from PromptSlot. Use with parse_message_format to support multi-turn
+	// conversation history and content blocks.
+	// Set to -1 (default) to use PromptSlot.
+	MessagesSlot int
 }
 
 // FallbackEntry holds one step in the fallback chain, resolved at bake time.
@@ -211,13 +218,21 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "llm_call[" + cfg.ModelConfig.Alias + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// 1. Read prompt
+			// 1. Read prompt.
+			// promptContent is the single-turn text (used as fallback for single-turn
+			// mode and as the trace "prompt" label when MessagesSlot is not set).
+			// When MessagesSlot is set, reqMessages is built from the slot and
+			// promptContent is used only for the trace snippet.
 			var promptContent string
 			if cfg.PromptSlot >= 0 && cfg.PromptSlot < len(ctx.ByteSlots) {
 				promptContent = string(ctx.ByteSlots[cfg.PromptSlot])
 			}
-			if promptContent == "" {
-				// Empty prompt — skip silently, leave result slot empty
+			// When MessagesSlot is configured, allow empty promptContent — the messages
+			// array will supply the actual content. Only skip if both are empty.
+			hasMessages := cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) &&
+				len(ctx.ByteSlots[cfg.MessagesSlot]) > 0
+			if promptContent == "" && !hasMessages {
+				// Nothing to send — skip silently, leave result slot empty
 				return state.PC + 1
 			}
 
@@ -329,8 +344,21 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			if wireModel == "" {
 				wireModel = activeCfg.Alias
 			}
+			// Build message list: use MessagesSlot (multi-turn) if configured,
+			// otherwise fall back to single-turn from PromptSlot.
+			var reqMessages []CanonicalMessage
+			if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.MessagesSlot]; len(raw) > 0 {
+					if jsonErr := json.Unmarshal(raw, &reqMessages); jsonErr != nil {
+						reqMessages = nil // fall through to single-turn
+					}
+				}
+			}
+			if len(reqMessages) == 0 {
+				reqMessages = []CanonicalMessage{{Role: RoleUser, Content: promptContent}}
+			}
 			req := LLMRequest{
-				Messages:            []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
+				Messages:            reqMessages,
 				System:              systemContent,
 				Model:               wireModel,
 				MaxTokens:           maxTokens,
@@ -368,12 +396,23 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 
-			// 6. HTTP call with retry
+			// 6. Proactive provider rate limit check.
+			// Checks local atomic counters — ~20ns, no network call.
+			// If any configured window is exhausted we skip the HTTP loop and fall
+			// through to the fallback chain exactly as a provider-returned 429 would.
+			var lastStatus int
+			var lastErrBody []byte // last provider error response body, for final exhaustion response
+			if detail, allowed := engine.CheckUpstreamLimitWithDetail(activeCfg.Alias); !allowed {
+				state.AddTraceAttr("rate_limited", activeCfg.Alias)
+				state.AddTraceAttr("rate_limit_detail", detail) // e.g. "minute:60/60"
+				lastStatus = 429
+			} else {
+			_ = detail // allowed path — no detail needed
+
+			// 7. HTTP call with retry
 			client := getLLMClient(activeCfg.BaseURL, timeoutMs)
 			attempts := maxRetries + 1
 
-			var lastStatus int
-			var lastErrBody []byte // last provider error response body, for final exhaustion response
 			for attempt := 1; attempt <= attempts; attempt++ {
 				start := time.Now()
 
@@ -539,27 +578,35 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
 						state.AddTraceAttr("cost_usd", fmt.Sprintf("%.6f", cost))
 					}
+					// For multi-turn (MessagesSlot), log the serialized messages array.
 					promptSnip := promptContent
-					if len(promptSnip) > 300 {
-						promptSnip = promptSnip[:300] + "…"
+					if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) {
+						if raw := ctx.ByteSlots[cfg.MessagesSlot]; len(raw) > 0 {
+							promptSnip = string(raw)
+						}
+					}
+					if len(promptSnip) > 4000 {
+						promptSnip = promptSnip[:4000] + "…"
 					}
 					state.AddTraceAttr("prompt", promptSnip)
 					if systemContent != "" {
 						sysSnip := systemContent
-						if len(sysSnip) > 200 {
-							sysSnip = sysSnip[:200] + "…"
+						if len(sysSnip) > 1000 {
+							sysSnip = sysSnip[:1000] + "…"
 						}
 						state.AddTraceAttr("system", sysSnip)
 					}
 					respSnip := llmResp.Content
-					if len(respSnip) > 500 {
-						respSnip = respSnip[:500] + "…"
+					if len(respSnip) > 4000 {
+						respSnip = respSnip[:4000] + "…"
 					}
 					state.AddTraceAttr("response", respSnip)
 				}
 
 				return state.PC + 1
 			}
+
+			} // end else (rate limit not exceeded)
 
 			// --- fallback chain: walk each entry until one succeeds ---
 			for chainIdx, fb := range activeFallback {
@@ -583,7 +630,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					fbWireModel = fb.ModelConfig.Alias
 				}
 				fbReq := LLMRequest{
-					Messages:    []CanonicalMessage{{Role: RoleUser, Content: promptContent}},
+					Messages:    reqMessages, // reuse same messages (single or multi-turn)
 					System:      systemContent,
 					Model:       fbWireModel,
 					MaxTokens:   maxTokens,
@@ -686,7 +733,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// All retries and fallback chain exhausted.
+			// All retries and fallback chain exhausted — emit diagnosis.
+			if len(activeFallback) == 0 {
+				state.AddTraceAttr("fallback_status", "none_configured")
+			} else {
+				state.AddTraceAttr("fallback_status", fmt.Sprintf("all_%d_exhausted", len(activeFallback)))
+			}
+			state.AddTraceAttr("primary_status", fmt.Sprintf("%d", lastStatus))
 			ctx.ResponseStatus = lastStatus
 			if ctx.ResponseStatus == 0 {
 				ctx.ResponseStatus = 502

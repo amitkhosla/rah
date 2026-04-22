@@ -59,6 +59,10 @@ export function fetchGatewayApis(): Promise<GatewayState> {
   return request<GatewayState>('/api/getAllApis')
 }
 
+export function deleteFlow(name: string): Promise<void> {
+  return request<void>(`/api/flows/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
 // ── Tenant Management ─────────────────────────────────────────────
 
 export function listTenants(cursor = 0, limit = 100): Promise<TenantListResponse> {
@@ -308,6 +312,30 @@ export async function saveRouteConfigs(routes: unknown[]): Promise<void> {
   } catch {
     // Non-fatal — localStorage is the fallback
   }
+}
+
+// ── Spend caps / quotas ────────────────────────────────────────────
+
+export interface TenantQuota {
+  tenant_id: string
+  daily_cost_limit?: number
+  monthly_cost_limit?: number
+}
+
+export function listQuotas(): Promise<TenantQuota[]> {
+  return aiReq<TenantQuota[]>('/api/ai/quotas')
+}
+
+export function upsertQuota(q: TenantQuota): Promise<TenantQuota> {
+  return aiReq<TenantQuota>('/api/ai/quotas', {
+    method: 'POST',
+    headers: AI_JSON,
+    body: JSON.stringify(q),
+  })
+}
+
+export function deleteQuota(tenantId: string): Promise<void> {
+  return aiReq<void>(`/api/ai/quotas/${encodeURIComponent(tenantId)}`, { method: 'DELETE' })
 }
 
 // ── Observability ──────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { listLLMModels, upsertLLMModel, deleteLLMModel, testLLMModel } from '../api'
+import { listLLMModels, upsertLLMModel, deleteLLMModel, testLLMModel, listQuotas, upsertQuota, deleteQuota } from '../api'
+import type { TenantQuota } from '../api'
 import type { LLMModel, LLMAdapter, ModelCapabilities, LLMTestDebug } from '../types'
 
 // ── SecretRefBuilder ─────────────────────────────────────────────────
@@ -644,7 +645,7 @@ export default function AIModels() {
     setShowForm(true)
   }
 
-  function setField(key: keyof LLMModel, val: string | number) {
+  function setField(key: keyof LLMModel, val: string | number | boolean | Array<{ window: string; limit: number }> | undefined) {
     setForm(f => ({ ...f, [key]: val }))
     if (key === 'alias') setTestResult(null)
   }
@@ -852,6 +853,54 @@ export default function AIModels() {
                   onChange={e => setField('cost_per_output_token', parseFloat(e.target.value) || 0)}
                   placeholder="e.g. 1.25" />
               </Field>
+            </div>
+
+            {/* ── Provider Rate Limits ── */}
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Provider Rate Limits
+                </span>
+                <button type="button" className="btn" style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={() => setField('rate_limits', [...(form.rate_limits ?? []), { window: 'minute', limit: 60 }])}>
+                  + Add Window
+                </button>
+              </div>
+              {(form.rate_limits ?? []).length === 0 && (
+                <p style={{ fontSize: 12, color: 'var(--muted)', margin: '4px 0 8px' }}>
+                  No limits — gateway relies on provider 429s. Add windows to proactively redirect to fallback before burning API quota.
+                </p>
+              )}
+              {(form.rate_limits ?? []).map((rl, idx) => (
+                <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                  <select className="input" style={{ flex: '0 0 110px', fontSize: 12 }}
+                    value={rl.window}
+                    onChange={e => {
+                      const updated = [...(form.rate_limits ?? [])]
+                      updated[idx] = { ...updated[idx], window: e.target.value }
+                      setField('rate_limits', updated)
+                    }}>
+                    <option value="second">/ second</option>
+                    <option value="minute">/ minute</option>
+                    <option value="hour">/ hour</option>
+                    <option value="day">/ day</option>
+                  </select>
+                  <input className="input" type="number" min="1" style={{ flex: 1, fontSize: 12 }}
+                    value={rl.limit}
+                    placeholder="limit"
+                    onChange={e => {
+                      const updated = [...(form.rate_limits ?? [])]
+                      updated[idx] = { ...updated[idx], limit: parseInt(e.target.value) || 1 }
+                      setField('rate_limits', updated)
+                    }} />
+                  <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 14, lineHeight: 1, padding: '0 4px' }}
+                    title="Remove window"
+                    onClick={() => {
+                      const updated = (form.rate_limits ?? []).filter((_, i) => i !== idx)
+                      setField('rate_limits', updated.length > 0 ? updated : undefined)
+                    }}>✕</button>
+                </div>
+              ))}
             </div>
 
             {/* ── Inline test panel (collapsible) ── */}
@@ -1150,6 +1199,147 @@ export default function AIModels() {
               </div>
             )
           })}
+        </div>
+      )}
+      <SpendCaps />
+    </div>
+  )
+}
+
+// ── SpendCaps ────────────────────────────────────────────────────────
+
+function SpendCaps() {
+  const [quotas, setQuotas]       = useState<TenantQuota[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [err, setErr]             = useState('')
+  const [expanded, setExpanded]   = useState(false)
+  const [editItem, setEditItem]   = useState<TenantQuota | null>(null)
+  const [saving, setSaving]       = useState(false)
+  const [saveMsg, setSaveMsg]     = useState('')
+  const blankQuota = (): TenantQuota => ({ tenant_id: '', daily_cost_limit: undefined, monthly_cost_limit: undefined })
+
+  async function load() {
+    setLoading(true); setErr('')
+    try { setQuotas(await listQuotas()) }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Failed to load quotas') }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { void load() }, [])
+
+  async function handleSave() {
+    if (!editItem || !editItem.tenant_id.trim()) { setSaveMsg('Tenant ID required'); return }
+    setSaving(true); setSaveMsg('')
+    try {
+      await upsertQuota(editItem)
+      await load()
+      setEditItem(null)
+      setSaveMsg('Saved')
+    } catch (e) {
+      setSaveMsg(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete(tid: string) {
+    if (!confirm(`Remove spend cap for tenant "${tid}"?`)) return
+    try { await deleteQuota(tid); await load() }
+    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+  }
+
+  return (
+    <div style={{ marginTop: 28, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '11px 16px', borderBottom: expanded ? '1px solid var(--border)' : 'none',
+          cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+        onClick={() => setExpanded(e => !e)}
+      >
+        <span>Spend Caps</span>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>{expanded ? '▲' : '▼'} {quotas.length} tenant{quotas.length !== 1 ? 's' : ''} configured</span>
+      </div>
+      {expanded && (
+        <div style={{ padding: 16 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 14 }}>
+            Set daily and monthly USD cost limits per tenant. Requests that would exceed the cap
+            are rejected with 429 before reaching any LLM provider.
+          </p>
+          {loading && <p className="hint">Loading…</p>}
+          {err && <p className="status-err">{err}</p>}
+
+          {/* Table */}
+          {!loading && quotas.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 140px 80px', gap: 6,
+                fontSize: 11, color: 'var(--muted)', fontWeight: 600, marginBottom: 6, paddingLeft: 4 }}>
+                <span>Tenant ID</span>
+                <span>Daily cap ($)</span>
+                <span>Monthly cap ($)</span>
+                <span></span>
+              </div>
+              {quotas.map(q => (
+                <div key={q.tenant_id} style={{ display: 'grid', gridTemplateColumns: '1fr 120px 140px 80px', gap: 6,
+                  alignItems: 'center', padding: '6px 8px', background: 'var(--block-bg)',
+                  border: '1px solid var(--border)', borderRadius: 6, marginBottom: 4, fontSize: 13 }}>
+                  <span style={{ fontFamily: 'monospace' }}>{q.tenant_id}</span>
+                  <span style={{ fontFamily: 'monospace', color: q.daily_cost_limit ? 'var(--text)' : 'var(--muted)' }}>
+                    {q.daily_cost_limit != null ? `$${q.daily_cost_limit}` : '—'}
+                  </span>
+                  <span style={{ fontFamily: 'monospace', color: q.monthly_cost_limit ? 'var(--text)' : 'var(--muted)' }}>
+                    {q.monthly_cost_limit != null ? `$${q.monthly_cost_limit}` : '—'}
+                  </span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn muted" style={{ padding: '2px 10px', fontSize: 12 }}
+                      onClick={() => setEditItem({ ...q })}>Edit</button>
+                    <button className="btn muted" style={{ padding: '2px 8px', fontSize: 12, color: '#ef4444' }}
+                      onClick={() => handleDelete(q.tenant_id)}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add / Edit form */}
+          {editItem ? (
+            <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 8, padding: 16 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>
+                {editItem.tenant_id && quotas.some(q => q.tenant_id === editItem.tenant_id) ? 'Edit Quota' : 'Add Quota'}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                <div>
+                  <label className="field-label">Tenant ID</label>
+                  <input className="input" value={editItem.tenant_id}
+                    placeholder="e.g. customer-42"
+                    onChange={e => setEditItem(q => q ? { ...q, tenant_id: e.target.value } : q)} />
+                </div>
+                <div>
+                  <label className="field-label">Daily Cost Limit (USD)</label>
+                  <input className="input" type="number" min={0} step={0.01}
+                    value={editItem.daily_cost_limit ?? ''}
+                    placeholder="e.g. 5.00"
+                    onChange={e => setEditItem(q => q ? { ...q, daily_cost_limit: e.target.value === '' ? undefined : parseFloat(e.target.value) } : q)} />
+                </div>
+                <div>
+                  <label className="field-label">Monthly Cost Limit (USD)</label>
+                  <input className="input" type="number" min={0} step={0.01}
+                    value={editItem.monthly_cost_limit ?? ''}
+                    placeholder="e.g. 50.00"
+                    onChange={e => setEditItem(q => q ? { ...q, monthly_cost_limit: e.target.value === '' ? undefined : parseFloat(e.target.value) } : q)} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
+                <button className="btn" style={{ width: 'auto', padding: '0 20px' }}
+                  onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+                <button className="btn muted" style={{ width: 'auto' }}
+                  onClick={() => { setEditItem(null); setSaveMsg('') }}>Cancel</button>
+                {saveMsg && <span className="status-err">{saveMsg}</span>}
+              </div>
+            </div>
+          ) : (
+            <button className="btn muted" style={{ width: 'auto', padding: '0 20px', fontSize: 13 }}
+              onClick={() => setEditItem(blankQuota())}>+ Add Spend Cap</button>
+          )}
         </div>
       )}
     </div>

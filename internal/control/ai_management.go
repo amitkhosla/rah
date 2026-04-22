@@ -211,6 +211,77 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
+	// Spend caps / quota routes — GET returns all tenant quotas, POST upserts one,
+	// DELETE /ai/quotas/{tenantId} removes one.
+	const aiKeyQuotas = "quotas"
+	mux.HandleFunc("/ai/quotas", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		switch r.Method {
+		case http.MethodGet:
+			writeAIOK(w, cfgMgr.Quotas().Tenants)
+		case http.MethodPost:
+			var q config.TenantQuotaConfig
+			if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+				writeAIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+				return
+			}
+			if q.TenantID == "" {
+				writeAIError(w, http.StatusBadRequest, "tenant_id required")
+				return
+			}
+			cfgMgr.UpsertTenantQuota(q)
+			if dsm != nil && dsm.IsConfigured(config.DomainAIConfig) {
+				if raw, err := json.Marshal(cfgMgr.Quotas().Tenants); err == nil {
+					_ = dsm.PutGlobal(ctx, config.DomainAIConfig, aiKeyQuotas, raw)
+				}
+			}
+			writeAIOK(w, q)
+		default:
+			writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
+	mux.HandleFunc("/ai/quotas/", func(w http.ResponseWriter, r *http.Request) {
+		tenantID := strings.TrimPrefix(r.URL.Path, "/ai/quotas/")
+		if tenantID == "" {
+			writeAIError(w, http.StatusBadRequest, "tenant_id required in path")
+			return
+		}
+		if r.Method != http.MethodDelete {
+			writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		ctx := r.Context()
+		if !cfgMgr.DeleteTenantQuota(tenantID) {
+			writeAIError(w, http.StatusNotFound, "tenant quota not found")
+			return
+		}
+		if dsm != nil && dsm.IsConfigured(config.DomainAIConfig) {
+			if raw, err := json.Marshal(cfgMgr.Quotas().Tenants); err == nil {
+				_ = dsm.PutGlobal(ctx, config.DomainAIConfig, aiKeyQuotas, raw)
+			}
+		}
+		writeAIOK(w, nil)
+	})
+
+	// Restore persisted quotas on startup (best-effort).
+	if dsm != nil && dsm.IsConfigured(config.DomainAIConfig) {
+		go func() {
+			ctx := context.Background()
+			raw, ok, err := dsm.GetGlobal(ctx, config.DomainAIConfig, aiKeyQuotas)
+			if err != nil || !ok {
+				return
+			}
+			var tenants []config.TenantQuotaConfig
+			if err := json.Unmarshal(raw, &tenants); err != nil {
+				log.Printf("[AI] failed to load persisted quotas: %v", err)
+				return
+			}
+			for _, q := range tenants {
+				cfgMgr.UpsertTenantQuota(q)
+			}
+		}()
+	}
+
 	// API Tools (global catalog) — only wired when mcpReg is provided.
 	if mcpReg != nil {
 		mux.HandleFunc("/ai/tools/apis", func(w http.ResponseWriter, r *http.Request) {

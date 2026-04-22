@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"rah/internal/config"
+	"rah/internal/engine"
 	"rah/internal/engine/steps"
 )
 
@@ -109,6 +110,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		APIKeySlot:       -1, // disabled by default
 		InputTokensSlot:  -1, // disabled by default
 		OutputTokensSlot: -1, // disabled by default
+		MessagesSlot:     -1, // disabled by default
 	}
 
 	// Dynamic model slot (optional)
@@ -270,7 +272,32 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		llmCfg.StopReasonSlot = s
 	}
 
+	// messages_slot: optional ByteSlot holding JSON-encoded []CanonicalMessage
+	// produced by parse_message_format. When set, the full conversation history
+	// (multi-turn, content blocks) is sent to the model instead of a single
+	// user turn from prompt_slot. Set alongside system_slot from parse_message_format.
+	if v, ok := step.Input["messages_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: messages_slot: %w", err)
+		}
+		llmCfg.MessagesSlot = s
+	}
+
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
+
+	// Register per-model upstream rate limits at bake time for all catalog models.
+	// This covers both the baked model and any model reachable via model_slot.
+	for _, m := range c.LLMCfg.Models {
+		if len(m.RateLimits) > 0 {
+			windows := make([]*engine.UpstreamRateWindow, 0, len(m.RateLimits))
+			for _, rl := range m.RateLimits {
+				windows = append(windows, engine.UpstreamWindowFromWindow(rl.Window, uint32(rl.Limit)))
+			}
+			engine.RegisterUpstreamLimit(m.Alias, windows)
+		}
+	}
+
 	return nil
 }
 
