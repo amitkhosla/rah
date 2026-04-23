@@ -3,13 +3,14 @@ package steps
 import (
 	"encoding/json"
 	"rah/internal/engine"
+	"rah/internal/observability"
 	"rah/internal/rctx"
 )
 
 // ClassifyLLMConfig configures the smart classification step.
 type ClassifyLLMConfig struct {
-	CallConfig  LLMCallConfig  // The model to use for classification (e.g. gemini-flash)
-	Mapping     map[string]int // JSON key in response -> ByteSlot index to write value to
+	CallConfig LLMCallConfig  // The model to use for classification (e.g. gemini-flash)
+	Mapping    map[string]int // JSON key in response -> ByteSlot index to write value to
 }
 
 // ClassifyLLM returns an engine.Instruction that calls an LLM and parses its
@@ -44,7 +45,7 @@ func ClassifyLLM(cfg ClassifyLLMConfig) engine.Instruction {
 								b, _ := json.Marshal(v)
 								strVal = string(b)
 							}
-							
+
 							if slot >= 0 && slot < len(ctx.ByteSlots) {
 								out := ctx.Alloc(len(strVal))
 								copy(out, strVal)
@@ -58,11 +59,18 @@ func ClassifyLLM(cfg ClassifyLLMConfig) engine.Instruction {
 			if cfg.CallConfig.ResultSlot >= 0 {
 				classifyRaw := ctx.ByteSlots[cfg.CallConfig.ResultSlot]
 				if len(classifyRaw) > 0 {
+					full := string(classifyRaw)
 					snip := string(classifyRaw)
 					if len(snip) > 500 {
 						snip = snip[:500] + "…"
 					}
 					state.AddTraceAttr("classifier_output", snip)
+					observability.WriteDetailLog(map[string]any{
+						"type":         "classify_llm",
+						"api_id":       ctx.ApiId,
+						"tenant_id":    ctx.TenantID,
+						"raw_response": full,
+					})
 				}
 			}
 			for key, slot := range cfg.Mapping {

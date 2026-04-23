@@ -58,6 +58,9 @@ ingest:
       sinks: [log_file]
 
 observability:
+  # Optional full prompt/response JSONL detail log:
+  # set env var on container, e.g.
+  #   RAH_OBS_DETAIL_LOG_FILE=/app/logs/obs-detail.jsonl
   store:
     type: postgres
   traces:

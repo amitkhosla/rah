@@ -75,6 +75,9 @@ ingest:
       sinks: [log_file]
 
 observability:
+  # Optional: enable full JSONL prompt/response detail log via environment variable
+  #   RAH_OBS_DETAIL_LOG_FILE=./obs-detail.jsonl
+  # This is env-driven (not a YAML key) to keep sensitive payload logging explicit.
   store:
     # use PostgreSQL-compatible backend (works with TimescaleDB)
     type: postgres

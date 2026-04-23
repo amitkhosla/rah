@@ -23,12 +23,16 @@ services:
       - "8081:8081"   # Management plane
     volumes:
       - ./deploy/docker/gateway-local.yaml:/app/gateway.yaml:ro
+      - ./logs:/app/logs
     environment:
       # API keys — values read from your host environment or a .env file
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Optional full prompt/response JSONL observability log
+      # Leave empty to disable.
+      RAH_OBS_DETAIL_LOG_FILE: ${RAH_OBS_DETAIL_LOG_FILE:-/app/logs/obs-detail.jsonl}
     healthcheck:
       test: ["CMD", "/usr/local/bin/rah-gateway", "-health", "-mport", "8081"]
       interval: 15s

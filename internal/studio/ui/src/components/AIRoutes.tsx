@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { listLLMModels, syncFlows, loadRouteConfigs, saveRouteConfigs, fetchGatewaySnapshot } from '../api'
+import {
+  listLLMModels, syncFlows, loadRouteConfigs, saveRouteConfigs, fetchGatewaySnapshot,
+  fetchObsDetailLogConfig, updateObsDetailLogConfig,
+} from '../api'
 import { reconstructRoute } from '../reconstructRoute'
 import type { SyncStep } from '../api'
 import type { LLMModel } from '../types'
@@ -733,6 +736,10 @@ export default function AIRoutes() {
   const [existingFlowNames, setExistingFlowNames] = useState<string[]>([])
   const [showExistingFlowPicker, setShowExistingFlowPicker] = useState(false)
   const [existingFlowSearch, setExistingFlowSearch] = useState('')
+  const [detailLogEnabled, setDetailLogEnabled] = useState(false)
+  const [detailLogPath, setDetailLogPath] = useState('/app/logs/obs-detail.jsonl')
+  const [detailLogSaving, setDetailLogSaving] = useState(false)
+  const [detailLogMsg, setDetailLogMsg] = useState<string | null>(null)
 
   // On mount: try to load routes from the gateway (server-side persistence).
   // Falls back to whatever loadRoutes() already returned from localStorage.
@@ -764,6 +771,15 @@ export default function AIRoutes() {
 
   useEffect(() => {
     listLLMModels().then(setModels).catch(() => {}).finally(() => setLoadingModels(false))
+  }, [])
+
+  useEffect(() => {
+    fetchObsDetailLogConfig().then(cfg => {
+      setDetailLogEnabled(!!cfg.enabled)
+      setDetailLogPath(cfg.path || '/app/logs/obs-detail.jsonl')
+    }).catch(() => {
+      // hide noisy errors in route builder when observability endpoint is unavailable
+    })
   }, [])
 
   // Active route derived
@@ -897,6 +913,24 @@ export default function AIRoutes() {
   }
   function updateModelRule(id: string, u: ModelTierRule) { setClassifier(c => ({ ...c, modelRules: c.modelRules.map(x => x.id === id ? u : x) })) }
   function removeModelRule(id: string) { setClassifier(c => ({ ...c, modelRules: c.modelRules.filter(x => x.id !== id) })) }
+
+  async function saveDetailLogConfig() {
+    setDetailLogSaving(true)
+    setDetailLogMsg(null)
+    try {
+      const cfg = await updateObsDetailLogConfig({
+        enabled: detailLogEnabled,
+        path: detailLogPath.trim(),
+      })
+      setDetailLogEnabled(!!cfg.enabled)
+      setDetailLogPath(cfg.path || '')
+      setDetailLogMsg('Detail log config saved.')
+    } catch (e) {
+      setDetailLogMsg('Failed to save detail log config: ' + String(e))
+    } finally {
+      setDetailLogSaving(false)
+    }
+  }
 
   async function handleDeploy() {
     const name = flowName.trim()
@@ -1334,6 +1368,41 @@ export default function AIRoutes() {
                     <input className="input" type="number" value={classifier.maxTurns} min={1} onChange={e => setClassifier(c => ({ ...c, maxTurns: e.target.value }))} />
                   </Field>
                 </div>
+              </div>
+            )}
+
+            <SectionLabel>Detail logs (full prompt/response)</SectionLabel>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+              Optional JSONL logging for debugging Smart Router requests. This writes full classifier/final LLM payloads to a server file.
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={detailLogEnabled}
+                onChange={e => setDetailLogEnabled(e.target.checked)}
+              />
+              <span style={{ fontSize: 13 }}>Enable full detail log file</span>
+            </label>
+            <Field label="Detail log path" hint="Path on gateway host/container. Example: /app/logs/obs-detail.jsonl">
+              <input
+                className="input"
+                value={detailLogPath}
+                onChange={e => setDetailLogPath(e.target.value)}
+                placeholder="/app/logs/obs-detail.jsonl"
+              />
+            </Field>
+            <button
+              className="btn"
+              type="button"
+              onClick={saveDetailLogConfig}
+              disabled={detailLogSaving}
+              style={{ width: 'auto', padding: '0 16px', fontSize: 12 }}
+            >
+              {detailLogSaving ? 'Saving…' : 'Save detail-log config'}
+            </button>
+            {detailLogMsg && (
+              <div style={{ fontSize: 11, marginTop: 6, color: detailLogMsg.startsWith('Failed') ? '#ef4444' : '#22c55e' }}>
+                {detailLogMsg}
               </div>
             )}
           </>)}
