@@ -372,3 +372,24 @@ export async function fetchObsTraces(params?: { api?: string; limit?: number }):
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
+
+export interface ObsDetailLogConfig {
+  enabled: boolean
+  path: string
+}
+
+export async function fetchObsDetailLogConfig(): Promise<ObsDetailLogConfig> {
+  const r = await fetch('/api/observability/detail-log')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function updateObsDetailLogConfig(cfg: ObsDetailLogConfig): Promise<ObsDetailLogConfig> {
+  const r = await fetch('/api/observability/detail-log', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
