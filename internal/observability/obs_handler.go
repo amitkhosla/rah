@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry) {
 	mux.HandleFunc("/observability/metrics", h.MetricsHandler)
 	mux.HandleFunc("/observability/access-log", h.AccessLogHandler)
 	mux.HandleFunc("/observability/traces", h.TracesHandler)
+	mux.HandleFunc("/observability/detail-log", h.DetailLogConfigHandler)
 	mux.HandleFunc("/observability/apis", h.APIsHandler)
 	mux.HandleFunc("/observability/apis/", h.APIDetailHandler)
 	mux.HandleFunc("/observability/tenants/", h.TenantDetailHandler)
@@ -216,6 +218,35 @@ func (h *ObsHandler) TracesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": traces})
 }
 
+// DetailLogConfigHandler handles:
+//   - GET /observability/detail-log  -> current detail log config
+//   - PUT /observability/detail-log  -> update detail log config
+func (h *ObsHandler) DetailLogConfigHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, GetDetailLogConfig())
+		return
+	case http.MethodPut:
+		var req struct {
+			Enabled bool   `json:"enabled"`
+			Path    string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		if err := SetDetailLogConfig(req.Enabled, req.Path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, GetDetailLogConfig())
+		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+}
+
 // APIsHandler handles GET /observability/apis.
 // Returns the top-slow APIs derived from in-memory telemetry.
 func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
@@ -223,15 +254,61 @@ func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	snap := h.obs.Snapshot(20)
-	var topSlow []NameLatency
-	if m, ok := snap["metrics"].(GatewayMetrics); ok {
-		topSlow = m.UpstreamTopSlow
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Primary source: aggregate true API performance from persisted access logs.
+	// This keeps API Performance focused on customer-facing APIs (api_name),
+	// not internal upstream/model calls.
+	if !isNoop(h.writer.Store()) {
+		logs, err := h.writer.Store().QueryAccessLog(ctx, AccessLogFilter{
+			FromUnixS: time.Now().Add(-1 * time.Hour).Unix(),
+			Limit:     1000,
+		})
+		if err == nil && len(logs) > 0 {
+			agg := make(map[string]NameLatency, len(logs))
+			for _, rec := range logs {
+				name := strings.TrimSpace(rec.ApiName)
+				if name == "" {
+					continue
+				}
+				a := agg[name]
+				a.Name = name
+				a.Count++
+				a.TotalLatencyNs += uint64(rec.TotalMs * 1e6)
+				if rec.ReqBytes > 0 {
+					a.BytesTx += uint64(rec.ReqBytes)
+				}
+				if rec.ResBytes > 0 {
+					a.BytesRx += uint64(rec.ResBytes)
+				}
+				agg[name] = a
+			}
+
+			apis := make([]NameLatency, 0, len(agg))
+			for _, v := range agg {
+				apis = append(apis, v)
+			}
+			sort.Slice(apis, func(i, j int) bool {
+				if apis[i].Count == apis[j].Count {
+					return apis[i].TotalLatencyNs > apis[j].TotalLatencyNs
+				}
+				return apis[i].Count > apis[j].Count
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"apis": apis})
+			return
+		}
 	}
-	if topSlow == nil {
-		topSlow = []NameLatency{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"apis": topSlow})
+
+	// Fallback: no persisted access logs available yet.
+	// Do NOT return upstream/model metrics here (that mixes provider calls
+	// with user-facing APIs and is misleading in "API Performance").
+	writeJSON(w, http.StatusOK, map[string]any{
+		"apis":   []NameLatency{},
+		"note":   "no persisted access-log data yet; API performance is derived from access logs only",
+		"source": "access_log",
+	})
 }
 
 // APIDetailHandler handles GET /observability/apis/{name}.
