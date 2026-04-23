@@ -150,6 +150,10 @@ secretEnv: {}
 # RAH_PG_DSN: "postgres://gw:pass@pg:5432/gateway?sslmode=disable"
 
 ## ── Extra environment variables ───────────────────────────────────────────────
+## Optional full prompt/response JSONL detail log file path.
+## Example: /var/log/rah/obs-detail.jsonl
+observabilityDetailLogFile: ""
+
 extraEnv: []
 # - name: MY_VAR
 #   value: "my-value"

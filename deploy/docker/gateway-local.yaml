@@ -58,6 +58,9 @@ server:
   write_timeout_ms: 30000
 
 observability:
+  # Optional full prompt/response JSONL detail log:
+  # set env var on container, e.g.
+  #   RAH_OBS_DETAIL_LOG_FILE=/app/logs/obs-detail.jsonl
   traces:
     enabled: true
     sample_rate: 1.0          # capture every request
