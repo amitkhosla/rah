@@ -309,6 +309,15 @@ func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 		"note":   "no persisted access-log data yet; API performance is derived from access logs only",
 		"source": "access_log",
 	})
+	}
+
+	// Fallback for environments without persisted access logs.
+	snap := h.obs.Snapshot(20)
+	apis := []NameLatency{}
+	if m, ok := snap["metrics"].(GatewayMetrics); ok {
+		apis = m.UpstreamTopSlow
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apis": apis})
 }
 
 // APIDetailHandler handles GET /observability/apis/{name}.
