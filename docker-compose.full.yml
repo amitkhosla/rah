@@ -54,6 +54,9 @@ services:
     volumes:
       - ./deploy/docker/gateway-full.yaml:/app/gateway.yaml:ro
       - gateway_logs:/app/logs
+    environment:
+      # Optional full prompt/response JSONL observability log
+      RAH_OBS_DETAIL_LOG_FILE: ${RAH_OBS_DETAIL_LOG_FILE:-/app/logs/obs-detail.jsonl}
     depends_on:
       redis:
         condition: service_healthy
