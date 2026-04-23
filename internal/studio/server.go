@@ -221,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/api/observability/metrics", s.obsHandler.MetricsHandler)
 		mux.HandleFunc("/api/observability/access-log", s.obsHandler.AccessLogHandler)
 		mux.HandleFunc("/api/observability/traces", s.obsHandler.TracesHandler)
+		mux.HandleFunc("/api/observability/detail-log", s.obsHandler.DetailLogConfigHandler)
 		mux.HandleFunc("/api/observability/apis", s.obsHandler.APIsHandler)
 		mux.HandleFunc("/api/observability/apis/", func(w http.ResponseWriter, r *http.Request) {
 			// Strip /api prefix so handler sees /observability/apis/{name}

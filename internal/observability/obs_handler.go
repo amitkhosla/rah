@@ -39,6 +39,7 @@ func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry) {
 	mux.HandleFunc("/observability/metrics", h.MetricsHandler)
 	mux.HandleFunc("/observability/access-log", h.AccessLogHandler)
 	mux.HandleFunc("/observability/traces", h.TracesHandler)
+	mux.HandleFunc("/observability/detail-log", h.DetailLogConfigHandler)
 	mux.HandleFunc("/observability/apis", h.APIsHandler)
 	mux.HandleFunc("/observability/apis/", h.APIDetailHandler)
 	mux.HandleFunc("/observability/tenants/", h.TenantDetailHandler)
@@ -215,6 +216,35 @@ func (h *ObsHandler) TracesHandler(w http.ResponseWriter, r *http.Request) {
 		traces = []TraceRecord{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": traces})
+}
+
+// DetailLogConfigHandler handles:
+//   - GET /observability/detail-log  -> current detail log config
+//   - PUT /observability/detail-log  -> update detail log config
+func (h *ObsHandler) DetailLogConfigHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, GetDetailLogConfig())
+		return
+	case http.MethodPut:
+		var req struct {
+			Enabled bool   `json:"enabled"`
+			Path    string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		if err := SetDetailLogConfig(req.Enabled, req.Path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, GetDetailLogConfig())
+		return
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 }
 
 // APIsHandler handles GET /observability/apis.

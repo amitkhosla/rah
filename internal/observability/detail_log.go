@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ var detailLogState struct {
 	enabled bool
 	mu      sync.Mutex
 	f       *os.File
+	path    string
 }
 
 func initDetailLog() {
@@ -28,6 +30,7 @@ func initDetailLog() {
 	}
 	detailLogState.f = f
 	detailLogState.enabled = true
+	detailLogState.path = path
 	log.Printf("[obs] detail log enabled: %s", path)
 }
 
@@ -51,4 +54,50 @@ func WriteDetailLog(record map[string]any) {
 	detailLogState.mu.Lock()
 	defer detailLogState.mu.Unlock()
 	_, _ = detailLogState.f.Write(append(b, '\n'))
+}
+
+type DetailLogConfig struct {
+	Enabled bool   `json:"enabled"`
+	Path    string `json:"path"`
+}
+
+func GetDetailLogConfig() DetailLogConfig {
+	detailLogState.once.Do(initDetailLog)
+	detailLogState.mu.Lock()
+	defer detailLogState.mu.Unlock()
+	return DetailLogConfig{
+		Enabled: detailLogState.enabled && detailLogState.f != nil,
+		Path:    detailLogState.path,
+	}
+}
+
+func SetDetailLogConfig(enabled bool, path string) error {
+	detailLogState.once.Do(initDetailLog)
+	detailLogState.mu.Lock()
+	defer detailLogState.mu.Unlock()
+
+	path = strings.TrimSpace(path)
+	if enabled && path == "" {
+		return errors.New("detail log path is required when enabled=true")
+	}
+
+	if detailLogState.f != nil && (path != detailLogState.path || !enabled) {
+		_ = detailLogState.f.Close()
+		detailLogState.f = nil
+	}
+
+	if !enabled {
+		detailLogState.enabled = false
+		detailLogState.path = ""
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	detailLogState.f = f
+	detailLogState.enabled = true
+	detailLogState.path = path
+	return nil
 }
