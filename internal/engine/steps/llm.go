@@ -34,7 +34,7 @@ type LLMCallConfig struct {
 	OnExceed     string                           // "reject" (default) — return 413 when prompt exceeds context
 	ModelSlot    int                              // >= 0: read model slug from ByteSlots at runtime
 	ModelCatalog map[string]config.LLMModelConfig // full catalog for runtime lookup
-	CatalogKeys  map[string]string               // pre-resolved API keys for catalog entries (alias → literal key)
+	CatalogKeys  map[string]string                // pre-resolved API keys for catalog entries (alias → literal key)
 
 	// APIKeySlot: if >= 0, read the API key at request time from ctx.ByteSlots[APIKeySlot]
 	// instead of using the baked-in APIKey string. Allows per-tenant key injection.
@@ -407,204 +407,219 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				state.AddTraceAttr("rate_limit_detail", detail) // e.g. "minute:60/60"
 				lastStatus = 429
 			} else {
-			_ = detail // allowed path — no detail needed
+				_ = detail // allowed path — no detail needed
 
-			// 7. HTTP call with retry
-			client := getLLMClient(activeCfg.BaseURL, timeoutMs)
-			attempts := maxRetries + 1
+				// 7. HTTP call with retry
+				client := getLLMClient(activeCfg.BaseURL, timeoutMs)
+				attempts := maxRetries + 1
 
-			for attempt := 1; attempt <= attempts; attempt++ {
-				start := time.Now()
+				for attempt := 1; attempt <= attempts; attempt++ {
+					start := time.Now()
 
-				reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-				httpReq, reqErr := http.NewRequestWithContext(reqCtx, http.MethodPost, activeParams.endpoint, bytes.NewReader(body))
-				if reqErr != nil {
-					cancel()
-					ctx.ResponseStatus = 500
-					ctx.Failed = true
-					ctx.ErrorCode = 500
-					msg := "llm_call: request build failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
-				}
-				httpReq.Header.Set("Content-Type", "application/json")
-				if activeParams.authName != "" {
-					httpReq.Header.Set(activeParams.authName, activeParams.authValue)
-				}
-				// Anthropic and Bedrock (Anthropic models) require the API version header.
-				if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
-					httpReq.Header.Set("anthropic-version", "2023-06-01")
-				}
-				// Extra headers defined on the model config — applied last so they can override defaults.
-				for k, v := range activeCfg.ExtraHeaders {
-					httpReq.Header.Set(k, v)
-				}
-				// SigV4 signing for adapters that require request-level signing (e.g. AWS Bedrock).
-				if signer, ok := activeParams.adapter.(RequestSigner); ok {
-					if signErr := signer.SignRequest(httpReq, body, apiKey); signErr != nil {
+					reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+					httpReq, reqErr := http.NewRequestWithContext(reqCtx, http.MethodPost, activeParams.endpoint, bytes.NewReader(body))
+					if reqErr != nil {
 						cancel()
 						ctx.ResponseStatus = 500
 						ctx.Failed = true
 						ctx.ErrorCode = 500
-						msg := "llm_call: request signing failed: " + signErr.Error()
+						msg := "llm_call: request build failed"
 						ctx.ErrorMsg = ctx.Alloc(len(msg))
 						copy(ctx.ErrorMsg, msg)
 						return engine.StopPlan
 					}
-				}
+					httpReq.Header.Set("Content-Type", "application/json")
+					if activeParams.authName != "" {
+						httpReq.Header.Set(activeParams.authName, activeParams.authValue)
+					}
+					// Anthropic and Bedrock (Anthropic models) require the API version header.
+					if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
+						httpReq.Header.Set("anthropic-version", "2023-06-01")
+					}
+					// Extra headers defined on the model config — applied last so they can override defaults.
+					for k, v := range activeCfg.ExtraHeaders {
+						httpReq.Header.Set(k, v)
+					}
+					// SigV4 signing for adapters that require request-level signing (e.g. AWS Bedrock).
+					if signer, ok := activeParams.adapter.(RequestSigner); ok {
+						if signErr := signer.SignRequest(httpReq, body, apiKey); signErr != nil {
+							cancel()
+							ctx.ResponseStatus = 500
+							ctx.Failed = true
+							ctx.ErrorCode = 500
+							msg := "llm_call: request signing failed: " + signErr.Error()
+							ctx.ErrorMsg = ctx.Alloc(len(msg))
+							copy(ctx.ErrorMsg, msg)
+							return engine.StopPlan
+						}
+					}
 
-				resp, doErr := client.Do(httpReq)
-				cancel()
-				elapsed := time.Since(start)
+					resp, doErr := client.Do(httpReq)
+					cancel()
+					elapsed := time.Since(start)
 
-				atomic.AddInt64(&ctx.Timing.UpstreamTimeNs, elapsed.Nanoseconds())
-				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
+					atomic.AddInt64(&ctx.Timing.UpstreamTimeNs, elapsed.Nanoseconds())
+					atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
-				if doErr != nil {
+					if doErr != nil {
+						if ctx.Obs != nil {
+							ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), 0)
+							ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
+								Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
+								Err: doErr.Error(), TotalNs: elapsed.Nanoseconds(),
+							})
+						}
+						if attempt < attempts {
+							time.Sleep(llmBackoff(attempt))
+							continue
+						}
+						// All retries exhausted — break to try fallback chain below.
+						lastStatus = 502
+						break
+					}
+
+					respBody, readErr := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					lastStatus = resp.StatusCode
+
+					atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, int64(len(respBody)))
+					atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, int64(len(body)))
+
 					if ctx.Obs != nil {
-						ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), 0)
+						ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), int64(len(respBody)))
 						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
 							Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
-							Err: doErr.Error(), TotalNs: elapsed.Nanoseconds(),
+							Status: resp.StatusCode, TotalNs: elapsed.Nanoseconds(),
+							BytesSent: int64(len(body)), BytesReceived: int64(len(respBody)),
+							Model: activeCfg.Alias,
 						})
 					}
-					if attempt < attempts {
-						time.Sleep(llmBackoff(attempt))
-						continue
-					}
-					// All retries exhausted — break to try fallback chain below.
-					lastStatus = 502
-					break
-				}
 
-				respBody, readErr := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				lastStatus = resp.StatusCode
-
-				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, int64(len(respBody)))
-				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, int64(len(body)))
-
-				if ctx.Obs != nil {
-					ctx.Obs.RecordUpstream(activeEndpointHost, elapsed, int64(len(body)), int64(len(respBody)))
-					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, observability.UpstreamEvent{
-						Host: activeEndpointHost, URL: activeParams.endpoint, Attempt: attempt,
-						Status: resp.StatusCode, TotalNs: elapsed.Nanoseconds(),
-						BytesSent: int64(len(body)), BytesReceived: int64(len(respBody)),
-						Model: activeCfg.Alias,
-					})
-				}
-
-				if readErr != nil {
-					if attempt < attempts {
-						time.Sleep(llmBackoff(attempt))
-						continue
-					}
-					// All retries exhausted — break to try fallback chain below.
-					lastStatus = 502
-					break
-				}
-
-				// Retry on rate-limit or transient server errors
-				if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-					if attempt < attempts {
-						time.Sleep(llmBackoff(attempt))
-						continue
-					}
-					// All retries exhausted — break to try fallback chain below.
-					lastStatus = resp.StatusCode
-					break
-				}
-
-				if resp.StatusCode != http.StatusOK {
-					// Capture provider error in trace regardless of what happens next.
-					errSnip := string(respBody)
-					if len(errSnip) > 500 {
-						errSnip = errSnip[:500] + "…"
-					}
-					state.AddTraceAttr("provider_error", errSnip)
-					state.AddTraceAttr("provider_status", fmt.Sprintf("%d", resp.StatusCode))
-					// Break to fallback chain — a 4xx may be model-specific (bad key,
-					// unsupported param, quota) and a different model may succeed.
-					lastStatus = resp.StatusCode
-					lastErrBody = respBody
-					break
-				}
-
-				// 7. Unmarshal response
-				llmResp, unmarshalErr := activeParams.adapter.Unmarshal(respBody)
-				if unmarshalErr != nil {
-					ctx.ResponseStatus = 502
-					ctx.Failed = true
-					ctx.ErrorCode = 502
-					msg := "llm_call: response parse failed"
-					ctx.ErrorMsg = ctx.Alloc(len(msg))
-					copy(ctx.ErrorMsg, msg)
-					return engine.StopPlan
-				}
-
-				// 8. Write result to slot
-				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
-					result := []byte(llmResp.Content)
-					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(result))
-					copy(ctx.ByteSlots[cfg.ResultSlot], result)
-				}
-
-				// 9. Write token usage to IntSlots (if configured).
-				if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
-					ctx.IntSlots[cfg.InputTokensSlot] = int64(llmResp.InputTokens)
-				}
-				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
-					ctx.IntSlots[cfg.OutputTokensSlot] = int64(llmResp.OutputTokens)
-				}
-				// 10. Write stop reason to ByteSlot (used by format_response).
-				if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
-					sr := ctx.Alloc(len(llmResp.StopReason))
-					copy(sr, llmResp.StopReason)
-					ctx.ByteSlots[cfg.StopReasonSlot] = sr
-				}
-
-				// Emit LLM trace attributes
-				{
-					alias := activeCfg.Alias
-					state.AddTraceAttr("model", alias)
-					if activeCfg.ModelID != alias {
-						state.AddTraceAttr("model_id", activeCfg.ModelID)
-					}
-					state.AddTraceAttr("input_tokens", strconv.Itoa(llmResp.InputTokens))
-					state.AddTraceAttr("output_tokens", strconv.Itoa(llmResp.OutputTokens))
-					if activeCfg.CostPerInputToken > 0 || activeCfg.CostPerOutputToken > 0 {
-						cost := float64(llmResp.InputTokens)/1e6*activeCfg.CostPerInputToken +
-							float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
-						state.AddTraceAttr("cost_usd", fmt.Sprintf("%.6f", cost))
-					}
-					// For multi-turn (MessagesSlot), log the serialized messages array.
-					promptSnip := promptContent
-					if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) {
-						if raw := ctx.ByteSlots[cfg.MessagesSlot]; len(raw) > 0 {
-							promptSnip = string(raw)
+					if readErr != nil {
+						if attempt < attempts {
+							time.Sleep(llmBackoff(attempt))
+							continue
 						}
+						// All retries exhausted — break to try fallback chain below.
+						lastStatus = 502
+						break
 					}
-					if len(promptSnip) > 4000 {
-						promptSnip = promptSnip[:4000] + "…"
-					}
-					state.AddTraceAttr("prompt", promptSnip)
-					if systemContent != "" {
-						sysSnip := systemContent
-						if len(sysSnip) > 1000 {
-							sysSnip = sysSnip[:1000] + "…"
-						}
-						state.AddTraceAttr("system", sysSnip)
-					}
-					respSnip := llmResp.Content
-					if len(respSnip) > 4000 {
-						respSnip = respSnip[:4000] + "…"
-					}
-					state.AddTraceAttr("response", respSnip)
-				}
 
-				return state.PC + 1
-			}
+					// Retry on rate-limit or transient server errors
+					if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+						if attempt < attempts {
+							time.Sleep(llmBackoff(attempt))
+							continue
+						}
+						// All retries exhausted — break to try fallback chain below.
+						lastStatus = resp.StatusCode
+						break
+					}
+
+					if resp.StatusCode != http.StatusOK {
+						// Capture provider error in trace regardless of what happens next.
+						errSnip := string(respBody)
+						if len(errSnip) > 500 {
+							errSnip = errSnip[:500] + "…"
+						}
+						state.AddTraceAttr("provider_error", errSnip)
+						state.AddTraceAttr("provider_status", fmt.Sprintf("%d", resp.StatusCode))
+						// Break to fallback chain — a 4xx may be model-specific (bad key,
+						// unsupported param, quota) and a different model may succeed.
+						lastStatus = resp.StatusCode
+						lastErrBody = respBody
+						break
+					}
+
+					// 7. Unmarshal response
+					llmResp, unmarshalErr := activeParams.adapter.Unmarshal(respBody)
+					if unmarshalErr != nil {
+						ctx.ResponseStatus = 502
+						ctx.Failed = true
+						ctx.ErrorCode = 502
+						msg := "llm_call: response parse failed"
+						ctx.ErrorMsg = ctx.Alloc(len(msg))
+						copy(ctx.ErrorMsg, msg)
+						return engine.StopPlan
+					}
+
+					// 8. Write result to slot
+					if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
+						result := []byte(llmResp.Content)
+						ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(result))
+						copy(ctx.ByteSlots[cfg.ResultSlot], result)
+					}
+
+					// 9. Write token usage to IntSlots (if configured).
+					if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
+						ctx.IntSlots[cfg.InputTokensSlot] = int64(llmResp.InputTokens)
+					}
+					if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
+						ctx.IntSlots[cfg.OutputTokensSlot] = int64(llmResp.OutputTokens)
+					}
+					// 10. Write stop reason to ByteSlot (used by format_response).
+					if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
+						sr := ctx.Alloc(len(llmResp.StopReason))
+						copy(sr, llmResp.StopReason)
+						ctx.ByteSlots[cfg.StopReasonSlot] = sr
+					}
+
+					// Emit LLM trace attributes
+					{
+						alias := activeCfg.Alias
+						state.AddTraceAttr("model", alias)
+						if activeCfg.ModelID != alias {
+							state.AddTraceAttr("model_id", activeCfg.ModelID)
+						}
+						state.AddTraceAttr("input_tokens", strconv.Itoa(llmResp.InputTokens))
+						state.AddTraceAttr("output_tokens", strconv.Itoa(llmResp.OutputTokens))
+						if activeCfg.CostPerInputToken > 0 || activeCfg.CostPerOutputToken > 0 {
+							cost := float64(llmResp.InputTokens)/1e6*activeCfg.CostPerInputToken +
+								float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
+							state.AddTraceAttr("cost_usd", fmt.Sprintf("%.6f", cost))
+						}
+						// For multi-turn (MessagesSlot), log the serialized messages array.
+						promptFull := promptContent
+						if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) {
+							if raw := ctx.ByteSlots[cfg.MessagesSlot]; len(raw) > 0 {
+								promptFull = string(raw)
+							}
+						}
+						promptSnip := promptFull
+						if len(promptSnip) > 4000 {
+							promptSnip = promptSnip[:4000] + "…"
+						}
+						state.AddTraceAttr("prompt", promptSnip)
+						if systemContent != "" {
+							sysSnip := systemContent
+							if len(sysSnip) > 1000 {
+								sysSnip = sysSnip[:1000] + "…"
+							}
+							state.AddTraceAttr("system", sysSnip)
+						}
+						respSnip := llmResp.Content
+						if len(respSnip) > 4000 {
+							respSnip = respSnip[:4000] + "…"
+						}
+						state.AddTraceAttr("response", respSnip)
+
+						// Optional full-detail JSONL file logging for incident/debug use.
+						observability.WriteDetailLog(map[string]any{
+							"type":          "llm_call",
+							"api_id":        ctx.ApiId,
+							"tenant_id":     ctx.TenantID,
+							"model":         alias,
+							"model_id":      activeCfg.ModelID,
+							"input_tokens":  llmResp.InputTokens,
+							"output_tokens": llmResp.OutputTokens,
+							"prompt":        promptFull,
+							"system":        systemContent,
+							"response":      llmResp.Content,
+						})
+					}
+
+					return state.PC + 1
+				}
 
 			} // end else (rate limit not exceeded)
 
@@ -772,7 +787,6 @@ func llmBackoff(attempt int) time.Duration {
 	}
 	return d
 }
-
 
 // mergeProviderParams merges extra provider-specific fields into an already-marshalled
 // JSON body. The base JSON is decoded into a map, params are overlaid (overriding any

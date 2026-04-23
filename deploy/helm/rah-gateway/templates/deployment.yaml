@@ -52,6 +52,10 @@ spec:
               containerPort: {{ .Values.service.managementPort }}
               protocol: TCP
           env:
+            {{- if .Values.observabilityDetailLogFile }}
+            - name: RAH_OBS_DETAIL_LOG_FILE
+              value: {{ .Values.observabilityDetailLogFile | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
