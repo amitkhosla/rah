@@ -67,15 +67,12 @@ func isNoop(s ObsStore) bool {
 }
 
 // MetricsHandler handles GET /observability/metrics.
-// Returns current in-memory aggregated gateway metrics as JSON.
-// Optional query params: ?api=name (filter top-N api list) and ?tenant=alias.
 func (h *ObsHandler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	snap := h.obs.Snapshot(20)
-	// Optional client-side hint filtering for top-lists (applied in-memory).
 	apiFilter := r.URL.Query().Get("api")
 	tenantFilter := r.URL.Query().Get("tenant")
 
@@ -106,7 +103,6 @@ func (h *ObsHandler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // AccessLogHandler handles GET /observability/access-log.
-// Queries persisted access log records using optional filters.
 func (h *ObsHandler) AccessLogHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -159,7 +155,6 @@ func (h *ObsHandler) AccessLogHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // TracesHandler handles GET /observability/traces.
-// Queries persisted trace records using optional filters.
 func (h *ObsHandler) TracesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -218,9 +213,7 @@ func (h *ObsHandler) TracesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": traces})
 }
 
-// DetailLogConfigHandler handles:
-//   - GET /observability/detail-log  -> current detail log config
-//   - PUT /observability/detail-log  -> update detail log config
+// DetailLogConfigHandler handles GET and PUT for detail log config.
 func (h *ObsHandler) DetailLogConfigHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -248,7 +241,6 @@ func (h *ObsHandler) DetailLogConfigHandler(w http.ResponseWriter, r *http.Reque
 }
 
 // APIsHandler handles GET /observability/apis.
-// Returns the top-slow APIs derived from in-memory telemetry.
 func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -258,9 +250,7 @@ func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Primary source: aggregate true API performance from persisted access logs.
-	// This keeps API Performance focused on customer-facing APIs (api_name),
-	// not internal upstream/model calls.
+	// 1. Primary Source: Persisted access logs
 	if !isNoop(h.writer.Store()) {
 		logs, err := h.writer.Store().QueryAccessLog(ctx, AccessLogFilter{
 			FromUnixS: time.Now().Add(-1 * time.Hour).Unix(),
@@ -296,39 +286,32 @@ func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				return apis[i].Count > apis[j].Count
 			})
-			writeJSON(w, http.StatusOK, map[string]any{"apis": apis})
+			writeJSON(w, http.StatusOK, map[string]any{"apis": apis, "source": "access_log"})
 			return
 		}
 	}
 
-	// Fallback: no persisted access logs available yet.
-	// Do NOT return upstream/model metrics here (that mixes provider calls
-	// with user-facing APIs and is misleading in "API Performance").
-	writeJSON(w, http.StatusOK, map[string]any{
-		"apis":   []NameLatency{},
-		"note":   "no persisted access-log data yet; API performance is derived from access logs only",
-		"source": "access_log",
-	})
-	}
-
-	// Fallback for environments without persisted access logs.
+	// 2. Fallback: In-memory telemetry snapshot
 	snap := h.obs.Snapshot(20)
 	apis := []NameLatency{}
 	if m, ok := snap["metrics"].(GatewayMetrics); ok {
 		apis = m.UpstreamTopSlow
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"apis": apis})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"apis":   apis,
+		"note":   "no persisted data available; using in-memory fallback",
+		"source": "telemetry_snapshot",
+	})
 }
 
 // APIDetailHandler handles GET /observability/apis/{name}.
-// Returns traces and recent access log entries for a single API.
 func (h *ObsHandler) APIDetailHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	// Extract the API name from the path: strip "/observability/apis/" prefix.
 	const prefix = "/observability/apis/"
 	apiName := strings.TrimPrefix(r.URL.Path, prefix)
 	if apiName == "" {
@@ -337,7 +320,6 @@ func (h *ObsHandler) APIDetailHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]any{"api": apiName}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -375,14 +357,12 @@ func (h *ObsHandler) APIDetailHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // TenantDetailHandler handles GET /observability/tenants/{alias}.
-// Returns access log and traces for a single tenant.
 func (h *ObsHandler) TenantDetailHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	// Extract the tenant alias from the path: strip "/observability/tenants/" prefix.
 	const prefix = "/observability/tenants/"
 	tenantAlias := strings.TrimPrefix(r.URL.Path, prefix)
 	if tenantAlias == "" {
@@ -391,7 +371,6 @@ func (h *ObsHandler) TenantDetailHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	result := map[string]any{"tenant": tenantAlias}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
