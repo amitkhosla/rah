@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchObsMetrics, fetchObsAccessLog, fetchObsApis, fetchObsTraces } from '../api'
+import {
+  fetchObsMetrics, fetchObsAccessLog, fetchObsApis, fetchObsTraces,
+  fetchObsDetailLogConfig, updateObsDetailLogConfig,
+} from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -222,6 +225,10 @@ export default function Observability() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [tracesOpen, setTracesOpen] = useState(false)
   const [expandedTrace, setExpandedTrace] = useState<number | null>(null)
+  const [detailLogEnabled, setDetailLogEnabled] = useState(false)
+  const [detailLogPath, setDetailLogPath] = useState('/app/logs/obs-detail.jsonl')
+  const [detailLogMsg, setDetailLogMsg] = useState<string | null>(null)
+  const [detailLogSaving, setDetailLogSaving] = useState(false)
 
   const metricsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -296,8 +303,34 @@ export default function Observability() {
     }
   }
 
+  async function loadDetailLogConfig() {
+    try {
+      const cfg = await fetchObsDetailLogConfig()
+      setDetailLogEnabled(!!cfg.enabled)
+      setDetailLogPath(cfg.path || '/app/logs/obs-detail.jsonl')
+    } catch {
+      // silently ignore if endpoint unavailable
+    }
+  }
+
+  async function saveDetailLogConfig() {
+    setDetailLogSaving(true)
+    setDetailLogMsg(null)
+    try {
+      const cfg = await updateObsDetailLogConfig({ enabled: detailLogEnabled, path: detailLogPath })
+      setDetailLogEnabled(!!cfg.enabled)
+      setDetailLogPath(cfg.path || '')
+      setDetailLogMsg('Detail log config saved.')
+    } catch (e: any) {
+      setDetailLogMsg(`Failed to save detail log config: ${e?.message ?? String(e)}`)
+    } finally {
+      setDetailLogSaving(false)
+    }
+  }
+
   useEffect(() => {
     loadAll()
+    loadDetailLogConfig()
 
     metricsTimerRef.current = setInterval(loadMetrics, 10_000)
     logTimerRef.current = setInterval(loadAccessLog, 5_000)
@@ -376,6 +409,56 @@ export default function Observability() {
           {error}
         </div>
       )}
+
+      {/* ── Detail Log Controls ── */}
+      <div style={{
+        background: 'var(--panel)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: '12px 16px',
+        marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+          Full Detail Logs (JSONL)
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+          Enable to write full classifier/final LLM payloads to a gateway file. In Docker, tail with:
+          <span style={{ fontFamily: 'monospace', marginLeft: 6 }}>docker compose logs -f gateway</span>
+          {' '}or read the mapped file path.
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={detailLogEnabled} onChange={e => setDetailLogEnabled(e.target.checked)} />
+          <span style={{ fontSize: 12, color: 'var(--text)' }}>Enable full detail log file</span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input
+            value={detailLogPath}
+            onChange={e => setDetailLogPath(e.target.value)}
+            placeholder="/app/logs/obs-detail.jsonl"
+            style={{
+              flex: 1, minWidth: 260, padding: '6px 10px',
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 6, color: 'var(--text)', fontSize: 12,
+            }}
+          />
+          <button
+            onClick={saveDetailLogConfig}
+            disabled={detailLogSaving}
+            style={{
+              padding: '6px 12px', borderRadius: 6,
+              border: '1px solid var(--accent)', background: 'rgba(87,181,255,0.08)',
+              color: 'var(--accent)', cursor: detailLogSaving ? 'wait' : 'pointer', fontSize: 12,
+            }}
+          >
+            {detailLogSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        {detailLogMsg && (
+          <div style={{ marginTop: 8, fontSize: 11, color: detailLogMsg.startsWith('Failed') ? '#ef4444' : '#22c55e' }}>
+            {detailLogMsg}
+          </div>
+        )}
+      </div>
 
       {/* ── Stat Cards ── */}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 28 }}>
