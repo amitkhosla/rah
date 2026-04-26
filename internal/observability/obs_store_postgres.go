@@ -254,15 +254,29 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 		var r AccessLogRecord
 		var tenantID, status int16
 		var totalMs, gatewayMs, upstreamMs, ttfbMs float32
+		// All TEXT columns are nullable (written via nilIfEmpty); use *string to handle NULLs.
+		var apiName, tenantKey, method, path *string
 		var extraJSON []byte
 
 		if err := rows.Scan(
-			&r.TimestampNs, &r.ApiName, &tenantID, &r.TenantKey,
-			&r.Method, &r.Path, &status,
+			&r.TimestampNs, &apiName, &tenantID, &tenantKey,
+			&method, &path, &status,
 			&totalMs, &gatewayMs, &upstreamMs, &ttfbMs,
 			&r.ReqBytes, &r.ResBytes, &extraJSON,
 		); err != nil {
 			return nil, err
+		}
+		if apiName != nil {
+			r.ApiName = *apiName
+		}
+		if tenantKey != nil {
+			r.TenantKey = *tenantKey
+		}
+		if method != nil {
+			r.Method = *method
+		}
+		if path != nil {
+			r.Path = *path
 		}
 		r.TenantID = uint16(tenantID)
 		r.Status = int(status)

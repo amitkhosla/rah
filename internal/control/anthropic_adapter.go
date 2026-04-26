@@ -3,7 +3,6 @@ package control
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -27,20 +26,23 @@ type anthropicAdapterMsg struct {
 }
 
 type anthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // ── Anthropic wire types (response) ──────────────────────────────────────────
 
 type anthropicAdapterResp struct {
-	ID           string                 `json:"id"`
-	Type         string                 `json:"type"`
-	Role         string                 `json:"role"`
-	Content      []anthropicContentBlock `json:"content"`
-	Model        string                 `json:"model"`
-	StopReason   string                 `json:"stop_reason"`
-	StopSequence *string                `json:"stop_sequence"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"` // Preserve raw to handle all block types
+	Model        string          `json:"model"`
+	StopReason   string          `json:"stop_reason"`
+	StopSequence *string         `json:"stop_sequence"`
 	Usage        anthropicAdapterUsage  `json:"usage"`
 }
 
@@ -101,12 +103,20 @@ func RegisterAnthropicAdapter(mux *http.ServeMux, gatewayBase string) {
 			return
 		}
 
+		// Read and parse the full Anthropic request
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			anthropicWriteError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
+			return
+		}
+
 		var req anthropicAdapterReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			anthropicWriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 			return
 		}
 
+		// Validate that there's at least a message
 		userMsg := anthropicExtractLastUserMsg(req.Messages)
 		if userMsg == "" {
 			anthropicWriteError(w, http.StatusBadRequest, "invalid_request_error", "no user message content found")
@@ -121,14 +131,8 @@ func RegisterAnthropicAdapter(mux *http.ServeMux, gatewayBase string) {
 			targetEndpoint = "/ai/smart-chat"
 		}
 
-		inputField := r.Header.Get("X-Input-Field")
-		if inputField == "" {
-			inputField = "message"
-		}
-
-		gwBody, _ := json.Marshal(map[string]string{inputField: userMsg})
-
-		gwReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, gatewayBase+targetEndpoint, bytes.NewReader(gwBody))
+		// Forward the full Anthropic request to the gateway (preserving tools, system, etc.)
+		gwReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, gatewayBase+targetEndpoint, bytes.NewReader(bodyBytes))
 		if err != nil {
 			anthropicWriteError(w, http.StatusInternalServerError, "api_error", "failed to build gateway request")
 			return
@@ -159,20 +163,10 @@ func RegisterAnthropicAdapter(mux *http.ServeMux, gatewayBase string) {
 			return
 		}
 
-		out, err := anthropicNormalize(respBytes, req.Model)
-		if err != nil {
-			// Could not parse/normalize — pass through raw (best effort)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(respBytes)
-			return
-		}
-
-		if req.Stream {
-			anthropicWriteStream(w, out)
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(out)
-		}
+		// Return the response as-is if it's already in Anthropic format
+		// This preserves tool_use blocks and other content types
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(respBytes)
 	})
 }
 
@@ -212,144 +206,9 @@ func anthropicExtractLastUserMsg(msgs []anthropicAdapterMsg) string {
 	return ""
 }
 
-// anthropicNormalize detects Anthropic vs OpenAI response format and converts
-// to Anthropic format. Unknown formats are wrapped as a text block.
-func anthropicNormalize(data []byte, requestModel string) (anthropicAdapterResp, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return anthropicAdapterResp{}, err
-	}
-
-	// Already Anthropic format: top-level "content" array + "stop_reason"
-	if _, hasContent := raw["content"]; hasContent {
-		if _, hasStop := raw["stop_reason"]; hasStop {
-			var resp anthropicAdapterResp
-			if err := json.Unmarshal(data, &resp); err == nil {
-				if resp.Model == "" {
-					resp.Model = requestModel
-				}
-				return resp, nil
-			}
-		}
-	}
-
-	// OpenAI format: "choices" array
-	if _, hasChoices := raw["choices"]; hasChoices {
-		var oai openAIAdapterResp
-		if err := json.Unmarshal(data, &oai); err != nil {
-			return anthropicAdapterResp{}, err
-		}
-		text := ""
-		if len(oai.Choices) > 0 {
-			text = oai.Choices[0].Message.Content
-		}
-		model := oai.Model
-		if model == "" {
-			model = requestModel
-		}
-		stopReason := "end_turn"
-		if len(oai.Choices) > 0 {
-			switch oai.Choices[0].FinishReason {
-			case "length":
-				stopReason = "max_tokens"
-			case "tool_calls", "function_call":
-				stopReason = "tool_use"
-			}
-		}
-		msgID := "msg_gw_" + oai.ID
-		if oai.ID == "" {
-			msgID = fmt.Sprintf("msg_gw_%d", time.Now().UnixNano())
-		}
-		return anthropicAdapterResp{
-			ID:         msgID,
-			Type:       "message",
-			Role:       "assistant",
-			Content:    []anthropicContentBlock{{Type: "text", Text: text}},
-			Model:      model,
-			StopReason: stopReason,
-			Usage: anthropicAdapterUsage{
-				InputTokens:  oai.Usage.PromptTokens,
-				OutputTokens: oai.Usage.CompletionTokens,
-			},
-		}, nil
-	}
-
-	// Unknown format — wrap raw bytes as plain text (last resort)
-	return anthropicAdapterResp{
-		ID:         fmt.Sprintf("msg_gw_%d", time.Now().UnixNano()),
-		Type:       "message",
-		Role:       "assistant",
-		Content:    []anthropicContentBlock{{Type: "text", Text: string(data)}},
-		Model:      requestModel,
-		StopReason: "end_turn",
-		Usage:      anthropicAdapterUsage{},
-	}, nil
-}
-
-// anthropicWriteStream emits a minimal Anthropic SSE stream containing all
-// content in a single delta event, then closes with message_stop.
-// This lets streaming-only SDK clients work correctly, albeit without
-// token-by-token streaming (all tokens arrive at once).
-func anthropicWriteStream(w http.ResponseWriter, resp anthropicAdapterResp) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, canFlush := w.(http.Flusher)
-
-	text := ""
-	if len(resp.Content) > 0 {
-		text = resp.Content[0].Text
-	}
-
-	writeSSE := func(event string, payload interface{}) {
-		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-		if canFlush {
-			flusher.Flush()
-		}
-	}
-
-	writeSSE("message_start", map[string]interface{}{
-		"type": "message_start",
-		"message": map[string]interface{}{
-			"id":            resp.ID,
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []interface{}{},
-			"model":         resp.Model,
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage":         map[string]int{"input_tokens": resp.Usage.InputTokens, "output_tokens": 0},
-		},
-	})
-
-	writeSSE("content_block_start", map[string]interface{}{
-		"type":          "content_block_start",
-		"index":         0,
-		"content_block": map[string]string{"type": "text", "text": ""},
-	})
-
-	writeSSE("ping", map[string]string{"type": "ping"})
-
-	writeSSE("content_block_delta", map[string]interface{}{
-		"type":  "content_block_delta",
-		"index": 0,
-		"delta": map[string]string{"type": "text_delta", "text": text},
-	})
-
-	writeSSE("content_block_stop", map[string]interface{}{
-		"type":  "content_block_stop",
-		"index": 0,
-	})
-
-	writeSSE("message_delta", map[string]interface{}{
-		"type":  "message_delta",
-		"delta": map[string]interface{}{"stop_reason": resp.StopReason, "stop_sequence": nil},
-		"usage": map[string]int{"output_tokens": resp.Usage.OutputTokens},
-	})
-
-	writeSSE("message_stop", map[string]string{"type": "message_stop"})
-}
+// Note: anthropicNormalize and anthropicWriteStream are no longer used.
+// The adapter now forwards responses as-is from the gateway to preserve
+// all content types including tool_use blocks.
 
 func anthropicWriteError(w http.ResponseWriter, status int, errType, msg string) {
 	w.Header().Set("Content-Type", "application/json")

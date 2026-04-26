@@ -117,6 +117,15 @@ type counter struct {
 	bytesRx uint64
 }
 
+// apiStat tracks per-API request counts and latency using atomics.
+// Indexed directly by ApiID in Telemetry.apiStats; no map, no GC pressure.
+type apiStat struct {
+	count          atomic.Uint64
+	totalLatencyNs atomic.Int64
+	bytesTx        atomic.Int64
+	bytesRx        atomic.Int64
+}
+
 type metricCounter struct {
 	count uint64
 	total int64
@@ -187,6 +196,11 @@ type Telemetry struct {
 	metricCh   chan MetricPoint
 	upstreamCh chan upstreamLog
 	sink       ExportSink
+
+	// apiStats is indexed by ApiID for zero-alloc, lock-free per-API request counting.
+	// Grows under apiStatsMu only when a higher ApiID is first seen (rare, at deploy time).
+	apiStats   atomic.Pointer[[]apiStat]
+	apiStatsMu sync.Mutex
 }
 
 func NewFromEnv() *Telemetry {
@@ -253,6 +267,9 @@ func New(cfg Config) *Telemetry {
 	t.phaseEnabled.Store(cfg.UpstreamPhaseTimingEnabled)
 	t.alwaysExport.Store(cfg.AlwaysExportSummary)
 	t.infoLog.Store(cfg.InfoLogEnabled)
+	// Pre-allocate 64 slots — covers most deployments without a single grow.
+	initial := make([]apiStat, 64)
+	t.apiStats.Store(&initial)
 	go t.exportWorker()
 	go t.metricWorker()
 	go t.upstreamWorker()
@@ -512,6 +529,103 @@ func (t *Telemetry) AppendUpstreamEvent(trace *RequestTrace, e UpstreamEvent) {
 	trace.upstreamSeq++
 	e.Seq = trace.upstreamSeq
 	trace.Upstreams = append(trace.Upstreams, e)
+}
+
+// RecordRequest records per-API request stats using atomic operations.
+// Called post-response (not on the critical latency path).
+// apiID is used as a direct slice index — no map, no string keys, no GC overhead.
+func (t *Telemetry) RecordRequest(apiID uint32, totalNs, reqBytes, resBytes int64) {
+	if !t.Enabled() || apiID == 0 {
+		return
+	}
+	idx := int(apiID)
+	s := t.apiStats.Load()
+	if s != nil && idx < len(*s) {
+		p := &(*s)[idx]
+		p.count.Add(1)
+		if totalNs > 0 {
+			p.totalLatencyNs.Add(totalNs)
+		}
+		if reqBytes > 0 {
+			p.bytesTx.Add(reqBytes)
+		}
+		if resBytes > 0 {
+			p.bytesRx.Add(resBytes)
+		}
+		return
+	}
+	// Grow the slice — only triggered when a new higher-ID API is first seen (rare, at deploy time).
+	t.apiStatsMu.Lock()
+	defer t.apiStatsMu.Unlock()
+	s = t.apiStats.Load() // re-read under lock; another goroutine may have grown it
+	if s != nil && idx < len(*s) {
+		p := &(*s)[idx]
+		p.count.Add(1)
+		if totalNs > 0 {
+			p.totalLatencyNs.Add(totalNs)
+		}
+		if reqBytes > 0 {
+			p.bytesTx.Add(reqBytes)
+		}
+		if resBytes > 0 {
+			p.bytesRx.Add(resBytes)
+		}
+		return
+	}
+	newCap := max(idx+32, 64) // grow in chunks to amortise future allocations
+	newSlice := make([]apiStat, newCap)
+	if s != nil {
+		copy(newSlice, *s)
+	}
+	t.apiStats.Store(&newSlice)
+	p := &newSlice[idx]
+	p.count.Add(1)
+	if totalNs > 0 {
+		p.totalLatencyNs.Add(totalNs)
+	}
+	if reqBytes > 0 {
+		p.bytesTx.Add(reqBytes)
+	}
+	if resBytes > 0 {
+		p.bytesRx.Add(resBytes)
+	}
+}
+
+// APITop returns per-API request stats sorted by request count descending.
+// nameResolver maps ApiID → API name; entries where the resolver returns "" are skipped.
+// Intended for infrequent snapshot reads (UI polling), not hot path.
+func (t *Telemetry) APITop(topN int, nameResolver func(uint32) string) []NameLatency {
+	if topN <= 0 {
+		topN = 20
+	}
+	s := t.apiStats.Load()
+	if s == nil || len(*s) == 0 || nameResolver == nil {
+		return nil
+	}
+	out := make([]NameLatency, 0, topN)
+	for i := range *s {
+		p := &(*s)[i]
+		cnt := p.count.Load()
+		if cnt == 0 {
+			continue
+		}
+		name := nameResolver(uint32(i))
+		if name == "" {
+			continue
+		}
+		out = append(out, NameLatency{
+			Name:           name,
+			Count:          cnt,
+			TotalLatencyNs: uint64(p.totalLatencyNs.Load()),
+			BytesTx:        uint64(p.bytesTx.Load()),
+			BytesRx:        uint64(p.bytesRx.Load()),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	if len(out) > topN {
+		out = out[:topN]
+	}
+	return out
 }
 
 func topNFromMap(m map[string]*counter, n int) []NameLatency {

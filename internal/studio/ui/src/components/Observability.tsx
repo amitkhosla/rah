@@ -35,6 +35,8 @@ interface AccessLogRecord {
   gateway_ms: number
   upstream_ms: number
   ttfb_ms: number
+  conn_setup_ms?: number
+  transfer_ms?: number
   req_bytes: number
   res_bytes: number
 }
@@ -216,6 +218,10 @@ export default function Observability() {
   const [traces, setTraces] = useState<TraceRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [accessLogError, setAccessLogError] = useState<string | null>(null)
+  const [logLimit, setLogLimit] = useState(50)
+  const [traceLimit, setTraceLimit] = useState(20)
+  const [expandedLogRows, setExpandedLogRows] = useState<Set<number>>(new Set())
   const [currentTps, setCurrentTps] = useState<number | null>(null)
   const prevMetricsRef = useRef<{ total: number; ts: number } | null>(null)
 
@@ -223,12 +229,16 @@ export default function Observability() {
   const [apiFilter, setApiFilter] = useState<string>('')
   const [tenantFilter, setTenantFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [logsOpen, setLogsOpen] = useState(true)
   const [tracesOpen, setTracesOpen] = useState(false)
   const [expandedTrace, setExpandedTrace] = useState<number | null>(null)
   const [detailLogEnabled, setDetailLogEnabled] = useState(false)
-  const [detailLogPath, setDetailLogPath] = useState('/app/logs/obs-detail.jsonl')
+  const [detailLogPath, setDetailLogPath] = useState('/app/logs/detailLogging.log')
   const [detailLogMsg, setDetailLogMsg] = useState<string | null>(null)
   const [detailLogSaving, setDetailLogSaving] = useState(false)
+  const [showConnTiming, setShowConnTiming] = useState<boolean>(() =>
+    localStorage.getItem('rah_show_conn_timing') === 'true'
+  )
 
   const metricsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -260,17 +270,18 @@ export default function Observability() {
     }
   }
 
-  async function loadAccessLog() {
+  async function loadAccessLog(limit?: number) {
     try {
       const data = await fetchObsAccessLog({
         api: apiFilter || undefined,
         tenant: tenantFilter || undefined,
         status: statusCodeForFilter(statusFilter),
-        limit: 50,
+        limit: limit ?? logLimit,
       })
       setAccessLog(data?.data ?? [])
+      setAccessLogError(null)
     } catch (e: any) {
-      // tolerate
+      setAccessLogError(e?.message ?? 'Failed to load access log')
     }
   }
 
@@ -283,9 +294,9 @@ export default function Observability() {
     }
   }
 
-  async function loadTraces() {
+  async function loadTraces(limit?: number) {
     try {
-      const data = await fetchObsTraces({ api: apiFilter || undefined, limit: 20 })
+      const data = await fetchObsTraces({ api: apiFilter || undefined, limit: limit ?? traceLimit })
       setTraces(data?.data ?? [])
     } catch {
       // tolerate
@@ -307,7 +318,7 @@ export default function Observability() {
     try {
       const cfg = await fetchObsDetailLogConfig()
       setDetailLogEnabled(!!cfg.enabled)
-      setDetailLogPath(cfg.path || '/app/logs/obs-detail.jsonl')
+      setDetailLogPath(cfg.path || '/app/logs/detailLogging.log')
     } catch {
       // silently ignore if endpoint unavailable
     }
@@ -333,7 +344,7 @@ export default function Observability() {
     loadDetailLogConfig()
 
     metricsTimerRef.current = setInterval(loadMetrics, 10_000)
-    logTimerRef.current = setInterval(loadAccessLog, 5_000)
+    logTimerRef.current = setInterval(() => { loadAccessLog(); loadApis() }, 5_000)
 
     return () => {
       if (metricsTimerRef.current) clearInterval(metricsTimerRef.current)
@@ -368,8 +379,8 @@ export default function Observability() {
   // ── Sort API perf by request count (from upstream_top_slow name counts) ──
   const sortedApis = [...apiPerf].sort((a, b) => b.count - a.count)
 
-  // ── Filter access log for display ─────────────────────────────
-  const displayLog = accessLog.slice(0, 50)
+  // accessLog is already fetched with the user-selected logLimit — no additional slicing needed.
+  const displayLog = accessLog
 
   // ── Distinct APIs for dropdown ─────────────────────────────────
   const apiNames = Array.from(new Set([
@@ -422,19 +433,32 @@ export default function Observability() {
           Full Detail Logs (JSONL)
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
-          Enable to write full classifier/final LLM payloads to a gateway file. In Docker, tail with:
-          <span style={{ fontFamily: 'monospace', marginLeft: 6 }}>docker compose logs -f gateway</span>
-          {' '}or read the mapped file path.
+          Enable to write full classifier/final LLM payloads to a gateway file.
+          Extract from Docker with:{' '}
+          <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>
+            docker cp &lt;container&gt;:/app/logs/detailLogging.log ./detailLogging.log
+          </code>
+          {' '}or mount <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4 }}>./logs:/app/logs</code> in your compose file.
         </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
           <input type="checkbox" checked={detailLogEnabled} onChange={e => setDetailLogEnabled(e.target.checked)} />
           <span style={{ fontSize: 12, color: 'var(--text)' }}>Enable full detail log file</span>
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={showConnTiming} onChange={e => {
+            setShowConnTiming(e.target.checked)
+            localStorage.setItem('rah_show_conn_timing', e.target.checked ? 'true' : 'false')
+          }} />
+          <span style={{ fontSize: 12, color: 'var(--text)' }}>
+            Show connection timing (TCP/TLS setup + response transfer) in access log and traces
+            <span style={{ color: 'var(--muted)', marginLeft: 4 }}>— collected free on each connection, zero latency impact</span>
+          </span>
+        </label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input
             value={detailLogPath}
             onChange={e => setDetailLogPath(e.target.value)}
-            placeholder="/app/logs/obs-detail.jsonl"
+            placeholder="/app/logs/detailLogging.log"
             style={{
               flex: 1, minWidth: 260, padding: '6px 10px',
               background: 'var(--bg)', border: '1px solid var(--border)',
@@ -567,119 +591,157 @@ export default function Observability() {
         border: '1px solid var(--border)',
         borderRadius: 10,
         marginBottom: 24,
-        overflow: 'hidden',
       }}>
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
-          <SectionHeader title="Access Log" sub="50 most recent requests. Live tail every 5s." />
-
-          {/* Filter bar */}
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
-            <select
-              value={apiFilter}
-              onChange={e => setApiFilter(e.target.value)}
-              style={{
-                padding: '4px 10px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                color: 'var(--text)',
-                fontSize: 12,
-                cursor: 'pointer',
-              }}
-            >
-              <option value="">All APIs</option>
-              {apiNames.map(n => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-
-            <input
-              type="text"
-              placeholder="Filter tenant…"
-              value={tenantFilter}
-              onChange={e => setTenantFilter(e.target.value)}
-              style={{
-                padding: '4px 10px',
-                background: 'var(--bg)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                color: 'var(--text)',
-                fontSize: 12,
-                width: 140,
-              }}
-            />
-
-            <div style={{ display: 'flex', gap: 6 }}>
-              <Chip label="All" active={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
-              <Chip label="2xx" active={statusFilter === '2xx'} onClick={() => setStatusFilter('2xx')} color="#34d399" />
-              <Chip label="4xx" active={statusFilter === '4xx'} onClick={() => setStatusFilter('4xx')} color="#fbbf24" />
-              <Chip label="5xx" active={statusFilter === '5xx'} onClick={() => setStatusFilter('5xx')} color="#f87171" />
+        {/* Collapsible header — same pattern as Traces */}
+        <button
+          onClick={() => setLogsOpen(o => !o)}
+          style={{
+            width: '100%',
+            padding: '14px 18px',
+            background: 'transparent',
+            border: 'none',
+            borderBottom: logsOpen ? '1px solid var(--border)' : 'none',
+            cursor: 'pointer',
+            textAlign: 'left',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 13, color: 'var(--muted)', userSelect: 'none' }}>
+            {logsOpen ? '▾' : '▸'}
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>Access Log</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>
+              {accessLog.length} most recent requests. Live tail every 5s.
             </div>
           </div>
-        </div>
+          {logsOpen && (
+            <>
+              <select
+                value={logLimit}
+                onClick={e => e.stopPropagation()}
+                onChange={e => { const n = Number(e.target.value); setLogLimit(n); loadAccessLog(n) }}
+                style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)', cursor: 'pointer' }}
+              >
+                {[25, 50, 100, 250, 500].map(n => <option key={n} value={n}>{n} rows</option>)}
+              </select>
+              <button
+                onClick={e => { e.stopPropagation(); loadAccessLog() }}
+                style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)' }}
+              >↺ Refresh</button>
+            </>
+          )}
+        </button>
 
-        {displayLog.length === 0 ? (
-          <div style={{ padding: '20px 18px', color: 'var(--muted)', fontSize: 13 }}>
-            No access log entries yet. Requests will appear here as they arrive.
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
-                  {['Time', 'Method', 'Path', 'Status', 'Total ms', 'Gateway ms', 'Upstream ms', 'Tenant', 'Bytes'].map(h => (
-                    <th key={h} style={{
-                      padding: '7px 12px',
-                      textAlign: 'left',
-                      color: 'var(--muted)',
-                      fontWeight: 600,
-                      fontSize: 11,
-                      borderBottom: '1px solid var(--border)',
-                      whiteSpace: 'nowrap',
-                    }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {displayLog.map((rec, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                      {fmtTime(rec.timestamp_ns)}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--accent)', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                      {rec.method}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--text)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {rec.path}
-                    </td>
-                    <td style={{ padding: '6px 12px', whiteSpace: 'nowrap' }}>
-                      <span style={{
-                        color: statusColor(rec.status),
-                        fontWeight: 700,
-                      }}>
-                        {rec.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--text)', whiteSpace: 'nowrap' }}>
-                      {rec.total_ms?.toFixed(2) ?? '—'}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                      {rec.gateway_ms?.toFixed(2) ?? '—'}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                      {rec.upstream_ms?.toFixed(2) ?? '—'}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {rec.tenant_key || rec.tenant_id || '—'}
-                    </td>
-                    <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                      {rec.res_bytes ?? '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {logsOpen && (
+          <>
+            {/* Error + filter bar */}
+            <div style={{ padding: '10px 18px', borderBottom: '1px solid var(--border)' }}>
+              {accessLogError && (
+                <div style={{ fontSize: 11, color: '#f87171', marginBottom: 8 }}>
+                  ⚠ Access log unavailable: {accessLogError}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select
+                  value={apiFilter}
+                  onChange={e => setApiFilter(e.target.value)}
+                  style={{ padding: '4px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}
+                >
+                  <option value="">All APIs</option>
+                  {apiNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <input
+                  type="text"
+                  placeholder="Filter tenant…"
+                  value={tenantFilter}
+                  onChange={e => setTenantFilter(e.target.value)}
+                  style={{ padding: '4px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, width: 140 }}
+                />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Chip label="All" active={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
+                  <Chip label="2xx" active={statusFilter === '2xx'} onClick={() => setStatusFilter('2xx')} color="#34d399" />
+                  <Chip label="4xx" active={statusFilter === '4xx'} onClick={() => setStatusFilter('4xx')} color="#fbbf24" />
+                  <Chip label="5xx" active={statusFilter === '5xx'} onClick={() => setStatusFilter('5xx')} color="#f87171" />
+                </div>
+              </div>
+            </div>
+
+            {displayLog.length === 0 ? (
+              <div style={{ padding: '20px 18px', color: 'var(--muted)', fontSize: 13 }}>
+                No access log entries yet. Requests will appear here as they arrive.
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
+                      {['Time', 'Method', 'Path', 'Status', 'Total ms', 'Gateway ms', 'Upstream ms', 'Tenant', 'Bytes'].map(h => (
+                        <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: 'var(--muted)', fontWeight: 600, fontSize: 11, borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayLog.map((rec, i) => {
+                      const isExpanded = expandedLogRows.has(i)
+                      const toggleRow = () => setExpandedLogRows(prev => {
+                        const next = new Set(prev)
+                        isExpanded ? next.delete(i) : next.add(i)
+                        return next
+                      })
+                      return (
+                        <>
+                          <tr
+                            key={`row-${i}`}
+                            onClick={toggleRow}
+                            style={{ borderBottom: isExpanded ? 'none' : '1px solid var(--border)', cursor: 'pointer' }}
+                          >
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtTime(rec.timestamp_ns)}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--accent)', fontWeight: 600, whiteSpace: 'nowrap' }}>{rec.method}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--text)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.path}</td>
+                            <td style={{ padding: '6px 12px', whiteSpace: 'nowrap' }}>
+                              <span style={{ color: statusColor(rec.status), fontWeight: 700 }}>{rec.status}</span>
+                            </td>
+                            <td style={{ padding: '6px 12px', color: 'var(--text)', whiteSpace: 'nowrap' }}>{rec.total_ms?.toFixed(2) ?? '—'}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{rec.gateway_ms?.toFixed(2) ?? '—'}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{rec.upstream_ms?.toFixed(2) ?? '—'}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.tenant_key || rec.tenant_id || '—'}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                              {rec.res_bytes > 0 ? fmtNum(rec.res_bytes) : '—'}
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr key={`exp-${i}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                              <td colSpan={9} style={{ padding: '8px 16px 12px 24px', background: 'rgba(0,0,0,0.18)' }}>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 28px', fontSize: 11 }}>
+                                  <span><span style={{ color: 'var(--muted)' }}>TTFB:</span> <span style={{ color: 'var(--text)' }}>{rec.ttfb_ms?.toFixed(2) ?? '—'} ms</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Response bytes:</span> <span style={{ color: 'var(--text)' }}>{rec.res_bytes ?? '—'}</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Request bytes:</span> <span style={{ color: 'var(--text)' }}>{rec.req_bytes ?? '—'}</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>API:</span> <span style={{ color: 'var(--text)' }}>{rec.api_name || '—'}</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Tenant:</span> <span style={{ color: 'var(--text)' }}>{rec.tenant_key || rec.tenant_id || '—'}</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Total (client):</span> <span style={{ color: 'var(--text)', fontWeight: 600 }}>{rec.total_ms?.toFixed(3) ?? '—'} ms</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Gateway only:</span> <span style={{ color: 'var(--text)' }}>{rec.gateway_ms?.toFixed(3) ?? '—'} ms</span></span>
+                                  <span><span style={{ color: 'var(--muted)' }}>Upstream only:</span> <span style={{ color: 'var(--text)' }}>{rec.upstream_ms?.toFixed(3) ?? '—'} ms</span></span>
+                                  {showConnTiming && rec.conn_setup_ms != null && rec.conn_setup_ms > 0 && (
+                                    <span><span style={{ color: '#a78bfa' }}>Conn setup:</span> <span style={{ color: 'var(--text)' }}>{rec.conn_setup_ms.toFixed(2)} ms</span></span>
+                                  )}
+                                  {showConnTiming && rec.transfer_ms != null && rec.transfer_ms > 0 && (
+                                    <span><span style={{ color: '#a78bfa' }}>Transfer time:</span> <span style={{ color: 'var(--text)' }}>{rec.transfer_ms.toFixed(2)} ms</span></span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -688,7 +750,6 @@ export default function Observability() {
         background: 'var(--panel)',
         border: '1px solid var(--border)',
         borderRadius: 10,
-        overflow: 'hidden',
       }}>
         <button
           onClick={() => setTracesOpen(o => !o)}
@@ -708,12 +769,22 @@ export default function Observability() {
           <span style={{ fontSize: 13, color: 'var(--muted)', userSelect: 'none' }}>
             {tracesOpen ? '▾' : '▸'}
           </span>
-          <div>
+          <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>Traces</div>
             <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>
               Last {traces.length} sampled or error traces
             </div>
           </div>
+          {tracesOpen && (
+            <select
+              value={traceLimit}
+              onClick={e => e.stopPropagation()}
+              onChange={e => { const n = Number(e.target.value); setTraceLimit(n); loadTraces(n) }}
+              style={{ padding: '3px 8px', borderRadius: 6, fontSize: 11, background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)', cursor: 'pointer' }}
+            >
+              {[10, 20, 50, 100].map(n => <option key={n} value={n}>{n} traces</option>)}
+            </select>
+          )}
         </button>
 
         {tracesOpen && (
@@ -764,6 +835,8 @@ export default function Observability() {
                         padding: '12px 18px 16px 18px',
                         background: 'rgba(0,0,0,0.2)',
                         fontSize: 12,
+                        maxHeight: 600,
+                        overflowY: 'auto',
                       }}>
                         <div style={{ marginBottom: 8, color: 'var(--muted)' }}>
                           Trace ID: <span style={{ color: 'var(--text)' }}>{trace.trace_id}</span>
@@ -806,6 +879,29 @@ export default function Observability() {
   )
 }
 
+const ROUTER_TRUNCATE_AT = 300
+
+function RouterField({ label, value, color }: { label: string; value: string; color: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = value.length > ROUTER_TRUNCATE_AT
+  return (
+    <div>
+      <span style={{ color }}>{label}:</span>{' '}
+      <span style={{ color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {isLong && !expanded ? value.slice(0, ROUTER_TRUNCATE_AT) + '…' : value}
+      </span>
+      {isLong && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          {expanded ? 'show less' : `show all (${value.length} chars)`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function RouterTraceSummary({ payload }: { payload: TracePayload }) {
   const d = deriveRouterTraceDetails(payload)
   const hasAny = !!(d.classifierPrompt || d.classifierResponse || d.finalPrompt || d.finalResponse)
@@ -824,12 +920,12 @@ function RouterTraceSummary({ payload }: { payload: TracePayload }) {
         AI Router Details (classifier + final LLM)
       </div>
       <div style={{ display: 'grid', gap: 6 }}>
-        {d.classifierPrompt && <div><span style={{ color: '#a78bfa' }}>Classifier prompt:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierPrompt)}</span></div>}
-        {d.classifierSystem && <div><span style={{ color: '#a78bfa' }}>Classifier system:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierSystem)}</span></div>}
-        {d.classifierResponse && <div><span style={{ color: '#fbbf24' }}>Classifier response:</span> <span style={{ color: 'var(--text)' }}>{snip(d.classifierResponse)}</span></div>}
-        {d.finalPrompt && <div><span style={{ color: 'var(--accent)' }}>Final LLM prompt:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalPrompt)}</span></div>}
-        {d.finalSystem && <div><span style={{ color: 'var(--accent)' }}>Final LLM system:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalSystem)}</span></div>}
-        {d.finalResponse && <div><span style={{ color: '#34d399' }}>Final LLM response:</span> <span style={{ color: 'var(--text)' }}>{snip(d.finalResponse)}</span></div>}
+        {d.classifierPrompt && <RouterField label="Classifier prompt" value={d.classifierPrompt} color="#a78bfa" />}
+        {d.classifierSystem && <RouterField label="Classifier system" value={d.classifierSystem} color="#a78bfa" />}
+        {d.classifierResponse && <RouterField label="Classifier response" value={d.classifierResponse} color="#fbbf24" />}
+        {d.finalPrompt && <RouterField label="Final LLM prompt" value={d.finalPrompt} color="var(--accent)" />}
+        {d.finalSystem && <RouterField label="Final LLM system" value={d.finalSystem} color="var(--accent)" />}
+        {d.finalResponse && <RouterField label="Final LLM response" value={d.finalResponse} color="#34d399" />}
       </div>
     </div>
   )
@@ -908,12 +1004,34 @@ function buildBlockGroups(instructions: TracePayloadEvent[]): BlockGroup[] {
 const LONG_VALUE_KEYS = new Set(['classifier_output', 'prompt', 'system', 'response', 'provider_error'])
 const TRUNCATE_AT = 300
 
+// Maps internal engine instruction names to the user-facing action names shown in flow JSON.
+// Internal names differ when the compiler renames for clarity (e.g. "return" → "early_return"
+// to distinguish intentional stop from error stop, or all-caps for arithmetic steps).
+const INSTRUCTION_DISPLAY_NAME: Record<string, string> = {
+  early_return:  'return',
+  CONCAT:        'concat',
+  TO_LOWER:      'to_lower',
+  TO_UPPER:      'to_upper',
+  SUBSTRING:     'substring',
+  TO_INT:        'to_int',
+  ADD:           'add',
+  SUB:           'subtract',
+  MUL:           'multiply',
+  DIV:           'divide',
+  SET_RESPONSE_HEADER: 'set_response_header',
+}
+
+function displayName(raw: string | undefined): string {
+  if (!raw) return '—'
+  return INSTRUCTION_DISPLAY_NAME[raw] ?? raw
+}
+
 function InstructionEventRow({ ev }: { ev: TracePayloadEvent }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const kvs = (ev.output ?? []).filter(o => o.v)
   return (
     <div style={{ padding: '4px 8px', fontSize: 11, borderLeft: '2px solid var(--border)', marginBottom: 2 }}>
-      <span style={{ color: 'var(--text)', fontWeight: 500 }}>{ev.name}</span>
+      <span style={{ color: 'var(--text)', fontWeight: 500 }}>{displayName(ev.name)}</span>
       {' '}
       <span style={{ color: 'var(--muted)' }}>{fmtNsAsMs(Number(ev.duration_ns ?? 0))}</span>
       {kvs.map(({ k, v }) => {
@@ -1031,23 +1149,63 @@ function BlockView({ payload }: { payload: TracePayload }) {
   )
 }
 
+// Human-readable labels for gateway lifecycle phases appended after flow execution.
+// These are NOT flow steps — they are gateway overhead recorded post-execution.
+const GATEWAY_PHASE_LABELS: Record<string, string> = {
+  GATEWAY_PHASE_CONN_SETUP:            'Connection setup (TCP/TLS)',
+  GATEWAY_PHASE_ROUTING:               'Request routing & setup',
+  GATEWAY_PHASE_PROCESS_REQUEST:       'Flow execution (total)',
+  GATEWAY_PHASE_FINALIZE_RESPONSE:     'Flush response to client',
+  GATEWAY_PHASE_RESPONSE_TRANSFER:     'Response transfer (first→last byte)',
+  GATEWAY_PHASE_AFTER_RESPONSE_HOOKS:  'Post-response hooks',
+  GATEWAY_PHASE_ACCESS_LOG_SNAPSHOT:   'Access log (in-memory)',
+  GATEWAY_PHASE_TELEMETRY_FINISH:      'Metrics update',
+  GATEWAY_PHASE_ACCESS_LOG_ENQUEUE:    'Access log (persist queue)',
+  GATEWAY_PHASE_RESIDUAL:              'Other overhead',
+}
+
+// Phases that happen BEFORE flow steps run (shown before the flow steps, not after).
+const PRE_FLOW_PHASES = new Set(['GATEWAY_PHASE_CONN_SETUP', 'GATEWAY_PHASE_ROUTING'])
+
+// Instructions that represent sending the response to the client.
+const RESPONSE_SENT_NAMES = new Set(['early_return', 'respond', 'return'])
+
 function TraceTimeline({ payload }: { payload: TracePayload }) {
   const instructionEvents = Array.isArray(payload.instructions) ? payload.instructions : []
   const upstreamEvents = Array.isArray(payload.upstreams) ? payload.upstreams : []
-  const events = [
-    ...instructionEvents.map((e) => ({
-      kind: 'instruction' as const,
-      label: e.name || 'instruction',
-      durationNs: Number(e.duration_ns ?? 0),
-      seq: Number(e.seq ?? 0),
-      status: undefined as number | undefined,
-    })),
+
+  type TimelineEvent = {
+    kind: 'instruction' | 'upstream'
+    rawName: string
+    label: string
+    durationNs: number
+    seq: number
+    status?: number
+    isGatewayPhase: boolean
+  }
+
+  const events: TimelineEvent[] = [
+    ...instructionEvents.map((e) => {
+      const raw = e.name || ''
+      const isPhase = raw.startsWith('GATEWAY_PHASE_')
+      return {
+        kind: 'instruction' as const,
+        rawName: raw,
+        label: GATEWAY_PHASE_LABELS[raw] ?? displayName(raw),
+        durationNs: Number(e.duration_ns ?? 0),
+        seq: Number(e.seq ?? 0),
+        status: undefined,
+        isGatewayPhase: isPhase,
+      }
+    }),
     ...upstreamEvents.map((e) => ({
       kind: 'upstream' as const,
+      rawName: e.name || '',
       label: e.name || 'upstream',
       durationNs: Number(e.total_ns ?? e.duration_ns ?? 0),
       seq: Number(e.seq ?? 0),
       status: e.status,
+      isGatewayPhase: false,
     })),
   ].filter(e => e.durationNs >= 0)
 
@@ -1062,37 +1220,97 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
     return <div style={{ color: 'var(--muted)' }}>No timeline events available</div>
   }
 
+  // Determine where the response was sent: last instruction whose raw name is a return variant,
+  // or last non-gateway-phase instruction if no explicit return found.
+  const flowEvents = events.filter(e => !e.isGatewayPhase)
+  const phaseEvents = events.filter(e => e.isGatewayPhase)
+  const responseSentIdx = (() => {
+    for (let i = flowEvents.length - 1; i >= 0; i--) {
+      if (RESPONSE_SENT_NAMES.has(flowEvents[i].rawName)) return i
+    }
+    return flowEvents.length - 1 // fallback: after last flow step
+  })()
+
+  // Pre-flow phases (e.g. routing/setup) — shown before flow steps.
+  const preFlowPhases = phaseEvents.filter(e => PRE_FLOW_PHASES.has(e.rawName))
+  // PROCESS_REQUEST is a summary of the whole flow execution — shown as header stat, not a bar.
+  const processTotalEvent = phaseEvents.find(e => e.rawName === 'GATEWAY_PHASE_PROCESS_REQUEST')
+  // Post-response phases — shown after the "response sent" marker.
+  const postResponsePhases = phaseEvents.filter(
+    e => e.rawName !== 'GATEWAY_PHASE_PROCESS_REQUEST' && !PRE_FLOW_PHASES.has(e.rawName)
+  )
+
+  function EventBar({ e, i, dimmed }: { e: TimelineEvent; i: number; dimmed?: boolean }) {
+    const widthPct = Math.max(2, (e.durationNs / maxNs) * 100)
+    const color = e.kind === 'upstream' ? '#fbbf24' : dimmed ? 'rgba(87,181,255,0.35)' : '#57b5ff'
+    const seqLabel = e.seq > 0 ? `${e.seq}. ` : ''
+    return (
+      <div key={`${e.kind}-${e.seq}-${i}`} style={{ marginBottom: 8, opacity: dimmed ? 0.7 : 1 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+          <div style={{ color: dimmed ? 'var(--muted)' : 'var(--text)', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {seqLabel}{e.label}
+            {e.kind === 'upstream' && e.status ? ` (${e.status})` : ''}
+          </div>
+          <div style={{ color: 'var(--muted)', fontSize: 11, whiteSpace: 'nowrap' }}>
+            {fmtNsAsMs(e.durationNs)}
+          </div>
+        </div>
+        <div style={{ height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
+          <div style={{ width: `${widthPct}%`, height: '100%', background: color }} />
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div style={{
-      background: 'var(--bg)',
-      borderRadius: 6,
-      border: '1px solid var(--border)',
-      padding: '10px 12px',
-    }}>
+    <div style={{ background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)', padding: '10px 12px' }}>
       <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
         Timeline • total {fmtNsAsMs(totalNs)}
+        {processTotalEvent && (
+          <span style={{ marginLeft: 12, color: 'var(--muted)' }}>
+            flow {fmtNsAsMs(processTotalEvent.durationNs)}
+          </span>
+        )}
       </div>
 
-      {events.map((e, i) => {
-        const widthPct = Math.max(2, (e.durationNs / maxNs) * 100)
-        const color = e.kind === 'upstream' ? '#fbbf24' : '#57b5ff'
-        return (
-          <div key={`${e.kind}-${e.seq}-${i}`} style={{ marginBottom: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
-              <div style={{ color: 'var(--text)', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {e.seq > 0 ? `${e.seq}. ` : ''}{e.label}
-                {e.kind === 'upstream' && e.status ? ` (${e.status})` : ''}
-              </div>
-              <div style={{ color: 'var(--muted)', fontSize: 11, whiteSpace: 'nowrap' }}>
-                {fmtNsAsMs(e.durationNs)}
-              </div>
-            </div>
-            <div style={{ height: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
-              <div style={{ width: `${widthPct}%`, height: '100%', background: color }} />
-            </div>
+      {/* Pre-flow gateway phases (routing + setup before first flow step) */}
+      {preFlowPhases.length > 0 && (
+        <div style={{ marginBottom: 6 }}>
+          {preFlowPhases.map((e, i) => (
+            <EventBar key={`pre-${i}`} e={e} i={i} dimmed />
+          ))}
+          <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
+        </div>
+      )}
+
+      {/* Flow steps */}
+      {flowEvents.map((e, i) => (
+        <EventBar key={`flow-${i}`} e={e} i={i} />
+      ))}
+
+      {/* Response-sent marker — inserted after the return/respond step */}
+      {flowEvents.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0 10px',
+          fontSize: 11, color: '#4ade80',
+        }}>
+          <div style={{ flex: 1, height: 1, background: 'rgba(74,222,128,0.3)' }} />
+          <span>↩ response sent to client</span>
+          <div style={{ flex: 1, height: 1, background: 'rgba(74,222,128,0.3)' }} />
+        </div>
+      )}
+
+      {/* Post-response gateway phases */}
+      {postResponsePhases.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6, fontStyle: 'italic' }}>
+            Gateway bookkeeping (after response)
           </div>
-        )
-      })}
+          {postResponsePhases.map((e, i) => (
+            <EventBar key={`phase-${i}`} e={e} i={i} dimmed />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -251,7 +251,7 @@ export default function FlowDesigner({
           <div className="ref-chips">
             {refs.map(ref => (
               <span key={ref.raw} className="ref-chip">
-                {ref.raw} <span className="ref-chip-arrow">→</span> slot: {ref.slotName}
+                {ref.raw} <span className="ref-chip-arrow">→</span> var: {ref.slotName}
               </span>
             ))}
           </div>

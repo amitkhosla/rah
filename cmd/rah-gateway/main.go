@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"rah/internal/cache"
@@ -51,6 +52,10 @@ func (d *domainScopedKV) Delete(ctx context.Context, key string) error {
 func (d *domainScopedKV) ListKeys(ctx context.Context, prefix string) ([]string, error) {
 	return d.mgr.ListGlobalKeys(ctx, d.domain, prefix)
 }
+
+// connAcceptKey is used to store the TCP connection accept time in the request context
+// via http.Server.ConnContext. This enables per-request connection setup timing.
+type connAcceptKey struct{}
 
 func main() {
 	port := flag.Int("port", 8080, "Gateway Port")
@@ -512,6 +517,18 @@ func main() {
 			// Always capture start time — needed for access log regardless of obs config.
 			reqStart := time.Now()
 
+			// Extract TCP connection accept time injected by ConnContext.
+			// For fresh connections: reqStart - acceptTime ≈ TLS + header parse time.
+			// For keep-alive connections: acceptTime is old → we suppress the value
+			// (any setup time > 3 s is almost certainly a reused connection, not a slow handshake).
+			var connSetupMs float64
+			if acceptTime, ok := req.Context().Value(connAcceptKey{}).(time.Time); ok && !acceptTime.IsZero() {
+				connSetupNs := reqStart.Sub(acceptTime).Nanoseconds()
+				if connSetupNs > 0 && connSetupNs < 3_000_000_000 {
+					connSetupMs = float64(connSetupNs) / 1e6
+				}
+			}
+
 			// A. Router Lookup — load current atomic state so dynamically
 			// registered APIs (via /sync) are always visible.
 			currentState := fm.State.Load()
@@ -557,6 +574,14 @@ func main() {
 			ctx.Finalize()
 			finalizeDuration := time.Since(finalizeStarted)
 
+			// Compute response transfer time: from first byte to last byte sent to client.
+			// Non-zero only when the response was actually written (not buffered-but-not-flushed).
+			var transferMs float64
+			lastByteSentNs := ctx.Timing.LastByteSentNs
+			if lastByteSentNs > 0 && ctx.Timing.FirstByteSentNs > 0 && lastByteSentNs > ctx.Timing.FirstByteSentNs {
+				transferMs = float64(lastByteSentNs-ctx.Timing.FirstByteSentNs) / 1e6
+			}
+
 			// D2. After-response hooks: run deferred ingest events now that
 			// the response is committed. These are non-blocking channel sends
 			// so they complete in nanoseconds; no latency impact on the caller.
@@ -570,10 +595,16 @@ func main() {
 			// Client has already received the response — none of this adds latency.
 			// req remains valid until this goroutine returns, so req.Header reads
 			// in Snapshot() are safe.
-			total := time.Since(reqStart)
+			//
+			// clientTotal: time from request received to response fully flushed to
+			// the client. This is what matters for SLA/latency reporting — it
+			// intentionally excludes post-response bookkeeping (access log write,
+			// telemetry counters, etc.) which the client never waits for.
+			clientTotal := processDuration + finalizeDuration
+			total := time.Since(reqStart) // includes post-processing; used for gateway phases only
 			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
 			upstream := time.Duration(upstreamNs)
-			gateway := max(total-upstream, 0)
+			gateway := max(clientTotal-upstream, 0)
 
 			ttfbNs := max(ctx.Timing.FirstByteSentNs-ctx.Timing.StartNs, 0)
 
@@ -588,7 +619,7 @@ func main() {
 				ctx.TenantID,
 				req.Method, req.URL.Path,
 				ctx.ResponseStatus,
-				total.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
+				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
 				req.ContentLength, ctx.Timing.ClientBytesSent,
 				req,
 			)
@@ -609,6 +640,12 @@ func main() {
 			)
 			obsFinishDuration := time.Since(obsFinishStarted)
 
+			// Record per-API stats for the in-memory API Performance fallback.
+			// Post-response: client already has the response, not on the critical path.
+			if ctx.ApiId != 0 {
+				obs.RecordRequest(ctx.ApiId, total.Nanoseconds(), req.ContentLength, ctx.Timing.ClientBytesSent)
+			}
+
 			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
 			accessLogEnqueueStarted := time.Now()
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
@@ -619,10 +656,12 @@ func main() {
 				Method:      req.Method,
 				Path:        req.URL.Path,
 				Status:      ctx.ResponseStatus,
-				TotalMs:     float64(total.Nanoseconds()) / 1e6,
+				TotalMs:     float64(clientTotal.Nanoseconds()) / 1e6,
 				GatewayMs:   float64(gateway.Nanoseconds()) / 1e6,
 				UpstreamMs:  float64(upstreamNs) / 1e6,
 				TTFBMs:      float64(ttfbNs) / 1e6,
+				ConnSetupMs: connSetupMs,
+				TransferMs:  transferMs,
 				ReqBytes:    req.ContentLength,
 				ResBytes:    ctx.Timing.ClientBytesSent,
 			})
@@ -639,26 +678,42 @@ func main() {
 					}
 					ctx.Obs.AppendInstructionEvent(ctx.Trace, ev)
 				}
+
+				// Connection setup: TCP+TLS time before this request started (fresh connections only).
+				if connSetupMs > 0 {
+					connSetupDuration := time.Duration(connSetupMs * float64(time.Millisecond))
+					appendGatewayPhase("GATEWAY_PHASE_CONN_SETUP", connSetupDuration, "TCP+TLS connection setup (fresh connections only; 0 for keep-alive)")
+				}
+
+				// Pre-execution setup: router lookup + context pool.Get + trace init.
+				// Represents the gateway overhead before the first flow instruction ran.
+				routingDuration := processStarted.Sub(reqStart)
+				appendGatewayPhase("GATEWAY_PHASE_ROUTING", routingDuration, "router lookup + context setup before first flow step")
+
 				appendGatewayPhase("GATEWAY_PHASE_PROCESS_REQUEST", processDuration, "time in flow manager request execution")
 				appendGatewayPhase("GATEWAY_PHASE_FINALIZE_RESPONSE", finalizeDuration, "time flushing buffered response to client")
-				appendGatewayPhase("GATEWAY_PHASE_AFTER_RESPONSE_HOOKS", afterHooksDuration, "time running deferred hooks")
+				if transferMs > 0 {
+					transferDuration := time.Duration(transferMs * float64(time.Millisecond))
+					appendGatewayPhase("GATEWAY_PHASE_RESPONSE_TRANSFER", transferDuration, "time from first→last byte written to client")
+				}
+				appendGatewayPhase("GATEWAY_PHASE_AFTER_RESPONSE_HOOKS", afterHooksDuration, "time running deferred hooks after client response")
 				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_SNAPSHOT", accessLogSnapshotDuration, "time building in-memory access log snapshot")
 				appendGatewayPhase("GATEWAY_PHASE_TELEMETRY_FINISH", obsFinishDuration, "time updating telemetry counters/export queue")
 				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_ENQUEUE", accessLogEnqueueDuration, "time enqueueing persistent access log write")
 
-				totalNs := total.Nanoseconds()
+				clientTotalNs := clientTotal.Nanoseconds()
 				var attributedNs int64
 				for _, e := range ctx.Trace.Instructions {
 					if e.DurationNs > 0 {
 						attributedNs += e.DurationNs
 					}
 				}
-				if residualNs := totalNs - attributedNs; residualNs > 0 {
+				if residualNs := clientTotalNs - attributedNs; residualNs > 0 {
 					ctx.Trace.Instructions = append(ctx.Trace.Instructions, observability.InstructionEvent{
 						Name:       "GATEWAY_PHASE_RESIDUAL",
 						PC:         -1,
 						DurationNs: residualNs,
-						Output:     []observability.KV{{K: "note", V: "unattributed remainder after explicit phase instrumentation"}},
+						Output:     []observability.KV{{K: "note", V: "unaccounted time within client-visible request duration"}},
 					})
 				}
 
@@ -672,7 +727,7 @@ func main() {
 						ApiName:   apiName,
 						TenantID:  ctx.TenantID,
 						Status:    ctx.ResponseStatus,
-						TotalMs:   float64(total.Nanoseconds()) / 1e6,
+						TotalMs:   float64(clientTotal.Nanoseconds()) / 1e6,
 						Payload:   payload,
 					})
 				}
@@ -691,7 +746,17 @@ func main() {
 		if cfgMgr.Gateway().Admin.RequireGatewayAuth {
 			gwHandler = adminUserStore.Middleware(handler)
 		}
-		log.Fatal(http.ListenAndServe(addr, gwHandler))
+		// Use http.Server with ConnContext to capture TCP accept time for connection
+		// setup latency tracking. Zero overhead on the hot path — runs once per TCP
+		// connection (not per request) and stores one time.Time in the context.
+		srv := &http.Server{
+			Addr:    addr,
+			Handler: gwHandler,
+			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
+				return context.WithValue(ctx, connAcceptKey{}, time.Now())
+			},
+		}
+		log.Fatal(srv.ListenAndServe())
 	}()
 
 	ts := tenantregistry.NewTenantServer(regMgr)
@@ -842,7 +907,7 @@ func main() {
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	ts.RegisterHandlers(mux)
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
-	observability.RegisterObsRoutes(mux, obsWriter, obs)
+	observability.RegisterObsRoutes(mux, obsWriter, obs, registry.GetNameByID)
 	if obsCfg.Export.Prometheus.Enabled {
 		mux.Handle("/metrics", observability.PrometheusHandler(obs))
 	}

@@ -31,14 +31,15 @@ type HeaderMutation struct {
 
 // RequestTiming holds per-request timing counters and byte metrics.
 // It is embedded by value in Context so all fields are contiguous in memory
-// (56 bytes = fits in one cache line) with zero pointer indirection.
+// (64 bytes = exactly one cache line) with zero pointer indirection.
 // Reset is a single memclr: ctx.Timing = RequestTiming{}
 type RequestTiming struct {
 	StartNs         int64 // request start — set by FlowManager before Execute
 	FirstByteSentNs int64 // when first byte was written to client (TTFB)
+	LastByteSentNs  int64 // when last byte was written to client (transfer complete)
 	UpstreamTimeNs  int64 // total upstream latency (atomic-added per call)
 	UpstreamCalls   int32 // upstream calls made this request
-	_               int32 // alignment pad → 56 bytes total, single cache line
+	_               int32 // alignment pad → 64 bytes total, one cache line
 	ClientBytesSent int64 // bytes written to client
 	UpstreamBytesTx int64 // bytes sent upstream
 	UpstreamBytesRx int64 // bytes received from upstream
@@ -227,6 +228,7 @@ func (ctx *Context) Write(p []byte) (n int, err error) {
 	n, err = ctx.Writer.Write(p)
 	if n > 0 {
 		ctx.Timing.ClientBytesSent += int64(n)
+		ctx.Timing.LastByteSentNs = nanotime()
 	}
 	return n, err
 }
@@ -249,6 +251,7 @@ func (ctx *Context) Finalize() {
 		}
 	}
 	ctx.headerSent = true
+	ctx.Timing.LastByteSentNs = nanotime()
 }
 
 // InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers

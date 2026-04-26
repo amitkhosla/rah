@@ -32,6 +32,8 @@ type AccessLogRecord struct {
 	GatewayMs   float64           `json:"gateway_ms"`
 	UpstreamMs  float64           `json:"upstream_ms"`
 	TTFBMs      float64           `json:"ttfb_ms"`
+	ConnSetupMs float64           `json:"conn_setup_ms,omitempty"` // TCP+TLS setup time (new connections only)
+	TransferMs  float64           `json:"transfer_ms,omitempty"`   // first→last byte sent to client
 	ReqBytes    int64             `json:"req_bytes"`
 	ResBytes    int64             `json:"res_bytes"`
 	Extra       map[string]string `json:"extra,omitempty"` // customer-configured extra fields

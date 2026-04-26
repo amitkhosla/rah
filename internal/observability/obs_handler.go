@@ -24,18 +24,25 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // ObsHandler serves the observability REST API on the management mux (port 8081).
 type ObsHandler struct {
-	writer *ObsWriter
-	obs    *Telemetry
+	writer       *ObsWriter
+	obs          *Telemetry
+	nameResolver func(uint32) string // optional; maps ApiID → name for in-memory fallback
 }
 
 // NewObsHandler creates an ObsHandler backed by the given writer and telemetry.
-func NewObsHandler(writer *ObsWriter, obs *Telemetry) *ObsHandler {
-	return &ObsHandler{writer: writer, obs: obs}
+// nameResolver is optional — pass registry.GetNameByID to enable the in-memory API stats fallback.
+func NewObsHandler(writer *ObsWriter, obs *Telemetry, nameResolver ...func(uint32) string) *ObsHandler {
+	h := &ObsHandler{writer: writer, obs: obs}
+	if len(nameResolver) > 0 && nameResolver[0] != nil {
+		h.nameResolver = nameResolver[0]
+	}
+	return h
 }
 
 // RegisterObsRoutes registers all observability REST routes on mux.
-func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry) {
-	h := NewObsHandler(writer, obs)
+// nameResolver is optional; pass registry.GetNameByID to enable the in-memory API stats fallback.
+func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, nameResolver ...func(uint32) string) {
+	h := NewObsHandler(writer, obs, nameResolver...)
 	mux.HandleFunc("/observability/metrics", h.MetricsHandler)
 	mux.HandleFunc("/observability/access-log", h.AccessLogHandler)
 	mux.HandleFunc("/observability/traces", h.TracesHandler)
@@ -291,17 +298,17 @@ func (h *ObsHandler) APIsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Fallback: In-memory telemetry snapshot
-	snap := h.obs.Snapshot(20)
-	apis := []NameLatency{}
-	if m, ok := snap["metrics"].(GatewayMetrics); ok {
-		apis = m.UpstreamTopSlow
+	// 2. Fallback: in-memory per-API stats accumulated by RecordRequest (atomic, no GC).
+	// Returns actual user-facing API names — never LLM upstream model names.
+	apis := h.obs.APITop(20, h.nameResolver)
+	note := "no persisted data in last hour; using in-memory API stats"
+	if len(apis) == 0 {
+		note = "no API data yet; make requests to populate"
 	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apis":   apis,
-		"note":   "no persisted data available; using in-memory fallback",
-		"source": "telemetry_snapshot",
+		"note":   note,
+		"source": "telemetry_api_stats",
 	})
 }
 
