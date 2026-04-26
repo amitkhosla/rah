@@ -1161,7 +1161,7 @@ const GATEWAY_PHASE_LABELS: Record<string, string> = {
   GATEWAY_PHASE_ACCESS_LOG_SNAPSHOT:   'Access log (in-memory)',
   GATEWAY_PHASE_TELEMETRY_FINISH:      'Metrics update',
   GATEWAY_PHASE_ACCESS_LOG_ENQUEUE:    'Access log (persist queue)',
-  GATEWAY_PHASE_RESIDUAL:              'Other overhead',
+  GATEWAY_PHASE_RESIDUAL:              'Flow executor overhead',
 }
 
 // Phases that happen BEFORE flow steps run (shown before the flow steps, not after).
@@ -1220,10 +1220,15 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
     return <div style={{ color: 'var(--muted)' }}>No timeline events available</div>
   }
 
+  // RESIDUAL belongs inside the flow execution window (it's processDuration minus
+  // individual instruction times — executor loop, dispatch overhead, etc.).
+  // Treat it as a flow-section event, not a post-response phase.
+  const FLOW_INTERNAL_PHASES = new Set(['GATEWAY_PHASE_RESIDUAL'])
+
   // Determine where the response was sent: last instruction whose raw name is a return variant,
   // or last non-gateway-phase instruction if no explicit return found.
-  const flowEvents = events.filter(e => !e.isGatewayPhase)
-  const phaseEvents = events.filter(e => e.isGatewayPhase)
+  const flowEvents = events.filter(e => !e.isGatewayPhase || FLOW_INTERNAL_PHASES.has(e.rawName))
+  const phaseEvents = events.filter(e => e.isGatewayPhase && !FLOW_INTERNAL_PHASES.has(e.rawName))
   const responseSentIdx = (() => {
     for (let i = flowEvents.length - 1; i >= 0; i--) {
       if (RESPONSE_SENT_NAMES.has(flowEvents[i].rawName)) return i
@@ -1243,7 +1248,10 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
   function EventBar({ e, i, dimmed }: { e: TimelineEvent; i: number; dimmed?: boolean }) {
     const widthPct = Math.max(2, (e.durationNs / maxNs) * 100)
     const color = e.kind === 'upstream' ? '#fbbf24' : dimmed ? 'rgba(87,181,255,0.35)' : '#57b5ff'
-    const seqLabel = e.seq > 0 ? `${e.seq}. ` : ''
+    // Gateway phases get their seq assigned after flow execution, so the numbers
+    // are always out-of-order relative to their visual position. Only show seq
+    // for actual flow instructions (non-phase events).
+    const seqLabel = (!e.isGatewayPhase && e.seq > 0) ? `${e.seq}. ` : ''
     return (
       <div key={`${e.kind}-${e.seq}-${i}`} style={{ marginBottom: 8, opacity: dimmed ? 0.7 : 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>

@@ -574,6 +574,14 @@ func main() {
 			ctx.Finalize()
 			finalizeDuration := time.Since(finalizeStarted)
 
+			// clientTotal: captured immediately after the last byte is written —
+			// before any post-response work — so it correctly spans:
+			//   routing overhead (router lookup, pool.Get, trace init) +
+			//   flow execution (fm.ProcessRequest) +
+			//   response flush (ctx.Finalize)
+			// This is the true client-visible latency and matches the trace timeline total.
+			clientTotal := time.Since(reqStart)
+
 			// Compute response transfer time: from first byte to last byte sent to client.
 			// Non-zero only when the response was actually written (not buffered-but-not-flushed).
 			var transferMs float64
@@ -593,15 +601,7 @@ func main() {
 
 			// E. Post-response: snapshot for async access log and observability.
 			// Client has already received the response — none of this adds latency.
-			// req remains valid until this goroutine returns, so req.Header reads
-			// in Snapshot() are safe.
-			//
-			// clientTotal: time from request received to response fully flushed to
-			// the client. This is what matters for SLA/latency reporting — it
-			// intentionally excludes post-response bookkeeping (access log write,
-			// telemetry counters, etc.) which the client never waits for.
-			clientTotal := processDuration + finalizeDuration
-			total := time.Since(reqStart) // includes post-processing; used for gateway phases only
+			total := time.Since(reqStart) // full wall time incl. post-response; for internal gateway accounting only
 			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
 			upstream := time.Duration(upstreamNs)
 			gateway := max(clientTotal-upstream, 0)
@@ -701,19 +701,22 @@ func main() {
 				appendGatewayPhase("GATEWAY_PHASE_TELEMETRY_FINISH", obsFinishDuration, "time updating telemetry counters/export queue")
 				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_ENQUEUE", accessLogEnqueueDuration, "time enqueueing persistent access log write")
 
-				clientTotalNs := clientTotal.Nanoseconds()
-				var attributedNs int64
+				// RESIDUAL: flow manager time not attributed to any individual instruction.
+				// Scoped to processDuration (not clientTotal) so routing and finalize don't
+				// inflate or deflate it. Gateway phase events use PC=-1; real instructions
+				// use PC>=0 — use that to distinguish without importing "strings".
+				var flowAttributedNs int64
 				for _, e := range ctx.Trace.Instructions {
-					if e.DurationNs > 0 {
-						attributedNs += e.DurationNs
+					if e.DurationNs > 0 && e.PC >= 0 {
+						flowAttributedNs += e.DurationNs
 					}
 				}
-				if residualNs := clientTotalNs - attributedNs; residualNs > 0 {
+				if residualNs := processDuration.Nanoseconds() - flowAttributedNs; residualNs > 0 {
 					ctx.Trace.Instructions = append(ctx.Trace.Instructions, observability.InstructionEvent{
 						Name:       "GATEWAY_PHASE_RESIDUAL",
 						PC:         -1,
 						DurationNs: residualNs,
-						Output:     []observability.KV{{K: "note", V: "unaccounted time within client-visible request duration"}},
+						Output:     []observability.KV{{K: "note", V: "flow manager overhead not captured by individual instruction events"}},
 					})
 				}
 
