@@ -88,7 +88,8 @@ func TestOpenAIAdapter_Marshal(t *testing.T) {
 }
 
 func TestGeminiAdapter_Marshal(t *testing.T) {
-	a := &geminiAdapter{}
+	// v1beta supports system_instruction as a dedicated field.
+	a := &geminiAdapter{apiVersion: "v1beta"}
 	req := LLMRequest{
 		Messages:  []CanonicalMessage{{Role: RoleUser, Content: "Translate this"}},
 		System:    "You translate.",
@@ -101,11 +102,41 @@ func TestGeminiAdapter_Marshal(t *testing.T) {
 	}
 	var got map[string]any
 	json.Unmarshal(b, &got)
-	if got["systemInstruction"] == nil {
-		t.Error("systemInstruction missing")
+	// Gemini REST API uses snake_case: system_instruction
+	if got["system_instruction"] == nil {
+		t.Error("system_instruction missing")
 	}
 	if got["contents"] == nil {
 		t.Error("contents missing")
+	}
+}
+
+func TestGeminiAdapter_Marshal_V1_SystemAsTurn(t *testing.T) {
+	// v1 stable API does not support system_instruction — injected as user/model turn pair.
+	a := &geminiAdapter{apiVersion: "v1"}
+	req := LLMRequest{
+		Messages:  []CanonicalMessage{{Role: RoleUser, Content: "Translate this"}},
+		System:    "You translate.",
+		Model:     "gemini-pro",
+		MaxTokens: 200,
+	}
+	b, err := a.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got map[string]any
+	json.Unmarshal(b, &got)
+	if got["system_instruction"] != nil {
+		t.Error("system_instruction must not be set for v1 — not supported by that API version")
+	}
+	// System prompt prepended as first user/model turn pair → 3 contents total
+	contents := got["contents"].([]any)
+	if len(contents) != 3 {
+		t.Errorf("contents len: want 3 (system-user + system-model + user), got %d", len(contents))
+	}
+	first := contents[0].(map[string]any)
+	if first["role"] != "user" {
+		t.Errorf("first content role: want user, got %v", first["role"])
 	}
 }
 
@@ -130,12 +161,15 @@ func TestOllamaAdapter_Marshal(t *testing.T) {
 
 func TestAdapterEndpoints(t *testing.T) {
 	cases := []struct {
-		adapter  ProviderAdapter
+		adapter    ProviderAdapter
 		wantSuffix string
 	}{
 		{&anthropicAdapter{}, "/v1/messages"},
 		{&openAIAdapter{}, "/v1/chat/completions"},
-		{&geminiAdapter{}, "/v1beta/models/my-model:generateContent"},
+		// Gemini default (v1beta — supports system_instruction, tools, thinking)
+		{&geminiAdapter{apiVersion: "v1beta"}, "/v1beta/models/my-model:generateContent"},
+		// Gemini v1 — stable but limited (no system_instruction, no tools)
+		{&geminiAdapter{apiVersion: "v1"}, "/v1/models/my-model:generateContent"},
 		{&ollamaAdapter{}, "/api/chat"},
 	}
 	for _, c := range cases {

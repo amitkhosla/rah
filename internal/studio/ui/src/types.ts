@@ -77,9 +77,25 @@ export interface TargetsResponse {
 // A step in a flow. `action` is always set; remaining keys are step parameters.
 export type FlowStep = { action: string } & Record<string, string>
 
+// ── Step Groups (Studio UI only — not compiled to gateway) ───────────
+
+export interface StepGroup {
+  id: string         // uuid or timestamp-based
+  label: string      // user-defined name, e.g. "Authentication"
+  startIndex: number // first step index (inclusive)
+  endIndex: number   // last step index (inclusive)
+  collapsed: boolean // default: false
+}
+
+// Per-step user labels: key = step index (as string), value = label text
+// Stored alongside the flow in Studio but NOT compiled into gateway instructions.
+export type StepLabels = Record<string, string>
+
 export interface SavedFlow {
   name: string
   steps: FlowStep[]
+  groups?: StepGroup[]
+  stepLabels?: Record<string, string>
 }
 
 export interface ApiDef {
@@ -223,6 +239,11 @@ export interface LLMModel {
   // The gateway checks local counters before calling the provider; on exhaustion it
   // falls through to the fallback chain instead of burning a real API call.
   rate_limits?: Array<{ window: string; limit: number }>
+  // Gemini only: Google Generative Language API version.
+  // "v1beta" (default) — supports system_instruction, tools, and thinking (Gemini 1.5+, 2.0+, Gemma).
+  // "v1"               — stable but limited; no system_instruction or function calling.
+  // Ignored when endpoint_override or a versioned base_url is set.
+  api_version?: 'v1' | 'v1beta'
 }
 
 export interface LLMTestResult {

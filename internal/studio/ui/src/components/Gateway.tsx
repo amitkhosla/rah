@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchGatewayApis, deleteFlow } from '../api'
-import type { FlowStep, GatewayState } from '../types'
+import type { FlowStep, GatewayFlow, GatewayState } from '../types'
 
 interface GatewayProps {
-  onLoadFlow?: (name: string, steps: FlowStep[]) => void
+  onLoadFlow?: (name: string, steps: FlowStep[], allGatewayFlows: GatewayFlow[]) => void
   onLoadApi?: (api: { name: string; path: string; method: string; flow_name: string }) => void
 }
 
@@ -101,7 +101,7 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
                   <div style={{ display: 'flex', gap: '6px' }}>
                     {onLoadFlow && !isSubFlow && (
                       <button className="btn" title="Load this flow into the Flow Designer for editing"
-                        onClick={() => onLoadFlow(f.name, f.instructions)}>Load</button>
+                        onClick={() => onLoadFlow(f.name, f.instructions, state?.flows ?? [])}>Load</button>
                     )}
                     <button className="btn muted"
                       onClick={() => setExpandedFlow(expandedFlow === f.name ? null : f.name)}>
@@ -201,7 +201,7 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
                         className="btn"
                         title="Load this API and its flow into the editor"
                         onClick={() => {
-                          onLoadFlow(flow.name, flow.instructions)
+                          onLoadFlow(flow.name, flow.instructions, state?.flows ?? [])
                           onLoadApi({
                             name: a.name,
                             path: a.path,

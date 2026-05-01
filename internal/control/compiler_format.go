@@ -39,11 +39,35 @@ func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 		}
 	}
 
+	toolsSlot := -1
+	if name := step.Input["tools_slot"]; name != "" {
+		if s, slotErr := c.getSlot(name); slotErr == nil {
+			toolsSlot = s
+		}
+	}
+
+	toolChoiceSlot := -1
+	if name := step.Input["tool_choice_slot"]; name != "" {
+		if s, slotErr := c.getSlot(name); slotErr == nil {
+			toolChoiceSlot = s
+		}
+	}
+
+	streamSlot := -1
+	if name := step.Input["stream_slot"]; name != "" {
+		if s, slotErr := c.getSlot(name); slotErr == nil {
+			streamSlot = s
+		}
+	}
+
 	cfg := steps.ParseMessageFormatConfig{
 		BodySlot:        bodySlot,
 		MessagesSlot:    messagesSlot,
 		SystemSlot:      systemSlot,
 		DetectedFmtSlot: detectedFmtSlot,
+		ToolsSlot:       toolsSlot,
+		ToolChoiceSlot:  toolChoiceSlot,
+		StreamSlot:      streamSlot,
 	}
 	c.GlobalTable = append(c.GlobalTable, steps.ParseMessageFormat(cfg))
 	return nil
@@ -129,6 +153,22 @@ func (c *Compiler) compileFormatResponse(step StepConfig) error {
 			return fmt.Errorf("format_response: stream_slot: %w", slotErr)
 		}
 		cfg.StreamSlot = s
+	}
+
+	if v := step.Input["tool_use_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: tool_use_slot: %w", slotErr)
+		}
+		cfg.ToolUseSlot = s
+	}
+
+	if v := step.Input["thinking_slot"]; v != "" {
+		s, slotErr := c.getSlot(v)
+		if slotErr != nil {
+			return fmt.Errorf("format_response: thinking_slot: %w", slotErr)
+		}
+		cfg.ThinkingSlot = s
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.FormatResponse(cfg))

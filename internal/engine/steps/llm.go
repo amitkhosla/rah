@@ -76,6 +76,46 @@ type LLMCallConfig struct {
 	// conversation history and content blocks.
 	// Set to -1 (default) to use PromptSlot.
 	MessagesSlot int
+
+	// ── Tool / thinking slots (runtime, read from ctx.ByteSlots) ──────────────
+	// All slot fields default to -1 (disabled). Callers (compiler) must set them
+	// explicitly; zero would silently conflict with a real slot.
+
+	// ToolsSlot: if >= 0, read JSON []ToolDefinition from ctx.ByteSlots[ToolsSlot].
+	// Populated by parse_message_format from the incoming request body.
+	// Set to -1 (default) to use no tools (or the baked ToolChoice static value).
+	ToolsSlot int
+
+	// ToolChoiceSlot: if >= 0, read a ToolChoice override from ctx.ByteSlots[ToolChoiceSlot].
+	// Value may be a JSON string ("auto") or a JSON ToolChoice object.
+	// Set to -1 (default) to use the static ToolChoice field below.
+	ToolChoiceSlot int
+
+	// ThinkingSlot: if >= 0, read a JSON ThinkingConfig from ctx.ByteSlots[ThinkingSlot].
+	// Set to -1 (default) to use the static Thinking field below.
+	ThinkingSlot int
+
+	// ── Static bake-time values (used when corresponding slot == -1) ───────────
+
+	// ToolChoice is the static tool choice strategy applied when ToolChoiceSlot == -1.
+	// Empty string means use the adapter default.
+	ToolChoice ToolChoiceType
+
+	// Thinking is the static thinking config applied when ThinkingSlot == -1.
+	// nil means thinking is disabled.
+	Thinking *ThinkingConfig
+
+	// ── Output slots (write after successful model call) ──────────────────────
+
+	// ToolUseSlot: if >= 0, write JSON []ContentBlock (BlockToolUse only) to
+	// ctx.ByteSlots[ToolUseSlot] after a successful call.
+	// Set to -1 (default) to skip.
+	ToolUseSlot int
+
+	// ThinkingOutSlot: if >= 0, write the text of the first BlockThinking block
+	// to ctx.ByteSlots[ThinkingOutSlot] after a successful call.
+	// Set to -1 (default) to skip.
+	ThinkingOutSlot int
 }
 
 // FallbackEntry holds one step in the fallback chain, resolved at bake time.
@@ -367,6 +407,50 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				UseCompletionTokens: activeCfg.UseCompletionTokens,
 			}
 
+			// 3b. Populate tools, tool_choice, and thinking from slots / baked config.
+
+			// Read tools from slot (populated by parse_message_format from incoming request body).
+			if cfg.ToolsSlot >= 0 && cfg.ToolsSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ToolsSlot]; len(raw) > 0 {
+					var tools []ToolDefinition
+					if jsonErr := json.Unmarshal(raw, &tools); jsonErr == nil && len(tools) > 0 {
+						req.Tools = tools
+					}
+				}
+			}
+
+			// Resolve tool choice: slot → baked default.
+			if cfg.ToolChoiceSlot >= 0 && cfg.ToolChoiceSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ToolChoiceSlot]; len(raw) > 0 {
+					// Try to parse as ToolChoice struct first, then as plain string.
+					var tc ToolChoice
+					if jsonErr := json.Unmarshal(raw, &tc); jsonErr == nil && tc.Type != "" {
+						req.ToolChoice = &tc
+					} else {
+						var s string
+						if jsonErr2 := json.Unmarshal(raw, &s); jsonErr2 == nil && s != "" {
+							req.ToolChoice = &ToolChoice{Type: ToolChoiceType(s)}
+						}
+					}
+				}
+			}
+			if req.ToolChoice == nil && cfg.ToolChoice != "" {
+				req.ToolChoice = &ToolChoice{Type: cfg.ToolChoice}
+			}
+
+			// Resolve thinking: slot → baked default.
+			if cfg.ThinkingSlot >= 0 && cfg.ThinkingSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ThinkingSlot]; len(raw) > 0 {
+					var tc ThinkingConfig
+					if jsonErr := json.Unmarshal(raw, &tc); jsonErr == nil {
+						req.Thinking = &tc
+					}
+				}
+			}
+			if req.Thinking == nil && cfg.Thinking != nil {
+				req.Thinking = cfg.Thinking
+			}
+
 			// 4. Token limit check (reject — no truncation)
 			if activeCfg.Capabilities.MaxContextTokens > 0 {
 				est := estimateRequestTokens(req) + maxTokens
@@ -564,6 +648,35 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						ctx.ByteSlots[cfg.StopReasonSlot] = sr
 					}
 
+					// 11. Write tool use blocks to ToolUseSlot.
+					if cfg.ToolUseSlot >= 0 && cfg.ToolUseSlot < len(ctx.ByteSlots) && len(llmResp.ContentBlocks) > 0 {
+						var toolUseBlocks []ContentBlock
+						for _, b := range llmResp.ContentBlocks {
+							if b.Type == BlockToolUse {
+								toolUseBlocks = append(toolUseBlocks, b)
+							}
+						}
+						if len(toolUseBlocks) > 0 {
+							if encoded, encErr := json.Marshal(toolUseBlocks); encErr == nil {
+								slot := ctx.Alloc(len(encoded))
+								copy(slot, encoded)
+								ctx.ByteSlots[cfg.ToolUseSlot] = slot
+							}
+						}
+					}
+
+					// 12. Write thinking text to ThinkingOutSlot (first BlockThinking block).
+					if cfg.ThinkingOutSlot >= 0 && cfg.ThinkingOutSlot < len(ctx.ByteSlots) {
+						for _, b := range llmResp.ContentBlocks {
+							if b.Type == BlockThinking && b.Text != "" {
+								slot := ctx.Alloc(len(b.Text))
+								copy(slot, b.Text)
+								ctx.ByteSlots[cfg.ThinkingOutSlot] = slot
+								break // only first thinking block
+							}
+						}
+					}
+
 					// Emit LLM trace attributes
 					{
 						alias := activeCfg.Alias
@@ -745,6 +858,36 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					copy(sr, fbLlmResp.StopReason)
 					ctx.ByteSlots[cfg.StopReasonSlot] = sr
 				}
+
+				// Write tool use blocks to ToolUseSlot (fallback path).
+				if cfg.ToolUseSlot >= 0 && cfg.ToolUseSlot < len(ctx.ByteSlots) && len(fbLlmResp.ContentBlocks) > 0 {
+					var toolUseBlocks []ContentBlock
+					for _, b := range fbLlmResp.ContentBlocks {
+						if b.Type == BlockToolUse {
+							toolUseBlocks = append(toolUseBlocks, b)
+						}
+					}
+					if len(toolUseBlocks) > 0 {
+						if encoded, encErr := json.Marshal(toolUseBlocks); encErr == nil {
+							slot := ctx.Alloc(len(encoded))
+							copy(slot, encoded)
+							ctx.ByteSlots[cfg.ToolUseSlot] = slot
+						}
+					}
+				}
+
+				// Write thinking text to ThinkingOutSlot (fallback path, first BlockThinking block).
+				if cfg.ThinkingOutSlot >= 0 && cfg.ThinkingOutSlot < len(ctx.ByteSlots) {
+					for _, b := range fbLlmResp.ContentBlocks {
+						if b.Type == BlockThinking && b.Text != "" {
+							slot := ctx.Alloc(len(b.Text))
+							copy(slot, b.Text)
+							ctx.ByteSlots[cfg.ThinkingOutSlot] = slot
+							break // only first thinking block
+						}
+					}
+				}
+
 				return state.PC + 1
 			}
 

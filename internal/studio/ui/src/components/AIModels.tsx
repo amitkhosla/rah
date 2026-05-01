@@ -332,7 +332,7 @@ const PRESETS: Preset[] = [
     label: 'Gemini 1.5 Pro',
     model: {
       alias: 'gemini-1.5-pro', provider: 'Google', adapter: 'gemini',
-      api_key_ref: 'llm:gemini', max_tokens: 8192,
+      api_key_ref: 'llm:gemini', max_tokens: 8192, api_version: 'v1beta',
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
     },
   },
@@ -463,7 +463,7 @@ const PRESETS: Preset[] = [
     label: 'Gemini 2.5 Flash-Lite',
     model: {
       alias: 'gemini-2.5-flash-lite', provider: 'Google', adapter: 'gemini',
-      api_key_ref: 'llm:gemini', max_tokens: 8192,
+      api_key_ref: 'llm:gemini', max_tokens: 8192, api_version: 'v1beta',
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
     },
   },
@@ -471,7 +471,7 @@ const PRESETS: Preset[] = [
     label: 'Gemini 2.5 Flash',
     model: {
       alias: 'gemini-2.5-flash', provider: 'Google', adapter: 'gemini',
-      api_key_ref: 'llm:gemini', max_tokens: 16384,
+      api_key_ref: 'llm:gemini', max_tokens: 16384, api_version: 'v1beta',
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
     },
   },
@@ -479,7 +479,7 @@ const PRESETS: Preset[] = [
     label: 'Gemini 2.5 Pro',
     model: {
       alias: 'gemini-2.5-pro', provider: 'Google', adapter: 'gemini',
-      api_key_ref: 'llm:gemini', max_tokens: 16384,
+      api_key_ref: 'llm:gemini', max_tokens: 16384, api_version: 'v1beta',
       capabilities: { max_context_tokens: 1000000, supported_tool_formats: ['openai-tools'] },
     },
   },
@@ -796,6 +796,15 @@ export default function AIModels() {
                   <option value="custom">custom (OpenAI-compatible)</option>
                 </select>
               </Field>
+              {form.adapter === 'gemini' && (
+                <Field label="API Version" hint='v1beta (default) supports system instructions, tools, and thinking. Use v1 only if you specifically need the stable-only endpoint.'>
+                  <select className="input" value={form.api_version ?? 'v1beta'}
+                    onChange={e => setField('api_version', e.target.value as 'v1' | 'v1beta')}>
+                    <option value="v1beta">v1beta — recommended (system prompt, tools, thinking)</option>
+                    <option value="v1">v1 — stable only (no system prompt or tools)</option>
+                  </select>
+                </Field>
+              )}
               {form.adapter === 'custom' && <>
                 <Field label="Auth Header Name" hint='HTTP header for the API key (default: "Authorization")'>
                   <input className="input" value={form.auth_header_name ?? ''}
@@ -1137,6 +1146,14 @@ export default function AIModels() {
                     ${m.cost_per_input_token ?? 0}/${m.cost_per_output_token ?? 0}
                   </span>
                 ) : null}
+
+                {/* Gemini API version badge */}
+                {m.adapter === 'gemini' && (
+                  <span style={{ fontSize: 10, fontFamily: 'monospace', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 4px', color: 'var(--muted)' }}
+                    title="Google Generative Language API version">
+                    {m.api_version ?? 'v1beta'}
+                  </span>
+                )}
 
                 {/* completion tokens badge */}
                 {m.use_completion_tokens && (

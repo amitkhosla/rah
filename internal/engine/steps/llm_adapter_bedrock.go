@@ -47,9 +47,12 @@ func newBedrockAdapter(baseURL string) *bedrockAdapter {
 // identical to anthropicRequest but WITHOUT the top-level "model" field
 // (the model is encoded in the URL path).
 type bedrockAnthropicRequest struct {
-	MaxTokens int                   `json:"max_tokens"`
-	System    string                `json:"system,omitempty"`
-	Messages  []anthropicReqMessage `json:"messages"`
+	MaxTokens  int                   `json:"max_tokens"`
+	System     string                `json:"system,omitempty"`
+	Messages   []anthropicReqMessage `json:"messages"`
+	Tools      []anthropicToolDef    `json:"tools,omitempty"`
+	ToolChoice json.RawMessage       `json:"tool_choice,omitempty"`
+	Thinking   json.RawMessage       `json:"thinking,omitempty"`
 }
 
 func (b *bedrockAdapter) Marshal(req LLMRequest) ([]byte, error) {
@@ -58,7 +61,11 @@ func (b *bedrockAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		if m.Role == RoleSystem {
 			continue // system goes in top-level field
 		}
-		msgs = append(msgs, anthropicReqMessage{Role: string(m.Role), Content: m.Content})
+		content, err := marshalAnthropicContent(m)
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: marshal message: %w", err)
+		}
+		msgs = append(msgs, anthropicReqMessage{Role: string(m.Role), Content: content})
 	}
 	system := req.System
 	if system == "" {
@@ -73,11 +80,63 @@ func (b *bedrockAdapter) Marshal(req LLMRequest) ([]byte, error) {
 	if maxTokens <= 0 {
 		maxTokens = 2048
 	}
-	return json.Marshal(bedrockAnthropicRequest{
+
+	br := bedrockAnthropicRequest{
 		MaxTokens: maxTokens,
 		System:    system,
 		Messages:  msgs,
-	})
+	}
+
+	// Tools
+	if len(req.Tools) > 0 {
+		br.Tools = make([]anthropicToolDef, len(req.Tools))
+		for i, t := range req.Tools {
+			schema := t.InputSchema
+			if schema == nil {
+				schema = json.RawMessage(`{}`)
+			}
+			br.Tools[i] = anthropicToolDef{
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: schema,
+			}
+		}
+	}
+
+	// ToolChoice
+	if req.ToolChoice != nil {
+		tc := req.ToolChoice
+		var raw json.RawMessage
+		var err error
+		if tc.Type == ToolChoiceTool {
+			raw, err = json.Marshal(map[string]interface{}{
+				"type": "tool",
+				"name": tc.Name,
+			})
+		} else {
+			raw, err = json.Marshal(map[string]interface{}{
+				"type": string(tc.Type),
+			})
+		}
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: marshal tool_choice: %w", err)
+		}
+		br.ToolChoice = raw
+	}
+
+	// Thinking
+	if req.Thinking != nil && req.Thinking.Enabled {
+		raw, err := json.Marshal(map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": req.Thinking.BudgetTokens,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bedrock: marshal thinking: %w", err)
+		}
+		br.Thinking = raw
+	}
+
+	return json.Marshal(br)
 }
 
 func (b *bedrockAdapter) Unmarshal(body []byte) (LLMResponse, error) {
@@ -88,18 +147,42 @@ func (b *bedrockAdapter) Unmarshal(body []byte) (LLMResponse, error) {
 	if resp.Error != nil {
 		return LLMResponse{}, fmt.Errorf("bedrock: api error: %s", resp.Error.Message)
 	}
-	var text string
-	for _, block := range resp.Content {
-		if block.Type == "text" {
-			text = block.Text
-			break
+
+	var blocks []anthropicRespBlock
+	if len(resp.Content) > 0 && resp.Content[0] == '[' {
+		if err := json.Unmarshal(resp.Content, &blocks); err != nil {
+			return LLMResponse{}, fmt.Errorf("bedrock: unmarshal content blocks: %w", err)
 		}
 	}
+
+	var contentBlocks []ContentBlock
+	var firstText string
+	for _, blk := range blocks {
+		switch blk.Type {
+		case "text":
+			contentBlocks = append(contentBlocks, ContentBlock{Type: BlockText, Text: blk.Text})
+			if firstText == "" {
+				firstText = blk.Text
+			}
+		case "tool_use":
+			contentBlocks = append(contentBlocks, ContentBlock{
+				Type:      BlockToolUse,
+				ToolUseID: blk.ID,
+				ToolName:  blk.Name,
+				ToolInput: blk.Input,
+			})
+		case "thinking":
+			contentBlocks = append(contentBlocks, ContentBlock{Type: BlockThinking, Text: blk.Thinking})
+		}
+	}
+
 	return LLMResponse{
-		Content:      text,
-		StopReason:   resp.StopReason,
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
+		Content:        firstText,
+		StopReason:     resp.StopReason,
+		InputTokens:    resp.Usage.InputTokens,
+		OutputTokens:   resp.Usage.OutputTokens,
+		ContentBlocks:  contentBlocks,
+		ThinkingTokens: resp.Usage.ThinkingTokens,
 	}, nil
 }
 

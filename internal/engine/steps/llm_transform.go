@@ -30,6 +30,12 @@ type TransformMessagesConfig struct {
 	FlattenContent  bool // collapse [{type:"text",text:"x"}] arrays → plain string "x"
 	AdaptRoles      bool // map role names: "model"↔"assistant", normalize tool roles
 	NormalizeTools  bool // rewrite tool_result messages for target format compatibility
+
+	// History truncation (applied after all content transforms above)
+	MaxMessages     int  // hard cap on message count; 0 = no cap
+	MaxTokens       int  // token budget; 0 = no cap (uses estimateTokens from llm_types.go)
+	RemoveOrphans   bool // remove tool_result blocks with no matching preceding tool_use
+	EnsureStartUser bool // after truncation, drop leading non-user messages
 }
 
 // contentBlock is a single element in an Anthropic-style content array.
@@ -84,6 +90,8 @@ func applyExtractSystem(msgs []CanonicalMessage, ctx *rctx.Context, state *engin
 
 // applyStripOrExtractThinking removes thinking blocks from assistant messages.
 // If extract is true, the thinking text is collected and written to thinkingSlot.
+// Handles both the legacy Content-string format (JSON array of contentBlock) and
+// the structured ContentBlocks []ContentBlock field.
 func applyStripOrExtractThinking(msgs []CanonicalMessage, ctx *rctx.Context, state *engine.ExecutionState, extract bool, thinkingSlot int) []CanonicalMessage {
 	var thinkingParts []string
 
@@ -91,6 +99,25 @@ func applyStripOrExtractThinking(msgs []CanonicalMessage, ctx *rctx.Context, sta
 		if m.Role != RoleAssistant {
 			continue
 		}
+
+		// Structured ContentBlocks path.
+		if len(m.ContentBlocks) > 0 {
+			var kept []ContentBlock
+			for _, b := range m.ContentBlocks {
+				if b.Type == BlockThinking {
+					if extract {
+						thinkingParts = append(thinkingParts, b.Text)
+					}
+					// Drop — do not include in kept.
+				} else {
+					kept = append(kept, b)
+				}
+			}
+			msgs[i].ContentBlocks = kept
+			continue
+		}
+
+		// Legacy Content-string path (JSON array of contentBlock).
 		blocks := parseContentBlocks(m.Content)
 		if blocks == nil {
 			continue
@@ -271,6 +298,83 @@ func TransformMessages(cfg TransformMessagesConfig) engine.Instruction {
 			// 6. InjectSystem
 			if cfg.InjectSystem {
 				msgs = applyInjectSystem(msgs, ctx, cfg.SystemSlot)
+			}
+
+			// ── Truncation ────────────────────────────────────────────────────────
+			needsTruncation := cfg.MaxMessages > 0 || cfg.MaxTokens > 0
+
+			if needsTruncation && len(msgs) > 0 {
+				// 7a. Hard message count cap: keep the most recent MaxMessages messages.
+				if cfg.MaxMessages > 0 && len(msgs) > cfg.MaxMessages {
+					msgs = msgs[len(msgs)-cfg.MaxMessages:]
+				}
+
+				// 7b. Token budget: drop oldest messages until under budget.
+				if cfg.MaxTokens > 0 {
+					for len(msgs) > 1 {
+						total := 0
+						for _, m := range msgs {
+							if m.HasBlocks() {
+								for _, b := range m.ContentBlocks {
+									total += estimateTokens(b.Text) + estimateTokens(b.ToolResult) + 4
+								}
+							} else {
+								total += estimateTokens(m.Content) + 4
+							}
+						}
+						if total <= cfg.MaxTokens {
+							break
+						}
+						msgs = msgs[1:] // drop oldest
+					}
+				}
+
+				// 7c. Remove orphaned tool_results.
+				// A tool_result ContentBlock is orphaned if its ToolCallID has no
+				// matching tool_use ContentBlock (with the same ToolUseID) anywhere
+				// in the retained window.
+				if cfg.RemoveOrphans && len(msgs) > 0 {
+					// Build set of all tool_use IDs in the retained window.
+					activeToolUseIDs := make(map[string]bool)
+					for _, m := range msgs {
+						for _, b := range m.ContentBlocks {
+							if b.Type == BlockToolUse && b.ToolUseID != "" {
+								activeToolUseIDs[b.ToolUseID] = true
+							}
+						}
+					}
+					// Filter out messages whose every block is an orphaned tool_result.
+					filtered := msgs[:0]
+					for _, m := range msgs {
+						if m.HasBlocks() {
+							hasNonOrphan := false
+							for _, b := range m.ContentBlocks {
+								if b.Type != BlockToolResult {
+									hasNonOrphan = true
+									break
+								}
+								if activeToolUseIDs[b.ToolCallID] {
+									hasNonOrphan = true
+									break
+								}
+							}
+							if hasNonOrphan {
+								filtered = append(filtered, m)
+							}
+							// else: skip — all blocks are orphaned tool_results
+						} else {
+							filtered = append(filtered, m)
+						}
+					}
+					msgs = filtered
+				}
+
+				// 7d. Ensure history starts with a user message.
+				if cfg.EnsureStartUser {
+					for len(msgs) > 0 && msgs[0].Role != RoleUser {
+						msgs = msgs[1:]
+					}
+				}
 			}
 
 			// Write transformed history back to slot.

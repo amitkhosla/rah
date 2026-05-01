@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchSchema } from './api'
-import type { ApiDef, ConnStatus, FlowStep, PaletteBlock, SavedFlow, TabId } from './types'
+import type { ApiDef, ConnStatus, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
 import FlowDesigner  from './components/FlowDesigner'
 import APIsSection   from './components/APIsSection'
 import AISection     from './components/AISection'
@@ -10,6 +10,48 @@ import Tenants       from './components/Tenants'
 import Settings      from './components/Settings'
 import Dashboard     from './components/Dashboard'
 import Observability from './components/Observability'
+
+// ── Action name normalization (internal engine → display names) ──────
+
+const INTERNAL_TO_DISPLAY: Record<string, string> = {
+  early_return:        'return',
+  CONCAT:              'concat',
+  TO_LOWER:            'to_lower',
+  TO_UPPER:            'to_upper',
+  SUBSTRING:           'substring',
+  TO_INT:              'to_int',
+  ADD:                 'add',
+  SUB:                 'subtract',
+  MUL:                 'multiply',
+  DIV:                 'divide',
+  SET_RESPONSE_HEADER: 'set_response_header',
+}
+
+function normalizeActionNames(steps: FlowStep[]): FlowStep[] {
+  return steps.map(s => {
+    const display = INTERNAL_TO_DISPLAY[s.action]
+    return display ? { ...s, action: display } : s
+  })
+}
+
+// ── Sub-flow reference collector ─────────────────────────────────────
+
+function collectFlowRefs(steps: FlowStep[]): string[] {
+  const refs: string[] = []
+  for (const step of steps) {
+    if (step['then']) refs.push(step['then'])
+    if (step['else']) refs.push(step['else'])
+    if (step['flow_name']) refs.push(step['flow_name'])
+    if (step['cases']) {
+      // cases format: "val1=flowA,val2=flowB"
+      step['cases'].split(',').forEach(c => {
+        const eq = c.indexOf('=')
+        if (eq >= 0) refs.push(c.slice(eq + 1).trim())
+      })
+    }
+  }
+  return refs.filter(Boolean)
+}
 
 // ── Sidebar structure ────────────────────────────────────────────────
 type NavItem =
@@ -59,16 +101,17 @@ export default function App() {
   // All flows saved during this session (shared between designer + APIs section)
   const [savedFlows, setSavedFlows] = useState<SavedFlow[]>([])
 
-  function saveCurrentFlow() {
+  function saveCurrentFlow(groups: StepGroup[], stepLabels: Record<string, string>) {
     if (!flowName.trim() || steps.length === 0) return
     setSavedFlows(prev => {
       const idx = prev.findIndex(f => f.name === flowName)
+      const entry: SavedFlow = { name: flowName, steps: [...steps], groups, stepLabels }
       if (idx >= 0) {
         const updated = [...prev]
-        updated[idx] = { name: flowName, steps: [...steps] }
+        updated[idx] = entry
         return updated
       }
-      return [...prev, { name: flowName, steps: [...steps] }]
+      return [...prev, entry]
     })
   }
 
@@ -80,8 +123,36 @@ export default function App() {
     })
   }
 
+  // Clears the active flow and navigates to the designer
+  function startNewFlow() {
+    setFlowName('')
+    setSteps([])
+    setTab('flows')
+  }
+
   // APIs — each carries its own flow_name
   const [apis, setApis] = useState<ApiDef[]>([])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('rah_studio_v1')
+      if (raw) {
+        const snap = JSON.parse(raw) as { savedFlows?: SavedFlow[]; apis?: ApiDef[]; accent?: string }
+        if (snap.savedFlows?.length) setSavedFlows(snap.savedFlows)
+        if (snap.apis?.length)       setApis(snap.apis)
+        if (snap.accent)             setAccent(snap.accent)
+      }
+    } catch { /* corrupt storage — ignore */ }
+  }, [])
+
+  useEffect(() => {
+    const id = setTimeout(() => {
+      try {
+        localStorage.setItem('rah_studio_v1', JSON.stringify({ savedFlows, apis, accent }))
+      } catch { /* quota exceeded — ignore */ }
+    }, 800)
+    return () => clearTimeout(id)
+  }, [savedFlows, apis, accent])
 
   const connLabel: Record<ConnStatus, string> = {
     connecting: 'connecting…',
@@ -106,25 +177,47 @@ export default function App() {
               )
             }
             return (
-              <button
-                key={item.id}
-                className={`sidebar-item${tab === item.id ? ' active' : ''}`}
-                onClick={() => setTab(item.id)}
-              >
-                {item.label}
-                {item.id === 'apis' && apis.length > 0 && (
-                  <span style={{
-                    marginLeft: 'auto',
-                    fontSize: 10,
-                    fontWeight: 700,
-                    background: 'rgba(255,255,255,0.15)',
-                    borderRadius: 8,
-                    padding: '1px 6px',
-                  }}>
-                    {apis.length}
-                  </span>
+              <div key={item.id}>
+                <button
+                  className={`sidebar-item${tab === item.id ? ' active' : ''}`}
+                  onClick={() => setTab(item.id)}
+                >
+                  {item.label}
+                  {item.id === 'apis' && apis.length > 0 && (
+                    <span style={{
+                      marginLeft: 'auto',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      background: 'rgba(255,255,255,0.15)',
+                      borderRadius: 8,
+                      padding: '1px 6px',
+                    }}>
+                      {apis.length}
+                    </span>
+                  )}
+                </button>
+                {item.id === 'flows' && (
+                  <button
+                    style={{
+                      display: 'block',
+                      width: 'calc(100% - 24px)',
+                      margin: '2px 12px 4px',
+                      padding: '4px 10px',
+                      borderRadius: 8,
+                      border: '1px solid var(--accent)',
+                      background: 'transparent',
+                      color: 'var(--accent)',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                    onClick={startNewFlow}
+                  >
+                    + New Flow
+                  </button>
                 )}
-              </button>
+              </div>
             )
           })}
         </nav>
@@ -159,7 +252,7 @@ export default function App() {
             flowName={flowName}
             setFlowName={setFlowName}
             savedFlows={savedFlows}
-            onSaveFlow={saveCurrentFlow}
+            onSaveFlow={() => saveCurrentFlow([], {})}
           />
         )}
         {tab === 'apis' && (
@@ -168,6 +261,8 @@ export default function App() {
             apis={apis}
             setApis={setApis}
             onCreateFlow={createNamedFlow}
+            onNavigateToDesigner={startNewFlow}
+            onNavigateToDeploy={() => setTab('deploy')}
           />
         )}
         {tab === 'ai' && <AISection />}
@@ -179,18 +274,42 @@ export default function App() {
         )}
         {tab === 'gateway' && (
           <Gateway
-            onLoadFlow={(name, loadedSteps) => {
+            onLoadFlow={(name, loadedSteps, allGatewayFlows) => {
+              const normalizedSteps = normalizeActionNames(loadedSteps)
               setFlowName(name)
-              setSteps(loadedSteps)
-              // also upsert into savedFlows so APIsSection can see it
+              setSteps(normalizedSteps)
+              // Also upsert into savedFlows so APIsSection can see it
               setSavedFlows(prev => {
-                const idx = prev.findIndex(f => f.name === name)
-                if (idx >= 0) {
-                  const updated = [...prev]
-                  updated[idx] = { name, steps: loadedSteps }
-                  return updated
+                let updated = [...prev]
+                const mainIdx = updated.findIndex(f => f.name === name)
+                if (mainIdx >= 0) {
+                  updated[mainIdx] = { name, steps: normalizedSteps }
+                } else {
+                  updated.push({ name, steps: normalizedSteps })
                 }
-                return [...prev, { name, steps: loadedSteps }]
+                // Recursively load all referenced sub-flows (up to 3 levels deep)
+                const queue = [...collectFlowRefs(normalizedSteps)]
+                const visited = new Set([name])
+                let depth = 0
+                while (queue.length > 0 && depth < 3) {
+                  const batch = queue.splice(0, queue.length)
+                  depth++
+                  for (const refName of batch) {
+                    if (visited.has(refName)) continue
+                    visited.add(refName)
+                    const refFlow = allGatewayFlows.find((f: GatewayFlow) => f.name === refName)
+                    if (!refFlow) continue
+                    const refSteps = normalizeActionNames(refFlow.instructions)
+                    const existingIdx = updated.findIndex(f => f.name === refName)
+                    if (existingIdx >= 0) {
+                      updated[existingIdx] = { name: refName, steps: refSteps }
+                    } else {
+                      updated.push({ name: refName, steps: refSteps })
+                    }
+                    queue.push(...collectFlowRefs(refSteps))
+                  }
+                }
+                return updated
               })
               setTab('flows')
             }}

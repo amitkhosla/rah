@@ -114,10 +114,53 @@ func AllStepDescriptors() []StepDescriptor {
 		// ── Auth ─────────────────────────────────────────────────────────────────
 		{
 			Type: "token_validation", Title: "Token Validation", Category: "auth", Capability: "jwt",
-			Description: "Validate a JWT or API token. Returns 401 if validation fails.",
+			Description: "Validate a JWT. Verifies signature (JWKS), standard claims, required scopes, and arbitrary custom claims. Every parameter supports a static value or a runtime variable loaded by any earlier step.",
 			Defaults: map[string]string{"key_identifier": "header.Authorization"},
 			Fields: []StepField{
-				sf("key_identifier", "Token slot", "Slot or header source containing the token to validate (e.g. header.Authorization)", "header.Authorization"),
+				// Token source
+				sf("key_identifier",                 "Token source",                    "Where to read the token: header.X, query.X, cookie.X, or a variable name", "header.Authorization"),
+				// JWKS / crypto
+				sf("input.jwt.jwks_uri",             "JWKS URL (static)",               "JWKS endpoint URL", "https://YOUR_IDP/.well-known/jwks.json"),
+				sf("input.jwt.jwks_uri_var",         "JWKS URL (variable)",             "Variable holding the JWKS URL (e.g. from load_service_url)", ""),
+				sf("input.jwt.alg",                  "Algorithm (static)",              "JWT algorithm. Default: RS256", "RS256"),
+				sf("input.jwt.alg_var",              "Algorithm (variable)",            "Variable holding the algorithm string", ""),
+				sf("input.jwt.leeway_seconds",       "Leeway seconds (static)",         "Clock skew tolerance in seconds. Default: 30", "30"),
+				sf("input.jwt.leeway_var",           "Leeway seconds (variable)",       "Variable holding clock leeway as a number string", ""),
+				sf("input.jwt.prefetch_jwks",        "Prefetch JWKS",                   "Pre-warm JWKS cache at deploy time (true/false)", "true"),
+				// Validation checks
+				sf("input.jwt.validate",             "Validate (static)",               "Comma-sep: signature,issuer,audience,expiry,not_before. Empty = all.", "signature,expiry"),
+				sf("input.jwt.validate_var",         "Validate (variable)",             "Variable holding the comma-sep validation check list", ""),
+				// Claim values
+				sf("input.jwt.issuer",               "Issuer (static)",                 "Expected iss claim value", "https://accounts.example.com"),
+				sf("input.jwt.issuer_var",           "Issuer (variable)",               "Variable holding the expected issuer", ""),
+				sf("input.jwt.audience",             "Audience (static)",               "Expected aud claim value", "my-api"),
+				sf("input.jwt.audience_var",         "Audience (variable)",             "Variable holding the expected audience", ""),
+				// Scopes
+				sf("input.jwt.required_scopes",     "Required scopes (static)",        "Comma-sep scope values that must be present", "read:orders"),
+				sf("input.jwt.required_scopes_var", "Required scopes (variable)",      "Variable holding comma-sep required scopes", ""),
+				sf("input.jwt.scope_claims",         "Scope claim keys (static)",       "Claim keys to scan for scopes. Default: scope,scp", "scope,scp"),
+				sf("input.jwt.scope_claims_var",     "Scope claim keys (variable)",     "Variable holding the scope claim key list", ""),
+				// Custom claims
+				sf("input.jwt.custom_claims",        "Custom claims (JSON)",            `JSON object of static claim checks e.g. {"role":"admin"}`, `{"role":"admin"}`),
+				sf("input.jwt.custom_claims_vars",   "Custom claim variables (JSON)",   `JSON object mapping claim keys to variable names e.g. {"org":"var.tenant_org"}`, ""),
+				// Failure config
+				sf("input.jwt.on_failure",           "On failure mode (static)",        `"stop" (return error) or "continue" (write result variable and proceed)`, "stop"),
+				sf("input.jwt.on_failure_var",       "On failure mode (variable)",      "Variable holding 'stop' or 'continue'", ""),
+				sf("input.jwt.failure_status",       "Failure status (static)",         "HTTP status code on failure. Default: 401", "401"),
+				sf("input.jwt.failure_status_var",   "Failure status (variable)",       "Variable holding the failure HTTP status code string", ""),
+				sf("input.jwt.failure_body",         "Failure body (static)",           "Response body on failure. Default: unauthorized", "unauthorized"),
+				sf("input.jwt.failure_body_var",     "Failure body (variable)",         "Variable holding the failure response body", ""),
+				// Result values
+				sf("input.jwt.result_success",       "Success result value (static)",   "Value written to result variable on success. Default: true", "true"),
+				sf("input.jwt.result_success_var",   "Success result value (variable)", "Variable holding the success result value", ""),
+				sf("input.jwt.result_failure",       "Failure result value (static)",   "Value written to result variable on failure. Default: false", "false"),
+				sf("input.jwt.result_failure_var",   "Failure result value (variable)", "Variable holding the failure result value", ""),
+				// Output variables
+				sf("input.jwt.result_var",           "Result variable",                 "Variable to write result value into (requires on_failure=continue)", ""),
+				sf("input.jwt.claims_var",           "Claims output variable",          "Variable to write all JWT claims JSON into on success", ""),
+				sf("input.jwt.subject_var",          "Subject output variable",         "Variable to write the JWT sub (subject) claim into on success", ""),
+				sf("input.jwt.client_id_var",        "Client ID output variable",       "Variable to write the client_id (or azp/appid) claim into on success", ""),
+				sf("input.jwt.scopes_out_var",       "Scopes output variable",          "Variable to write comma-separated parsed scopes into on success", ""),
 			},
 		},
 

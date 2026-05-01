@@ -526,6 +526,198 @@ func TestTransformMessages_ComposedTransforms_AppliedInOrder(t *testing.T) {
 	}
 }
 
+// ─── Truncation: MaxMessages ──────────────────────────────────────────────────
+
+func TestTransformTruncateByCount(t *testing.T) {
+	msgs := []CanonicalMessage{
+		{Role: RoleUser, Content: "turn 1"},
+		{Role: RoleAssistant, Content: "reply 1"},
+		{Role: RoleUser, Content: "turn 2"},
+		{Role: RoleAssistant, Content: "reply 2"},
+		{Role: RoleUser, Content: "turn 3"},
+	}
+	cfg := TransformMessagesConfig{
+		HistorySlot:  0,
+		SystemSlot:   -1,
+		ThinkingSlot: -1,
+		FormatSlot:   -1,
+		MaxMessages:  3,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	if len(result) != 3 {
+		t.Errorf("expected 3 messages after truncation, got %d", len(result))
+	}
+	// Should be the last 3 messages.
+	if result[0].Content != "turn 2" {
+		t.Errorf("expected first retained message to be 'turn 2', got %q", result[0].Content)
+	}
+}
+
+// ─── Truncation: MaxTokens ────────────────────────────────────────────────────
+
+func TestTransformTruncateByTokens(t *testing.T) {
+	// Each message: content ~7 chars → estimateTokens = (7+3)/4 = 2, +4 overhead = 6 tokens.
+	// 5 messages ≈ 30 tokens; budget of 15 → should drop oldest until under budget.
+	msgs := []CanonicalMessage{
+		{Role: RoleUser, Content: "turn 1a"},
+		{Role: RoleAssistant, Content: "reply1a"},
+		{Role: RoleUser, Content: "turn 2a"},
+		{Role: RoleAssistant, Content: "reply2a"},
+		{Role: RoleUser, Content: "turn 3a"},
+	}
+	cfg := TransformMessagesConfig{
+		HistorySlot:  0,
+		SystemSlot:   -1,
+		ThinkingSlot: -1,
+		FormatSlot:   -1,
+		MaxTokens:    15,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	if len(result) >= len(msgs) {
+		t.Errorf("expected fewer messages after token truncation, got %d (same as input %d)", len(result), len(msgs))
+	}
+}
+
+// ─── Truncation: RemoveOrphans ────────────────────────────────────────────────
+
+func TestTransformRemovesOrphanedToolResults(t *testing.T) {
+	// Full history: user → assistant(tool_use tu_1) → user(tool_result tu_1) → assistant → user
+	// Truncate to last 2: only [assistant("Done"), user("What next?")] — no tool_use/tool_result.
+	msgs := []CanonicalMessage{
+		{Role: RoleUser, Content: "Do something"},
+		{Role: RoleAssistant, ContentBlocks: []ContentBlock{
+			{Type: BlockToolUse, ToolUseID: "tu_1", ToolName: "bash", ToolInput: json.RawMessage(`{}`)},
+		}},
+		{Role: RoleUser, ContentBlocks: []ContentBlock{
+			{Type: BlockToolResult, ToolCallID: "tu_1", ToolResult: "output"},
+		}},
+		{Role: RoleAssistant, Content: "Done"},
+		{Role: RoleUser, Content: "What next?"},
+	}
+	// Truncate to last 2 → [assistant("Done"), user("What next?")] — no orphans expected
+	cfg := TransformMessagesConfig{
+		HistorySlot:   0,
+		SystemSlot:    -1,
+		ThinkingSlot:  -1,
+		FormatSlot:    -1,
+		MaxMessages:   2,
+		RemoveOrphans: true,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	for _, m := range result {
+		for _, b := range m.ContentBlocks {
+			if b.Type == BlockToolResult {
+				t.Errorf("unexpected tool_result block after truncation+orphan removal: %+v", m)
+			}
+		}
+	}
+
+	// Now truncate to last 3 → [user(tool_result tu_1), assistant("Done"), user("What next?")]
+	// tu_1 tool_use is NOT in window → tool_result is orphaned → that message should be removed.
+	cfg3 := TransformMessagesConfig{
+		HistorySlot:   0,
+		SystemSlot:    -1,
+		ThinkingSlot:  -1,
+		FormatSlot:    -1,
+		MaxMessages:   3,
+		RemoveOrphans: true,
+	}
+	_, result3 := runTransform(t, cfg3, msgs)
+	for _, m := range result3 {
+		for _, b := range m.ContentBlocks {
+			if b.Type == BlockToolResult {
+				t.Errorf("orphaned tool_result should have been removed, found in message: %+v", m)
+			}
+		}
+	}
+}
+
+func TestTransformRetainsNonOrphanedToolResults(t *testing.T) {
+	// Truncate to last 4 → tool_use tu_1 IS retained → tool_result tu_1 is NOT orphaned.
+	msgs := []CanonicalMessage{
+		{Role: RoleUser, Content: "Do something"},
+		{Role: RoleAssistant, ContentBlocks: []ContentBlock{
+			{Type: BlockToolUse, ToolUseID: "tu_1", ToolName: "bash", ToolInput: json.RawMessage(`{}`)},
+		}},
+		{Role: RoleUser, ContentBlocks: []ContentBlock{
+			{Type: BlockToolResult, ToolCallID: "tu_1", ToolResult: "output"},
+		}},
+		{Role: RoleAssistant, Content: "Done"},
+		{Role: RoleUser, Content: "What next?"},
+	}
+	cfg := TransformMessagesConfig{
+		HistorySlot:   0,
+		SystemSlot:    -1,
+		ThinkingSlot:  -1,
+		FormatSlot:    -1,
+		MaxMessages:   4,
+		RemoveOrphans: true,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	// After truncation to 4: [assistant(tool_use tu_1), user(tool_result tu_1), assistant("Done"), user("What next?")]
+	// tool_use is present → tool_result is not orphaned → all 4 messages kept.
+	if len(result) != 4 {
+		t.Errorf("expected 4 messages when tool_use is retained, got %d", len(result))
+	}
+}
+
+// ─── Truncation: EnsureStartUser ─────────────────────────────────────────────
+
+func TestTransformEnsureStartUser(t *testing.T) {
+	msgs := []CanonicalMessage{
+		{Role: RoleAssistant, Content: "I was thinking..."},
+		{Role: RoleUser, Content: "Hello"},
+		{Role: RoleAssistant, Content: "Hi"},
+	}
+	cfg := TransformMessagesConfig{
+		HistorySlot:     0,
+		SystemSlot:      -1,
+		ThinkingSlot:    -1,
+		FormatSlot:      -1,
+		MaxMessages:     3, // must set MaxMessages or MaxTokens to enable truncation block
+		EnsureStartUser: true,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	if len(result) == 0 {
+		t.Fatal("result should not be empty")
+	}
+	if result[0].Role != RoleUser {
+		t.Errorf("first message should be user, got %s", result[0].Role)
+	}
+}
+
+// ─── Truncation: combined StripThinking + MaxMessages ────────────────────────
+
+func TestTransformTruncateAndStripThinking(t *testing.T) {
+	msgs := []CanonicalMessage{
+		{Role: RoleUser, Content: "Hello"},
+		{Role: RoleAssistant, ContentBlocks: []ContentBlock{
+			{Type: BlockThinking, Text: "I should say hi"},
+			{Type: BlockText, Text: "Hi there!"},
+		}},
+		{Role: RoleUser, Content: "How are you?"},
+	}
+	cfg := TransformMessagesConfig{
+		HistorySlot:   0,
+		SystemSlot:    -1,
+		ThinkingSlot:  -1,
+		FormatSlot:    -1,
+		StripThinking: true,
+		MaxMessages:   2,
+	}
+	_, result := runTransform(t, cfg, msgs)
+	if len(result) != 2 {
+		t.Errorf("expected 2 messages after truncation, got %d", len(result))
+	}
+	for _, m := range result {
+		for _, b := range m.ContentBlocks {
+			if b.Type == BlockThinking {
+				t.Error("thinking block should have been stripped before truncation check")
+			}
+		}
+	}
+}
+
 // ─── MalformedJSON ────────────────────────────────────────────────────────────
 
 func TestTransformMessages_MalformedContentJSON_TreatedAsPlainString(t *testing.T) {

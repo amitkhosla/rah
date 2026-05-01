@@ -104,6 +104,11 @@ type LLMModelConfig struct {
 	// Up to 4 windows are supported; window values: "second", "minute", "hour", "day".
 	// Example: [{window: "minute", limit: 60}, {window: "day", limit: 1000}]
 	RateLimits []LLMRateLimitWindow `json:"rate_limits,omitempty" yaml:"rate_limits,omitempty"`
+	// APIVersion selects the Google Generative Language API version for Gemini models.
+	// "v1beta" — (default) required for system_instruction, tools, and thinking support.
+	// "v1"     — stable production API; lacks system_instruction and function calling.
+	// Ignored for non-Gemini adapters and when base_url or endpoint_override is set.
+	APIVersion string `json:"api_version,omitempty" yaml:"api_version,omitempty"`
 }
 
 // LLMRateLimitWindow defines a single rate limit window for a model.

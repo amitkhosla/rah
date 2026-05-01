@@ -191,6 +191,25 @@ export default function Deploy({ savedFlows, apis }: Props) {
       <div className="panel">
         <div className="panel-header">Release + Deploy</div>
         <div className="panel-body">
+          {/* Workflow hint when no APIs configured */}
+          {usedFlowNames.length === 0 && (
+            <div style={{
+              marginBottom: 16,
+              padding: '12px 14px',
+              borderRadius: 6,
+              background: 'rgba(87,181,255,0.04)',
+              border: '1px solid rgba(87,181,255,0.15)',
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)', marginBottom: 8 }}>
+                To publish your APIs:
+              </div>
+              <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--muted)', lineHeight: 2 }}>
+                <li>Design a flow in the <strong style={{ color: 'var(--text)' }}>Flow Designer</strong> tab</li>
+                <li>Register API endpoints in the <strong style={{ color: 'var(--text)' }}>APIs</strong> tab</li>
+                <li>Click <strong style={{ color: 'var(--text)' }}>Create Release + Deploy</strong> below</li>
+              </ol>
+            </div>
+          )}
           <input
             className="input"
             placeholder="release id (auto-generated if empty)"

@@ -16,13 +16,6 @@ import (
 	"rah/internal/rctx"
 )
 
-// ToolDefinition is the canonical representation of one MCP tool.
-type ToolDefinition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"inputSchema,omitempty"`
-}
-
 // MCPLoadMode controls how much tool detail is written to the output slot.
 type MCPLoadMode string
 
@@ -283,10 +276,14 @@ func MCPListTools(cfg MCPListToolsConfig) engine.Instruction {
 			default: // MCPLoadFull
 				full := make([]ToolDefinition, len(tools))
 				for i, t := range tools {
+					var schemaRaw json.RawMessage
+					if t.InputSchema != nil {
+						schemaRaw, _ = json.Marshal(t.InputSchema)
+					}
 					full[i] = ToolDefinition{
 						Name:        t.Name,
 						Description: t.Description,
-						InputSchema: t.InputSchema,
+						InputSchema: schemaRaw,
 					}
 				}
 				out, marshalErr = json.Marshal(full)
@@ -367,10 +364,14 @@ func MCPFetchSchemas(cfg MCPFetchSchemasConfig) engine.Instruction {
 			filtered := make([]ToolDefinition, 0, len(selectedNames))
 			for _, t := range allTools {
 				if _, ok := want[t.Name]; ok {
+					var schemaRaw json.RawMessage
+					if t.InputSchema != nil {
+						schemaRaw, _ = json.Marshal(t.InputSchema)
+					}
 					filtered = append(filtered, ToolDefinition{
 						Name:        t.Name,
 						Description: t.Description,
-						InputSchema: t.InputSchema,
+						InputSchema: schemaRaw,
 					})
 				}
 			}

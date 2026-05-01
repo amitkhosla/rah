@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"strconv"
 
 	"rah/internal/engine/steps"
 )
@@ -53,6 +54,15 @@ func (c *Compiler) compileTransformMessages(step StepConfig) error {
 		return step.Input[key] == "true"
 	}
 
+	parseInt := func(key string) int {
+		if v := step.Input[key]; v != "" {
+			if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+				return n
+			}
+		}
+		return 0
+	}
+
 	cfg := steps.TransformMessagesConfig{
 		HistorySlot:     historySlot,
 		SystemSlot:      systemSlot,
@@ -67,6 +77,11 @@ func (c *Compiler) compileTransformMessages(step StepConfig) error {
 		FlattenContent:  parseBool("flatten_content"),
 		AdaptRoles:      parseBool("adapt_roles"),
 		NormalizeTools:  parseBool("normalize_tools"),
+		// Truncation fields
+		MaxMessages:     parseInt("max_messages"),
+		MaxTokens:       parseInt("max_tokens"),
+		RemoveOrphans:   parseBool("remove_orphans"),
+		EnsureStartUser: parseBool("ensure_start_user"),
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.TransformMessages(cfg))

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"rah/internal/engine"
 	"rah/internal/rctx"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,31 @@ const (
 	TokenReadFromQuery
 	TokenReadFromCookie
 )
+
+// TokenValidationSlots holds runtime slot indexes for token_validation.
+// -1 means "not configured — use static value from TokenValidationConfig".
+type TokenValidationSlots struct {
+	Token          int
+	JWKSURI        int
+	Algorithm      int
+	Leeway         int
+	ValidateSet    int // comma-sep string → parsed into ValidationSet at runtime
+	Issuer         int
+	Audience       int
+	RequiredScopes int // comma-sep string → split at runtime
+	ScopeClaimKeys int
+	OnFailureMode  int // "stop" or "continue"
+	FailureStatus  int // string → parsed as int
+	FailureBody    int
+	ResultSuccess  int // value to write to Result slot on success
+	ResultFailure  int // value to write to Result slot on failure
+	Result         int // where to write result value
+	Claims         int // where to write claims JSON on success
+	Subject        int // where to write jwt "sub" claim on success
+	ClientID       int // where to write client_id / azp / appid claim on success
+	ScopesOut      int // where to write comma-sep parsed scopes on success
+	CustomClaimsVars map[string]int // per-claim key → slot for expected value
+}
 
 // TokenValidationConfig is a typed, precompiled config for JWT verification.
 //
@@ -66,6 +92,13 @@ type TokenValidationConfig struct {
 
 	RequiredScopes []string
 	ScopeClaimKeys []string // default: scope, scp
+
+	OnFailureStatus   int               // default 401
+	OnFailureBody     string            // default "unauthorized"
+	ContinueOnFailure bool              // resolved from jwt.on_failure static value
+	ResultSuccess     string            // default "true"
+	ResultFailure     string            // default "false"
+	CustomClaims      map[string]string // static custom claim checks
 }
 
 // ValidationSet allows selecting claim/signature checks.
@@ -176,7 +209,49 @@ func ParseTokenValidationConfig(keyIdentifier string, input map[string]string) T
 	if !cfg.Validate.Signature && !cfg.Validate.Issuer && !cfg.Validate.Audience && !cfg.Validate.Expiry && !cfg.Validate.NotBefore {
 		cfg.Validate = ValidationSet{Signature: true, Issuer: true, Audience: true, Expiry: true, NotBefore: true}
 	}
+
+	cfg.OnFailureStatus = func() int {
+		if v := strings.TrimSpace(input["jwt.failure_status"]); v != "" {
+			if n, e := strconv.Atoi(v); e == nil {
+				return n
+			}
+		}
+		return 401
+	}()
+	cfg.OnFailureBody = func() string {
+		if v := strings.TrimSpace(input["jwt.failure_body"]); v != "" {
+			return v
+		}
+		return "unauthorized"
+	}()
+	cfg.ContinueOnFailure = strings.EqualFold(strings.TrimSpace(input["jwt.on_failure"]), "continue")
+	cfg.ResultSuccess = func() string {
+		if v := strings.TrimSpace(input["jwt.result_success"]); v != "" {
+			return v
+		}
+		return "true"
+	}()
+	cfg.ResultFailure = func() string {
+		if v := strings.TrimSpace(input["jwt.result_failure"]); v != "" {
+			return v
+		}
+		return "false"
+	}()
+	cfg.CustomClaims = parseJSONStringMap(input["jwt.custom_claims"])
+
 	return cfg
+}
+
+func parseJSONStringMap(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 func parseTokenSource(raw string) TokenReadSource {
@@ -233,7 +308,7 @@ func parseValidationSet(raw string) ValidationSet {
 }
 
 // TokenValidation builds the runtime JWT validation instruction.
-func TokenValidation(tokenSlot int, cfg TokenValidationConfig) engine.Instruction {
+func TokenValidation(slots TokenValidationSlots, cfg TokenValidationConfig) engine.Instruction {
 	if cfg.PrefetchJWKS && cfg.JWKSURI != "" {
 		_, _ = publicKeyFromJWKS(cfg.JWKSURI, "")
 	}
@@ -241,25 +316,214 @@ func TokenValidation(tokenSlot int, cfg TokenValidationConfig) engine.Instructio
 	return engine.Instruction{
 		Name: "TOKEN_VALIDATE",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			token := strings.TrimSpace(readToken(ctx, tokenSlot, cfg))
-			token = extractBearerOrRaw(token)
-			if token == "" {
-				return rejectUnauthorized(ctx)
+			// Helper to read a slot value
+			resolve := func(slotIdx int) (string, bool) {
+				if slotIdx < 0 || slotIdx >= len(ctx.ByteSlots) {
+					return "", false
+				}
+				v := string(ctx.ByteSlots[slotIdx])
+				return v, v != ""
 			}
 
+			// Read token
+			token := strings.TrimSpace(readToken(ctx, slots.Token, cfg))
+			token = extractBearerOrRaw(token)
+			if token == "" {
+				// Check dynamic on-failure mode for empty token case
+				emptyContinue := cfg.ContinueOnFailure
+				if v, ok := resolve(slots.OnFailureMode); ok {
+					emptyContinue = strings.EqualFold(v, "continue")
+				}
+				if emptyContinue {
+					failureVal := cfg.ResultFailure
+					if failureVal == "" {
+						failureVal = "false"
+					}
+					if v, ok := resolve(slots.ResultFailure); ok {
+						failureVal = v
+					}
+					if slots.Result >= 0 && slots.Result < len(ctx.ByteSlots) {
+						ctx.ByteSlots[slots.Result] = []byte(failureVal)
+					}
+					return s.PC + 1
+				}
+				emptyStatus := cfg.OnFailureStatus
+				if emptyStatus == 0 {
+					emptyStatus = 401
+				}
+				if v, ok := resolve(slots.FailureStatus); ok {
+					if n, e := strconv.Atoi(v); e == nil {
+						emptyStatus = n
+					}
+				}
+				emptyBody := cfg.OnFailureBody
+				if emptyBody == "" {
+					emptyBody = "unauthorized"
+				}
+				if v, ok := resolve(slots.FailureBody); ok {
+					emptyBody = v
+				}
+				ctx.ResponseStatus = emptyStatus
+				ctx.Write([]byte(emptyBody))
+				ctx.Failed = true
+				ctx.ErrorCode = int16(emptyStatus)
+				ctx.ErrorMsg = ctx.Alloc(len(emptyBody))
+				copy(ctx.ErrorMsg, emptyBody)
+				return engine.StopPlan
+			}
+
+			// Build resolved config (override statics with runtime variable values)
 			resolvedCfg := cfg
+
+			if v, ok := resolve(slots.JWKSURI); ok {
+				resolvedCfg.JWKSURI = v
+			}
+			if v, ok := resolve(slots.Algorithm); ok {
+				resolvedCfg.Algorithm = v
+			}
+			if v, ok := resolve(slots.Issuer); ok {
+				resolvedCfg.Issuer = v
+			}
+			if v, ok := resolve(slots.Audience); ok {
+				resolvedCfg.Audience = v
+			}
+			if v, ok := resolve(slots.RequiredScopes); ok {
+				resolvedCfg.RequiredScopes = splitAndTrim(v, ",")
+			}
+			if v, ok := resolve(slots.ScopeClaimKeys); ok {
+				resolvedCfg.ScopeClaimKeys = splitAndTrim(v, ",")
+			}
+			if v, ok := resolve(slots.Leeway); ok {
+				if sec, e := strconv.Atoi(v); e == nil {
+					resolvedCfg.Leeway = time.Duration(sec) * time.Second
+				}
+			}
+			if v, ok := resolve(slots.ValidateSet); ok {
+				resolvedCfg.Validate = parseValidationSet(v)
+			}
+
+			// Dynamic on-failure mode
+			continueOnFailure := resolvedCfg.ContinueOnFailure
+			if v, ok := resolve(slots.OnFailureMode); ok {
+				continueOnFailure = strings.EqualFold(v, "continue")
+			}
+
+			// Dynamic failure status + body
+			failureStatus := resolvedCfg.OnFailureStatus
+			if failureStatus == 0 {
+				failureStatus = 401
+			}
+			if v, ok := resolve(slots.FailureStatus); ok {
+				if n, e := strconv.Atoi(v); e == nil {
+					failureStatus = n
+				}
+			}
+			failureBody := resolvedCfg.OnFailureBody
+			if failureBody == "" {
+				failureBody = "unauthorized"
+			}
+			if v, ok := resolve(slots.FailureBody); ok {
+				failureBody = v
+			}
+
+			// Dynamic result values
+			successVal := resolvedCfg.ResultSuccess
+			if successVal == "" {
+				successVal = "true"
+			}
+			if v, ok := resolve(slots.ResultSuccess); ok {
+				successVal = v
+			}
+			failureVal := resolvedCfg.ResultFailure
+			if failureVal == "" {
+				failureVal = "false"
+			}
+			if v, ok := resolve(slots.ResultFailure); ok {
+				failureVal = v
+			}
+
+			// Dynamic custom claim expected values (merge over static map)
+			if len(slots.CustomClaimsVars) > 0 {
+				merged := make(map[string]string, len(resolvedCfg.CustomClaims)+len(slots.CustomClaimsVars))
+				for k, v := range resolvedCfg.CustomClaims {
+					merged[k] = v
+				}
+				for k, slotIdx := range slots.CustomClaimsVars {
+					if v, ok := resolve(slotIdx); ok {
+						merged[k] = v
+					}
+				}
+				resolvedCfg.CustomClaims = merged
+			}
+
+			// Resolve JWKS URI via resolver if needed
 			if resolvedCfg.JWKSURI == "" && resolvedCfg.JWKSIssuerRef != "" {
 				if uri, err := resolveJWKSURI(ctx, resolvedCfg); err == nil {
 					resolvedCfg.JWKSURI = uri
 				}
 			}
-			if err := validateJWT(token, resolvedCfg); err != nil {
-				return rejectUnauthorized(ctx)
+
+			claims, err := validateJWTWithClaims(token, resolvedCfg)
+			if err != nil {
+				// Failure path
+				if continueOnFailure {
+					if slots.Result >= 0 && slots.Result < len(ctx.ByteSlots) {
+						ctx.ByteSlots[slots.Result] = []byte(failureVal)
+					}
+					return s.PC + 1
+				}
+				ctx.ResponseStatus = failureStatus
+				ctx.Write([]byte(failureBody))
+				ctx.Failed = true
+				ctx.ErrorCode = int16(failureStatus)
+				ctx.ErrorMsg = ctx.Alloc(len(failureBody))
+				copy(ctx.ErrorMsg, failureBody)
+				return engine.StopPlan
+			}
+
+			// Success path
+			if slots.Result >= 0 && slots.Result < len(ctx.ByteSlots) {
+				ctx.ByteSlots[slots.Result] = []byte(successVal)
+			}
+			if slots.Claims >= 0 && slots.Claims < len(ctx.ByteSlots) {
+				if b, e := json.Marshal(claims.Extra); e == nil {
+					ctx.ByteSlots[slots.Claims] = b
+				}
+			}
+			if slots.Subject >= 0 && slots.Subject < len(ctx.ByteSlots) {
+				if sub, ok := claims.Extra["sub"].(string); ok && sub != "" {
+					ctx.ByteSlots[slots.Subject] = []byte(sub)
+				}
+			}
+			if slots.ClientID >= 0 && slots.ClientID < len(ctx.ByteSlots) {
+				for _, k := range []string{"client_id", "azp", "appid"} {
+					if v, ok := claims.Extra[k].(string); ok && v != "" {
+						ctx.ByteSlots[slots.ClientID] = []byte(v)
+						break
+					}
+				}
+			}
+			if slots.ScopesOut >= 0 && slots.ScopesOut < len(ctx.ByteSlots) {
+				present := map[string]struct{}{}
+				for _, k := range resolvedCfg.ScopeClaimKeys {
+					if v, ok := claims.Extra[k]; ok {
+						extractScopesIntoSet(v, present)
+					}
+				}
+				if len(present) > 0 {
+					scopeList := make([]string, 0, len(present))
+					for sc := range present {
+						scopeList = append(scopeList, sc)
+					}
+					sort.Strings(scopeList)
+					ctx.ByteSlots[slots.ScopesOut] = []byte(strings.Join(scopeList, ","))
+				}
 			}
 			return s.PC + 1
 		},
 	}
 }
+
 
 func readToken(ctx *rctx.Context, tokenSlot int, cfg TokenValidationConfig) string {
 	switch cfg.TokenSource {
@@ -320,84 +584,92 @@ func extractBearerOrRaw(raw string) string {
 	return raw
 }
 
-func validateJWT(token string, cfg TokenValidationConfig) error {
+func validateJWTWithClaims(token string, cfg TokenValidationConfig) (*jwtClaims, error) {
 	dot1 := strings.IndexByte(token, '.')
 	if dot1 <= 0 {
-		return errors.New("invalid jwt format")
+		return nil, errors.New("invalid jwt format")
 	}
 	dot2Rel := strings.IndexByte(token[dot1+1:], '.')
 	if dot2Rel <= 0 {
-		return errors.New("invalid jwt format")
+		return nil, errors.New("invalid jwt format")
 	}
 	dot2 := dot1 + 1 + dot2Rel
 
 	headerSeg, claimsSeg, sigSeg := token[:dot1], token[dot1+1:dot2], token[dot2+1:]
 	headerBytes, err := base64.RawURLEncoding.DecodeString(headerSeg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	claimsBytes, err := base64.RawURLEncoding.DecodeString(claimsSeg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var header jwtHeader
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return err
+		return nil, err
 	}
 	if header.Alg != cfg.Algorithm || header.Alg != "RS256" {
-		return errors.New("unsupported jwt algorithm")
+		return nil, errors.New("unsupported jwt algorithm")
 	}
 
 	var claims jwtClaims
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
-		return err
+		return nil, err
 	}
 	if err := json.Unmarshal(claimsBytes, &claims.Extra); err != nil {
-		return err
+		return nil, err
 	}
 
 	now := time.Now()
 	if cfg.Validate.Issuer && cfg.Issuer != "" && claims.Issuer != cfg.Issuer {
-		return errors.New("issuer mismatch")
+		return nil, errors.New("issuer mismatch")
 	}
 	if cfg.Validate.Audience && cfg.Audience != "" && !audienceMatches(claims.Audience, cfg.Audience) {
-		return errors.New("audience mismatch")
+		return nil, errors.New("audience mismatch")
 	}
 	if cfg.Validate.Expiry && claims.ExpiresAt > 0 && now.After(time.Unix(claims.ExpiresAt, 0).Add(cfg.Leeway)) {
-		return errors.New("token expired")
+		return nil, errors.New("token expired")
 	}
 	if cfg.Validate.NotBefore && claims.NotBefore > 0 && now.Before(time.Unix(claims.NotBefore, 0).Add(-cfg.Leeway)) {
-		return errors.New("token not active")
+		return nil, errors.New("token not active")
 	}
 	if len(cfg.RequiredScopes) > 0 {
 		if err := validateRequiredScopes(claims.Extra, cfg.ScopeClaimKeys, cfg.RequiredScopes); err != nil {
-			return err
+			return nil, err
+		}
+	}
+
+	// Custom claim checks
+	for claimKey, expected := range cfg.CustomClaims {
+		actual := fmt.Sprintf("%v", claims.Extra[claimKey])
+		if actual != expected {
+			return nil, fmt.Errorf("claim %q: expected %q got %q", claimKey, expected, actual)
 		}
 	}
 
 	if cfg.Validate.Signature {
 		if cfg.JWKSURI == "" {
-			return errors.New("jwt.jwks_uri is required")
+			return nil, errors.New("jwt.jwks_uri is required")
 		}
 		if header.Kid == "" {
-			return errors.New("missing kid")
+			return nil, errors.New("missing kid")
 		}
 		pub, err := publicKeyFromJWKS(cfg.JWKSURI, header.Kid)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		signature, err := base64.RawURLEncoding.DecodeString(sigSeg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		h := sha256.Sum256([]byte(token[:dot2]))
 		if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, h[:], signature); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return &claims, nil
 }
 
 func validateRequiredScopes(claims map[string]any, claimKeys []string, required []string) error {

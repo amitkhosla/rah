@@ -259,7 +259,9 @@ func TestParseMessageFormat_EmptyBody_Skips(t *testing.T) {
 	}
 }
 
-func TestParseMessageFormat_Unknown_Returns400(t *testing.T) {
+func TestParseMessageFormat_Unknown_SkipsSilently(t *testing.T) {
+	// parse_message_format is designed to skip silently on unrecognised bodies so
+	// it can be placed in generic flows where the request may not be an LLM payload.
 	ctx := newTestCtx()
 	state := newTestState()
 
@@ -275,14 +277,11 @@ func TestParseMessageFormat_Unknown_Returns400(t *testing.T) {
 	instr := ParseMessageFormat(cfg)
 	next := instr.Action(ctx, state)
 
-	if next != engine.StopPlan {
-		t.Errorf("expected StopPlan for unknown format, got %d", next)
+	if next != state.PC+1 {
+		t.Errorf("expected PC+1 (skip) for unknown format, got %d", next)
 	}
-	if !ctx.Failed {
-		t.Error("expected ctx.Failed = true for unknown format")
-	}
-	if ctx.ResponseStatus != 400 {
-		t.Errorf("expected ResponseStatus=400, got %d", ctx.ResponseStatus)
+	if ctx.Failed {
+		t.Error("expected ctx.Failed = false for unknown format (silent skip)")
 	}
 }
 
@@ -306,6 +305,8 @@ func TestFormatResponse_Anthropic(t *testing.T) {
 		OutputTokensSlot: -1,
 		FormatSlot:       -1,
 		ModelSlot:        -1,
+		ToolUseSlot:      -1,
+		ThinkingSlot:     -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)
@@ -361,6 +362,8 @@ func TestFormatResponse_OpenAI(t *testing.T) {
 		OutputTokensSlot: -1,
 		FormatSlot:       -1,
 		ModelSlot:        -1,
+		ToolUseSlot:      -1,
+		ThinkingSlot:     -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)
@@ -418,6 +421,8 @@ func TestFormatResponse_Gemini(t *testing.T) {
 		OutputTokensSlot: -1,
 		FormatSlot:       -1,
 		ModelSlot:        -1,
+		ToolUseSlot:      -1,
+		ThinkingSlot:     -1,
 	}
 	instr := FormatResponse(cfg)
 	next := instr.Action(ctx, state)
@@ -458,5 +463,149 @@ func TestFormatResponse_Gemini(t *testing.T) {
 	}
 	if resp.Candidates[0].FinishReason != "STOP" {
 		t.Errorf("finishReason: got %q, want %q", resp.Candidates[0].FinishReason, "STOP")
+	}
+}
+
+// ──────────────────────────────────────────────
+// Section 4 & 5: tools / tool_choice / stream / content-block tests
+// ──────────────────────────────────────────────
+
+func TestParseAnthropicExtractsTools(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-sonnet-4-6","max_tokens":1024,
+		"tools":[{"name":"read_file","description":"Read","input_schema":{"type":"object"}}],
+		"tool_choice":{"type":"auto"},
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+
+	ctx := newTestCtx()
+	ctx.ByteSlots[0] = body
+
+	cfg := ParseMessageFormatConfig{
+		BodySlot:        0,
+		MessagesSlot:    1,
+		SystemSlot:      -1,
+		DetectedFmtSlot: -1,
+		ToolsSlot:       2,
+		ToolChoiceSlot:  3,
+		StreamSlot:      -1,
+	}
+	instr := ParseMessageFormat(cfg)
+	state := newTestState()
+	instr.Action(ctx, state)
+
+	if len(ctx.ByteSlots[2]) == 0 {
+		t.Error("tools slot should be populated")
+	}
+	if len(ctx.ByteSlots[3]) == 0 {
+		t.Error("tool_choice slot should be populated")
+	}
+}
+
+func TestParseAnthropicToolHistory(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-sonnet-4-6","max_tokens":1024,
+		"messages":[
+			{"role":"user","content":"Read /tmp/test.txt"},
+			{"role":"assistant","content":[
+				{"type":"text","text":"I will read it"},
+				{"type":"tool_use","id":"tu_1","name":"read_file","input":{"path":"/tmp/test.txt"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"tu_1","content":"file contents"}
+			]}
+		]
+	}`)
+
+	ctx := newTestCtx()
+	ctx.ByteSlots[0] = body
+
+	cfg := ParseMessageFormatConfig{
+		BodySlot:        0,
+		MessagesSlot:    1,
+		SystemSlot:      -1,
+		DetectedFmtSlot: -1,
+		ToolsSlot:       -1,
+		ToolChoiceSlot:  -1,
+		StreamSlot:      -1,
+	}
+	instr := ParseMessageFormat(cfg)
+	state := newTestState()
+	instr.Action(ctx, state)
+
+	var msgs []CanonicalMessage
+	if err := json.Unmarshal(ctx.ByteSlots[1], &msgs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	// Second message (assistant) should have ContentBlocks with tool_use
+	if !msgs[1].HasBlocks() {
+		t.Error("assistant message should have content blocks")
+	}
+	hasToolUse := false
+	for _, b := range msgs[1].ContentBlocks {
+		if b.Type == BlockToolUse {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Error("assistant message blocks should include tool_use")
+	}
+	// Third message (user) should have tool_result block
+	if !msgs[2].HasBlocks() {
+		t.Error("user tool_result message should have content blocks")
+	}
+}
+
+func TestAssembleAnthropicWithToolUse(t *testing.T) {
+	blocks := []ContentBlock{
+		{Type: BlockToolUse, ToolUseID: "tu_1", ToolName: "read_file", ToolInput: json.RawMessage(`{"path":"/tmp/test.txt"}`)},
+	}
+	var txid [2]uint64
+	result := assembleAnthropic(nil, txid, "I will read it", "end_turn", "test-model", 100, 30, blocks, "")
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(result, &wire); err != nil {
+		t.Fatalf("invalid JSON: %v — got: %s", err, result)
+	}
+	stopReason := string(wire["stop_reason"])
+	if stopReason != `"tool_use"` {
+		t.Errorf("stop_reason should be tool_use, got %s", stopReason)
+	}
+	var content []map[string]json.RawMessage
+	if err := json.Unmarshal(wire["content"], &content); err != nil {
+		t.Fatal(err)
+	}
+	hasToolUse := false
+	for _, b := range content {
+		if string(b["type"]) == `"tool_use"` {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Errorf("content should include tool_use block, got: %s", wire["content"])
+	}
+}
+
+func TestAssembleAnthropicWithThinking(t *testing.T) {
+	var txid [2]uint64
+	result := assembleAnthropic(nil, txid, "Here is my answer", "end_turn", "test-model", 100, 30, nil, "I thought about this")
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(result, &wire); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	var content []map[string]json.RawMessage
+	if err := json.Unmarshal(wire["content"], &content); err != nil {
+		t.Fatal(err)
+	}
+	hasThinking := false
+	for _, b := range content {
+		if string(b["type"]) == `"thinking"` {
+			hasThinking = true
+		}
+	}
+	if !hasThinking {
+		t.Error("content should include thinking block")
 	}
 }

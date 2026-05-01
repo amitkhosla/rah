@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"rah/internal/config"
 	"rah/internal/engine"
@@ -574,12 +575,58 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.IPRestriction(cfg, sourceSlot))
 
 	case "token_validation":
+		alloc := func(key string) int {
+			name := strings.TrimSpace(step.Input[key])
+			if name == "" {
+				return -1
+			}
+			s, _ := c.getSlot(name)
+			return s
+		}
+
 		tokenSlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
 			return err
 		}
+
+		// Build per-claim variable slots from jwt.custom_claims_vars JSON
+		customClaimsSlots := map[string]int{}
+		if raw := strings.TrimSpace(step.Input["jwt.custom_claims_vars"]); raw != "" {
+			var varMap map[string]string
+			if json.Unmarshal([]byte(raw), &varMap) == nil {
+				for claimKey, varName := range varMap {
+					if s, e := c.getSlot(strings.TrimSpace(varName)); e == nil {
+						customClaimsSlots[claimKey] = s
+					}
+				}
+			}
+		}
+
+		tvSlots := steps.TokenValidationSlots{
+			Token:          tokenSlot,
+			JWKSURI:        alloc("jwt.jwks_uri_var"),
+			Algorithm:      alloc("jwt.alg_var"),
+			Leeway:         alloc("jwt.leeway_var"),
+			ValidateSet:    alloc("jwt.validate_var"),
+			Issuer:         alloc("jwt.issuer_var"),
+			Audience:       alloc("jwt.audience_var"),
+			RequiredScopes: alloc("jwt.required_scopes_var"),
+			ScopeClaimKeys: alloc("jwt.scope_claims_var"),
+			OnFailureMode:  alloc("jwt.on_failure_var"),
+			FailureStatus:  alloc("jwt.failure_status_var"),
+			FailureBody:    alloc("jwt.failure_body_var"),
+			ResultSuccess:  alloc("jwt.result_success_var"),
+			ResultFailure:  alloc("jwt.result_failure_var"),
+			Result:         alloc("jwt.result_var"),
+			Claims:         alloc("jwt.claims_var"),
+			Subject:        alloc("jwt.subject_var"),
+			ClientID:       alloc("jwt.client_id_var"),
+			ScopesOut:      alloc("jwt.scopes_out_var"),
+			CustomClaimsVars: customClaimsSlots,
+		}
+
 		cfg := steps.ParseTokenValidationConfig(step.KeyIdentifier, step.Input)
-		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tokenSlot, cfg))
+		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tvSlots, cfg))
 
 	case "foreach":
 		if c.nextSlot >= rctx.BaseByteSlots {

@@ -18,12 +18,18 @@ type ParseMessageFormatConfig struct {
 	MessagesSlot    int // output: ByteSlots index for JSON-encoded []CanonicalMessage
 	SystemSlot      int // output: ByteSlots index for extracted system prompt (-1 = don't extract)
 	DetectedFmtSlot int // output: ByteSlots index for detected format string (-1 = don't store)
+	ToolsSlot       int // output: write raw tools JSON array here (-1 = skip)
+	ToolChoiceSlot  int // output: write raw tool_choice JSON here (-1 = skip)
+	StreamSlot      int // output: write "true" or "false" string here (-1 = skip)
 }
 
 // ParseMessageFormat returns an Instruction that reads a provider-specific JSON
 // body from cfg.BodySlot, detects the format (anthropic/openai/gemini), parses it
 // into []CanonicalMessage, and writes results to the configured output slots.
 func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
+	// Initialize new fields to -1 if not set (zero value means slot 0 which is valid).
+	// Callers must explicitly set these; default zero would be wrong. We keep the
+	// convention that -1 means "skip" for all optional slots.
 	return engine.Instruction{
 		Name: "PARSE_MESSAGE_FORMAT",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
@@ -73,11 +79,21 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 
 			switch format {
 			case "anthropic":
-				// Content field can be a plain string or an array of content blocks:
-				// [{"type":"text","text":"..."},{"type":"image",...}]
+				// anthropicContentBlock handles all block types including tool_use/thinking.
 				type anthropicContentBlock struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type     string          `json:"type"`
+					Text     string          `json:"text,omitempty"`
+					ID       string          `json:"id,omitempty"`
+					Name     string          `json:"name,omitempty"`
+					Input    json.RawMessage `json:"input,omitempty"`
+					Thinking string          `json:"thinking,omitempty"`
+				}
+				// anthropicToolResultBlock handles tool_result content items.
+				type anthropicToolResultBlock struct {
+					Type      string          `json:"type"`
+					ToolUseID string          `json:"tool_use_id"`
+					Content   json.RawMessage `json:"content"` // string or []block
+					IsError   bool            `json:"is_error,omitempty"`
 				}
 				type anthropicMsg struct {
 					Role    string          `json:"role"`
@@ -109,8 +125,9 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 						}
 					}
 				}
-				// Resolve each message — content can be string or []content_block
-				extractAnthropicText := func(raw json.RawMessage) string {
+
+				// extractAnthropicTextSimple extracts text from simple string or text-only arrays.
+				extractAnthropicTextSimple := func(raw json.RawMessage) string {
 					if len(raw) == 0 {
 						return ""
 					}
@@ -133,21 +150,191 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 					}
 					return string(raw)
 				}
+
+				// hasNonTextBlock checks if a raw JSON array contains any non-text blocks
+				// (tool_use, tool_result, thinking, etc).
+				hasNonTextBlock := func(raw json.RawMessage) bool {
+					if len(raw) == 0 || raw[0] != '[' {
+						return false
+					}
+					var blocks []anthropicContentBlock
+					if json.Unmarshal(raw, &blocks) != nil {
+						return false
+					}
+					for _, b := range blocks {
+						if b.Type != "text" {
+							return true
+						}
+					}
+					return false
+				}
+
 				messages = make([]CanonicalMessage, 0, len(req.Messages))
 				for _, m := range req.Messages {
-					text := extractAnthropicText(m.Content)
 					switch m.Role {
-					case "user":
-						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: text})
 					case "assistant":
+						// Check for tool_use or thinking blocks in content array.
+						if m.Content != nil && m.Content[0] == '[' && hasNonTextBlock(m.Content) {
+							var blocks []anthropicContentBlock
+							if json.Unmarshal(m.Content, &blocks) == nil {
+								var cbList []ContentBlock
+								var textConcat strings.Builder
+								for _, b := range blocks {
+									switch b.Type {
+									case "text":
+										cbList = append(cbList, ContentBlock{Type: BlockText, Text: b.Text})
+										textConcat.WriteString(b.Text)
+									case "tool_use":
+										cbList = append(cbList, ContentBlock{
+											Type:      BlockToolUse,
+											ToolUseID: b.ID,
+											ToolName:  b.Name,
+											ToolInput: b.Input,
+										})
+									case "thinking":
+										cbList = append(cbList, ContentBlock{Type: BlockThinking, Text: b.Thinking})
+									}
+								}
+								messages = append(messages, CanonicalMessage{
+									Role:          RoleAssistant,
+									Content:       textConcat.String(),
+									ContentBlocks: cbList,
+								})
+								continue
+							}
+						}
+						// Plain text assistant message.
+						text := extractAnthropicTextSimple(m.Content)
 						messages = append(messages, CanonicalMessage{Role: RoleAssistant, Content: text})
+
+					case "user":
+						// Check for tool_result blocks in content array.
+						if m.Content != nil && len(m.Content) > 0 && m.Content[0] == '[' {
+							var rawBlocks []json.RawMessage
+							if json.Unmarshal(m.Content, &rawBlocks) == nil {
+								// Peek at first block type to determine if this is a tool_result message.
+								hasTR := false
+								for _, rb := range rawBlocks {
+									var peek struct {
+										Type string `json:"type"`
+									}
+									if json.Unmarshal(rb, &peek) == nil && peek.Type == "tool_result" {
+										hasTR = true
+										break
+									}
+								}
+								if hasTR {
+									var cbList []ContentBlock
+									var textConcat strings.Builder
+									for _, rb := range rawBlocks {
+										var peek struct {
+											Type string `json:"type"`
+										}
+										if json.Unmarshal(rb, &peek) != nil {
+											continue
+										}
+										switch peek.Type {
+										case "tool_result":
+											var tr anthropicToolResultBlock
+											if json.Unmarshal(rb, &tr) == nil {
+												// Extract string content from tool_result.
+												var resultText string
+												if len(tr.Content) > 0 {
+													if tr.Content[0] == '"' {
+														json.Unmarshal(tr.Content, &resultText) //nolint:errcheck
+													} else if tr.Content[0] == '[' {
+														// Array of text blocks — concatenate.
+														var innerBlocks []struct {
+															Type string `json:"type"`
+															Text string `json:"text"`
+														}
+														if json.Unmarshal(tr.Content, &innerBlocks) == nil {
+															var sb strings.Builder
+															for _, ib := range innerBlocks {
+																if ib.Type == "text" {
+																	sb.WriteString(ib.Text)
+																}
+															}
+															resultText = sb.String()
+														}
+													}
+												}
+												cbList = append(cbList, ContentBlock{
+													Type:        BlockToolResult,
+													ToolCallID:  tr.ToolUseID,
+													ToolResult:  resultText,
+													IsToolError: tr.IsError,
+												})
+											}
+										case "text":
+											var tb struct {
+												Type string `json:"type"`
+												Text string `json:"text"`
+											}
+											if json.Unmarshal(rb, &tb) == nil {
+												cbList = append(cbList, ContentBlock{Type: BlockText, Text: tb.Text})
+												textConcat.WriteString(tb.Text)
+											}
+										}
+									}
+									messages = append(messages, CanonicalMessage{
+										Role:          RoleUser,
+										Content:       textConcat.String(),
+										ContentBlocks: cbList,
+									})
+									continue
+								}
+							}
+						}
+						// Plain text user message.
+						text := extractAnthropicTextSimple(m.Content)
+						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: text})
+					}
+				}
+
+				// Extract tools if configured.
+				if cfg.ToolsSlot >= 0 {
+					if raw, ok := topLevel["tools"]; ok {
+						sl := ctx.Alloc(len(raw))
+						copy(sl, raw)
+						ctx.ByteSlots[cfg.ToolsSlot] = sl
+					}
+				}
+
+				// Extract tool_choice if configured.
+				if cfg.ToolChoiceSlot >= 0 {
+					if raw, ok := topLevel["tool_choice"]; ok {
+						sl := ctx.Alloc(len(raw))
+						copy(sl, raw)
+						ctx.ByteSlots[cfg.ToolChoiceSlot] = sl
+					}
+				}
+
+				// Extract stream flag if configured.
+				if cfg.StreamSlot >= 0 {
+					if raw, ok := topLevel["stream"]; ok {
+						streamVal := []byte("false")
+						if strings.TrimSpace(string(raw)) == "true" {
+							streamVal = []byte("true")
+						}
+						sl := ctx.Alloc(len(streamVal))
+						copy(sl, streamVal)
+						ctx.ByteSlots[cfg.StreamSlot] = sl
 					}
 				}
 
 			case "openai":
 				type openAIMsg struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
+					Role       string          `json:"role"`
+					Content    json.RawMessage `json:"content"`
+					ToolCallID string          `json:"tool_call_id,omitempty"`
+					ToolCalls  []struct {
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls,omitempty"`
 				}
 				var req struct {
 					Messages []openAIMsg `json:"messages"`
@@ -163,16 +350,78 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 				systemExtracted := false
 				messages = make([]CanonicalMessage, 0, len(req.Messages))
 				for _, m := range req.Messages {
+					// Extract string content from raw JSON.
+					var contentStr string
+					if len(m.Content) > 0 {
+						if m.Content[0] == '"' {
+							json.Unmarshal(m.Content, &contentStr) //nolint:errcheck
+						} else {
+							contentStr = string(m.Content)
+						}
+					}
 					switch m.Role {
 					case "system":
 						if !systemExtracted {
-							systemText = m.Content
+							systemText = contentStr
 							systemExtracted = true
 						}
 					case "user":
-						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: m.Content})
+						messages = append(messages, CanonicalMessage{Role: RoleUser, Content: contentStr})
 					case "assistant":
-						messages = append(messages, CanonicalMessage{Role: RoleAssistant, Content: m.Content})
+						if len(m.ToolCalls) > 0 {
+							// Build ContentBlocks for tool_calls.
+							cbList := make([]ContentBlock, 0, len(m.ToolCalls))
+							for _, tc := range m.ToolCalls {
+								cbList = append(cbList, ContentBlock{
+									Type:      BlockToolUse,
+									ToolUseID: tc.ID,
+									ToolName:  tc.Function.Name,
+									ToolInput: json.RawMessage(tc.Function.Arguments),
+								})
+							}
+							messages = append(messages, CanonicalMessage{
+								Role:          RoleAssistant,
+								Content:       contentStr,
+								ContentBlocks: cbList,
+							})
+						} else {
+							messages = append(messages, CanonicalMessage{Role: RoleAssistant, Content: contentStr})
+						}
+					case "tool":
+						// Tool result message.
+						messages = append(messages, CanonicalMessage{
+							Role:    RoleUser,
+							Content: contentStr,
+							ContentBlocks: []ContentBlock{
+								{
+									Type:       BlockToolResult,
+									ToolCallID: m.ToolCallID,
+									ToolResult: contentStr,
+								},
+							},
+						})
+					}
+				}
+
+				// Extract tools if configured.
+				if cfg.ToolsSlot >= 0 {
+					if raw, ok := topLevel["tools"]; ok {
+						sl := ctx.Alloc(len(raw))
+						copy(sl, raw)
+						ctx.ByteSlots[cfg.ToolsSlot] = sl
+					}
+				}
+
+				// Extract stream flag if configured.
+				if cfg.StreamSlot >= 0 {
+					if raw, ok := topLevel["stream"]; ok {
+						streamVal := []byte("false")
+						if strings.TrimSpace(string(raw)) == "true" {
+							streamVal = []byte("true")
+						}
+						sl := ctx.Alloc(len(streamVal))
+						copy(sl, streamVal)
+						ctx.ByteSlots[cfg.StreamSlot] = sl
 					}
 				}
 
@@ -268,6 +517,11 @@ type FormatResponseConfig struct {
 	// "true" or "1", assemble an SSE streaming response instead of plain JSON.
 	// Set to -1 (default) to always return plain JSON.
 	StreamSlot int
+
+	// ToolUseSlot: if >= 0, read JSON []ContentBlock of tool_use type from here.
+	ToolUseSlot int
+	// ThinkingSlot: if >= 0, read thinking text from here.
+	ThinkingSlot int
 
 	// Bake-time static values (used when corresponding slot < 0)
 	Model  string // model slug
@@ -412,7 +666,12 @@ func mapStopReason(reason, format string) string {
 // assembleAnthropicSSE writes a complete Anthropic streaming response as SSE events to dst.
 // Claude Code (and other clients that send stream:true) expect this format.
 // The entire response is assembled in one buffer — no goroutines needed.
-func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64) []byte {
+func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64, toolUseBlocks []ContentBlock, thinkingText string) []byte {
+	// Override stop_reason when tool use blocks are present.
+	if len(toolUseBlocks) > 0 {
+		stopReason = "tool_use"
+	}
+
 	// event: message_start
 	dst = append(dst, "event: message_start\ndata: "...)
 	dst = append(dst, `{"type":"message_start","message":{"id":"msg_`...)
@@ -422,7 +681,10 @@ func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model
 	dst = append(dst, `,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`...)
 	dst = append(dst, "\n\n"...)
 
-	// event: content_block_start
+	// Track content block index.
+	blockIndex := 0
+
+	// event: content_block_start (text block at index 0)
 	dst = append(dst, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"...)
 
 	// event: ping
@@ -434,8 +696,43 @@ func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model
 	dst = appendJSONString(dst, content)
 	dst = append(dst, "}}\n\n"...)
 
-	// event: content_block_stop
+	// event: content_block_stop (text block)
 	dst = append(dst, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"...)
+	blockIndex = 1
+
+	// Emit tool_use blocks after text block.
+	for _, tb := range toolUseBlocks {
+		idxStr := strconv.Itoa(blockIndex)
+
+		// content_block_start
+		dst = append(dst, "event: content_block_start\ndata: "...)
+		dst = append(dst, `{"type":"content_block_start","index":`...)
+		dst = append(dst, idxStr...)
+		dst = append(dst, `,"content_block":{"type":"tool_use","id":`...)
+		dst = appendJSONString(dst, tb.ToolUseID)
+		dst = append(dst, `,"name":`...)
+		dst = appendJSONString(dst, tb.ToolName)
+		dst = append(dst, `,"input":{}}}`...)
+		dst = append(dst, "\n\n"...)
+
+		// content_block_delta
+		dst = append(dst, "event: content_block_delta\ndata: "...)
+		dst = append(dst, `{"type":"content_block_delta","index":`...)
+		dst = append(dst, idxStr...)
+		dst = append(dst, `,"delta":{"type":"input_json_delta","partial_json":`...)
+		// ToolInput is already valid JSON; escape it as a string value.
+		inputStr := string(tb.ToolInput)
+		dst = appendJSONString(dst, inputStr)
+		dst = append(dst, "}}\n\n"...)
+
+		// content_block_stop
+		dst = append(dst, "event: content_block_stop\ndata: "...)
+		dst = append(dst, `{"type":"content_block_stop","index":`...)
+		dst = append(dst, idxStr...)
+		dst = append(dst, "}\n\n"...)
+
+		blockIndex++
+	}
 
 	// event: message_delta
 	dst = append(dst, "event: message_delta\ndata: "...)
@@ -502,12 +799,65 @@ func assembleOpenAISSE(dst []byte, txid [2]uint64, content, finishReason, model 
 }
 
 // assembleAnthropic writes a complete Anthropic Messages API response JSON to dst.
-func assembleAnthropic(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64) []byte {
+func assembleAnthropic(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64, toolUseBlocks []ContentBlock, thinkingText string) []byte {
+	// Override stop_reason when tool use blocks are present.
+	if len(toolUseBlocks) > 0 {
+		stopReason = "tool_use"
+	}
+
 	dst = append(dst, `{"id":"msg_`...)
 	dst = appendTxIDHex(dst, txid)
-	dst = append(dst, `","type":"message","role":"assistant","content":[{"type":"text","text":`...)
-	dst = appendJSONString(dst, content)
-	dst = append(dst, `}],"model":`...)
+	dst = append(dst, `","type":"message","role":"assistant","content":[`...)
+
+	needComma := false
+
+	// Thinking block (if present).
+	if thinkingText != "" {
+		dst = append(dst, `{"type":"thinking","thinking":`...)
+		dst = appendJSONString(dst, thinkingText)
+		dst = append(dst, '}')
+		needComma = true
+	}
+
+	if len(toolUseBlocks) > 0 {
+		// Emit text block first (for compat), then tool_use blocks.
+		if content != "" {
+			if needComma {
+				dst = append(dst, ',')
+			}
+			dst = append(dst, `{"type":"text","text":`...)
+			dst = appendJSONString(dst, content)
+			dst = append(dst, '}')
+			needComma = true
+		}
+		for _, tb := range toolUseBlocks {
+			if needComma {
+				dst = append(dst, ',')
+			}
+			dst = append(dst, `{"type":"tool_use","id":`...)
+			dst = appendJSONString(dst, tb.ToolUseID)
+			dst = append(dst, `,"name":`...)
+			dst = appendJSONString(dst, tb.ToolName)
+			dst = append(dst, `,"input":`...)
+			if len(tb.ToolInput) > 0 {
+				dst = append(dst, tb.ToolInput...)
+			} else {
+				dst = append(dst, '{', '}')
+			}
+			dst = append(dst, '}')
+			needComma = true
+		}
+	} else {
+		// Plain text response.
+		if needComma {
+			dst = append(dst, ',')
+		}
+		dst = append(dst, `{"type":"text","text":`...)
+		dst = appendJSONString(dst, content)
+		dst = append(dst, '}')
+	}
+
+	dst = append(dst, `],"model":`...)
 	dst = appendJSONString(dst, model)
 	dst = append(dst, `,"stop_reason":`...)
 	dst = appendJSONString(dst, stopReason)
@@ -519,18 +869,44 @@ func assembleAnthropic(dst []byte, txid [2]uint64, content, stopReason, model st
 }
 
 // assembleOpenAI writes a complete OpenAI Chat Completions API response JSON to dst.
-func assembleOpenAI(dst []byte, txid [2]uint64, content, finishReason, model string, in, out int64) []byte {
+func assembleOpenAI(dst []byte, txid [2]uint64, content, finishReason, model string, in, out int64, toolUseBlocks []ContentBlock) []byte {
 	dst = append(dst, `{"id":"chatcmpl-`...)
 	dst = appendTxIDHex(dst, txid)
 	dst = append(dst, `","object":"chat.completion","created":`...)
 	dst = strconv.AppendInt(dst, time.Now().Unix(), 10)
 	dst = append(dst, `,"model":`...)
 	dst = appendJSONString(dst, model)
-	dst = append(dst, `,"choices":[{"index":0,"message":{"role":"assistant","content":`...)
-	dst = appendJSONString(dst, content)
-	dst = append(dst, `},"finish_reason":`...)
-	dst = appendJSONString(dst, finishReason)
-	dst = append(dst, `,"logprobs":null}],"usage":{"prompt_tokens":`...)
+
+	if len(toolUseBlocks) > 0 {
+		// Tool calls response: content=null, finish_reason=tool_calls.
+		dst = append(dst, `,"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[`...)
+		for i, tb := range toolUseBlocks {
+			if i > 0 {
+				dst = append(dst, ',')
+			}
+			dst = append(dst, `{"id":`...)
+			dst = appendJSONString(dst, tb.ToolUseID)
+			dst = append(dst, `,"type":"function","function":{"name":`...)
+			dst = appendJSONString(dst, tb.ToolName)
+			dst = append(dst, `,"arguments":`...)
+			// Arguments must be a JSON string (OpenAI wire format).
+			if len(tb.ToolInput) > 0 {
+				dst = appendJSONString(dst, string(tb.ToolInput))
+			} else {
+				dst = appendJSONString(dst, "{}")
+			}
+			dst = append(dst, "}}"...)
+		}
+		dst = append(dst, `]},"finish_reason":"tool_calls","logprobs":null}]`...)
+	} else {
+		dst = append(dst, `,"choices":[{"index":0,"message":{"role":"assistant","content":`...)
+		dst = appendJSONString(dst, content)
+		dst = append(dst, `},"finish_reason":`...)
+		dst = appendJSONString(dst, finishReason)
+		dst = append(dst, `,"logprobs":null}]`...)
+	}
+
+	dst = append(dst, `,"usage":{"prompt_tokens":`...)
 	dst = strconv.AppendInt(dst, in, 10)
 	dst = append(dst, `,"completion_tokens":`...)
 	dst = strconv.AppendInt(dst, out, 10)
@@ -621,7 +997,21 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 				isStream = string(v) == "true" || string(v) == "1"
 			}
 
-			// 7. Assemble format-specific response into a pooled buffer.
+			// 7. Read tool use blocks.
+			var toolUseBlocks []ContentBlock
+			if cfg.ToolUseSlot >= 0 && cfg.ToolUseSlot < len(ctx.ByteSlots) {
+				if raw := ctx.ByteSlots[cfg.ToolUseSlot]; len(raw) > 0 {
+					_ = json.Unmarshal(raw, &toolUseBlocks)
+				}
+			}
+
+			// 8. Read thinking text.
+			var thinkingText string
+			if cfg.ThinkingSlot >= 0 && cfg.ThinkingSlot < len(ctx.ByteSlots) {
+				thinkingText = string(ctx.ByteSlots[cfg.ThinkingSlot])
+			}
+
+			// 9. Assemble format-specific response into a pooled buffer.
 			bufPtr := respBufPool.Get().(*[]byte)
 			buf := (*bufPtr)[:0]
 
@@ -638,7 +1028,7 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 					ctx.SetResponseHeader([]byte("Cache-Control"), []byte("no-cache"))
 					ctx.SetResponseHeader([]byte("X-Accel-Buffering"), []byte("no"))
 				default: // "anthropic" + anything else
-					buf = assembleAnthropicSSE(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+					buf = assembleAnthropicSSE(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens, toolUseBlocks, thinkingText)
 					ctx.SetResponseHeader([]byte("Content-Type"), []byte("text/event-stream"))
 					ctx.SetResponseHeader([]byte("Cache-Control"), []byte("no-cache"))
 					ctx.SetResponseHeader([]byte("X-Accel-Buffering"), []byte("no"))
@@ -646,22 +1036,22 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 			} else {
 				switch format {
 				case "anthropic":
-					buf = assembleAnthropic(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+					buf = assembleAnthropic(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens, toolUseBlocks, thinkingText)
 				case "gemini":
 					buf = assembleGemini(buf, content, stopReason, model, inputTokens, outputTokens)
 				default: // "openai" + anything unrecognised
-					buf = assembleOpenAI(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)
+					buf = assembleOpenAI(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens, toolUseBlocks)
 				}
 			}
 
-			// 8. Copy assembled bytes into the arena (ctx owns the memory).
+			// 10. Copy assembled bytes into the arena (ctx owns the memory).
 			if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 				out := ctx.Alloc(len(buf))
 				copy(out, buf)
 				ctx.ByteSlots[cfg.ResultSlot] = out
 			}
 
-			// 9. Return buffer to pool immediately.
+			// 11. Return buffer to pool immediately.
 			*bufPtr = buf[:0]
 			respBufPool.Put(bufPtr)
 

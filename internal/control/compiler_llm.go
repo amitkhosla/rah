@@ -111,6 +111,12 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		InputTokensSlot:  -1, // disabled by default
 		OutputTokensSlot: -1, // disabled by default
 		MessagesSlot:     -1, // disabled by default
+		// Tool / thinking slots — disabled by default
+		ToolsSlot:       -1,
+		ToolChoiceSlot:  -1,
+		ThinkingSlot:    -1,
+		ToolUseSlot:     -1,
+		ThinkingOutSlot: -1,
 	}
 
 	// Dynamic model slot (optional)
@@ -282,6 +288,74 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			return fmt.Errorf("llm_call: messages_slot: %w", err)
 		}
 		llmCfg.MessagesSlot = s
+	}
+
+	// tools_slot: ByteSlot populated by parse_message_format containing JSON []ToolDefinition.
+	if v, ok := step.Input["tools_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: tools_slot: %w", err)
+		}
+		llmCfg.ToolsSlot = s
+	}
+
+	// tool_choice_slot: ByteSlot containing a JSON-encoded ToolChoice override.
+	if v, ok := step.Input["tool_choice_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: tool_choice_slot: %w", err)
+		}
+		llmCfg.ToolChoiceSlot = s
+	}
+
+	// tool_choice: static tool choice strategy ("auto", "required", "none", "tool").
+	if v, ok := step.Input["tool_choice"]; ok && v != "" {
+		llmCfg.ToolChoice = steps.ToolChoiceType(v)
+	}
+
+	// thinking_slot: ByteSlot containing a JSON-encoded ThinkingConfig override.
+	if v, ok := step.Input["thinking_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: thinking_slot: %w", err)
+		}
+		llmCfg.ThinkingSlot = s
+	}
+
+	// thinking_enabled / thinking_budget: bake-time static ThinkingConfig.
+	if v, ok := step.Input["thinking_enabled"]; ok && v == "true" {
+		if llmCfg.Thinking == nil {
+			llmCfg.Thinking = &steps.ThinkingConfig{}
+		}
+		llmCfg.Thinking.Enabled = true
+	}
+	if v, ok := step.Input["thinking_budget"]; ok && v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+			if llmCfg.Thinking == nil {
+				llmCfg.Thinking = &steps.ThinkingConfig{}
+			}
+			llmCfg.Thinking.BudgetTokens = n
+		}
+	}
+
+	// tool_use_slot: ByteSlot to write JSON []ContentBlock (tool_use type) after a
+	// successful call. Read by format_response to assemble tool_use response blocks.
+	if v, ok := step.Input["tool_use_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: tool_use_slot: %w", err)
+		}
+		llmCfg.ToolUseSlot = s
+	}
+
+	// thinking_out_slot: ByteSlot to write the first thinking block text after a
+	// successful call.
+	if v, ok := step.Input["thinking_out_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: thinking_out_slot: %w", err)
+		}
+		llmCfg.ThinkingOutSlot = s
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
