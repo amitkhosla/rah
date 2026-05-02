@@ -270,7 +270,7 @@ export interface SyncPayload {
 
 export interface GatewaySnapshot {
   flows: Array<{ name: string; instructions: SyncStep[] }>
-  apis:  Array<{ name: string; path: string; flow_name: string }>
+  apis:  Array<{ name: string; path: string; method?: string; flow_name: string }>
 }
 
 export async function fetchGatewaySnapshot(): Promise<GatewaySnapshot> {

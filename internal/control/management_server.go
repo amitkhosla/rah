@@ -219,6 +219,13 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
+			if len(a.AliasPaths) > 0 {
+				cleaned := make([]string, 0, len(a.AliasPaths))
+				for _, p := range a.AliasPaths {
+					cleaned = append(cleaned, strings.TrimSuffix(p, "/"))
+				}
+				def.AliasPaths = cleaned
+			}
 
 			apiRLId := uint16(0)
 			if a.RateLimitName != "" && s.RegMgr != nil {
@@ -438,7 +445,22 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 						epPath = "/"
 					}
 					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
-					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId, asyncMode)
+
+					// Resolve endpoint-level flow override
+					epInstructions := instructions
+					if ec.FlowName != "" && ec.FlowName != a.FlowName {
+						if epFlowCfg, ok := newFlowConfigs[ec.FlowName]; ok {
+							if compiled, err := s.Compiler.CompileExecutable(epFlowCfg, newFlowConfigs); err == nil {
+								epInstructions = compiled
+							} else {
+								log.Printf("[Management] Error compiling endpoint flow %s for API %s: %v", ec.FlowName, a.Name, err)
+							}
+						} else {
+							log.Printf("[Management] Warning: endpoint flow %s not found for API %s, using API default", ec.FlowName, a.Name)
+						}
+					}
+
+					s.Compiler.BakeSubRouter(def, epPath, method, epInstructions, isStrict, apiRLId, epRLId, asyncMode)
 				}
 			}
 
@@ -460,6 +482,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				RateLimitName:   a.RateLimitName,
 				EndpointConfigs: a.EndpointConfigs,
 				Async:           a.Async,
+				AliasPaths:      a.AliasPaths,
 			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
@@ -485,6 +508,9 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		for _, d := range newDefs {
 			if d != nil {
 				finalRouter.Add(d.BaseRawPath, d.Id)
+				for _, alias := range d.AliasPaths {
+					finalRouter.Add(alias, d.Id)
+				}
 			}
 		}
 	} else {

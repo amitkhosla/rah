@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { importOpenAPI, fetchGatewaySnapshot } from '../api'
-import type { ApiDef, FlowStep, SavedFlow } from '../types'
+import { fetchGatewaySnapshot } from '../api'
+import type { ApiDef, EndpointDef, FlowStep, SavedFlow } from '../types'
 import FlowSearchSelect from './FlowSearchSelect'
 
 interface Props {
@@ -60,6 +60,20 @@ function suggestName(path: string): string {
     .replace(/^_|_$/g, '')
 }
 
+// ── Full path computation ─────────────────────────────────────────────────────
+
+function fullPath(basePath: string, subPath: string): string {
+  const base = basePath.replace(/\/+$/, '')
+  const sub  = subPath.startsWith('/') ? subPath : '/' + subPath
+  return sub === '/' ? base || '/' : base + sub
+}
+
+// ── Resolve flow for endpoint ─────────────────────────────────────────────────
+
+function resolveFlow(ep: EndpointDef, api: ApiDef): string {
+  return ep.flowName ?? api.defaultFlow
+}
+
 // ── API interface derivation ─────────────────────────────────────────────────
 
 interface InputBinding  { source: string; field: string; variable: string }
@@ -92,165 +106,241 @@ function deriveApiInterface(steps: FlowStep[]): { inputs: InputBinding[]; output
 // ── Main component ───────────────────────────────────────────────────────────
 
 export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavigateToDesigner, onNavigateToDeploy }: Props) {
-  const [selectedApiIdx, setSelectedApiIdx] = useState<number | null>(null)
-  const [showWizard,     setShowWizard]     = useState(false)
+  // Selection state
+  const [selectedApiId,      setSelectedApiId]      = useState<string | null>(null)
+  const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null)
+  const [showWizard,         setShowWizard]          = useState(false)
 
   // Wizard state
-  const [wizardStep,         setWizardStep]         = useState<1 | 2>(1)
-  const [wizardMethod,       setWizardMethod]       = useState('GET')
-  const [wizardPath,         setWizardPath]         = useState('')
-  const [wizardName,         setWizardName]         = useState('')
-  const [wizardFlowMode,     setWizardFlowMode]     = useState<'create' | 'existing'>('create')
-  const [wizardExistingFlow, setWizardExistingFlow] = useState('')
-  const [wizardErr,          setWizardErr]          = useState('')
+  const [wizardStep,   setWizardStep]   = useState<1 | 2 | 3>(1)
+  const [wizardApiId,  setWizardApiId]  = useState<string | null>(null) // null = new API
+  // Step 1
+  const [wBasePaths,   setWBasePaths]   = useState<string[]>(['']) // [primary, ...aliases]
+  const [wApiName,     setWApiName]     = useState('')
+  const [wDefaultFlow, setWDefaultFlow] = useState('')
+  const [wFlowMode,    setWFlowMode]    = useState<'create' | 'existing'>('create')
+  // Step 2
+  const [wEndpoints,   setWEndpoints]   = useState<Array<{ id: string; subPath: string; method: string; flowName?: string; overrideFlow: boolean }>>([])
+  const [wizardErr,    setWizardErr]    = useState('')
 
-  // Loading state while we check the gateway on mount
+  // Sync state
   const [syncing, setSyncing] = useState(true)
 
-  // OpenAPI import state (lives in detail panel)
-  const [spec,      setSpec]      = useState('')
-  const [importMsg, setImportMsg] = useState('')
-  const [importErr, setImportErr] = useState(false)
-  const [importing, setImporting] = useState(false)
-
-  // On mount: fetch live gateway state and seed the local API list so the
-  // panel is not empty after a page refresh.
+  // On mount: fetch gateway snapshot and seed local API list
   useEffect(() => {
     fetchGatewaySnapshot()
       .then(state => {
         if (state?.apis?.length) {
-          const incoming = state.apis
-            .filter(ga => !apis.find(a => a.name === ga.name))
-            .map(ga => ({ name: ga.name, path: ga.path, method: 'POST' as const, flow_name: ga.flow_name ?? '' }))
+          const grouped = new Map<string, ApiDef>()
+          for (const ga of state.apis) {
+            const method = ga.method ?? 'POST'
+            if (grouped.has(ga.path)) {
+              grouped.get(ga.path)!.endpoints.push({
+                id: crypto.randomUUID(),
+                subPath: '/',
+                method,
+              })
+            } else {
+              grouped.set(ga.path, {
+                id: crypto.randomUUID(),
+                name: ga.name,
+                basePath: ga.path,
+                defaultFlow: ga.flow_name ?? '',
+                endpoints: [{ id: crypto.randomUUID(), subPath: '/', method }],
+              })
+            }
+          }
+          const incoming = Array.from(grouped.values()).filter(
+            g => !apis.find(a => a.basePath === g.basePath)
+          )
           if (incoming.length > 0) setApis([...apis, ...incoming])
         }
-        // Register any gateway flow names that aren't yet in local savedFlows
-        for (const gf of (state.flows ?? [])) {
+        for (const gf of (state?.flows ?? [])) {
           onCreateFlow(gf.name)
         }
         setSyncing(false)
       })
-      .catch(() => {
-        setSyncing(false) /* gateway unreachable — silent */
-      })
+      .catch(() => setSyncing(false))
   }, [])
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
-  const flowNames  = flows.map(f => f.name)
-  const unassigned = apis.filter(a => !a.flow_name || !flowNames.includes(a.flow_name))
+  const flowNames = flows.map(f => f.name)
 
-  function apiStatus(api: ApiDef): 'ready' | 'empty' | 'unlinked' {
-    if (!api.flow_name || !flowNames.includes(api.flow_name)) return 'unlinked'
-    const flow = flows.find(f => f.name === api.flow_name)
+  function endpointStatus(ep: EndpointDef, api: ApiDef): 'ready' | 'empty' | 'unlinked' {
+    const fn = resolveFlow(ep, api)
+    if (!fn || !flowNames.includes(fn)) return 'unlinked'
+    const flow = flows.find(f => f.name === fn)
     if (!flow || flow.steps.length === 0) return 'empty'
     return 'ready'
   }
 
-  const selectedApi  = selectedApiIdx !== null ? apis[selectedApiIdx] ?? null : null
-  const selectedFlow = selectedApi
-    ? flows.find(f => f.name === selectedApi.flow_name) ?? null
-    : null
+  const totalEndpoints = apis.reduce((sum, a) => sum + a.endpoints.length, 0)
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
+  // ── Wizard helpers ─────────────────────────────────────────────────────────
 
-  function handleRemoveApi(idx: number) {
-    setApis(apis.filter((_, i) => i !== idx))
-    if (selectedApiIdx === idx) setSelectedApiIdx(null)
-    else if (selectedApiIdx !== null && selectedApiIdx > idx) setSelectedApiIdx(selectedApiIdx - 1)
-  }
-
-  function handleAssignFlow(flowName: string) {
-    if (selectedApiIdx === null) return
-    const updated = [...apis]
-    updated[selectedApiIdx] = { ...updated[selectedApiIdx], flow_name: flowName }
-    setApis(updated)
-  }
-
-  function handleAssignUnassigned(api: ApiDef, flowName: string) {
-    const i = apis.indexOf(api)
-    if (i === -1) return
-    const updated = [...apis]
-    updated[i] = { ...api, flow_name: flowName }
-    setApis(updated)
-  }
-
-  // Wizard
-  function openWizard() {
+  function openNewWizard() {
     setShowWizard(true)
-    setSelectedApiIdx(null)
+    setSelectedApiId(null)
+    setSelectedEndpointId(null)
+    setWizardApiId(null)
     setWizardStep(1)
-    setWizardMethod('GET')
-    setWizardPath('')
-    setWizardName('')
-    setWizardFlowMode('create')
-    setWizardExistingFlow('')
+    setWBasePaths([''])
+    setWApiName('')
+    setWDefaultFlow('')
+    setWFlowMode('create')
+    setWEndpoints([{ id: crypto.randomUUID(), subPath: '/', method: 'GET', overrideFlow: false }])
     setWizardErr('')
   }
 
-  function wizardNext() {
+  function openAddEndpointWizard(api: ApiDef) {
+    setShowWizard(true)
+    setSelectedApiId(null)
+    setSelectedEndpointId(null)
+    setWizardApiId(api.id)
+    setWizardStep(2)
+    setWBasePaths([api.basePath, ...(api.aliasPaths ?? [])])
+    setWApiName(api.name)
+    setWDefaultFlow(api.defaultFlow)
+    setWFlowMode('existing')
+    setWEndpoints([{ id: crypto.randomUUID(), subPath: '/', method: 'GET', overrideFlow: false }])
     setWizardErr('')
-    if (!wizardPath.startsWith('/')) { setWizardErr('Path must start with /'); return }
-    if (!wizardName.trim()) { setWizardErr('Name must not be empty'); return }
-    if (apis.some(a => a.name === wizardName.trim())) { setWizardErr('Name already exists'); return }
+  }
+
+  function wizardStep1Next() {
+    setWizardErr('')
+    if (wBasePaths.some(p => !p.trim())) { setWizardErr('All basepaths must be non-empty'); return }
+    if (wBasePaths.some(p => !p.trim().startsWith('/'))) { setWizardErr('All basepaths must start with /'); return }
+    if (wBasePaths.length !== new Set(wBasePaths.map(p => p.trim())).size) {
+      setWizardErr('Basepaths must be unique'); return
+    }
+    if (!wApiName.trim()) { setWizardErr('Name must not be empty'); return }
+    if (wizardApiId === null && apis.some(a => a.name === wApiName.trim())) {
+      setWizardErr('Name already exists'); return
+    }
+    if (wFlowMode === 'existing' && !wDefaultFlow) {
+      setWizardErr('Please select an existing flow'); return
+    }
+    if (wFlowMode === 'create' && !wDefaultFlow.trim()) {
+      setWizardErr('Please enter a name for the new flow'); return
+    }
     setWizardStep(2)
   }
 
-  function wizardRegister() {
+  function wizardStep2Next() {
     setWizardErr('')
-    const entry: ApiDef = {
-      name:      wizardName.trim(),
-      path:      wizardPath.trim(),
-      method:    wizardMethod,
-      flow_name: wizardFlowMode === 'existing' ? wizardExistingFlow : `${wizardName.trim()}_flow`,
+    if (wEndpoints.length === 0) { setWizardErr('Add at least one endpoint'); return }
+    for (const ep of wEndpoints) {
+      if (!ep.subPath.startsWith('/')) { setWizardErr('Sub-paths must start with /'); return }
+      if (!ep.method) { setWizardErr('Each endpoint needs a method'); return }
+      if (ep.overrideFlow && !ep.flowName?.trim()) {
+        setWizardErr('Each overridden endpoint needs a flow selected'); return
+      }
     }
-    const newApis = [...apis, entry]
-    setApis(newApis)
+    setWizardStep(3)
+  }
 
-    if (wizardFlowMode === 'create') {
-      onCreateFlow(entry.flow_name)
-      onNavigateToDesigner()
-    } else {
-      // Select the newly created API
+  function wizardConfirm() {
+    const newEndpoints: EndpointDef[] = wEndpoints.map(e => ({
+      id: e.id,
+      subPath: e.subPath,
+      method: e.method,
+      flowName: e.overrideFlow && e.flowName ? e.flowName : undefined,
+    }))
+
+    if (wizardApiId === null) {
+      // Create new API
+      const newApi: ApiDef = {
+        id: crypto.randomUUID(),
+        name: wApiName.trim(),
+        basePath: wBasePaths[0].trim(),
+        aliasPaths: wBasePaths.slice(1).map(p => p.trim()).filter(Boolean),
+        defaultFlow: wFlowMode === 'existing' ? wDefaultFlow : wDefaultFlow.trim(),
+        endpoints: newEndpoints,
+      }
+      setApis([...apis, newApi])
+      if (wFlowMode === 'create') onCreateFlow(newApi.defaultFlow)
       setShowWizard(false)
-      setSelectedApiIdx(newApis.length - 1)
+      setSelectedApiId(newApi.id)
+    } else {
+      // Add endpoints to existing API
+      const updated = apis.map(a =>
+        a.id === wizardApiId
+          ? { ...a, endpoints: [...a.endpoints, ...newEndpoints] }
+          : a
+      )
+      setApis(updated)
+      setShowWizard(false)
+      setSelectedApiId(wizardApiId)
     }
   }
 
-  // OpenAPI import
-  async function handleImport(targetFlow: string) {
-    if (!spec.trim() || !targetFlow) return
-    setImporting(true)
-    setImportMsg('')
-    setImportErr(false)
-    try {
-      const data    = await importOpenAPI(spec)
-      const entries = data.apis.map(a => ({
-        name: a.name, path: a.path, method: a.method, flow_name: targetFlow,
-      }))
-      setApis([...apis, ...entries])
-      setImportMsg(`Imported ${entries.length} API(s) from ${data.source}`)
-    } catch (e) {
-      setImportErr(true)
-      setImportMsg(e instanceof Error ? e.message : 'Import failed')
-    } finally {
-      setImporting(false)
+  function cancelWizard() {
+    setShowWizard(false)
+  }
+
+  // ── Remove handlers ────────────────────────────────────────────────────────
+
+  function handleRemoveApi(apiId: string) {
+    setApis(apis.filter(a => a.id !== apiId))
+    if (selectedApiId === apiId) { setSelectedApiId(null); setSelectedEndpointId(null) }
+  }
+
+  function handleRemoveEndpoint(apiId: string, endpointId: string) {
+    const api = apis.find(a => a.id === apiId)
+    if (!api) return
+    if (api.endpoints.length <= 1) {
+      // Remove entire API
+      handleRemoveApi(apiId)
+    } else {
+      const updated = apis.map(a =>
+        a.id === apiId
+          ? { ...a, endpoints: a.endpoints.filter(e => e.id !== endpointId) }
+          : a
+      )
+      setApis(updated)
+      if (selectedEndpointId === endpointId) setSelectedEndpointId(null)
     }
   }
+
+  function handleUpdateApiDefaultFlow(apiId: string, flowName: string) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, defaultFlow: flowName } : a))
+  }
+
+  function handleRemoveAlias(apiId: string, index: number) {
+    setApis(apis.map(a => a.id === apiId
+      ? { ...a, aliasPaths: (a.aliasPaths ?? []).filter((_, j) => j !== index) }
+      : a))
+  }
+
+  function handleSetEndpointFlow(apiId: string, endpointId: string, flowName: string | undefined) {
+    setApis(apis.map(a =>
+      a.id === apiId
+        ? { ...a, endpoints: a.endpoints.map(e => e.id === endpointId ? { ...e, flowName } : e) }
+        : a
+    ))
+  }
+
+  // ── Selection ──────────────────────────────────────────────────────────────
+
+  const selectedApi = selectedApiId ? apis.find(a => a.id === selectedApiId) ?? null : null
+  const selectedEndpoint = selectedApi && selectedEndpointId
+    ? selectedApi.endpoints.find(e => e.id === selectedEndpointId) ?? null
+    : null
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 58px)', gap: 0, margin: -14 }}>
 
-      {/* ── Left sidebar: API catalog ──────────────────────────────────── */}
+      {/* ── Left sidebar ──────────────────────────────────────────────── */}
       <div style={{
-        width: 280, flexShrink: 0,
+        width: 290, flexShrink: 0,
         borderRight: '1px solid var(--border)',
         display: 'flex', flexDirection: 'column',
         background: 'var(--panel)',
       }}>
-        {/* Header + New API button */}
+        {/* Header */}
         <div style={{
           padding: '12px 14px',
           borderBottom: '1px solid var(--border)',
@@ -260,13 +350,13 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
           <button
             className="btn"
             style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12 }}
-            onClick={openWizard}
+            onClick={openNewWizard}
           >
             + New API
           </button>
         </div>
 
-        {/* API list */}
+        {/* API accordion list */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 0' }}>
           {apis.length === 0 && !showWizard && (
             <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--muted)' }}>
@@ -276,121 +366,122 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
                   <>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>No APIs yet</div>
                     <div style={{ fontSize: 11, marginBottom: 12 }}>
-                      Create your first API endpoint to start routing traffic through a flow.
+                      Create your first API to start routing traffic through flows.
                     </div>
-                    <button className="btn" onClick={() => setShowWizard(true)}>＋ Create API</button>
+                    <button className="btn" onClick={openNewWizard}>＋ Create API</button>
                   </>
                 )
               }
             </div>
           )}
 
-          {/* Assigned APIs grouped by status */}
-          {apis
-            .map((a, i) => ({ api: a, idx: i }))
-            .filter(({ api }) => api.flow_name && flowNames.includes(api.flow_name))
-            .map(({ api, idx }) => {
-              const status = apiStatus(api)
-              const active = selectedApiIdx === idx && !showWizard
-              return (
+          {apis.map(api => {
+            const isApiSelected = selectedApiId === api.id && !selectedEndpointId && !showWizard
+            return (
+              <div key={api.id} style={{ marginBottom: 6 }}>
+                {/* Accordion header: basePath + API name */}
                 <div
-                  key={idx}
-                  onClick={() => { setSelectedApiIdx(idx); setShowWizard(false) }}
+                  onClick={() => {
+                    setSelectedApiId(api.id)
+                    setSelectedEndpointId(null)
+                    setShowWizard(false)
+                  }}
                   style={{
                     padding: '7px 9px',
                     borderRadius: 7,
                     cursor: 'pointer',
-                    marginBottom: 3,
-                    background: active ? 'rgba(87,181,255,0.1)' : 'transparent',
-                    border:     active ? '1px solid var(--accent)' : '1px solid transparent',
-                    display: 'flex', alignItems: 'center', gap: 7,
+                    background: isApiSelected ? 'rgba(87,181,255,0.1)' : 'rgba(255,255,255,0.03)',
+                    border: isApiSelected ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    display: 'flex', alignItems: 'center', gap: 6,
                   }}
                 >
-                  {/* Status dot */}
-                  <span style={{
-                    width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                    background: status === 'ready' ? '#22c55e' : status === 'empty' ? '#f59e0b' : '#ef4444',
-                    boxShadow: status === 'ready' ? '0 0 4px #22c55e66' : undefined,
-                  }} title={status === 'ready' ? 'Ready' : status === 'empty' ? 'Flow has no steps' : 'No flow linked'} />
-
-                  <MethodBadge method={api.method} />
-
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
-                      fontFamily: 'monospace', fontSize: 12,
-                      color: active ? 'var(--accent)' : 'var(--text)',
+                      fontFamily: 'monospace', fontSize: 12, fontWeight: 600,
+                      color: isApiSelected ? 'var(--accent)' : 'var(--text)',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }}>
-                      {api.path}
+                      {api.basePath}
                     </div>
                     <div style={{ fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {api.flow_name}
+                      {api.name}
                     </div>
                   </div>
-
-                  {/* Action button */}
+                  {/* + button to add endpoint */}
                   <button
                     className="btn muted"
-                    style={{ width: 'auto', padding: '2px 7px', marginTop: 0, fontSize: 10, flexShrink: 0 }}
-                    onClick={e => { e.stopPropagation(); setSelectedApiIdx(idx); setShowWizard(false) }}
+                    style={{ width: 'auto', padding: '1px 7px', marginTop: 0, fontSize: 12, flexShrink: 0 }}
+                    title="Add endpoint"
+                    onClick={e => { e.stopPropagation(); openAddEndpointWizard(api) }}
                   >
-                    {status === 'ready' ? 'Edit' : status === 'empty' ? 'Build' : 'Assign'}
+                    +
                   </button>
                 </div>
-              )
-            })
-          }
 
-          {/* Unassigned bucket */}
-          {unassigned.length > 0 && (
-            <div style={{ marginTop: 12, marginBottom: 8 }}>
-              <div style={{
-                fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase',
-                letterSpacing: 1, marginBottom: 6, padding: '0 3px',
-              }}>
-                Unassigned ({unassigned.length})
+                {/* Endpoint child rows */}
+                {api.endpoints.map(ep => {
+                  const isEpSelected = selectedEndpointId === ep.id && selectedApiId === api.id && !showWizard
+                  const status = endpointStatus(ep, api)
+                  const resolvedFn = resolveFlow(ep, api)
+                  return (
+                    <div
+                      key={ep.id}
+                      onClick={() => {
+                        setSelectedApiId(api.id)
+                        setSelectedEndpointId(ep.id)
+                        setShowWizard(false)
+                      }}
+                      style={{
+                        padding: '5px 9px 5px 20px',
+                        borderRadius: 5,
+                        cursor: 'pointer',
+                        marginTop: 2,
+                        background: isEpSelected ? 'rgba(87,181,255,0.08)' : 'transparent',
+                        border: isEpSelected ? '1px solid rgba(87,181,255,0.4)' : '1px solid transparent',
+                        display: 'flex', alignItems: 'center', gap: 6,
+                      }}
+                    >
+                      {/* Status dot */}
+                      <span style={{
+                        width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                        background: status === 'ready' ? '#22c55e' : status === 'empty' ? '#f59e0b' : '#ef4444',
+                        boxShadow: status === 'ready' ? '0 0 4px #22c55e66' : undefined,
+                      }} title={status === 'ready' ? 'Ready' : status === 'empty' ? 'Flow has no steps' : 'Flow not found'} />
+
+                      <MethodBadge method={ep.method} />
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontFamily: 'monospace', fontSize: 11,
+                          color: isEpSelected ? 'var(--accent)' : 'var(--text)',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {ep.subPath}
+                        </div>
+                        <div style={{
+                          fontSize: 10, color: 'var(--muted)',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {ep.flowName ? `★ ${ep.flowName}` : resolvedFn || '(no flow)'}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
-              {unassigned.map((a, i) => {
-                const idx = apis.indexOf(a)
-                const active = selectedApiIdx === idx && !showWizard
-                return (
-                  <div
-                    key={i}
-                    onClick={() => { setSelectedApiIdx(idx); setShowWizard(false) }}
-                    style={{
-                      padding: '6px 9px',
-                      borderRadius: 7,
-                      cursor: 'pointer',
-                      marginBottom: 3,
-                      background: active ? 'rgba(239,68,68,0.08)' : 'rgba(239,68,68,0.03)',
-                      border: active ? '1px solid rgba(239,68,68,0.5)' : '1px solid rgba(239,68,68,0.2)',
-                      display: 'flex', alignItems: 'center', gap: 7,
-                    }}
-                  >
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: '#ef4444' }} />
-                    <MethodBadge method={a.method} />
-                    <span style={{
-                      flex: 1, fontFamily: 'monospace', fontSize: 12,
-                      color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {a.path}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+            )
+          })}
         </div>
 
         {/* Deploy shortcut at bottom */}
-        {apis.length > 0 && (
+        {totalEndpoints > 0 && (
           <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)' }}>
             <button
               className="btn"
               style={{ width: '100%', fontSize: 12 }}
               onClick={onNavigateToDeploy}
             >
-              → Publish Now ({apis.length})
+              → Publish Now ({totalEndpoints} endpoint{totalEndpoints !== 1 ? 's' : ''})
             </button>
           </div>
         )}
@@ -398,48 +489,54 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
 
       {/* ── Right panel ────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto', background: 'var(--bg)' }}>
-
         {showWizard ? (
           <WizardPanel
             apis={apis}
             flows={flows}
             wizardStep={wizardStep}
-            wizardMethod={wizardMethod}
-            wizardPath={wizardPath}
-            wizardName={wizardName}
-            wizardFlowMode={wizardFlowMode}
-            wizardExistingFlow={wizardExistingFlow}
+            wizardApiId={wizardApiId}
+            wBasePaths={wBasePaths}
+            wApiName={wApiName}
+            wDefaultFlow={wDefaultFlow}
+            wFlowMode={wFlowMode}
+            wEndpoints={wEndpoints}
             wizardErr={wizardErr}
-            setWizardMethod={setWizardMethod}
-            setWizardPath={p => { setWizardPath(p); setWizardName(suggestName(p)) }}
-            setWizardName={setWizardName}
-            setWizardFlowMode={setWizardFlowMode}
-            setWizardExistingFlow={setWizardExistingFlow}
-            onNext={wizardNext}
-            onBack={() => setWizardStep(1)}
-            onRegister={wizardRegister}
-            onCancel={() => setShowWizard(false)}
+            setWBasePaths={setWBasePaths}
+            onPrimaryBasePathChange={p => { if (!wizardApiId) setWApiName(suggestName(p)) }}
+            setWApiName={setWApiName}
+            setWDefaultFlow={setWDefaultFlow}
+            setWFlowMode={setWFlowMode}
+            setWEndpoints={setWEndpoints}
+            onStep1Next={wizardStep1Next}
+            onStep2Next={wizardStep2Next}
+            onBack={() => setWizardStep(s => (s > 1 ? (s - 1) as 1 | 2 | 3 : s))}
+            onConfirm={wizardConfirm}
+            onCancel={cancelWizard}
           />
-        ) : selectedApi !== null && selectedApiIdx !== null ? (
-          <DetailPanel
+        ) : selectedEndpoint !== null && selectedApi !== null ? (
+          <EndpointDetailPanel
             api={selectedApi}
-            apiIdx={selectedApiIdx}
-            flow={selectedFlow}
+            endpoint={selectedEndpoint}
             flows={flows}
-            spec={spec}
-            importMsg={importMsg}
-            importErr={importErr}
-            importing={importing}
-            setSpec={setSpec}
-            onRemove={() => handleRemoveApi(selectedApiIdx)}
-            onAssignFlow={handleAssignFlow}
-            onCreateFlow={(name) => { onCreateFlow(name); handleAssignFlow(name) }}
+            onRemove={() => handleRemoveEndpoint(selectedApi.id, selectedEndpoint.id)}
+            onSetFlow={(flowName) => handleSetEndpointFlow(selectedApi.id, selectedEndpoint.id, flowName)}
+            onClearOverride={() => handleSetEndpointFlow(selectedApi.id, selectedEndpoint.id, undefined)}
             onNavigateToDesigner={onNavigateToDesigner}
             onNavigateToDeploy={onNavigateToDeploy}
-            onImport={handleImport}
+          />
+        ) : selectedApi !== null ? (
+          <ApiDetailPanel
+            api={selectedApi}
+            flows={flows}
+            onRemove={() => handleRemoveApi(selectedApi.id)}
+            onUpdateDefaultFlow={fn => handleUpdateApiDefaultFlow(selectedApi.id, fn)}
+            onSelectEndpoint={epId => setSelectedEndpointId(epId)}
+            onAddEndpoint={() => openAddEndpointWizard(selectedApi)}
+            onNavigateToDesigner={onNavigateToDesigner}
+            onRemoveAlias={i => handleRemoveAlias(selectedApi.id, i)}
           />
         ) : (
-          <EmptyRight onNewApi={openWizard} onNavigateToDesigner={onNavigateToDesigner} />
+          <EmptyRight onNewApi={openNewWizard} onNavigateToDesigner={onNavigateToDesigner} />
         )}
       </div>
     </div>
@@ -457,10 +554,11 @@ function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; 
     }}>
       <span style={{ fontSize: 36, opacity: 0.2 }}>⚡</span>
       <div style={{ textAlign: 'center' }}>
-        <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6 }}>Register your first API endpoint</p>
+        <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6 }}>Register your first API</p>
         <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.6 }}>
-          Connect HTTP routes to flows. Each endpoint routes incoming requests<br />
-          to a flow that handles authentication, upstream calls, and responses.
+          Group endpoints under a base path and connect them to flows.<br />
+          Each endpoint routes incoming requests to a flow that handles<br />
+          authentication, upstream calls, and responses.
         </p>
       </div>
       <div style={{ display: 'flex', gap: 10 }}>
@@ -475,46 +573,191 @@ function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; 
   )
 }
 
-// ── Detail panel ─────────────────────────────────────────────────────────────
+// ── API Detail Panel ─────────────────────────────────────────────────────────
 
-interface DetailProps {
+interface ApiDetailProps {
   api: ApiDef
-  apiIdx: number
-  flow: SavedFlow | null
   flows: SavedFlow[]
-  spec: string
-  importMsg: string
-  importErr: boolean
-  importing: boolean
-  setSpec: (s: string) => void
   onRemove: () => void
-  onAssignFlow: (name: string) => void
-  onCreateFlow: (name: string) => void
+  onUpdateDefaultFlow: (name: string) => void
+  onSelectEndpoint: (epId: string) => void
+  onAddEndpoint: () => void
   onNavigateToDesigner: () => void
-  onNavigateToDeploy: () => void
-  onImport: (targetFlow: string) => void
+  onRemoveAlias: (index: number) => void
 }
 
-function DetailPanel({
-  api, flow, flows,
-  spec, importMsg, importErr, importing,
-  setSpec,
-  onRemove, onAssignFlow, onCreateFlow,
-  onNavigateToDesigner, onNavigateToDeploy, onImport,
-}: DetailProps) {
-  const [importFlow, setImportFlow] = useState(api.flow_name ?? '')
+function ApiDetailPanel({
+  api, flows, onRemove, onUpdateDefaultFlow, onSelectEndpoint, onAddEndpoint, onNavigateToDesigner, onRemoveAlias,
+}: ApiDetailProps) {
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const flowNames = flows.map(f => f.name)
 
-  // Sync importFlow when api changes
-  const resolvedImportFlow = api.flow_name || importFlow
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <div style={{
+        padding: '16px 20px',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--panel)',
+        flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: 'monospace', fontSize: 18, fontWeight: 700, color: 'var(--accent)', marginBottom: 3 }}>
+              {api.basePath}
+            </div>
+            {(api.aliasPaths ?? []).length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                {(api.aliasPaths ?? []).map((alias, i) => (
+                  <span key={i} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    padding: '2px 8px', borderRadius: 10, fontSize: 11,
+                    background: 'rgba(87,181,255,0.08)', border: '1px solid rgba(87,181,255,0.2)',
+                    fontFamily: 'monospace', color: 'var(--muted)',
+                  }}>
+                    {alias}
+                    <button
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', padding: 0, fontSize: 12, lineHeight: 1 }}
+                      onClick={() => onRemoveAlias(i)}
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>{api.name}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            {confirmRemove ? (
+              <>
+                <span style={{ fontSize: 12, color: '#ef4444', alignSelf: 'center' }}>Remove API?</span>
+                <button
+                  className="btn muted"
+                  style={{ width: 'auto', padding: '4px 10px', marginTop: 0, fontSize: 12 }}
+                  onClick={() => setConfirmRemove(false)}
+                >Cancel</button>
+                <button
+                  className="btn"
+                  style={{ width: 'auto', padding: '4px 10px', marginTop: 0, fontSize: 12, background: '#ef4444' }}
+                  onClick={onRemove}
+                >Confirm</button>
+              </>
+            ) : (
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12 }}
+                onClick={() => setConfirmRemove(true)}
+              >Remove API</button>
+            )}
+          </div>
+        </div>
+      </div>
 
-  const hasFlow  = !!flow
-  const hasSteps = hasFlow && flow!.steps.length > 0
+      <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+        {/* Default flow */}
+        <Section label="Default Flow">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>Default:</span>
+            <div style={{ flex: 1, maxWidth: 360 }}>
+              <FlowSearchSelect
+                flows={flows}
+                value={api.defaultFlow}
+                onChange={onUpdateDefaultFlow}
+                placeholder="search or select a flow…"
+              />
+            </div>
+          </div>
+          {api.defaultFlow && !flowNames.includes(api.defaultFlow) && (
+            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 6 }}>
+              Flow "{api.defaultFlow}" not found in designer — build it first.
+            </div>
+          )}
+        </Section>
 
-  function handleCreateAndAssign() {
-    const name = `${api.name}_flow`
-    onCreateFlow(name)
-    onNavigateToDesigner()
-  }
+        {/* Endpoints table */}
+        <Section label="Endpoints" style={{ marginTop: 20 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Method</th>
+                <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Sub-path</th>
+                <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Flow</th>
+                <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Override?</th>
+              </tr>
+            </thead>
+            <tbody>
+              {api.endpoints.map(ep => {
+                const resolvedFn = resolveFlow(ep, api)
+                return (
+                  <tr
+                    key={ep.id}
+                    onClick={() => onSelectEndpoint(ep.id)}
+                    style={{ cursor: 'pointer', borderTop: '1px solid var(--border)' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(87,181,255,0.05)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <td style={{ padding: '7px 8px 7px 0' }}><MethodBadge method={ep.method} /></td>
+                    <td style={{ padding: '7px 8px 7px 0', fontFamily: 'monospace', color: 'var(--text)' }}>
+                      {ep.subPath}
+                    </td>
+                    <td style={{ padding: '7px 8px 7px 0', color: 'var(--muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {resolvedFn || <span style={{ color: '#ef4444' }}>(none)</span>}
+                    </td>
+                    <td style={{ padding: '7px 0 7px 0', color: ep.flowName ? '#fbbf24' : 'var(--muted)' }}>
+                      {ep.flowName ? '★ yes' : '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          <button
+            className="btn muted"
+            style={{ width: 'auto', padding: '4px 14px', marginTop: 10, fontSize: 12 }}
+            onClick={onAddEndpoint}
+          >
+            + Add Endpoint
+          </button>
+        </Section>
+
+        {/* Navigate to designer */}
+        <div style={{ marginTop: 20 }}>
+          <button
+            className="btn muted"
+            style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
+            onClick={onNavigateToDesigner}
+          >
+            → Open Flow Designer
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Endpoint Detail Panel ─────────────────────────────────────────────────────
+
+interface EndpointDetailProps {
+  api: ApiDef
+  endpoint: EndpointDef
+  flows: SavedFlow[]
+  onRemove: () => void
+  onSetFlow: (flowName: string) => void
+  onClearOverride: () => void
+  onNavigateToDesigner: () => void
+  onNavigateToDeploy: () => void
+}
+
+function EndpointDetailPanel({
+  api, endpoint, flows, onRemove, onSetFlow, onClearOverride,
+  onNavigateToDesigner, onNavigateToDeploy,
+}: EndpointDetailProps) {
+  const [showOverridePicker, setShowOverridePicker] = useState(false)
+  const [confirmRemove,      setConfirmRemove]      = useState(false)
+
+  const resolvedFn   = resolveFlow(endpoint, api)
+  const resolvedFlow = flows.find(f => f.name === resolvedFn) ?? null
+  const hasSteps     = !!(resolvedFlow && resolvedFlow.steps.length > 0)
+  const fp           = fullPath(api.basePath, endpoint.subPath)
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -528,92 +771,135 @@ function DetailPanel({
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-              <MethodBadge method={api.method} large />
-              <span style={{ fontFamily: 'monospace', fontSize: 16, fontWeight: 600 }}>{api.path}</span>
+              <MethodBadge method={endpoint.method} large />
+              <span style={{ fontFamily: 'monospace', fontSize: 16, fontWeight: 600 }}>{fp}</span>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>{api.name}</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Part of: <strong style={{ color: 'var(--text)' }}>{api.name}</strong>
+              {'  '}
+              Basepath: <span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{api.basePath}</span>
+            </div>
           </div>
-          <button
-            className="btn muted"
-            style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12, flexShrink: 0 }}
-            onClick={onRemove}
-          >
-            Remove API
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            {confirmRemove ? (
+              <>
+                <span style={{ fontSize: 12, color: '#ef4444', alignSelf: 'center' }}>Remove?</span>
+                <button
+                  className="btn muted"
+                  style={{ width: 'auto', padding: '4px 10px', marginTop: 0, fontSize: 12 }}
+                  onClick={() => setConfirmRemove(false)}
+                >Cancel</button>
+                <button
+                  className="btn"
+                  style={{ width: 'auto', padding: '4px 10px', marginTop: 0, fontSize: 12, background: '#ef4444' }}
+                  onClick={onRemove}
+                >Confirm</button>
+              </>
+            ) : (
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12 }}
+                onClick={() => setConfirmRemove(true)}
+              >Remove Endpoint</button>
+            )}
+          </div>
         </div>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
 
-        {/* Flow assignment */}
-        <Section label="Flow Assignment">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>Flow:</span>
-            <div style={{ flex: 1, maxWidth: 360 }}>
-              <FlowSearchSelect
-                flows={flows}
-                value={api.flow_name ?? ''}
-                onChange={onAssignFlow}
-                placeholder="search or select a flow…"
-              />
+        {/* Flow row */}
+        <Section label="Flow">
+          {endpoint.flowName ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>Override: </span>
+                <span style={{ fontFamily: 'monospace', color: '#fbbf24', fontSize: 12 }}>{endpoint.flowName}</span>
+              </div>
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '3px 12px', marginTop: 0, fontSize: 11 }}
+                onClick={onClearOverride}
+              >
+                Clear override (use {api.defaultFlow || 'default'})
+              </button>
             </div>
-          </div>
-
-          {/* Flow states */}
-          {!hasFlow && (
-            <div style={{
-              padding: '14px 16px',
-              borderRadius: 8,
-              background: 'rgba(239,68,68,0.06)',
-              border: '1px solid rgba(239,68,68,0.2)',
-            }}>
-              <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>
-                No flow assigned yet.
-              </p>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          ) : (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                <div>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>Inherited: </span>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--accent)', fontSize: 12 }}>
+                    {api.defaultFlow || <span style={{ color: '#ef4444' }}>(no default flow)</span>}
+                  </span>
+                </div>
                 <button
                   className="btn muted"
-                  style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-                  onClick={() => { /* FlowSearchSelect handles pick */ }}
+                  style={{ width: 'auto', padding: '3px 12px', marginTop: 0, fontSize: 11 }}
+                  onClick={() => setShowOverridePicker(p => !p)}
                 >
-                  Pick existing flow ▼
-                </button>
-                <button
-                  className="btn"
-                  style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-                  onClick={handleCreateAndAssign}
-                >
-                  + Create new flow
+                  {showOverridePicker ? 'Cancel' : 'Set override'}
                 </button>
               </div>
-            </div>
-          )}
-
-          {hasFlow && !hasSteps && (
-            <div style={{
-              padding: '12px 16px',
-              borderRadius: 8,
-              background: 'rgba(251,191,36,0.06)',
-              border: '1px solid rgba(251,191,36,0.25)',
-            }}>
-              <p style={{ fontSize: 13, color: '#fbbf24', marginBottom: 10 }}>
-                ⚠ Flow "{flow!.name}" has no steps yet.
-              </p>
-              <button
-                className="btn"
-                style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-                onClick={onNavigateToDesigner}
-              >
-                Build this flow in Designer →
-              </button>
+              {showOverridePicker && (
+                <div style={{ maxWidth: 360 }}>
+                  <FlowSearchSelect
+                    flows={flows}
+                    value={''}
+                    onChange={fn => { onSetFlow(fn); setShowOverridePicker(false) }}
+                    placeholder="search or select override flow…"
+                  />
+                </div>
+              )}
             </div>
           )}
         </Section>
 
-        {/* Mini pipeline preview */}
-        {hasFlow && hasSteps && (
+        {/* Flow states */}
+        {!resolvedFlow && (
+          <div style={{
+            marginTop: 16, padding: '14px 16px',
+            borderRadius: 8,
+            background: 'rgba(239,68,68,0.06)',
+            border: '1px solid rgba(239,68,68,0.2)',
+          }}>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 10 }}>
+              Flow "{resolvedFn}" not found — build it in the designer.
+            </p>
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
+              onClick={onNavigateToDesigner}
+            >
+              + Create flow in Designer
+            </button>
+          </div>
+        )}
+
+        {resolvedFlow && !hasSteps && (
+          <div style={{
+            marginTop: 16, padding: '12px 16px',
+            borderRadius: 8,
+            background: 'rgba(251,191,36,0.06)',
+            border: '1px solid rgba(251,191,36,0.25)',
+          }}>
+            <p style={{ fontSize: 13, color: '#fbbf24', marginBottom: 10 }}>
+              Flow "{resolvedFlow.name}" has no steps yet.
+            </p>
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
+              onClick={onNavigateToDesigner}
+            >
+              Build this flow in Designer →
+            </button>
+          </div>
+        )}
+
+        {/* Pipeline preview */}
+        {resolvedFlow && hasSteps && (
           <Section label="Pipeline Preview" style={{ marginTop: 20 }}>
-            <MiniPipeline api={api} steps={flow!.steps} />
+            <MiniPipeline method={endpoint.method} path={fp} steps={resolvedFlow.steps} />
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button
                 className="btn muted"
@@ -633,9 +919,9 @@ function DetailPanel({
           </Section>
         )}
 
-        {/* API Interface — inputs/outputs derived from flow steps */}
-        {hasFlow && hasSteps && (() => {
-          const { inputs, outputs } = deriveApiInterface(flow!.steps)
+        {/* API Interface */}
+        {resolvedFlow && hasSteps && (() => {
+          const { inputs, outputs } = deriveApiInterface(resolvedFlow.steps)
           if (inputs.length === 0 && outputs.length === 0) return null
           return (
             <Section label="API Interface" style={{ marginTop: 20 }}>
@@ -685,15 +971,15 @@ function DetailPanel({
         })()}
 
         {/* Try it — curl snippet */}
-        {hasFlow && hasSteps && (() => {
-          const { inputs } = deriveApiInterface(flow!.steps)
+        {resolvedFlow && hasSteps && (() => {
+          const { inputs } = deriveApiInterface(resolvedFlow.steps)
           const headerInputs = inputs.filter(b => b.source === 'header')
           const bodyInputs   = inputs.filter(b => b.source === 'body')
           const queryInputs  = inputs.filter(b => b.source === 'query')
 
-          const method  = api.method ?? 'POST'
-          const path    = api.path.replace(/\{(\w+)\}/g, '<$1>')
-          const bodyObj = bodyInputs.length > 0
+          const method   = endpoint.method ?? 'POST'
+          const curlPath = fp.replace(/\{(\w+)\}/g, '<$1>')
+          const bodyObj  = bodyInputs.length > 0
             ? JSON.stringify(Object.fromEntries(bodyInputs.map(b => [b.field, `<${b.field}>`])), null, 2)
             : (method !== 'GET' ? '{}' : null)
           const queryStr = queryInputs.length > 0
@@ -701,7 +987,7 @@ function DetailPanel({
             : ''
 
           const curl = [
-            `curl -X ${method} http://localhost:8080${path}${queryStr}`,
+            `curl -X ${method} http://localhost:8080${curlPath}${queryStr}`,
             `  -H 'Content-Type: application/json'`,
             ...headerInputs.map(b => `  -H '${b.field}: <${b.field.toLowerCase().replace(/[^a-z0-9]/g, '_')}>'`),
             ...(bodyObj ? [`  -d '${bodyObj}'`] : []),
@@ -741,63 +1027,6 @@ function DetailPanel({
           )
         })()}
 
-        {/* OpenAPI import collapsible */}
-        <div style={{ marginTop: 24 }}>
-          <details style={{ borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden' }}>
-            <summary style={{
-              padding: '10px 14px',
-              cursor: 'pointer',
-              fontSize: 12,
-              color: 'var(--muted)',
-              background: 'var(--panel)',
-              userSelect: 'none',
-              listStyle: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-            }}>
-              <span style={{ fontSize: 10, opacity: 0.6 }}>▶</span>
-              Import endpoints from OpenAPI spec
-            </summary>
-            <div style={{ padding: '14px 14px 16px', background: 'var(--bg)' }}>
-              {!api.flow_name && (
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Target flow for import:</div>
-                  <FlowSearchSelect
-                    flows={flows}
-                    value={importFlow}
-                    onChange={setImportFlow}
-                    placeholder="select target flow…"
-                  />
-                </div>
-              )}
-              {api.flow_name && (
-                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
-                  Endpoints will be imported into <strong style={{ color: 'var(--accent)' }}>{api.flow_name}</strong>.
-                </p>
-              )}
-              <textarea
-                className="input"
-                placeholder="Paste OpenAPI spec (JSON or YAML)…"
-                value={spec}
-                onChange={e => setSpec(e.target.value)}
-                style={{ minHeight: 110 }}
-              />
-              <button
-                className="btn mt8"
-                style={{ width: 'auto', padding: '0 18px' }}
-                onClick={() => onImport(resolvedImportFlow)}
-                disabled={importing || !resolvedImportFlow}
-              >
-                {importing ? 'Importing…' : `Import → ${resolvedImportFlow || '(select flow)'}`}
-              </button>
-              {importMsg && (
-                <p className={`mt8 ${importErr ? 'status-err' : 'status-ok'}`}>{importMsg}</p>
-              )}
-            </div>
-          </details>
-        </div>
-
       </div>
     </div>
   )
@@ -805,8 +1034,7 @@ function DetailPanel({
 
 // ── Mini pipeline preview ────────────────────────────────────────────────────
 
-function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
-  // Build zone-segmented step list
+function MiniPipeline({ method, path, steps }: { method: string; path: string; steps: FlowStep[] }) {
   type RenderedItem =
     | { kind: 'zone-header'; zone: Zone }
     | { kind: 'step'; step: FlowStep; zone: Zone }
@@ -816,17 +1044,14 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
   let lastZone: Zone | null   = null
   let hasResponseZone         = false
 
-  steps.forEach((step, i) => {
+  steps.forEach(step => {
     const zone = stepZone(step.action)
     if (zone !== lastZone) {
       items.push({ kind: 'zone-header', zone })
       lastZone = zone
     }
     items.push({ kind: 'step', step, zone })
-    if (zone === 'response' && !hasResponseZone) {
-      // We'll add boundary after all response-zone steps in a second pass
-      hasResponseZone = true
-    }
+    if (zone === 'response' && !hasResponseZone) hasResponseZone = true
   })
 
   // Insert boundary after last response-zone step
@@ -860,8 +1085,8 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
         <span style={{ color: '#57b5ff' }}>↓ REQUEST IN</span>
-        <MethodBadge method={api.method} />
-        <span style={{ color: 'var(--text)' }}>{api.path}</span>
+        <MethodBadge method={method} />
+        <span style={{ color: 'var(--text)' }}>{path}</span>
       </div>
 
       {/* Steps */}
@@ -905,10 +1130,9 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
           )
         }
 
-        // step
         const { step, zone } = item
         const meta = ZONE_META[zone]
-        const inputRef = (step.key_identifier || step.source) as string | undefined
+        const inputRef  = (step.key_identifier || step.source) as string | undefined
         const outputRef = step.as as string | undefined
 
         let conditionText: string | null = null
@@ -924,32 +1148,26 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
             display: 'flex', alignItems: 'baseline', gap: 0,
             borderBottom: '1px solid rgba(255,255,255,0.03)',
           }}>
-            {/* Zone color bar */}
             <div style={{
               width: 3, alignSelf: 'stretch', flexShrink: 0,
               background: meta.color,
               marginRight: 10,
               opacity: 0.6,
             }} />
-            {/* Bullet */}
             <span style={{ color: meta.color, marginRight: 6, fontSize: 10, flexShrink: 0 }}>•</span>
-            {/* Action */}
             <span style={{ color: 'var(--text)', fontWeight: 500, flexShrink: 0 }}>
               {step.action}
             </span>
-            {/* Input ref */}
             {inputRef && (
               <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: 11 }}>
                 ← <span style={{ color: '#57b5ff' }}>{inputRef}</span>
               </span>
             )}
-            {/* Output ref */}
             {outputRef && (
               <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: 11 }}>
                 → <span style={{ color: '#34d399' }}>{outputRef}</span>
               </span>
             )}
-            {/* Condition */}
             {conditionText && (
               <span style={{ color: 'var(--muted)', marginLeft: 8, fontSize: 11, fontStyle: 'italic' }}>
                 {conditionText}
@@ -959,7 +1177,6 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
         )
       })}
 
-      {/* If no response zone, show boundary at end */}
       {!hasResponseZone && (
         <div style={{
           padding: '5px 12px',
@@ -983,59 +1200,85 @@ function MiniPipeline({ api, steps }: { api: ApiDef; steps: FlowStep[] }) {
 interface WizardProps {
   apis: ApiDef[]
   flows: SavedFlow[]
-  wizardStep: 1 | 2
-  wizardMethod: string
-  wizardPath: string
-  wizardName: string
-  wizardFlowMode: 'create' | 'existing'
-  wizardExistingFlow: string
+  wizardStep: 1 | 2 | 3
+  wizardApiId: string | null
+  wBasePaths: string[]
+  wApiName: string
+  wDefaultFlow: string
+  wFlowMode: 'create' | 'existing'
+  wEndpoints: Array<{ id: string; subPath: string; method: string; flowName?: string; overrideFlow: boolean }>
   wizardErr: string
-  setWizardMethod: (v: string) => void
-  setWizardPath: (v: string) => void
-  setWizardName: (v: string) => void
-  setWizardFlowMode: (v: 'create' | 'existing') => void
-  setWizardExistingFlow: (v: string) => void
-  onNext: () => void
+  setWBasePaths: (v: string[]) => void
+  onPrimaryBasePathChange: (v: string) => void
+  setWApiName: (v: string) => void
+  setWDefaultFlow: (v: string) => void
+  setWFlowMode: (v: 'create' | 'existing') => void
+  setWEndpoints: (v: Array<{ id: string; subPath: string; method: string; flowName?: string; overrideFlow: boolean }>) => void
+  onStep1Next: () => void
+  onStep2Next: () => void
   onBack: () => void
-  onRegister: () => void
+  onConfirm: () => void
   onCancel: () => void
 }
 
 function WizardPanel({
   apis, flows,
-  wizardStep, wizardMethod, wizardPath, wizardName,
-  wizardFlowMode, wizardExistingFlow, wizardErr,
-  setWizardMethod, setWizardPath, setWizardName,
-  setWizardFlowMode, setWizardExistingFlow,
-  onNext, onBack, onRegister, onCancel,
+  wizardStep, wizardApiId,
+  wBasePaths, wApiName, wDefaultFlow, wFlowMode, wEndpoints, wizardErr,
+  setWBasePaths, onPrimaryBasePathChange, setWApiName, setWDefaultFlow, setWFlowMode, setWEndpoints,
+  onStep1Next, onStep2Next, onBack, onConfirm, onCancel,
 }: WizardProps) {
-  const newFlowName = wizardName ? `${wizardName}_flow` : '_flow'
+  const isAddEndpointMode = wizardApiId !== null
+
+  function addEndpointRow() {
+    setWEndpoints([
+      ...wEndpoints,
+      { id: crypto.randomUUID(), subPath: '/', method: 'GET', overrideFlow: false },
+    ])
+  }
+
+  function updateEndpoint(id: string, patch: Partial<typeof wEndpoints[0]>) {
+    setWEndpoints(wEndpoints.map(e => e.id === id ? { ...e, ...patch } : e))
+  }
+
+  function removeEndpointRow(id: string) {
+    if (wEndpoints.length <= 1) return
+    setWEndpoints(wEndpoints.filter(e => e.id !== id))
+  }
+
+  const stepCount = isAddEndpointMode ? 2 : 3
+  const stepLabel = isAddEndpointMode
+    ? (wizardStep === 2 ? 'Step 1 of 2 — Endpoints' : 'Step 2 of 2 — Review')
+    : (wizardStep === 1 ? 'Step 1 of 3 — API Identity'
+      : wizardStep === 2 ? 'Step 2 of 3 — Endpoints'
+      : 'Step 3 of 3 — Review')
+
+  const displayStep = isAddEndpointMode ? wizardStep - 1 : wizardStep
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 20px' }}>
       <div style={{
-        width: '100%', maxWidth: 520,
+        width: '100%', maxWidth: 560,
         background: 'var(--panel)',
         borderRadius: 10,
         border: '1px solid var(--border)',
         overflow: 'hidden',
       }}>
-        {/* Wizard header */}
+        {/* Header */}
         <div style={{
           padding: '16px 20px',
           borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>
-              {wizardStep === 1 ? 'Step 1 of 2 — Define the endpoint' : 'Step 2 of 2 — Assign a flow'}
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+              {stepLabel}
             </div>
-            {/* Step indicators */}
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              {[1, 2].map(n => (
+              {Array.from({ length: stepCount }, (_, n) => (
                 <div key={n} style={{
                   width: 20, height: 4, borderRadius: 2,
-                  background: n <= wizardStep ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                  background: n < displayStep ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
                   transition: 'background 0.2s',
                 }} />
               ))}
@@ -1049,71 +1292,118 @@ function WizardPanel({
         </div>
 
         <div style={{ padding: '20px 20px 24px' }}>
-          {wizardStep === 1 ? (
+          {/* Step 1: API Identity */}
+          {wizardStep === 1 && (
             <>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 14 }}>
-                {/* Method */}
-                <div style={{ flexShrink: 0 }}>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>Method</div>
-                  <select
-                    className="input"
-                    value={wizardMethod}
-                    onChange={e => setWizardMethod(e.target.value)}
-                    style={{ width: 90, marginTop: 0 }}
-                  >
-                    {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m}>{m}</option>)}
-                  </select>
-                </div>
-                {/* Path */}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>Path</div>
-                  <input
-                    className="input"
-                    placeholder="/v1/orders"
-                    value={wizardPath}
-                    onChange={e => setWizardPath(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && onNext()}
-                    style={{ width: '100%', marginTop: 0 }}
-                    autoFocus
-                  />
-                </div>
-              </div>
-              {/* Path param hint */}
-              {(() => {
-                const params = (wizardPath.match(/\{(\w+)\}/g) ?? []).map(p => p.slice(1, -1))
-                if (params.length === 0) return null
-                return (
-                  <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 10, lineHeight: 1.6 }}>
-                    Path params detected: {params.map(p => (
-                      <code key={p} style={{
-                        fontFamily: 'monospace', background: 'rgba(87,181,255,0.12)',
-                        padding: '1px 5px', borderRadius: 3, marginRight: 5,
-                      }}>{'{' + p + '}'}</code>
-                    ))}
-                    <span style={{ color: 'var(--muted)' }}>
-                      — add "Read Body Field" steps in your flow to bind these to variables
-                    </span>
-                  </div>
-                )
-              })()}
-              {/* Name */}
-              <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>
-                  Name <span style={{ fontSize: 10, opacity: 0.6 }}>(auto-suggested)</span>
+                  Basepaths
+                  <span style={{ fontSize: 10, marginLeft: 8, opacity: 0.6 }}>first = primary · extras = aliases (same API, same endpoints)</span>
+                </div>
+                {wBasePaths.map((bp, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                    <input
+                      className="input"
+                      placeholder={i === 0 ? '/api/v1/users' : '/v1/users  (alias)'}
+                      value={bp}
+                      onChange={e => {
+                        const updated = [...wBasePaths]
+                        updated[i] = e.target.value
+                        setWBasePaths(updated)
+                        if (i === 0) onPrimaryBasePathChange(e.target.value)
+                      }}
+                      onKeyDown={e => e.key === 'Enter' && onStep1Next()}
+                      style={{ flex: 1, marginTop: 0, fontFamily: 'monospace' }}
+                      autoFocus={i === 0}
+                    />
+                    {wBasePaths.length > 1 && (
+                      <button
+                        className="btn muted"
+                        style={{ width: 'auto', padding: '0 10px', marginTop: 0, fontSize: 16, flexShrink: 0 }}
+                        onClick={() => setWBasePaths(wBasePaths.filter((_, j) => j !== i))}
+                      >×</button>
+                    )}
+                  </div>
+                ))}
+                <button
+                  className="btn muted"
+                  style={{ width: 'auto', padding: '3px 12px', marginTop: 2, fontSize: 11 }}
+                  onClick={() => setWBasePaths([...wBasePaths, ''])}
+                >+ Add basepath</button>
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 5 }}>
+                  API Name <span style={{ fontSize: 10, opacity: 0.6 }}>(auto-suggested)</span>
                 </div>
                 <input
                   className="input"
-                  placeholder="v1_orders"
-                  value={wizardName}
-                  onChange={e => setWizardName(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && onNext()}
+                  placeholder="users_api"
+                  value={wApiName}
+                  onChange={e => setWApiName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && onStep1Next()}
                   style={{ width: '100%', marginTop: 0 }}
                 />
-                {wizardName && apis.some(a => a.name === wizardName) && (
+                {wApiName && apis.some(a => a.name === wApiName) && (
                   <div style={{ fontSize: 11, color: '#f97316', marginTop: 4 }}>
-                    Name "{wizardName}" already exists
+                    Name "{wApiName}" already exists
                   </div>
                 )}
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>Default Flow</div>
+
+                <label style={{
+                  display: 'flex', gap: 10, alignItems: 'flex-start',
+                  padding: '11px 14px', borderRadius: 8, cursor: 'pointer',
+                  marginBottom: 8,
+                  background: wFlowMode === 'create' ? 'rgba(87,181,255,0.08)' : 'var(--step-bg)',
+                  border: wFlowMode === 'create' ? '1px solid var(--accent)' : '1px solid transparent',
+                }}>
+                  <input type="radio" checked={wFlowMode === 'create'} onChange={() => setWFlowMode('create')} style={{ marginTop: 2 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Create new flow</div>
+                    {wFlowMode === 'create' && (
+                      <input
+                        className="input"
+                        placeholder="my_api_flow"
+                        value={wDefaultFlow}
+                        onChange={e => setWDefaultFlow(e.target.value)}
+                        style={{ width: '100%', marginTop: 0 }}
+                        onClick={e => e.stopPropagation()}
+                      />
+                    )}
+                    {wFlowMode !== 'create' && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>Opens Designer to build from scratch.</div>
+                    )}
+                  </div>
+                </label>
+
+                <label style={{
+                  display: 'flex', gap: 10, alignItems: 'flex-start',
+                  padding: '11px 14px', borderRadius: 8, cursor: 'pointer',
+                  background: wFlowMode === 'existing' ? 'rgba(87,181,255,0.08)' : 'var(--step-bg)',
+                  border: wFlowMode === 'existing' ? '1px solid var(--accent)' : '1px solid transparent',
+                }}>
+                  <input type="radio" checked={wFlowMode === 'existing'} onChange={() => setWFlowMode('existing')} style={{ marginTop: 2 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Use existing flow</div>
+                    {wFlowMode === 'existing' && (
+                      <div onClick={e => e.stopPropagation()}>
+                        <FlowSearchSelect
+                          flows={flows}
+                          value={wDefaultFlow}
+                          onChange={setWDefaultFlow}
+                          placeholder="search or select a flow…"
+                        />
+                      </div>
+                    )}
+                    {wFlowMode !== 'existing' && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>Route to an already-built flow.</div>
+                    )}
+                  </div>
+                </label>
               </div>
 
               {wizardErr && (
@@ -1124,83 +1414,179 @@ function WizardPanel({
                 <button
                   className="btn"
                   style={{ width: 'auto', padding: '6px 20px', marginTop: 0 }}
-                  onClick={onNext}
+                  onClick={onStep1Next}
                 >
                   Next →
                 </button>
               </div>
             </>
-          ) : (
+          )}
+
+          {/* Step 2: Endpoints */}
+          {wizardStep === 2 && (
             <>
-              <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
-                How should{' '}
-                <MethodBadge method={wizardMethod} />{' '}
-                <span style={{ fontFamily: 'monospace', color: 'var(--text)' }}>{wizardPath}</span>{' '}
-                be handled?
-              </p>
-
-              {/* Option: Create new */}
-              <label style={{
-                display: 'flex', gap: 10, alignItems: 'flex-start',
-                padding: '12px 14px', borderRadius: 8, cursor: 'pointer',
-                marginBottom: 10,
-                background: wizardFlowMode === 'create' ? 'rgba(87,181,255,0.08)' : 'var(--step-bg)',
-                border: wizardFlowMode === 'create' ? '1px solid var(--accent)' : '1px solid transparent',
-                transition: 'all 0.15s',
+              {/* Base path read-only prefix */}
+              <div style={{
+                padding: '8px 12px', marginBottom: 16, borderRadius: 6,
+                background: 'rgba(87,181,255,0.06)', border: '1px solid rgba(87,181,255,0.2)',
+                fontSize: 12, color: 'var(--muted)',
               }}>
-                <input
-                  type="radio"
-                  value="create"
-                  checked={wizardFlowMode === 'create'}
-                  onChange={() => setWizardFlowMode('create')}
-                  style={{ marginTop: 2 }}
-                />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>
-                    Create new flow:{' '}
-                    <span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{newFlowName}</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    Opens Designer to build from scratch.
-                  </div>
-                </div>
-              </label>
+                Base path: <span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{wBasePaths[0]}</span>{wBasePaths.length > 1 && <span style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 4 }}>+{wBasePaths.length - 1} alias{wBasePaths.length > 2 ? 'es' : ''}</span>}
+                {!isAddEndpointMode && wDefaultFlow && (
+                  <span> · Default flow: <span style={{ color: 'var(--text)' }}>{wDefaultFlow}</span></span>
+                )}
+              </div>
 
-              {/* Option: Use existing */}
-              <label style={{
-                display: 'flex', gap: 10, alignItems: 'flex-start',
-                padding: '12px 14px', borderRadius: 8, cursor: 'pointer',
-                marginBottom: 16,
-                background: wizardFlowMode === 'existing' ? 'rgba(87,181,255,0.08)' : 'var(--step-bg)',
-                border: wizardFlowMode === 'existing' ? '1px solid var(--accent)' : '1px solid transparent',
-                transition: 'all 0.15s',
-              }}>
-                <input
-                  type="radio"
-                  value="existing"
-                  checked={wizardFlowMode === 'existing'}
-                  onChange={() => setWizardFlowMode('existing')}
-                  style={{ marginTop: 2 }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>
-                    Use existing flow:
+              {wEndpoints.map((ep, idx) => (
+                <div key={ep.id} style={{
+                  padding: '12px 14px', marginBottom: 10,
+                  borderRadius: 8, border: '1px solid var(--border)',
+                  background: 'var(--step-bg)',
+                }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 8 }}>
+                    {/* Method */}
+                    <div style={{ flexShrink: 0 }}>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>Method</div>
+                      <select
+                        className="input"
+                        value={ep.method}
+                        onChange={e => updateEndpoint(ep.id, { method: e.target.value })}
+                        style={{ width: 90, marginTop: 0 }}
+                      >
+                        {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    {/* Sub-path */}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
+                        Sub-path
+                        <span style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 8 }}>
+                          preview: <span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>
+                            {fullPath(wBasePaths[0], ep.subPath)}
+                          </span>
+                        </span>
+                      </div>
+                      <input
+                        className="input"
+                        placeholder="/"
+                        value={ep.subPath}
+                        onChange={e => updateEndpoint(ep.id, { subPath: e.target.value })}
+                        style={{ width: '100%', marginTop: 0 }}
+                      />
+                    </div>
+                    {wEndpoints.length > 1 && (
+                      <button
+                        className="btn muted"
+                        style={{ width: 'auto', padding: '4px 8px', marginTop: 0, fontSize: 12, flexShrink: 0 }}
+                        onClick={() => removeEndpointRow(ep.id)}
+                        title="Remove row"
+                      >✕</button>
+                    )}
                   </div>
-                  {wizardFlowMode === 'existing' && (
-                    <FlowSearchSelect
-                      flows={flows}
-                      value={wizardExistingFlow}
-                      onChange={setWizardExistingFlow}
-                      placeholder="search or select a flow…"
-                    />
+
+                  {/* Optional flow override */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: 'var(--muted)' }}>
+                      <input
+                        type="checkbox"
+                        checked={ep.overrideFlow}
+                        onChange={e => updateEndpoint(ep.id, { overrideFlow: e.target.checked, flowName: e.target.checked ? ep.flowName : undefined })}
+                      />
+                      Override flow for this endpoint
+                    </label>
+                  </div>
+                  {ep.overrideFlow && (
+                    <div style={{ marginTop: 8 }}>
+                      <FlowSearchSelect
+                        flows={flows}
+                        value={ep.flowName ?? ''}
+                        onChange={fn => updateEndpoint(ep.id, { flowName: fn })}
+                        placeholder="search or select override flow…"
+                      />
+                    </div>
                   )}
-                  {wizardFlowMode !== 'existing' && (
-                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                      Route to an already-built flow.
+
+                  {/* Resolved path hint */}
+                  {idx === wEndpoints.length - 1 && (
+                    <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>
+                      Full path: <span style={{ fontFamily: 'monospace' }}>{fullPath(wBasePaths[0], ep.subPath)}</span>
                     </div>
                   )}
                 </div>
-              </label>
+              ))}
+
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12, marginBottom: 16 }}
+                onClick={addEndpointRow}
+              >
+                + Add endpoint
+              </button>
+
+              {wizardErr && (
+                <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>{wizardErr}</div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                {!isAddEndpointMode && (
+                  <button
+                    className="btn muted"
+                    style={{ width: 'auto', padding: '6px 16px', marginTop: 0 }}
+                    onClick={onBack}
+                  >
+                    ← Back
+                  </button>
+                )}
+                {isAddEndpointMode && <div />}
+                <button
+                  className="btn"
+                  style={{ width: 'auto', padding: '6px 20px', marginTop: 0 }}
+                  onClick={onStep2Next}
+                >
+                  Next →
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Step 3: Review */}
+          {wizardStep === 3 && (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+                  API: <span style={{ color: 'var(--text)', fontWeight: 600 }}>{wApiName}</span>
+                  {'  '}
+                  Base path: <span style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>{wBasePaths[0]}</span>{wBasePaths.length > 1 && <span style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 4 }}>+{wBasePaths.length - 1} alias{wBasePaths.length > 2 ? 'es' : ''}</span>}
+                  {'  '}
+                  Default flow: <span style={{ color: 'var(--text)' }}>{wDefaultFlow}</span>
+                  {wFlowMode === 'create' && <span style={{ color: '#fbbf24', marginLeft: 4 }}>(will be created)</span>}
+                </div>
+
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Method</th>
+                      <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Full Path</th>
+                      <th style={{ textAlign: 'left', padding: '4px 8px 8px 0' }}>Flow</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wEndpoints.map(ep => (
+                      <tr key={ep.id} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '7px 8px 7px 0' }}><MethodBadge method={ep.method} /></td>
+                        <td style={{ padding: '7px 8px 7px 0', fontFamily: 'monospace', color: 'var(--text)' }}>
+                          {fullPath(wBasePaths[0], ep.subPath)}
+                        </td>
+                        <td style={{ padding: '7px 0 7px 0', color: ep.overrideFlow && ep.flowName ? '#fbbf24' : 'var(--muted)' }}>
+                          {ep.overrideFlow && ep.flowName
+                            ? `★ ${ep.flowName}`
+                            : wDefaultFlow || '(none)'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
               {wizardErr && (
                 <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>{wizardErr}</div>
@@ -1217,10 +1603,9 @@ function WizardPanel({
                 <button
                   className="btn"
                   style={{ width: 'auto', padding: '6px 20px', marginTop: 0 }}
-                  disabled={wizardFlowMode === 'existing' && !wizardExistingFlow}
-                  onClick={onRegister}
+                  onClick={onConfirm}
                 >
-                  Register API
+                  Confirm & Save
                 </button>
               </div>
             </>

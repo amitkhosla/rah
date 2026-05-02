@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchSchema } from './api'
-import type { ApiDef, ConnStatus, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
+import type { ApiDef, EndpointDef, ConnStatus, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
 import FlowDesigner  from './components/FlowDesigner'
 import APIsSection   from './components/APIsSection'
 import AISection     from './components/AISection'
@@ -137,10 +137,32 @@ export default function App() {
     try {
       const raw = localStorage.getItem('rah_studio_v1')
       if (raw) {
-        const snap = JSON.parse(raw) as { savedFlows?: SavedFlow[]; apis?: ApiDef[]; accent?: string }
+        const snap = JSON.parse(raw) as {
+          savedFlows?: SavedFlow[]
+          apis?: unknown[]
+          accent?: string
+        }
         if (snap.savedFlows?.length) setSavedFlows(snap.savedFlows)
-        if (snap.apis?.length)       setApis(snap.apis)
-        if (snap.accent)             setAccent(snap.accent)
+        if (snap.apis?.length) {
+          // Migrate old flat format { name, path, method, flow_name } to new ApiDef
+          const migrated: ApiDef[] = snap.apis.map((a: any) => {
+            if (a.endpoints) return a as ApiDef  // already new format
+            // Old flat format — wrap as single-endpoint ApiDef
+            return {
+              id: crypto.randomUUID(),
+              name: a.name ?? 'unnamed',
+              basePath: a.path ?? '/',
+              defaultFlow: a.flow_name ?? '',
+              endpoints: [{
+                id: crypto.randomUUID(),
+                subPath: '/',
+                method: a.method ?? 'GET',
+              }],
+            } satisfies ApiDef
+          })
+          setApis(migrated)
+        }
+        if (snap.accent) setAccent(snap.accent)
       }
     } catch { /* corrupt storage — ignore */ }
   }, [])
@@ -192,7 +214,7 @@ export default function App() {
                       borderRadius: 8,
                       padding: '1px 6px',
                     }}>
-                      {apis.length}
+                      {apis.reduce((sum, a) => sum + a.endpoints.length, 0)}
                     </span>
                   )}
                 </button>
@@ -316,12 +338,23 @@ export default function App() {
             onLoadApi={(api) => {
               setApis(prev => {
                 const idx = prev.findIndex(a => a.name === api.name)
+                const newDef: ApiDef = {
+                  id: prev[idx]?.id ?? crypto.randomUUID(),
+                  name: api.name,
+                  basePath: api.path,
+                  defaultFlow: api.flow_name,
+                  endpoints: prev[idx]?.endpoints ?? [{
+                    id: crypto.randomUUID(),
+                    subPath: '/',
+                    method: api.method,
+                  } satisfies EndpointDef],
+                }
                 if (idx >= 0) {
                   const updated = [...prev]
-                  updated[idx] = api
+                  updated[idx] = newDef
                   return updated
                 }
-                return [...prev, api]
+                return [...prev, newDef]
               })
             }}
           />

@@ -67,6 +67,7 @@ type EndpointConfig struct {
 	Path          string `json:"path"`
 	Method        string `json:"method,omitempty"`      // empty = ANY
 	RateLimitName string `json:"rate_limit,omitempty"`
+	FlowName      string `json:"flow_name,omitempty"`   // overrides API-level flow when set
 }
 
 // ApiConfig maps a URL path to a specific execution plan.
@@ -80,6 +81,7 @@ type ApiConfig struct {
 	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
 	EntryPoint      int16            `json:"-"`                     // Absolute ID in GlobalTable (calculated at Bake)
 	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
+	AliasPaths      []string         `json:"alias_paths,omitempty"` // additional basepaths → same ApiID
 }
 
 type FlowUpdate struct {
@@ -97,6 +99,7 @@ type ApiUpdate struct {
 	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name
 	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
 	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
+	AliasPaths      []string         `json:"alias_paths,omitempty"` // additional basepaths → same ApiID
 	Action          string           `json:"action"`                // "upsert" or "delete"
 }
 

@@ -98,11 +98,22 @@ export interface SavedFlow {
   stepLabels?: Record<string, string>
 }
 
+// Sub-path + method entry under an API
+export interface EndpointDef {
+  id: string          // uuid (client-generated, use crypto.randomUUID())
+  subPath: string     // e.g. "/" or "/{id}" or "/search"
+  method: string      // GET | POST | PUT | PATCH | DELETE
+  flowName?: string   // if set, overrides the API's defaultFlow for this endpoint
+}
+
+// Basepath-level API with multiple endpoints
 export interface ApiDef {
-  name: string
-  path: string
-  method: string
-  flow_name: string
+  id: string              // uuid (client-generated)
+  name: string            // display name, e.g. "Users API"
+  basePath: string        // primary basepath, e.g. "/api/v1/users"  (must start with /)
+  aliasPaths?: string[]   // additional basepaths → same ApiID in gateway router
+  defaultFlow: string     // flow inherited by all endpoints that don't override
+  endpoints: EndpointDef[]
 }
 
 // ── Request bodies ────────────────────────────────────────────────
@@ -110,7 +121,14 @@ export interface ApiDef {
 export interface DeployPayload {
   sync_uuid: string
   flows: Array<{ name: string; instructions: FlowStep[]; action: 'upsert' }>
-  apis: Array<{ name: string; path: string; flow_name: string; action: 'upsert' }>
+  apis: Array<{
+    name: string
+    path: string
+    flow_name: string
+    method?: string
+    endpoint_configs?: Array<{ path: string; method: string; flow_name?: string }>
+    action: 'upsert'
+  }>
 }
 
 export interface DeployRequest {

@@ -48,7 +48,12 @@ export default function Deploy({ savedFlows, apis }: Props) {
   useEffect(() => { void load() }, [])
 
   // Derive the set of flows referenced by the current API list
-  const usedFlowNames  = [...new Set(apis.map(a => a.flow_name).filter(Boolean))]
+  const usedFlowNames = [...new Set(
+    apis.flatMap(a => [
+      a.defaultFlow,
+      ...a.endpoints.map(ep => ep.flowName).filter((f): f is string => !!f)
+    ]).filter(Boolean)
+  )]
   const flowsMissing   = usedFlowNames.filter(n => !savedFlows.find(f => f.name === n)?.steps.length)
 
   function parseApiVersions(): Record<string, string> {
@@ -60,6 +65,10 @@ export default function Deploy({ savedFlows, apis }: Props) {
   async function handleReleaseDeploy() {
     if (apis.length === 0) {
       setStatusErr(true); setStatus('No APIs defined — add endpoints in the APIs tab.'); return
+    }
+    const apisWithoutFlow = apis.filter(a => !a.defaultFlow)
+    if (apisWithoutFlow.length > 0) {
+      setStatusErr(true); setStatus(`API(s) missing default flow: ${apisWithoutFlow.map(a => a.name).join(', ')}`); return
     }
     if (usedFlowNames.length === 0) {
       setStatusErr(true); setStatus('APIs have no flow assignments.'); return
@@ -83,7 +92,16 @@ export default function Deploy({ savedFlows, apis }: Props) {
         return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
       })
       const apisPayload = apis.map(a => ({
-        name: a.name, path: a.path, flow_name: a.flow_name, action: 'upsert' as const,
+        name:      a.name,
+        path:      a.basePath,
+        flow_name: a.defaultFlow,
+        ...(a.aliasPaths?.length ? { alias_paths: a.aliasPaths } : {}),
+        endpoint_configs: a.endpoints.map(ep => ({
+          path:   ep.subPath,
+          method: ep.method,
+          ...(ep.flowName ? { flow_name: ep.flowName } : {}),
+        })),
+        action: 'upsert' as const,
       }))
 
       const res = await deploy({
@@ -163,21 +181,25 @@ export default function Deploy({ savedFlows, apis }: Props) {
           />
 
           {/* payload summary */}
-          {usedFlowNames.length > 0 && (
+          {apis.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
                 Payload summary
               </div>
-              {usedFlowNames.map(name => {
-                const count   = apis.filter(a => a.flow_name === name).length
-                const hasSteps = !!savedFlows.find(f => f.name === name)?.steps.length
+              {apis.map(api => {
+                const hasDefault = !!savedFlows.find(f => f.name === api.defaultFlow)?.steps.length
                 return (
-                  <div key={name} className="hint mt4" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontFamily: 'monospace', color: hasSteps ? 'var(--text)' : '#f97316' }}>
-                      {name}
+                  <div key={api.id} className="hint mt4" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontFamily: 'monospace', color: hasDefault ? 'var(--text)' : '#f97316' }}>
+                      {api.basePath}
+                      {api.aliasPaths?.length ? (
+                        <span style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 6 }}>
+                          +{api.aliasPaths.length} alias{api.aliasPaths.length > 1 ? 'es' : ''}
+                        </span>
+                      ) : null}
                     </span>
                     <span style={{ color: 'var(--muted)' }}>
-                      {count} API{count !== 1 ? 's' : ''}{!hasSteps ? ' ⚠ no steps' : ''}
+                      {api.endpoints.length} endpoint{api.endpoints.length !== 1 ? 's' : ''}{!hasDefault ? ' ⚠ no steps' : ''}
                     </span>
                   </div>
                 )
@@ -192,7 +214,7 @@ export default function Deploy({ savedFlows, apis }: Props) {
         <div className="panel-header">Release + Deploy</div>
         <div className="panel-body">
           {/* Workflow hint when no APIs configured */}
-          {usedFlowNames.length === 0 && (
+          {apis.length === 0 && (
             <div style={{
               marginBottom: 16,
               padding: '12px 14px',
@@ -205,7 +227,7 @@ export default function Deploy({ savedFlows, apis }: Props) {
               </div>
               <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--muted)', lineHeight: 2 }}>
                 <li>Design a flow in the <strong style={{ color: 'var(--text)' }}>Flow Designer</strong> tab</li>
-                <li>Register API endpoints in the <strong style={{ color: 'var(--text)' }}>APIs</strong> tab</li>
+                <li>Register APIs with basepaths and endpoints in the <strong style={{ color: 'var(--text)' }}>APIs</strong> tab</li>
                 <li>Click <strong style={{ color: 'var(--text)' }}>Create Release + Deploy</strong> below</li>
               </ol>
             </div>

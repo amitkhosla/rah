@@ -30,6 +30,7 @@ type Endpoint struct {
 type ApiDefinition struct {
 	Id          uint32
 	BaseRawPath string
+	AliasPaths  []string // additional basepaths that also route to this API
 
 	MethodRoots [5]uint32
 

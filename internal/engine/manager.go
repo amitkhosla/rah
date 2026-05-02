@@ -358,6 +358,20 @@ Behavior:
 - Returns endpoint execution plan if matched.
 */
 
+// pathHasStrPrefix reports whether the []byte path starts with the string prefix.
+// Zero allocation: compares bytes directly without converting string → []byte.
+func pathHasStrPrefix(path []byte, prefix string) bool {
+	if len(path) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		if path[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (fm *FlowManager) resolveSubPath(
 	ctx *rctx.Context,
 	def *ApiDefinition,
@@ -372,7 +386,20 @@ func (fm *FlowManager) resolveSubPath(
 
 	currIdx := uint32(0)
 
+	// Determine which registered basepath was matched for this request.
+	// Primary path is checked first (fast path, covers 99% of traffic).
+	// Alias walk only runs when an alias basepath was matched by the router.
+	// Zero allocation: direct byte-by-byte prefix check avoids string conversion.
 	baseLen := len(def.BaseRawPath)
+	if !pathHasStrPrefix(ctx.Path, def.BaseRawPath) {
+		baseLen = 0
+		for _, alias := range def.AliasPaths {
+			if pathHasStrPrefix(ctx.Path, alias) {
+				baseLen = len(alias)
+				break
+			}
+		}
+	}
 	relPath := ctx.Path[baseLen:]
 
 	strPos := 0
