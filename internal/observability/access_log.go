@@ -149,6 +149,7 @@ func (l *AccessLogger) Snapshot(
 	status int,
 	totalNs, gatewayNs, upstreamNs, ttfbNs, reqBytes, resBytes int64,
 	req *http.Request,
+	runtimeExtra ...KV,
 ) {
 	cfg := l.cfg.Load()
 
@@ -192,6 +193,9 @@ func (l *AccessLogger) Snapshot(
 			}
 		}
 	}
+
+	// Append runtime extra fields emitted by log_field steps during flow execution.
+	entry.Extra = append(entry.Extra, runtimeExtra...)
 
 	// Derive insights from thresholds.
 	ins := cfg.insights

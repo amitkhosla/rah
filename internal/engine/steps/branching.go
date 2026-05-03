@@ -131,6 +131,42 @@ func BindBody(jsonPath string, slot int) engine.Instruction {
 	}
 }
 
+// LogFieldStep records a named slot value for inclusion in the request access log.
+// Name is baked at compile time; the value is read from ByteSlots[srcSlot] post-response.
+// Zero-allocation: ExtraLogFields is an inline array in Context.
+func LogFieldStep(name string, srcSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "LOG_FIELD",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if ctx.ExtraLogCount < uint8(len(ctx.ExtraLogFields)) {
+				ctx.ExtraLogFields[ctx.ExtraLogCount] = rctx.LogFieldEntry{Name: name, Slot: srcSlot}
+				ctx.ExtraLogCount++
+			}
+			return state.PC + 1
+		},
+	}
+}
+
+// SetRequestHeader injects a header into the upstream request before proxying.
+// name is baked at compile time; the value is read from ByteSlots[valueSlot] at runtime.
+// Zero-allocation: MutationLog is pre-allocated in the pool.
+func SetRequestHeader(name string, valueSlot int) engine.Instruction {
+	keyBytes := []byte(name)
+	return engine.Instruction{
+		Name: "SET_REQUEST_HEADER",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if ctx.MutationCount < len(ctx.MutationLog) {
+				ctx.MutationLog[ctx.MutationCount] = rctx.HeaderMutation{
+					Key:   keyBytes,
+					Value: ctx.ByteSlots[valueSlot],
+				}
+				ctx.MutationCount++
+			}
+			return state.PC + 1
+		},
+	}
+}
+
 // scanQuery finds the raw value for key in a query string like "a=1&b=2&c=3".
 // Returns a slice directly into the raw query bytes — zero allocation.
 // No URL-decoding is applied; values are raw as received from the wire.

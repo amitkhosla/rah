@@ -556,6 +556,20 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindClientIP(destSlot))
 
+	case "set_request_header":
+		// Injects a header into the upstream request before proxying.
+		// key / key_identifier: header name (static, baked at compile time)
+		// source: slot name whose value is injected as the header value
+		headerName := step.Key
+		if headerName == "" {
+			headerName = step.KeyIdentifier
+		}
+		valueSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("set_request_header: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetRequestHeader(headerName, valueSlot))
+
 	case "ip_restriction":
 		// Enforces allow/deny CIDR policy for the resolved client IP.
 		// Optional key_identifier can point to a slot containing a pre-resolved IP
@@ -796,6 +810,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.ToIntStep(src, result))
 
+	case "byte_length":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		dest, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ByteLengthStep(src, dest))
+
 	case "add":
 		slotA, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -896,6 +921,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable,
 			steps.BindCorrelationID(step.Key, step.GenerateIfMissing, c.fm.TxIDGen, slot))
+
+	case "log_field":
+		// key / key_identifier: field name in access log Extra
+		// source: ByteSlot to read value from
+		fieldName := step.Key
+		if fieldName == "" {
+			fieldName = step.KeyIdentifier
+		}
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("log_field: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LogFieldStep(fieldName, srcSlot))
 
 	case "load_secret":
 		if c.SecretsMgr == nil {

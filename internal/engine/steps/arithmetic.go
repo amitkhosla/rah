@@ -131,6 +131,17 @@ func DivStep(slotA, slotB, result int) engine.Instruction {
 	}
 }
 
+// ByteLengthStep writes the byte-length of ByteSlots[srcSlot] into IntSlots[destSlot].
+func ByteLengthStep(srcSlot, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "BYTE_LENGTH",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.IntSlots[destSlot] = int64(len(ctx.ByteSlots[srcSlot]))
+			return state.PC + 1
+		},
+	}
+}
+
 // SetResponseHeaderFromSlot sets a response header named `name` from ByteSlots[src].
 func SetResponseHeaderFromSlot(name string, src int) engine.Instruction {
 	nameBytes := []byte(name)

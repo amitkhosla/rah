@@ -29,6 +29,13 @@ type HeaderMutation struct {
 	Op    uint8 // 0: Set, 1: Remove
 }
 
+// LogFieldEntry records a named slot value to be written into the access log Extra slice.
+// Name is a static string baked at compile time; Slot is a ByteSlot index read at request time.
+type LogFieldEntry struct {
+	Name string
+	Slot int
+}
+
 // RequestTiming holds per-request timing counters and byte metrics.
 // It is embedded by value in Context so all fields are contiguous in memory
 // (64 bytes = exactly one cache line) with zero pointer indirection.
@@ -81,6 +88,11 @@ type Context struct {
 	// Proxy State
 	MutationLog   []HeaderMutation
 	MutationCount int
+
+	// Access log extra fields — populated by log_field steps during flow execution.
+	// Read post-response to append named slot values to the access log.
+	ExtraLogFields [8]LogFieldEntry
+	ExtraLogCount  uint8
 
 	// Request Body & Buffering
 	MaxBodySize   int64
@@ -331,6 +343,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ResHeaderCount = 0
 	ctx.ApiId = 0
 	ctx.MutationCount = 0
+	ctx.ExtraLogCount = 0
 	ctx.Match.Plan = nil
 	ctx.Match.ParamCount = 0
 

@@ -68,9 +68,12 @@ const VISUAL_GROUPS: VisualGroup[] = [
     label: 'SECURITY',
     icon: '🔒',
     recipes: [
-      { title: 'Validate Token',  wraps: 'token_validation', description: 'Validate JWT or API key' },
-      { title: 'Check Rate Limit',wraps: 'check_rate_limit', description: 'Enforce request rate limits' },
-      { title: 'Load Credential', wraps: 'load_credential',  description: 'Fetch a stored credential' },
+      { title: 'Validate Token',   wraps: 'token_validation',   description: 'Validate JWT or API key' },
+      { title: 'Check Rate Limit', wraps: 'check_rate_limit',  description: 'Enforce request rate limits' },
+      { title: 'Load Credential',  wraps: 'load_identifier',   description: 'Fetch a stored credential' },
+      { title: 'IP Restriction',   wraps: 'ip_restriction',    description: 'Allow or deny requests by IP CIDR range' },
+      { title: 'Assign Quota Group',wraps: 'assign_quota_group',description: 'Map tenant tier to a quota group for rate limiting' },
+      { title: 'Load Secret',      wraps: 'load_secret',       description: 'Fetch a secret from GSM, Vault, or env' },
     ],
   },
   {
@@ -81,15 +84,59 @@ const VISUAL_GROUPS: VisualGroup[] = [
       { title: 'Call Another Flow', wraps: 'call',      description: 'Execute a sub-flow' },
       { title: 'HTTP Request',      wraps: 'http_call', description: 'Call an external HTTP endpoint' },
       { title: 'Return Response',   wraps: 'return',    description: 'Return a value and exit flow' },
+      { title: 'Switch',            wraps: 'switch',    description: 'Branch to different flows based on a value' },
+      { title: 'Fail',              wraps: 'fail',      description: 'Return an error response and stop the flow' },
     ],
   },
   {
     label: 'DATA',
     icon: '📊',
     recipes: [
-      { title: 'Extract Field',  wraps: 'extract',           description: 'Extract a field from request/response' },
-      { title: 'Set Response',   wraps: 'set_response_body', description: 'Set the response body' },
-      { title: 'Lookup Tenant',  wraps: 'registry_lookup',   description: 'Resolve tenant from request header' },
+      { title: 'Extract Field',   wraps: 'json_extract_emit', description: 'Extract a field from request/response' },
+      { title: 'Lookup Tenant',   wraps: 'registry_lookup',  description: 'Resolve tenant from request header' },
+      { title: 'Load Service URL',wraps: 'load_service_url', description: 'Load upstream URL for the current tenant' },
+      { title: 'Load Identifier', wraps: 'load_identifier',  description: 'Load a stored credential or identifier' },
+    ],
+  },
+  {
+    label: 'REQUEST',
+    icon: '📥',
+    recipes: [
+      { title: 'Read Header',         wraps: 'bind_header',        description: 'Extract an HTTP request header into a slot' },
+      { title: 'Read Query Param',    wraps: 'bind_query',         description: 'Extract a URL query parameter into a slot' },
+      { title: 'Read Path Param',     wraps: 'bind_path',          description: 'Extract a path parameter like {id} into a slot' },
+      { title: 'Client IP',           wraps: 'bind_client_ip',     description: 'Extract the real client IP address' },
+      { title: 'Set Upstream Header', wraps: 'set_request_header', description: 'Inject a header into the upstream request' },
+    ],
+  },
+  {
+    label: 'CACHE',
+    icon: '🗄️',
+    recipes: [
+      { title: 'Cache Read',         wraps: 'cache_get',         description: 'Read a value from the tenant cache' },
+      { title: 'Cache Write',        wraps: 'cache_put',         description: 'Write a value to the tenant cache with TTL' },
+      { title: 'Global Cache Read',  wraps: 'cache_get_global',  description: 'Read from the shared global cache' },
+      { title: 'Global Cache Write', wraps: 'cache_put_global',  description: 'Write to the shared global cache' },
+      { title: 'Extract JSON',       wraps: 'json_extract_emit', description: 'Extract fields from a JSON response body' },
+    ],
+  },
+  {
+    label: 'RESPONSE',
+    icon: '📤',
+    recipes: [
+      { title: 'Set Body',   wraps: 'set_response_body',   description: 'Set the HTTP response body' },
+      { title: 'Set Header', wraps: 'set_response_header', description: 'Set a response header' },
+      { title: 'Set Status', wraps: 'set_response_status', description: 'Set the HTTP response status code' },
+    ],
+  },
+  {
+    label: 'OBSERVABILITY',
+    icon: '📊',
+    recipes: [
+      { title: 'Transaction ID',   wraps: 'store_internal_tx_id', description: 'Store gateway transaction ID into a slot' },
+      { title: 'Correlation ID',   wraps: 'bind_correlation_id',  description: 'Read or generate a correlation ID header' },
+      { title: 'Emit Event',       wraps: 'emit_event',           description: 'Emit a structured event to the ingest pipeline' },
+      { title: 'Log Custom Field', wraps: 'log_field',            description: 'Write a slot value into the request access log' },
     ],
   },
 ]

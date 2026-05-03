@@ -27,6 +27,16 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"go.opentelemetry.io/otel"
+	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	otlptracegrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"google.golang.org/grpc"
+	insecurecreds "google.golang.org/grpc/credentials/insecure"
 )
 
 // domainScopedKV adapts DataStoreManager to the RegistryStoreBackend interface,
@@ -200,6 +210,68 @@ func main() {
 	alwaysTrace5xx := obsCfg.Traces.AlwaysTrace5xx
 	accessLog := observability.NewAccessLogger(8192)
 	registry := control.NewNameRegistry()
+
+	// ── S8: OpenTelemetry SDK init ──────────────────────────────────────────────
+	// Enabled via obs.export.otel.enabled in gateway config. No-op when disabled.
+	if obsCfg.Export.OTEL.Enabled {
+		otelCfg := obsCfg.Export.OTEL
+		svcName := otelCfg.ServiceName
+		if svcName == "" {
+			svcName = "rah-gateway"
+		}
+		res, resErr := resource.Merge(
+			resource.Default(),
+			resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(svcName)),
+		)
+		if resErr != nil {
+			log.Printf("[otel] resource merge warning: %v", resErr)
+			res = resource.Default()
+		}
+
+		var grpcDialOpts []grpc.DialOption
+		if otelCfg.Insecure {
+			grpcDialOpts = append(grpcDialOpts, grpc.WithTransportCredentials(insecurecreds.NewCredentials()))
+		}
+
+		traceExp, traceErr := otlptracegrpc.New(gatewayCtx,
+			otlptracegrpc.WithEndpoint(otelCfg.Endpoint),
+			otlptracegrpc.WithDialOption(grpcDialOpts...),
+		)
+		if traceErr != nil {
+			log.Fatalf("[otel] trace exporter init failed: %v", traceErr)
+		}
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(traceExp),
+			sdktrace.WithResource(res),
+		)
+		otel.SetTracerProvider(tp)
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tp.Shutdown(shutCtx)
+		}()
+
+		metricExp, metricErr := otlpmetricgrpc.New(gatewayCtx,
+			otlpmetricgrpc.WithEndpoint(otelCfg.Endpoint),
+			otlpmetricgrpc.WithDialOption(grpcDialOpts...),
+		)
+		if metricErr != nil {
+			log.Fatalf("[otel] metric exporter init failed: %v", metricErr)
+		}
+		mp := sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
+			sdkmetric.WithResource(res),
+		)
+		otel.SetMeterProvider(mp)
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = mp.Shutdown(shutCtx)
+		}()
+
+		log.Printf("[otel] SDK initialized: endpoint=%s insecure=%v service=%s",
+			otelCfg.Endpoint, otelCfg.Insecure, svcName)
+	}
 
 	// 2b. Ingestion pipeline — started before the compiler so that
 	// IngestPipeline can be wired into baked instruction closures.
@@ -611,6 +683,21 @@ func main() {
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
 			apiName := registry.GetNameByID(ctx.ApiId)
+			// Build runtime extra KV pairs from log_field steps — allocated post-response,
+			// outside the hot path, so the small allocation here is acceptable.
+			var runtimeLogFields []observability.KV
+			if ctx.ExtraLogCount > 0 {
+				runtimeLogFields = make([]observability.KV, 0, ctx.ExtraLogCount)
+				for i := 0; i < int(ctx.ExtraLogCount); i++ {
+					e := ctx.ExtraLogFields[i]
+					if e.Slot < len(ctx.ByteSlots) && len(ctx.ByteSlots[e.Slot]) > 0 {
+						runtimeLogFields = append(runtimeLogFields, observability.KV{
+							K: e.Name,
+							V: string(ctx.ByteSlots[e.Slot]),
+						})
+					}
+				}
+			}
 			accessLogSnapshotStarted := time.Now()
 			accessLog.Snapshot(
 				apiName,
@@ -622,6 +709,7 @@ func main() {
 				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
 				req.ContentLength, ctx.Timing.ClientBytesSent,
 				req,
+				runtimeLogFields...,
 			)
 			accessLogSnapshotDuration := time.Since(accessLogSnapshotStarted)
 

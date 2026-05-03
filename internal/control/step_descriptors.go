@@ -164,6 +164,16 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		{
+			Type: "load_secret", Title: "Load Secret", Category: "auth", Capability: "auth",
+			Description: "Fetch a secret from GSM, Vault, AWS SM, or env into a slot.",
+			Defaults: map[string]string{"ref": "", "slot": "0"},
+			Fields: []StepField{
+				sf("ref", "Secret Reference", "Secret URI e.g. gsm://project/secrets/name or env:MY_VAR", "gsm://my-project/secrets/api-key"),
+				sf("slot", "Destination Slot", "ByteSlot index to write secret value into", "0"),
+			},
+		},
+
 		// ── Rate Limiting ─────────────────────────────────────────────────────────
 		{
 			Type: "assign_quota_group", Title: "Assign Quota Group", Category: "rate-limit", Capability: "quota",
@@ -185,11 +195,47 @@ func AllStepDescriptors() []StepDescriptor {
 
 		// ── Network ───────────────────────────────────────────────────────────────
 		{
+			Type: "bind_header", Title: "Read Header", Category: "request", Capability: "request",
+			Description: "Extract an HTTP request header value into a slot.",
+			Defaults: map[string]string{"key": "", "slot": "0"},
+			Fields: []StepField{
+				sf("key", "Header Name", "Name of the HTTP header e.g. Authorization", "Authorization"),
+				sf("slot", "Destination Slot", "ByteSlot index to write value into", "0"),
+			},
+		},
+		{
+			Type: "bind_query", Title: "Read Query Param", Category: "request", Capability: "request",
+			Description: "Extract a URL query parameter value into a slot.",
+			Defaults: map[string]string{"key": "", "slot": "0"},
+			Fields: []StepField{
+				sf("key", "Param Name", "Query parameter name e.g. api_key", "api_key"),
+				sf("slot", "Destination Slot", "ByteSlot index to write value into", "0"),
+			},
+		},
+		{
+			Type: "bind_path", Title: "Read Path Param", Category: "request", Capability: "request",
+			Description: "Extract a path parameter (e.g. {id}) into a slot by index.",
+			Defaults: map[string]string{"index": "0", "slot": "0"},
+			Fields: []StepField{
+				sf("index", "Param Index", "0-based index of the path parameter", "0"),
+				sf("slot", "Destination Slot", "ByteSlot index to write value into", "0"),
+			},
+		},
+		{
 			Type: "bind_client_ip", Title: "Bind Client IP", Category: "network", Capability: "identity",
 			Description: "Extract the real client IP address and store it in a slot. Resolution order: X-Forwarded-For (first IP) → X-Real-IP → TCP RemoteAddr.",
 			Defaults: map[string]string{"key_identifier": "client_ip"},
 			Fields: []StepField{
 				sf("key_identifier", "Store as", "Slot name to store the client IP string in (e.g. client_ip)", "client_ip"),
+			},
+		},
+		{
+			Type: "set_request_header", Title: "Set Upstream Header", Category: "request", Capability: "request",
+			Description: "Inject a header into the upstream request before proxying. The header name is static; the value is read from a slot at runtime.",
+			Defaults: map[string]string{"key": "Cookie", "source": "var.cookie_val"},
+			Fields: []StepField{
+				sf("key", "Header Name", "Static header name to inject into the upstream request (e.g. Cookie, X-Auth-Token)", "Cookie"),
+				sf("source", "Value slot", "Slot whose value is used as the header value", "var.cookie_val"),
 			},
 		},
 		{
@@ -249,6 +295,15 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("key", "Header name", "Incoming request header to read the correlation ID from", "X-Correlation-ID"),
 				sf("as", "Store as", "Slot name to save the correlation ID into", "corr_id"),
 				sf("generate_if_missing", "Generate if missing", "Set to true to generate a new ID when the header is absent (true/false)", "true"),
+			},
+		},
+		{
+			Type: "log_field", Title: "Log Custom Field", Category: "observability", Capability: "logging",
+			Description: "Write a slot value as a named field in the request access log Extra section.",
+			Defaults: map[string]string{"key": "client_id", "source": "var.client_id"},
+			Fields: []StepField{
+				sf("key", "Field name", "Name of the field as it appears in the access log Extra section (e.g. client_id, tenant_alias)", "client_id"),
+				sf("source", "Source slot", "Slot whose value is written to the access log", "var.client_id"),
 			},
 		},
 
@@ -367,6 +422,15 @@ func AllStepDescriptors() []StepDescriptor {
 			Fields: []StepField{
 				sf("source", "Source slot", "Slot containing the string to parse", "var.str_val"),
 				sf("as", "Store as", "Slot to save the integer into", "int_val"),
+			},
+		},
+		{
+			Type: "byte_length", Title: "String Length", Category: "string", Capability: "type-convert",
+			Description: "Write the byte-length of a slot value into an integer slot.",
+			Defaults: map[string]string{"source": "var.str_val", "as": "int_len"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot whose byte-length to measure", "var.str_val"),
+				sf("as", "Integer dest slot", "Int slot to write the length into", "int_len"),
 			},
 		},
 
