@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"unsafe"
+
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"rah/internal/registry"
@@ -79,6 +81,29 @@ func LoadIdentifier(keyID uint16, destSlot int) engine.Instruction {
 		Name: "LOAD_IDENTIFIER",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			if val, ok := registry.GetIDByKeyID(ctx.TenantID, keyID); ok {
+				ctx.ByteSlots[destSlot] = val
+			}
+			return s.PC + 1
+		},
+	}
+}
+
+// LoadServiceURLVar loads a service URL using a runtime key name from keySlot.
+// The key name (e.g. "payments_url") must already be in ctx.ByteSlots[keySlot].
+// Hot-path cost: ~50–100 ns (radix walk on immutable snapshot). Zero allocations.
+// Use only when the key is not known at compile time. Prefer LoadServiceURL (~2–5 ns)
+// when the key is static.
+func LoadServiceURLVar(keySlot int, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "LOAD_SERVICE_URL_VAR",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if keySlot >= len(ctx.ByteSlots) || len(ctx.ByteSlots[keySlot]) == 0 {
+				return s.PC + 1
+			}
+			// Zero-copy string view — no heap allocation.
+			keyName := *(*string)(unsafe.Pointer(&ctx.ByteSlots[keySlot]))
+			reg := registry.State.Active.Load()
+			if val, ok := registry.GetURLByKeyName(reg, ctx.TenantID, keyName); ok {
 				ctx.ByteSlots[destSlot] = val
 			}
 			return s.PC + 1

@@ -18,7 +18,7 @@ export interface LineageMap {
 }
 
 const REGISTRY_ACTIONS = new Set([
-  'load_service_url', 'load_identifier', 'set_meta', 'registry_lookup',
+  'load_service_url', 'load_service_url_var', 'load_identifier', 'set_meta', 'registry_lookup',
   'get_service_url',
 ])
 const CACHE_ACTIONS = new Set([
@@ -54,9 +54,9 @@ export function buildLineage(steps: FlowStep[]): LineageMap {
     const step = steps[i]
 
     // Record what this step produces (via 'as' field)
-    const asSlot = step['as']
+    const asSlot = step['as'] as string | undefined
     if (asSlot && asSlot.startsWith('var.')) {
-      const registryKey = step['key_identifier'] || step['key'] || undefined
+      const registryKey = (step['key_identifier'] as string | undefined) || (step['key'] as string | undefined) || undefined
       producers.set(asSlot, {
         stepIndex: i,
         action: step.action,

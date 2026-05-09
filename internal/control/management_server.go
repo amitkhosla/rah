@@ -166,13 +166,17 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	}
 	s.mu.RUnlock()
 
-	// 1. Clone Current State (Library & Definitions)
+	// 1. Clone Current State (Library & Definitions & RouteConstants)
 	newLibrary := make(map[string][]engine.Instruction)
 	for k, v := range oldState.FlowLibrary {
 		newLibrary[k] = v
 	}
 	newDefs := make([]*engine.ApiDefinition, len(oldState.Definitions))
 	copy(newDefs, oldState.Definitions)
+	newRouteConstants := make(map[uint64][]engine.ConstantSlot)
+	for k, v := range oldState.RouteConstants {
+		newRouteConstants[k] = v
+	}
 
 	// 2. Update Shared Flows (The Instruction Library)
 	var deletedFlows []string
@@ -202,6 +206,9 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 		if a.Action == "delete" {
 			if int(id) < len(newDefs) && newDefs[id] != nil {
 				newDefs[id] = nil
+				for ep := uint64(0); ep < 256; ep++ {
+					delete(newRouteConstants, uint64(id)<<8|ep)
+				}
 			}
 			delete(newApiConfigs, a.Name)
 		} else {
@@ -216,6 +223,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 				log.Printf("[Draft] Error compiling API %s: %v", a.Name, err)
 				continue
 			}
+			defaultSlotSnap, defaultNextSlot := s.Compiler.SnapshotSlots()
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
@@ -241,7 +249,18 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 				asyncMode = engine.AsyncForced
 			}
 
+			// Clear stale constant slots for this API before registering new ones.
+			for ep := uint64(0); ep < 256; ep++ {
+				delete(newRouteConstants, uint64(id)<<8|ep)
+			}
+
 			if len(a.EndpointConfigs) == 0 {
+				epID := uint8(len(def.Endpoints))
+				if len(a.Constants) > 0 {
+					if constSlots, cerr := s.Compiler.AllocConstantSlots(a.Constants); cerr == nil && len(constSlots) > 0 {
+						newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+					}
+				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 			} else {
 				for _, ec := range a.EndpointConfigs {
@@ -260,6 +279,14 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 						epPath = "/"
 					}
 					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
+					epID := uint8(len(def.Endpoints))
+					s.Compiler.RestoreSlots(defaultSlotSnap, defaultNextSlot)
+					mergedConsts := mergeConstants(a.Constants, ec.Constants)
+					if len(mergedConsts) > 0 {
+						if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
+							newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+						}
+					}
 					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId, asyncMode)
 				}
 			}
@@ -294,9 +321,10 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 
 	// 6. Store in DraftState — does NOT touch FlowManager.State.
 	s.FlowManager.DraftState.Store(&engine.EngineState{
-		Router:      draftRouter,
-		Definitions: newDefs,
-		FlowLibrary: newLibrary,
+		Router:         draftRouter,
+		Definitions:    newDefs,
+		FlowLibrary:    newLibrary,
+		RouteConstants: newRouteConstants,
 	})
 
 	log.Printf("[Draft] Sync Complete. Stored in DraftState (not live).")
@@ -347,6 +375,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	}
 	newDefs := make([]*engine.ApiDefinition, len(oldState.Definitions))
 	copy(newDefs, oldState.Definitions)
+	newRouteConstants := make(map[uint64][]engine.ConstantSlot)
+	for k, v := range oldState.RouteConstants {
+		newRouteConstants[k] = v
+	}
 
 	// Track changes for persistence after the atomic swap.
 	type persistOp struct {
@@ -391,6 +423,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			if int(id) < len(newDefs) && newDefs[id] != nil {
 				newDefs[id] = nil
 				routerChanged = true
+				// Clear all constant slots for this API (up to 256 endpoints).
+				for ep := uint64(0); ep < 256; ep++ {
+					delete(newRouteConstants, uint64(id)<<8|ep)
+				}
 			}
 			delete(newApiConfigs, a.Name)
 			pendingPersist = append(pendingPersist, persistOp{kind: "api_delete", name: a.Name})
@@ -406,6 +442,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				log.Printf("[Management] Error compiling API %s: %v", a.Name, err)
 				continue
 			}
+
+			// Snapshot the default flow's slot assignments so we can restore them
+			// when allocating constants for endpoints that share the default flow.
+			defaultSlotSnap, defaultNextSlot := s.Compiler.SnapshotSlots()
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
@@ -425,8 +465,20 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				asyncMode = engine.AsyncForced
 			}
 
+			// Clear stale constant slots for this API before registering new ones.
+			for ep := uint64(0); ep < 256; ep++ {
+				delete(newRouteConstants, uint64(id)<<8|ep)
+			}
+
 			if len(a.EndpointConfigs) == 0 {
 				// No sub-route config — register root for all methods.
+				epID := uint8(len(def.Endpoints)) // = 0 before BakeSubRouter
+				mergedConsts := a.Constants
+				if len(mergedConsts) > 0 {
+					if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
+						newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+					}
+				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 			} else {
 				for _, ec := range a.EndpointConfigs {
@@ -446,17 +498,35 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					}
 					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
 
-					// Resolve endpoint-level flow override
+					// Capture endpointID before BakeSubRouter appends the new endpoint.
+					epID := uint8(len(def.Endpoints))
+
+					// Resolve endpoint-level flow override.
 					epInstructions := instructions
+					overrideCompiled := false
 					if ec.FlowName != "" && ec.FlowName != a.FlowName {
 						if epFlowCfg, ok := newFlowConfigs[ec.FlowName]; ok {
-							if compiled, err := s.Compiler.CompileExecutable(epFlowCfg, newFlowConfigs); err == nil {
+							if compiled, cerr := s.Compiler.CompileExecutable(epFlowCfg, newFlowConfigs); cerr == nil {
 								epInstructions = compiled
+								overrideCompiled = true
 							} else {
-								log.Printf("[Management] Error compiling endpoint flow %s for API %s: %v", ec.FlowName, a.Name, err)
+								log.Printf("[Management] Error compiling endpoint flow %s for API %s: %v", ec.FlowName, a.Name, cerr)
 							}
 						} else {
 							log.Printf("[Management] Warning: endpoint flow %s not found for API %s, using API default", ec.FlowName, a.Name)
+						}
+					}
+
+					// Constant slot allocation must use the slot map from this endpoint's flow.
+					// If no override was compiled, restore the default flow's slot state so
+					// constant keys resolve to the correct indices for the default flow.
+					if !overrideCompiled {
+						s.Compiler.RestoreSlots(defaultSlotSnap, defaultNextSlot)
+					}
+					mergedConsts := mergeConstants(a.Constants, ec.Constants)
+					if len(mergedConsts) > 0 {
+						if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
+							newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
 						}
 					}
 
@@ -519,9 +589,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	// 6. Atomic Swap — live traffic sees new state immediately after this line.
 	s.FlowManager.SetState(&engine.EngineState{
-		Router:      finalRouter,
-		Definitions: newDefs,
-		FlowLibrary: newLibrary,
+		Router:         finalRouter,
+		Definitions:    newDefs,
+		FlowLibrary:    newLibrary,
+		RouteConstants: newRouteConstants,
 	})
 
 	s.mu.Lock()
@@ -567,6 +638,22 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 // StepsMetaHandler handles GET /meta/steps.
 // Returns the full step catalog — the single source of truth for every action
+// mergeConstants returns a new map with apiConsts as the base, overridden by epConsts.
+// Returns nil when both inputs are empty.
+func mergeConstants(apiConsts, epConsts map[string]string) map[string]string {
+	if len(apiConsts) == 0 && len(epConsts) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(apiConsts)+len(epConsts))
+	for k, v := range apiConsts {
+		merged[k] = v
+	}
+	for k, v := range epConsts {
+		merged[k] = v
+	}
+	return merged
+}
+
 // the compiler supports. Studio fetches this at load time to build its palette
 // dynamically; no UI code changes are needed when new steps are added.
 func (s *ManagementServer) StepsMetaHandler(w http.ResponseWriter, r *http.Request) {

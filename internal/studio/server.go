@@ -206,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/openapi/import", s.importOpenAPIHandler)
 	mux.HandleFunc("/api/getAllApis", s.getAllApisProxy)
 	mux.HandleFunc("/api/sync", s.syncProxy)
+	mux.HandleFunc("/api/flows/", s.flowsMgmtProxy)
 	mux.HandleFunc("/api/tenants", s.tenantsMgmtProxy)
 	mux.HandleFunc("/api/tenants/", s.tenantsMgmtProxy)
 	mux.HandleFunc("/api/rate-limit-configs", s.rateLimitConfigsMgmtProxy)
@@ -238,6 +239,11 @@ func (s *Server) Handler() http.Handler {
 	} else {
 		mux.HandleFunc("/api/observability/", s.obsGatewayProxy)
 	}
+	// Observability config (GET/POST) — always proxy to /debug/observability on the management server.
+	// This endpoint is independent of the obs store presence, so it lives outside the if/else above.
+	mux.HandleFunc("/api/observability/config", func(w http.ResponseWriter, r *http.Request) {
+		s.proxyPassThrough(w, r, "/debug/observability")
+	})
 
 	// Serve the React SPA from the embedded ui/dist directory.
 	// Any path that doesn't match a real file falls back to index.html
@@ -355,10 +361,44 @@ func defaultBlocks() []PaletteBlock {
 		// ── Auth ─────────────────────────────────────────────────────────────────────
 		{
 			Type: "token_validation", Title: "Token Validation", Category: "auth", Capability: "jwt-validation",
-			Description: "Validate a JWT; maps jwt.* input keys to validation parameters",
-			Defaults:    map[string]string{"key_identifier": "default_key"},
+			Description: "Validate a JWT. Verifies signature (JWKS), standard claims, required scopes, and arbitrary custom claims. Every parameter supports a static value or a runtime variable loaded by any earlier step.",
+			Defaults:    map[string]string{"key_identifier": "header.Authorization"},
 			Fields: []FieldDef{
-				fld("key_identifier", "Key identifier", "Registry key used to look up the JWT signing / verification key", "default_key"),
+				fld("key_identifier", "Token source", "Where to read the token: header.X, query.X, cookie.X, or a variable name", "header.Authorization"),
+				fld("input.jwt.jwks_uri", "JWKS URL (static)", "JWKS endpoint URL", "https://YOUR_IDP/.well-known/jwks.json"),
+				fld("input.jwt.jwks_uri_var", "JWKS URL (variable)", "Variable holding the JWKS URL (e.g. from load_service_url)", ""),
+				fld("input.jwt.alg", "Algorithm (static)", "JWT algorithm. Default: RS256", "RS256"),
+				fld("input.jwt.alg_var", "Algorithm (variable)", "Variable holding the algorithm string", ""),
+				fld("input.jwt.leeway_seconds", "Leeway seconds (static)", "Clock skew tolerance in seconds. Default: 30", "30"),
+				fld("input.jwt.leeway_var", "Leeway seconds (variable)", "Variable holding clock leeway as a number string", ""),
+				fld("input.jwt.prefetch_jwks", "Prefetch JWKS", "Pre-warm JWKS cache at deploy time (true/false)", "true"),
+				fld("input.jwt.validate", "Validate (static)", "Comma-sep: signature,issuer,audience,expiry,not_before. Empty = all.", "signature,expiry"),
+				fld("input.jwt.validate_var", "Validate (variable)", "Variable holding the comma-sep validation check list", ""),
+				fld("input.jwt.issuer", "Issuer (static)", "Expected iss claim value", "https://accounts.example.com"),
+				fld("input.jwt.issuer_var", "Issuer (variable)", "Variable holding the expected issuer", ""),
+				fld("input.jwt.audience", "Audience (static)", "Expected aud claim value", "my-api"),
+				fld("input.jwt.audience_var", "Audience (variable)", "Variable holding the expected audience", ""),
+				fld("input.jwt.required_scopes", "Required scopes (static)", "Comma-sep scope values that must be present", "read:orders"),
+				fld("input.jwt.required_scopes_var", "Required scopes (variable)", "Variable holding comma-sep required scopes", ""),
+				fld("input.jwt.scope_claims", "Scope claim keys (static)", "Claim keys to scan for scopes. Default: scope,scp", "scope,scp"),
+				fld("input.jwt.scope_claims_var", "Scope claim keys (variable)", "Variable holding the scope claim key list", ""),
+				fld("input.jwt.custom_claims", "Custom claims (JSON)", `JSON object of static claim checks e.g. {"role":"admin"}`, `{"role":"admin"}`),
+				fld("input.jwt.custom_claims_vars", "Custom claim variables (JSON)", `JSON object mapping claim keys to variable names e.g. {"org":"var.tenant_org"}`, ""),
+				fld("input.jwt.on_failure", "On failure mode (static)", `"stop" (return error) or "continue" (write result variable and proceed)`, "stop"),
+				fld("input.jwt.on_failure_var", "On failure mode (variable)", "Variable holding 'stop' or 'continue'", ""),
+				fld("input.jwt.failure_status", "Failure status (static)", "HTTP status code on failure. Default: 401", "401"),
+				fld("input.jwt.failure_status_var", "Failure status (variable)", "Variable holding the failure HTTP status code string", ""),
+				fld("input.jwt.failure_body", "Failure body (static)", "Response body on failure. Default: unauthorized", "unauthorized"),
+				fld("input.jwt.failure_body_var", "Failure body (variable)", "Variable holding the failure response body", ""),
+				fld("input.jwt.result_success", "Success result value (static)", "Value written to result variable on success. Default: true", "true"),
+				fld("input.jwt.result_success_var", "Success result value (variable)", "Variable holding the success result value", ""),
+				fld("input.jwt.result_failure", "Failure result value (static)", "Value written to result variable on failure. Default: false", "false"),
+				fld("input.jwt.result_failure_var", "Failure result value (variable)", "Variable holding the failure result value", ""),
+				fld("input.jwt.result_var", "Result variable", "Variable to write result value into (requires on_failure=continue)", ""),
+				fld("input.jwt.claims_var", "Claims output variable", "Variable to write all JWT claims JSON into on success", ""),
+				fld("input.jwt.subject_var", "Subject output variable", "Variable to write the JWT sub (subject) claim into on success", ""),
+				fld("input.jwt.client_id_var", "Client ID output variable", "Variable to write the client_id (or azp/appid) claim into on success", ""),
+				fld("input.jwt.scopes_out_var", "Scopes output variable", "Variable to write comma-separated parsed scopes into on success", ""),
 			},
 		},
 		{
@@ -844,6 +884,9 @@ func joinURLPath(basePath, endpointPath string) string {
 
 func (s *Server) getAllApisProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyToDefault(w, r, http.MethodGet, "/getAllApis")
+}
+func (s *Server) flowsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyToDefault(w, r, http.MethodPost, "/sync")

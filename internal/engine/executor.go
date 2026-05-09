@@ -49,6 +49,10 @@ type Instruction struct {
 	// Action takes the Data Plane (ctx) and Control Plane (state).
 	// It returns the absolute ID of the NEXT instruction to execute.
 	Action InstructionFunc
+	// StepIdx is the index of the user-defined flow step that emitted this
+	// instruction. -1 means a system/infrastructure instruction (auto-bind,
+	// RET, STOP, GOTO). Set at compile time; zero runtime cost.
+	StepIdx int16
 }
 
 // Execute runs a compiled instruction table using absolute jumps.
@@ -91,6 +95,7 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 			ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
 				Name:       current.Name,
 				PC:         state.PC,
+				StepIdx:    current.StepIdx,
 				DurationNs: duration.Nanoseconds(),
 				Output:     outputKVs,
 			})

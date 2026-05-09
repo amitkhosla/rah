@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { deploy, fetchTargets } from '../api'
 import type { ApiDef, DeployRecord, ReleaseRecord, SavedFlow, Target } from '../types'
+import { flattenForDeploy } from '../utils/flatten'
 
 interface Props {
   savedFlows: SavedFlow[]
@@ -86,20 +87,22 @@ export default function Deploy({ savedFlows, apis }: Props) {
 
     setDeploying(true); setStatus(''); setStatusErr(false)
     try {
-      // Build payload: one entry per used flow (with its steps), every API with its own flow_name
-      const flowsPayload = usedFlowNames.map(name => {
+      // Build payload: flatten inline branches into fragment flows, then deploy
+      const flowsPayload = usedFlowNames.flatMap(name => {
         const saved = savedFlows.find(f => f.name === name)
-        return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
+        return flattenForDeploy(name, saved?.steps ?? [])
       })
       const apisPayload = apis.map(a => ({
         name:      a.name,
         path:      a.basePath,
         flow_name: a.defaultFlow,
+        ...(a.rateLimitName ? { rate_limit: a.rateLimitName } : {}),
         ...(a.aliasPaths?.length ? { alias_paths: a.aliasPaths } : {}),
         endpoint_configs: a.endpoints.map(ep => ({
           path:   ep.subPath,
           method: ep.method,
           ...(ep.flowName ? { flow_name: ep.flowName } : {}),
+          ...(ep.rateLimitName ? { rate_limit: ep.rateLimitName } : {}),
         })),
         action: 'upsert' as const,
       }))

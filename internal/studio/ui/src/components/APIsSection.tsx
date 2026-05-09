@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchGatewaySnapshot } from '../api'
+import { fetchGatewaySnapshot, listRateLimitConfigs, syncFlows } from '../api'
 import type { ApiDef, EndpointDef, FlowStep, SavedFlow } from '../types'
 import FlowSearchSelect from './FlowSearchSelect'
 
@@ -8,7 +8,8 @@ interface Props {
   apis: ApiDef[]
   setApis: (apis: ApiDef[]) => void
   onCreateFlow: (name: string) => void
-  onNavigateToDesigner: () => void
+  onLoadFlow: (name: string, steps: FlowStep[]) => void
+  onNavigateToDesigner: (flowName?: string) => void
   onNavigateToDeploy: () => void
 }
 
@@ -85,18 +86,18 @@ function deriveApiInterface(steps: FlowStep[]): { inputs: InputBinding[]; output
 
   for (const step of steps) {
     if (step.action === 'bind_header') {
-      inputs.push({ source: 'header', field: step['key'] ?? '', variable: step['as'] ?? '' })
+      inputs.push({ source: 'header', field: (step['key'] as string) ?? '', variable: (step['as'] as string) ?? '' })
     } else if (step.action === 'bind_query_param') {
-      inputs.push({ source: 'query',  field: step['key'] ?? '', variable: step['as'] ?? '' })
+      inputs.push({ source: 'query',  field: (step['key'] as string) ?? '', variable: (step['as'] as string) ?? '' })
     } else if (step.action === 'bind_body') {
-      inputs.push({ source: 'body',   field: step['key'] ?? '', variable: step['as'] ?? '' })
+      inputs.push({ source: 'body',   field: (step['key'] as string) ?? '', variable: (step['as'] as string) ?? '' })
     } else if (step.action === 'set_response_body') {
-      outputs.push({ action: 'response body', value: step['source'] ?? '' })
+      outputs.push({ action: 'response body', value: (step['source'] as string) ?? '' })
     } else if (step.action === 'return') {
-      const v = step['body'] || step['as'] || ''
+      const v = (step['body'] as string) || (step['as'] as string) || ''
       if (v) outputs.push({ action: 'return', value: v })
     } else if (step.action === 'set_response_header') {
-      outputs.push({ action: `header ${step['key'] ?? ''}`, value: step['source'] ?? '' })
+      outputs.push({ action: `header ${(step['key'] as string) ?? ''}`, value: (step['source'] as string) ?? '' })
     }
   }
 
@@ -105,7 +106,7 @@ function deriveApiInterface(steps: FlowStep[]): { inputs: InputBinding[]; output
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavigateToDesigner, onNavigateToDeploy }: Props) {
+export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoadFlow, onNavigateToDesigner, onNavigateToDeploy }: Props) {
   // Selection state
   const [selectedApiId,      setSelectedApiId]      = useState<string | null>(null)
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null)
@@ -123,6 +124,17 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
   const [wEndpoints,   setWEndpoints]   = useState<Array<{ id: string; subPath: string; method: string; flowName?: string; overrideFlow: boolean }>>([])
   const [wizardErr,    setWizardErr]    = useState('')
 
+  // Rate limit configs
+  const [rateLimitConfigs, setRateLimitConfigs] = useState<string[]>([])
+  const [rateLimitError, setRateLimitError] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<'idle'|'syncing'|'done'|'error'>('idle')
+
+  useEffect(() => {
+    listRateLimitConfigs()
+      .then(r => { setRateLimitConfigs(r.items.map(c => c.name)); setRateLimitError(false) })
+      .catch(() => setRateLimitError(true))
+  }, [])
+
   // Sync state
   const [syncing, setSyncing] = useState(true)
 
@@ -134,19 +146,31 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
           const grouped = new Map<string, ApiDef>()
           for (const ga of state.apis) {
             const method = ga.method ?? 'POST'
-            if (grouped.has(ga.path)) {
-              grouped.get(ga.path)!.endpoints.push({
-                id: crypto.randomUUID(),
-                subPath: '/',
-                method,
-              })
-            } else {
+            const gaAny = ga as any
+            const eps: EndpointDef[] = ga.endpoint_configs?.length
+              ? ga.endpoint_configs.map(ec => {
+                  const ecAny = ec as any
+                  return {
+                    id: crypto.randomUUID(),
+                    subPath: ec.path || '/',
+                    method: ec.method || method,
+                    ...(ec.flow_name ? { flowName: ec.flow_name } : {}),
+                    ...(ec.rate_limit ? { rateLimitName: ec.rate_limit } : {}),
+                    ...(ecAny.constants ? { constants: ecAny.constants as Record<string,string> } : {}),
+                  }
+                })
+              : [{ id: crypto.randomUUID(), subPath: '/', method }]
+
+            if (!grouped.has(ga.path)) {
               grouped.set(ga.path, {
                 id: crypto.randomUUID(),
                 name: ga.name,
                 basePath: ga.path,
                 defaultFlow: ga.flow_name ?? '',
-                endpoints: [{ id: crypto.randomUUID(), subPath: '/', method }],
+                endpoints: eps,
+                ...(ga.rate_limit ? { rateLimitName: ga.rate_limit } : {}),
+                ...(ga.alias_paths?.length ? { aliasPaths: ga.alias_paths } : {}),
+                ...(gaAny.constants ? { constants: gaAny.constants as Record<string,string> } : {}),
               })
             }
           }
@@ -156,7 +180,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
           if (incoming.length > 0) setApis([...apis, ...incoming])
         }
         for (const gf of (state?.flows ?? [])) {
-          onCreateFlow(gf.name)
+          onLoadFlow(gf.name, gf.instructions as FlowStep[])
         }
         setSyncing(false)
       })
@@ -319,6 +343,62 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
         ? { ...a, endpoints: a.endpoints.map(e => e.id === endpointId ? { ...e, flowName } : e) }
         : a
     ))
+  }
+
+  function updateApi(id: string, patch: Partial<ApiDef>) {
+    setApis(apis.map(a => a.id === id ? { ...a, ...patch } : a))
+  }
+
+  function handleUpdateEndpointRateLimit(apiId: string, endpointId: string, name: string | undefined) {
+    setApis(apis.map(a =>
+      a.id === apiId
+        ? { ...a, endpoints: a.endpoints.map(e => e.id === endpointId ? { ...e, rateLimitName: name } : e) }
+        : a
+    ))
+  }
+
+  function handleUpdateApiConstants(apiId: string, c: Record<string, string>) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, constants: c } : a))
+  }
+
+  function handleUpdateEndpointConstants(apiId: string, epId: string, c: Record<string, string>) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a,
+      endpoints: a.endpoints.map(e => e.id === epId ? { ...e, constants: c } : e),
+    }))
+  }
+
+  async function syncThisApi(api: ApiDef) {
+    setSyncStatus('syncing')
+    const flowNamesSet = new Set<string>([
+      api.defaultFlow,
+      ...api.endpoints.map(e => e.flowName).filter((f): f is string => !!f),
+    ])
+    const flowsPayload = [...flowNamesSet].map(name => {
+      const saved = flows.find(f => f.name === name)
+      return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
+    })
+    const apisPayload = [{
+      name: api.name,
+      path: api.basePath,
+      flow_name: api.defaultFlow,
+      ...(api.rateLimitName ? { rate_limit: api.rateLimitName } : {}),
+      ...(api.aliasPaths?.length ? { alias_paths: api.aliasPaths } : {}),
+      ...(api.constants && Object.keys(api.constants).length ? { constants: api.constants } : {}),
+      endpoint_configs: api.endpoints.map(ep => ({
+        path: ep.subPath,
+        method: ep.method,
+        ...(ep.flowName ? { flow_name: ep.flowName } : {}),
+        ...(ep.rateLimitName ? { rate_limit: ep.rateLimitName } : {}),
+        ...(ep.constants && Object.keys(ep.constants).length ? { constants: ep.constants } : {}),
+      })),
+      action: 'upsert' as const,
+    }]
+    try {
+      await syncFlows({ sync_uuid: crypto.randomUUID(), flows: flowsPayload, apis: apisPayload })
+      setSyncStatus('done')
+    } catch { setSyncStatus('error') }
+    setTimeout(() => setSyncStatus('idle'), 3000)
   }
 
   // ── Selection ──────────────────────────────────────────────────────────────
@@ -523,6 +603,11 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
             onClearOverride={() => handleSetEndpointFlow(selectedApi.id, selectedEndpoint.id, undefined)}
             onNavigateToDesigner={onNavigateToDesigner}
             onNavigateToDeploy={onNavigateToDeploy}
+            rateLimitConfigs={rateLimitConfigs}
+            rateLimitError={rateLimitError}
+            onUpdateRateLimit={name => handleUpdateEndpointRateLimit(selectedApi.id, selectedEndpoint.id, name || undefined)}
+            constants={selectedEndpoint.constants ?? {}}
+            onUpdateConstants={c => handleUpdateEndpointConstants(selectedApi.id, selectedEndpoint.id, c)}
           />
         ) : selectedApi !== null ? (
           <ApiDetailPanel
@@ -534,6 +619,13 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
             onAddEndpoint={() => openAddEndpointWizard(selectedApi)}
             onNavigateToDesigner={onNavigateToDesigner}
             onRemoveAlias={i => handleRemoveAlias(selectedApi.id, i)}
+            rateLimitConfigs={rateLimitConfigs}
+            rateLimitError={rateLimitError}
+            onUpdateRateLimit={name => updateApi(selectedApi.id, { rateLimitName: name || undefined })}
+            onSync={() => syncThisApi(selectedApi)}
+            syncStatus={syncStatus}
+            constants={selectedApi.constants ?? {}}
+            onUpdateConstants={c => handleUpdateApiConstants(selectedApi.id, c)}
           />
         ) : (
           <EmptyRight onNewApi={openNewWizard} onNavigateToDesigner={onNavigateToDesigner} />
@@ -545,7 +637,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onNavi
 
 // ── Empty right panel ────────────────────────────────────────────────────────
 
-function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; onNavigateToDesigner: () => void }) {
+function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; onNavigateToDesigner: (flowName?: string) => void }) {
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
@@ -565,9 +657,70 @@ function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; 
         <button className="btn" style={{ width: 'auto', padding: '6px 18px', marginTop: 0 }} onClick={onNewApi}>
           + New API
         </button>
-        <button className="btn muted" style={{ width: 'auto', padding: '6px 18px', marginTop: 0 }} onClick={onNavigateToDesigner}>
+        <button className="btn muted" style={{ width: 'auto', padding: '6px 18px', marginTop: 0 }} onClick={() => onNavigateToDesigner()}>
           → Flow Designer
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Constants Editor ─────────────────────────────────────────────────────────
+
+function ConstantsEditor({
+  constants,
+  onChange,
+}: {
+  constants: Record<string, string>
+  onChange: (c: Record<string, string>) => void
+}) {
+  const [newKey, setNewKey] = useState('')
+  const [newVal, setNewVal] = useState('')
+  const entries = Object.entries(constants)
+
+  return (
+    <div>
+      {entries.map(([k, v]) => (
+        <div key={k} style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
+          <code style={{ fontSize: 11, minWidth: 100, color: 'var(--accent)' }}>{k}</code>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>=</span>
+          <input
+            className="input"
+            style={{ flex: 1, padding: '2px 8px', fontSize: 12 }}
+            value={v}
+            onChange={e => onChange({ ...constants, [k]: e.target.value })}
+          />
+          <button
+            className="btn muted"
+            style={{ padding: '2px 8px', fontSize: 11, marginTop: 0 }}
+            onClick={() => { const c = { ...constants }; delete c[k]; onChange(c) }}
+          >×</button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <input
+          className="input"
+          placeholder="name"
+          style={{ width: 100, padding: '2px 8px', fontSize: 12 }}
+          value={newKey}
+          onChange={e => setNewKey(e.target.value)}
+        />
+        <input
+          className="input"
+          placeholder="value"
+          style={{ flex: 1, padding: '2px 8px', fontSize: 12 }}
+          value={newVal}
+          onChange={e => setNewVal(e.target.value)}
+        />
+        <button
+          className="btn muted"
+          style={{ padding: '2px 8px', fontSize: 11, marginTop: 0 }}
+          onClick={() => {
+            if (!newKey.trim()) return
+            onChange({ ...constants, [newKey.trim()]: newVal.trim() })
+            setNewKey(''); setNewVal('')
+          }}
+        >+ Add</button>
       </div>
     </div>
   )
@@ -582,12 +735,21 @@ interface ApiDetailProps {
   onUpdateDefaultFlow: (name: string) => void
   onSelectEndpoint: (epId: string) => void
   onAddEndpoint: () => void
-  onNavigateToDesigner: () => void
+  onNavigateToDesigner: (flowName?: string) => void
   onRemoveAlias: (index: number) => void
+  rateLimitConfigs: string[]
+  rateLimitError: boolean
+  onUpdateRateLimit: (name: string) => void
+  onSync: () => void
+  syncStatus: 'idle'|'syncing'|'done'|'error'
+  constants: Record<string, string>
+  onUpdateConstants: (c: Record<string, string>) => void
 }
 
 function ApiDetailPanel({
   api, flows, onRemove, onUpdateDefaultFlow, onSelectEndpoint, onAddEndpoint, onNavigateToDesigner, onRemoveAlias,
+  rateLimitConfigs, rateLimitError, onUpdateRateLimit, onSync, syncStatus,
+  constants, onUpdateConstants,
 }: ApiDetailProps) {
   const [confirmRemove, setConfirmRemove] = useState(false)
   const flowNames = flows.map(f => f.name)
@@ -626,7 +788,20 @@ function ApiDetailPanel({
             )}
             <div style={{ fontSize: 12, color: 'var(--muted)' }}>{api.name}</div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+            <button
+              className="btn"
+              style={{
+                width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12,
+                background: syncStatus === 'done' ? '#22c55e' : syncStatus === 'error' ? '#ef4444' : undefined,
+                opacity: syncStatus === 'syncing' ? 0.7 : 1,
+              }}
+              onClick={onSync}
+              disabled={syncStatus === 'syncing'}
+              title="Sync only this API to the gateway"
+            >
+              {syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'done' ? '✓ Synced' : syncStatus === 'error' ? '✗ Error' : '↑ Sync'}
+            </button>
             {confirmRemove ? (
               <>
                 <span style={{ fontSize: 12, color: '#ef4444', alignSelf: 'center' }}>Remove API?</span>
@@ -671,6 +846,34 @@ function ApiDetailPanel({
               Flow "{api.defaultFlow}" not found in designer — build it first.
             </div>
           )}
+        </Section>
+
+        {/* Rate limit */}
+        <Section label="Rate Limit" style={{ marginTop: 20 }}>
+          <select
+            className="input"
+            style={{ maxWidth: 280, marginTop: 0 }}
+            value={api.rateLimitName ?? ''}
+            onChange={e => onUpdateRateLimit(e.target.value)}
+          >
+            <option value="">— none —</option>
+            {rateLimitConfigs.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          {rateLimitError && (
+            <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
+              Could not load configs — is the gateway running?
+            </p>
+          )}
+          {!rateLimitError && rateLimitConfigs.length === 0 && (
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              No rate limit configs yet — create one in the Tenants tab.
+            </p>
+          )}
+        </Section>
+
+        {/* Route Constants */}
+        <Section label="Route Constants" style={{ marginTop: 20 }}>
+          <ConstantsEditor constants={constants} onChange={onUpdateConstants} />
         </Section>
 
         {/* Endpoints table */}
@@ -724,9 +927,9 @@ function ApiDetailPanel({
           <button
             className="btn muted"
             style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-            onClick={onNavigateToDesigner}
+            onClick={() => onNavigateToDesigner(api.defaultFlow)}
           >
-            → Open Flow Designer
+            → Edit Default Flow in Designer
           </button>
         </div>
       </div>
@@ -743,13 +946,20 @@ interface EndpointDetailProps {
   onRemove: () => void
   onSetFlow: (flowName: string) => void
   onClearOverride: () => void
-  onNavigateToDesigner: () => void
+  onNavigateToDesigner: (flowName?: string) => void
   onNavigateToDeploy: () => void
+  rateLimitConfigs: string[]
+  rateLimitError: boolean
+  onUpdateRateLimit: (name: string) => void
+  constants: Record<string, string>
+  onUpdateConstants: (c: Record<string, string>) => void
 }
 
 function EndpointDetailPanel({
   api, endpoint, flows, onRemove, onSetFlow, onClearOverride,
   onNavigateToDesigner, onNavigateToDeploy,
+  rateLimitConfigs, rateLimitError, onUpdateRateLimit,
+  constants, onUpdateConstants,
 }: EndpointDetailProps) {
   const [showOverridePicker, setShowOverridePicker] = useState(false)
   const [confirmRemove,      setConfirmRemove]      = useState(false)
@@ -855,6 +1065,34 @@ function EndpointDetailPanel({
           )}
         </Section>
 
+        {/* Rate limit */}
+        <Section label="Rate Limit" style={{ marginTop: 20 }}>
+          <select
+            className="input"
+            style={{ maxWidth: 280, marginTop: 0 }}
+            value={endpoint.rateLimitName ?? ''}
+            onChange={e => onUpdateRateLimit(e.target.value)}
+          >
+            <option value="">— inherit from API —</option>
+            {rateLimitConfigs.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          {rateLimitError && (
+            <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
+              Could not load configs — is the gateway running?
+            </p>
+          )}
+          {!rateLimitError && rateLimitConfigs.length === 0 && (
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              No rate limit configs yet — create one in the Tenants tab.
+            </p>
+          )}
+        </Section>
+
+        {/* Route Constants */}
+        <Section label="Route Constants" style={{ marginTop: 20 }}>
+          <ConstantsEditor constants={constants} onChange={onUpdateConstants} />
+        </Section>
+
         {/* Flow states */}
         {!resolvedFlow && (
           <div style={{
@@ -869,7 +1107,7 @@ function EndpointDetailPanel({
             <button
               className="btn"
               style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-              onClick={onNavigateToDesigner}
+              onClick={() => onNavigateToDesigner(resolvedFn)}
             >
               + Create flow in Designer
             </button>
@@ -889,7 +1127,7 @@ function EndpointDetailPanel({
             <button
               className="btn"
               style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-              onClick={onNavigateToDesigner}
+              onClick={() => onNavigateToDesigner(resolvedFn)}
             >
               Build this flow in Designer →
             </button>
@@ -904,7 +1142,7 @@ function EndpointDetailPanel({
               <button
                 className="btn muted"
                 style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12 }}
-                onClick={onNavigateToDesigner}
+                onClick={() => onNavigateToDesigner(resolvedFn)}
               >
                 Edit Flow in Designer →
               </button>

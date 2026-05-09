@@ -75,7 +75,13 @@ export interface TargetsResponse {
 // ── Flow / APIs ───────────────────────────────────────────────────
 
 // A step in a flow. `action` is always set; remaining keys are step parameters.
-export type FlowStep = { action: string } & Record<string, string>
+// then_steps/else_steps are Studio-only inline branch steps (not sent to gateway).
+export interface FlowStep {
+  action: string
+  then_steps?: FlowStep[]   // Studio-only: inline then branch steps
+  else_steps?: FlowStep[]   // Studio-only: inline else branch steps
+  [key: string]: unknown    // all other step params (strings, numbers, etc.)
+}
 
 // ── Step Groups (Studio UI only — not compiled to gateway) ───────────
 
@@ -104,6 +110,8 @@ export interface EndpointDef {
   subPath: string     // e.g. "/" or "/{id}" or "/search"
   method: string      // GET | POST | PUT | PATCH | DELETE
   flowName?: string   // if set, overrides the API's defaultFlow for this endpoint
+  rateLimitName?: string   // optional rate limit config name for this endpoint
+  constants?: Record<string, string>   // NEW: pre-loaded named slots for this endpoint
 }
 
 // Basepath-level API with multiple endpoints
@@ -114,13 +122,15 @@ export interface ApiDef {
   aliasPaths?: string[]   // additional basepaths → same ApiID in gateway router
   defaultFlow: string     // flow inherited by all endpoints that don't override
   endpoints: EndpointDef[]
+  rateLimitName?: string   // optional rate limit config name for this API
+  constants?: Record<string, string>   // NEW: pre-loaded named slots (endpoint overrides api)
 }
 
 // ── Request bodies ────────────────────────────────────────────────
 
 export interface DeployPayload {
   sync_uuid: string
-  flows: Array<{ name: string; instructions: FlowStep[]; action: 'upsert' }>
+  flows: Array<{ name: string; instructions: Array<Record<string, unknown>>; action: 'upsert' }>
   apis: Array<{
     name: string
     path: string
@@ -331,6 +341,14 @@ export interface VirtualMCPServer {
 
 export interface CredentialListResponse {
   credentials: string[]  // names only, e.g. ["llm:openai", "mcp:brave-search"]
+}
+
+// ── Subflow impact map ────────────────────────────────────────────
+
+/** Which flows and APIs reference a given flow by name. */
+export interface FlowImpact {
+  flows: string[]   // names of flows that call this flow
+  apis:  string[]   // names of APIs whose defaultFlow or endpoint flowName points here
 }
 
 // ── Gateway live state ────────────────────────────────────────────

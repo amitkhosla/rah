@@ -89,7 +89,9 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 		if err := c.bakeFlow(flow, cfg.Flows); err != nil {
 			return fmt.Errorf("flow %q: %w", name, err)
 		}
-		c.GlobalTable = append(c.GlobalTable, c.newReturnStep())
+		ret := c.newReturnStep()
+		ret.StepIdx = -1 // system instruction
+		c.GlobalTable = append(c.GlobalTable, ret)
 		c.FlowProfiles[name] = buildFlowProfile(name, flow)
 	}
 
@@ -99,6 +101,7 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 
 		// AUTO-BINDING: Discover what headers/query params this flow needs
 		deps := c.discoverDependencies(cfg.Flows[api.FlowName])
+		depStart := len(c.GlobalTable)
 		for _, dep := range deps {
 			slot, err := c.getSlot(dep.Identifier)
 			if err != nil {
@@ -106,11 +109,17 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 			}
 			c.GlobalTable = append(c.GlobalTable, steps.BindInput(dep.Source, dep.Key, slot))
 		}
+		// Mark auto-bind preamble as system instructions (not user flow steps).
+		for j := depStart; j < len(c.GlobalTable); j++ {
+			c.GlobalTable[j].StepIdx = -1
+		}
 
 		if err := c.bakeFlow(cfg.Flows[api.FlowName], cfg.Flows); err != nil {
 			return fmt.Errorf("api %q: %w", api.FlowName, err)
 		}
-		c.GlobalTable = append(c.GlobalTable, c.newStopStep())
+		stop := c.newStopStep()
+		stop.StepIdx = -1 // system instruction
+		c.GlobalTable = append(c.GlobalTable, stop)
 	}
 	if err := c.resolvePendingJumps(); err != nil {
 		return err
@@ -123,8 +132,13 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 func (c *Compiler) bakeFlow(flow []StepConfig, fragments map[string][]StepConfig) error {
 	lastUse := c.computeLastUse(flow, fragments)
 	for i, step := range flow {
+		startIdx := len(c.GlobalTable)
 		if err := c.compileStep(step, fragments); err != nil {
 			return err
+		}
+		// Tag all instructions emitted for this step with its index (OBS-4: flow-aligned trace view).
+		for j := startIdx; j < len(c.GlobalTable); j++ {
+			c.GlobalTable[j].StepIdx = int16(i)
 		}
 		c.releaseDeadSlots(i, lastUse)
 	}
@@ -316,6 +330,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.LoadServiceURL(urlKeyID, destSlot))
 
+	case "load_service_url_var":
+		// Loads a service URL using a runtime key name from keySlot.
+		// The key name is read from ByteSlots[keySlot] at request time — radix walk ~50–100 ns.
+		// Use when the key differs per API (e.g. set via route constants). Prefer load_service_url
+		// (~2–5 ns) when the key is known at compile time.
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadServiceURLVar(keySlot, destSlot))
+
 	case "load_identifier":
 		// Loads the named identifier for the current tenant into the slot named by "as".
 		// Same bake-time KeyID resolution as load_service_url.
@@ -376,16 +405,37 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// Optional quota group map in step.Input: {"1": "free_rl", "2": "pro_rl"}
 		// Keys are group IDs (uint8), values are rate limit config names.
 		// Set "emit_quota_headers": "true" to send X-RateLimit-* headers to callers.
-		var quotaGroupRLIds []uint16
-		if len(step.Input) > 0 && c.RegMgr != nil {
-			quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
-		}
+		// Set "scope": "ip" to key the counter on client IP instead of TenantID.
+		//   "ip_slot": slot name holding the client IP (from bind_client_ip).
+		// Set "scope": "slot" to key the counter on any arbitrary value.
+		//   "key_slot": slot name holding the rate limit key (e.g., user ID).
 		emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
 		syncPolicy := uint8(0)
 		if c.fm.RemoteRL != nil {
 			syncPolicy = c.fm.DistRLPolicy
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
+		scope := step.Input["scope"]
+		if scope == "ip" {
+			ipSlotName := strings.TrimSpace(step.Input["ip_slot"])
+			ipSlot := -1
+			if ipSlotName != "" {
+				ipSlot, _ = c.getSlot(ipSlotName)
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitIP(c.fm.RateLimitStore, ipSlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
+		} else if scope == "slot" {
+			keySlotName := strings.TrimSpace(step.Input["key_slot"])
+			keySlot := -1
+			if keySlotName != "" {
+				keySlot, _ = c.getSlot(keySlotName)
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitSlot(c.fm.RateLimitStore, keySlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
+		} else {
+			var quotaGroupRLIds []uint16
+			if len(step.Input) > 0 && c.RegMgr != nil {
+				quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
+		}
 
 	case "assign_quota_group":
 		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.
@@ -882,9 +932,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.DivStep(slotA, slotB, result))
 
 	case "set_response_header":
-		src, err := c.getSlot(step.Source)
-		if err != nil {
-			return err
+		var src int
+		if _, known := c.slotMap[step.Source]; !known {
+			// Source is not a slot variable — treat the raw string as a literal value.
+			litSlot, err := c.getSlot(step.Source)
+			if err != nil {
+				return err
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.SetConstStep(step.Source, litSlot))
+			src = litSlot
+		} else {
+			var err error
+			src, err = c.getSlot(step.Source)
+			if err != nil {
+				return err
+			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseHeaderFromSlot(step.Key, src))
 
@@ -892,9 +954,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.EchoRequestStep())
 
 	case "set_response_body":
-		src, err := c.getSlot(step.Source)
-		if err != nil {
-			return err
+		var src int
+		if _, known := c.slotMap[step.Source]; !known {
+			// Source is not a slot variable — treat the raw string as a literal value.
+			litSlot, err := c.getSlot(step.Source)
+			if err != nil {
+				return err
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.SetConstStep(step.Source, litSlot))
+			src = litSlot
+		} else {
+			var err error
+			src, err = c.getSlot(step.Source)
+			if err != nil {
+				return err
+			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseBodyStep(src))
 
@@ -1154,6 +1228,39 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 	}
 
+	// ── Per-step observability hooks ──────────────────────────────────
+	// Applied after the step's own instruction(s) and any on_error wrapper.
+	// Control-flow steps (if, switch, call, return, fail) are skipped because
+	// they don't produce a single output variable in the conventional sense.
+	if !isControlFlowAction(step.Action) {
+		outSlotName := step.As
+		if outSlotName == "" {
+			outSlotName = step.Destination // fallback for cache_get_batched
+		}
+		if outSlot, ok := c.slotMap[outSlotName]; ok && outSlotName != "" {
+			if step.LogAs != "" {
+				c.GlobalTable = append(c.GlobalTable, steps.LogFieldStep(step.LogAs, outSlot))
+			}
+			if step.TraceCapture {
+				c.GlobalTable = append(c.GlobalTable, steps.TraceCaptureStep(outSlot, outSlotName))
+			}
+		}
+		// TraceVars: emit a trace_capture for each explicitly named variable.
+		// Deduplicates against the primary TraceCapture variable.
+		if len(step.TraceVars) > 0 {
+			seen := outSlotName
+			_ = seen
+			for _, varName := range step.TraceVars {
+				if varName == "" || (step.TraceCapture && varName == outSlotName) {
+					continue
+				}
+				if slot, ok2 := c.slotMap[varName]; ok2 {
+					c.GlobalTable = append(c.GlobalTable, steps.TraceCaptureStep(slot, varName))
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1304,6 +1411,50 @@ func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
 	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
+}
+
+// SnapshotSlots returns a copy of the current slot map and nextSlot counter.
+// Used to save slot state after a CompileExecutable call so it can be restored
+// for multiple endpoints that share the same flow (no per-endpoint override).
+func (c *Compiler) SnapshotSlots() (map[string]int, int) {
+	snap := make(map[string]int, len(c.slotMap))
+	for k, v := range c.slotMap {
+		snap[k] = v
+	}
+	return snap, c.nextSlot
+}
+
+// RestoreSlots replaces the current slot map with a fresh copy of snap and
+// resets nextSlot. Used to restore the default-flow slot context before
+// allocating constants for a no-override endpoint in the same API.
+func (c *Compiler) RestoreSlots(snap map[string]int, nextSlot int) {
+	fresh := make(map[string]int, len(snap))
+	for k, v := range snap {
+		fresh[k] = v
+	}
+	c.slotMap = fresh
+	c.nextSlot = nextSlot
+	c.freeSlots = c.freeSlots[:0]
+}
+
+// AllocConstantSlots resolves slot indices for each constant key using the
+// compiler's current slotMap (populated by the most recent CompileExecutable call).
+// Keys already referenced in the flow map to existing slots; new keys get fresh ones.
+// Returns pre-allocated []ConstantSlot ready to be stored in EngineState.RouteConstants.
+// Must be called immediately after CompileExecutable, before any other compilation resets the slotMap.
+func (c *Compiler) AllocConstantSlots(constants map[string]string) ([]engine.ConstantSlot, error) {
+	if len(constants) == 0 {
+		return nil, nil
+	}
+	slots := make([]engine.ConstantSlot, 0, len(constants))
+	for k, v := range constants {
+		idx, err := c.getSlot(k)
+		if err != nil {
+			return nil, fmt.Errorf("constant %q: %w", k, err)
+		}
+		slots = append(slots, engine.ConstantSlot{SlotIdx: idx, Value: []byte(v)})
+	}
+	return slots, nil
 }
 
 // isControlFlowAction returns true for step actions that must not be wrapped
@@ -1628,6 +1779,11 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (in
 
 	sharedFlowStartID := c.FragmentMap[api.FlowName]
 	c.GlobalTable = append(c.GlobalTable, c.newInternalJump(sharedFlowStartID))
+
+	// Mark all preamble instructions (auto-binds + GOTO) as system.
+	for j := int(entryPoint); j < len(c.GlobalTable); j++ {
+		c.GlobalTable[j].StepIdx = -1
+	}
 
 	return entryPoint, nil
 }

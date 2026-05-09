@@ -75,7 +75,6 @@ body {
 
 /* ── Sidebar ───────────────────────────────────────────────────── */
 .sidebar {
-  width: 200px;
   flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
@@ -84,6 +83,8 @@ body {
   height: 100vh;
   position: sticky;
   top: 0;
+  transition: width 0.2s ease;
+  overflow: hidden;
 }
 
 .sidebar-title {
@@ -130,6 +131,15 @@ body {
   font-weight: 600;
   background: rgba(87, 181, 255, 0.08);
 }
+.sidebar-item.icon-only {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+  border-left: 3px solid transparent;
+}
+.sidebar-item.icon-only.active {
+  border-left-color: var(--accent);
+}
 
 .sidebar-bottom {
   padding: 12px 14px;
@@ -140,8 +150,10 @@ body {
 /* ── Main content area ─────────────────────────────────────────── */
 .main-content {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 20px;
+  height: 100%;
+  min-height: 0;
 }
 
 /* ── Layout ────────────────────────────────────────────────────── */
@@ -151,6 +163,8 @@ body {
   display: grid;
   grid-template-columns: 320px 1fr;
   gap: 12px;
+  height: 100%;
+  min-height: 0;
 }
 
 /* ── Panel ─────────────────────────────────────────────────────── */
@@ -159,6 +173,9 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .panel-header {
@@ -166,10 +183,14 @@ body {
   border-bottom: 1px solid #2a3a63;
   font-weight: 600;
   font-size: 13px;
+  flex-shrink: 0;
 }
 
 .panel-body {
   padding: 12px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Form inputs ────────────────────────────────────────────────── */

@@ -208,6 +208,175 @@ func CheckRateLimit(store *engine.CounterStore, remoteRL engine.ExternalRateLimi
 	}
 }
 
+// CheckRateLimitIP enforces a rate limit keyed by source IP rather than TenantID.
+// ipSlot: ByteSlots index holding the client IP (set by bind_client_ip).
+// The IP bytes are hashed directly — no string conversion, no allocation.
+// Returns 429 when the limit is exceeded.
+func CheckRateLimitIP(store *engine.CounterStore, ipSlot int, syncPolicy uint8,
+	remoteRL engine.ExternalRateLimitProvider, emitQuotaHeaders bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "CHECK_RATE_LIMIT_IP",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			reg := registry.State.Active.Load()
+			resolved, blocked := registry.ResolveRateLimit(reg, ctx.CallerID,
+				ctx.TenantID, ctx.APIRateLimitId, ctx.EndpointRateLimitId)
+			if blocked {
+				ctx.ResponseStatus = 403
+				return -1
+			}
+			if resolved.PerSec == 0 && resolved.PerMin == 0 {
+				return s.PC + 1
+			}
+
+			var ipBytes []byte
+			if ipSlot >= 0 && ipSlot < len(ctx.ByteSlots) {
+				ipBytes = ctx.ByteSlots[ipSlot]
+			}
+			h := ipHash32(ipBytes)
+
+			now := uint32(time.Now().Unix())
+
+			if resolved.PerSec > 0 {
+				bf := resolved.BurstFactor
+				if bf == 0 {
+					bf = 100
+				}
+				effectiveSec := uint32(uint64(resolved.PerSec) * uint64(bf) / 100)
+				if effectiveSec == 0 {
+					effectiveSec = 1
+				}
+				idx := rateLimitIndexIP(store, h, uint32(ctx.APIRateLimitId), now, 0)
+				ok, remSec := store.FixedWindowEpoch(idx, now, effectiveSec)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+					ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+					ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+					}
+					return -1
+				}
+			}
+			if resolved.PerMin > 0 {
+				epochMin := now / 60
+				idx := rateLimitIndexIP(store, h, uint32(ctx.APIRateLimitId), epochMin, 1)
+				ok, remMin := store.FixedWindowEpoch(idx, epochMin, resolved.PerMin)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+					ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						secsUntilReset := 60 - (now % 60)
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+					}
+					return -1
+				}
+			}
+			return s.PC + 1
+		},
+	}
+}
+
+// ipHash32 hashes raw IP bytes using FNV-1a. Zero alloc — operates on the
+// []byte directly without converting to string. ~5 ns for an IPv4 address.
+func ipHash32(ip []byte) uint32 {
+	h := uint32(2166136261)
+	for _, b := range ip {
+		h ^= uint32(b)
+		h *= 16777619
+	}
+	return h
+}
+
+// rateLimitIndexIP hashes (ipHash, apiRLId, epoch, windowType) to a CounterStore
+// slot. Uses Knuth multiplicative hashing — same pattern as rateLimitIndex.
+func rateLimitIndexIP(store *engine.CounterStore, ipHash, apiRLId, epoch uint32, windowType uint8) uint32 {
+	h := uint64(ipHash)*2654435761 ^
+		uint64(apiRLId)*2246822519 ^
+		uint64(epoch)*1000003 ^
+		uint64(windowType)*2166136261
+	return uint32(h) % uint32(len(store.Arena))
+}
+
+// CheckRateLimitSlot enforces a rate limit keyed by any runtime value from a slot.
+// slotKey: ByteSlots index holding the rate limit key (e.g., user ID, client ID, device ID).
+// The slot bytes are hashed directly — no string conversion, no allocation.
+// Returns 429 when the limit is exceeded.
+func CheckRateLimitSlot(store *engine.CounterStore, slotKey int, syncPolicy uint8,
+	remoteRL engine.ExternalRateLimitProvider, emitQuotaHeaders bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "CHECK_RATE_LIMIT_SLOT",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			reg := registry.State.Active.Load()
+			resolved, blocked := registry.ResolveRateLimit(reg, ctx.CallerID,
+				ctx.TenantID, ctx.APIRateLimitId, ctx.EndpointRateLimitId)
+			if blocked {
+				ctx.ResponseStatus = 403
+				return -1
+			}
+			if resolved.PerSec == 0 && resolved.PerMin == 0 {
+				return s.PC + 1
+			}
+
+			var keyBytes []byte
+			if slotKey >= 0 && slotKey < len(ctx.ByteSlots) {
+				keyBytes = ctx.ByteSlots[slotKey]
+			}
+			h := ipHash32(keyBytes) // reuse same hash function for any []byte
+
+			now := uint32(time.Now().Unix())
+
+			if resolved.PerSec > 0 {
+				bf := resolved.BurstFactor
+				if bf == 0 {
+					bf = 100
+				}
+				effectiveSec := uint32(uint64(resolved.PerSec) * uint64(bf) / 100)
+				if effectiveSec == 0 {
+					effectiveSec = 1
+				}
+				idx := rateLimitIndexIP(store, h, uint32(ctx.APIRateLimitId), now, 0)
+				ok, remSec := store.FixedWindowEpoch(idx, now, effectiveSec)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+					ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+					ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+					}
+					return -1
+				}
+			}
+			if resolved.PerMin > 0 {
+				epochMin := now / 60
+				idx := rateLimitIndexIP(store, h, uint32(ctx.APIRateLimitId), epochMin, 1)
+				ok, remMin := store.FixedWindowEpoch(idx, epochMin, resolved.PerMin)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+					ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						secsUntilReset := 60 - (now % 60)
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+					}
+					return -1
+				}
+			}
+			return s.PC + 1
+		},
+	}
+}
+
 // rateLimitIndex hashes (tenantID, apiRLId, endpointRLId, epoch, windowType)
 // to a CounterStore slot. The windowType byte (0=sec, 1=min) ensures per-second
 // and per-minute counters for the same request land on different slots.

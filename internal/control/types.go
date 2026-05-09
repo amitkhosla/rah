@@ -43,6 +43,17 @@ type StepConfig struct {
 	Params      []map[string]string `json:"params,omitempty"`      // For json_extract_emit / json_foreach_emit: list of ExtractOp descriptors
 	Destination string              `json:"destination,omitempty"` // For cache_get_batched: dest slot name
 
+	// Per-step observability hooks — applied after the step's own instruction(s).
+	// LogAs, if non-empty, emits a log_field instruction that writes the step's
+	// output variable (As) into the request access log under this field name.
+	// TraceCapture, if true, emits a trace_capture instruction that copies the step's
+	// output variable into the instruction trace output so it appears in trace detail.
+	// TraceVars, if non-empty, emits a trace_capture instruction for each named variable
+	// (looked up in slotMap). Complements TraceCapture; duplicates are skipped.
+	LogAs        string   `json:"log_as,omitempty"`
+	TraceCapture bool     `json:"trace_capture,omitempty"`
+	TraceVars    []string `json:"trace_vars,omitempty"`
+
 	// Error handling
 	// OnError controls what happens when this step signals failure (sets ctx.Failed + StopPlan).
 	// Values:
@@ -64,10 +75,11 @@ type StepConfig struct {
 
 // EndpointConfig defines per-endpoint overrides within an API definition.
 type EndpointConfig struct {
-	Path          string `json:"path"`
-	Method        string `json:"method,omitempty"`      // empty = ANY
-	RateLimitName string `json:"rate_limit,omitempty"`
-	FlowName      string `json:"flow_name,omitempty"`   // overrides API-level flow when set
+	Path          string            `json:"path"`
+	Method        string            `json:"method,omitempty"`      // empty = ANY
+	RateLimitName string            `json:"rate_limit,omitempty"`
+	FlowName      string            `json:"flow_name,omitempty"`   // overrides API-level flow when set
+	Constants     map[string]string `json:"constants,omitempty"`   // pre-loaded named slots for this endpoint
 }
 
 // ApiConfig maps a URL path to a specific execution plan.
@@ -91,16 +103,17 @@ type FlowUpdate struct {
 }
 
 type ApiUpdate struct {
-	Name            string           `json:"name"`
-	Path            string           `json:"path"`
-	Method          string           `json:"method,omitempty"`      // HTTP method; empty = all methods
-	FlowName        string           `json:"flow_name"`             // Reference to a Flow name
-	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
-	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name
-	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
-	EndpointConfigs []EndpointConfig `json:"endpoint_configs,omitempty"`
-	AliasPaths      []string         `json:"alias_paths,omitempty"` // additional basepaths → same ApiID
-	Action          string           `json:"action"`                // "upsert" or "delete"
+	Name            string            `json:"name"`
+	Path            string            `json:"path"`
+	Method          string            `json:"method,omitempty"`      // HTTP method; empty = all methods
+	FlowName        string            `json:"flow_name"`             // Reference to a Flow name
+	RateLimitName   string            `json:"rate_limit,omitempty"`  // API-level rate limit config name
+	QuotaGroup      string            `json:"quota_group,omitempty"` // Quota group name
+	Async           string            `json:"async,omitempty"`       // "" | "allowed" | "forced"
+	EndpointConfigs []EndpointConfig  `json:"endpoint_configs,omitempty"`
+	AliasPaths      []string          `json:"alias_paths,omitempty"` // additional basepaths → same ApiID
+	Constants       map[string]string `json:"constants,omitempty"`   // pre-loaded named slots for this API
+	Action          string            `json:"action"`                // "upsert" or "delete"
 }
 
 type UnifiedSyncRequest struct {

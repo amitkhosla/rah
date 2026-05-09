@@ -71,6 +71,20 @@ func GetMetaByKeyID(tenantID uint16, keyID uint16) ([]byte, bool) {
 	return getPropByKeyID(&reg.Meta, reg.ValuePool, tenantID, keyID)
 }
 
+// GetURLByKeyName resolves a service URL by key name at runtime.
+// Uses a radix tree walk (~50–100 ns) instead of the 2–5 ns matrix read.
+// Only use when the key name is not known at compile time (e.g. route constants).
+func GetURLByKeyName(reg *TenantRegistry, tenantID uint16, keyName string) ([]byte, bool) {
+	if reg == nil {
+		return nil, false
+	}
+	keyID, found := findKeyID(reg.URLs.Keys, reg.URLs.StringPool, keyName)
+	if !found {
+		return nil, false
+	}
+	return getPropByKeyID(&reg.URLs, reg.ValuePool, tenantID, keyID)
+}
+
 // getPropByKeyID is the shared inner implementation for typed KeyID lookups.
 // Lock-free: reads the store's Matrix with atomic.LoadUint32.
 func getPropByKeyID(store *PropStore, valuePool [][]byte, tenantID uint16, keyID uint16) ([]byte, bool) {

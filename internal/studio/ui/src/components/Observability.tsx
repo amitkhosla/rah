@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import {
   fetchObsMetrics, fetchObsAccessLog, fetchObsApis, fetchObsTraces,
   fetchObsDetailLogConfig, updateObsDetailLogConfig,
+  fetchObsConfig, updateObsConfig,
+  type ObsRuntimeConfig,
 } from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -57,15 +59,38 @@ interface TracePayloadEvent {
   duration_ns?: number
   total_ns?: number
   status?: number
+  step_idx?: number  // flow step index (-1 = system/infra, 0+ = user step)
   output?: Array<{ k: string; v: string }>
+  // upstream-only fields (populated for entries in the upstreams[] array)
+  host?: string
+  url?: string
+  bytes_sent?: number
+  bytes_received?: number
+  dns_duration_ns?: number
+  connect_duration_ns?: number
+  tls_duration_ns?: number
+  ttfb_ns?: number
+  conn_reused?: boolean
+  attempt?: number
+  err?: string
+  req_headers?: Record<string, string>
+  res_headers?: Record<string, string>
+  res_body?: string
 }
 
 interface TracePayload {
   summary?: {
     duration_ns?: number
+    method?: string
+    path?: string
+    status?: number
+    tenant_id?: number
+    api_id?: number
   }
   instructions?: TracePayloadEvent[]
   upstreams?: TracePayloadEvent[]
+  request_headers?: Record<string, string>
+  query_string?: string
 }
 
 interface RouterTraceDetails {
@@ -95,6 +120,13 @@ function fmtTime(ns: number): string {
 function fmtNsAsMs(ns: number): string {
   if (!ns || ns <= 0) return '0 ms'
   return `${(ns / 1_000_000).toFixed(2)} ms`
+}
+
+function fmtBytes(n?: number): string {
+  if (!n || n <= 0) return '0 B'
+  if (n >= 1_048_576) return (n / 1_048_576).toFixed(1) + ' MB'
+  if (n >= 1_024) return (n / 1_024).toFixed(1) + ' KB'
+  return `${n} B`
 }
 
 function snip(value?: string, n = 220): string {
@@ -240,6 +272,18 @@ export default function Observability() {
     localStorage.getItem('rah_show_conn_timing') === 'true'
   )
 
+  // ── Trace & log runtime config ─────────────────────────────────────
+  const [obsCfg, setObsCfg]         = useState<ObsRuntimeConfig | null>(null)
+  const [obsCfgOpen, setObsCfgOpen] = useState(false)
+  const [obsCfgSaving, setObsCfgSaving] = useState(false)
+  const [obsCfgMsg, setObsCfgMsg]   = useState<string | null>(null)
+  // Draft values (only applied on Save)
+  const [draftTrace,     setDraftTrace]     = useState(false)
+  const [draftSampleRate,setDraftSampleRate]= useState(0)
+  const [draftInstrTiming,setDraftInstrTiming]= useState(true)
+  const [draftInfoLog,   setDraftInfoLog]   = useState(true)
+  const [draftLogFields, setDraftLogFields] = useState('')  // comma-separated
+
   const metricsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -339,9 +383,44 @@ export default function Observability() {
     }
   }
 
+  async function loadObsConfig() {
+    try {
+      const cfg = await fetchObsConfig()
+      setObsCfg(cfg)
+      setDraftTrace(cfg.trace_mode)
+      setDraftSampleRate(cfg.trace_sample_rate)
+      setDraftInstrTiming(cfg.instruction_timing_enabled)
+      setDraftInfoLog(cfg.info_log_enabled)
+      setDraftLogFields(cfg.info_log_fields.join(', '))
+    } catch {
+      // config endpoint may not be reachable in all setups
+    }
+  }
+
+  async function saveObsConfig() {
+    setObsCfgSaving(true)
+    setObsCfgMsg(null)
+    try {
+      await updateObsConfig({
+        trace_mode:                  draftTrace,
+        trace_sample_rate:           draftSampleRate,
+        instruction_timing_enabled:  draftInstrTiming,
+        info_log_enabled:            draftInfoLog,
+        info_log_fields:             draftLogFields.split(',').map(s => s.trim()).filter(Boolean),
+      })
+      setObsCfgMsg('Saved.')
+      await loadObsConfig()
+    } catch (e: any) {
+      setObsCfgMsg('Error: ' + (e?.message ?? 'unknown'))
+    } finally {
+      setObsCfgSaving(false)
+    }
+  }
+
   useEffect(() => {
     loadAll()
     loadDetailLogConfig()
+    loadObsConfig()
 
     metricsTimerRef.current = setInterval(loadMetrics, 10_000)
     logTimerRef.current = setInterval(() => { loadAccessLog(); loadApis() }, 5_000)
@@ -405,6 +484,131 @@ export default function Observability() {
         <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--muted)' }}>
           Live gateway metrics, access log, and traces. Metrics refresh every 10s, access log every 5s.
         </p>
+      </div>
+
+      {/* ── Trace & Log Settings panel ─────────────────────────────── */}
+      <div style={{
+        marginBottom: 20,
+        borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: 'var(--panel)',
+        overflow: 'hidden',
+      }}>
+        {/* Collapsible header */}
+        <button
+          onClick={() => setObsCfgOpen(o => !o)}
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text)', fontSize: 13, fontWeight: 600, textAlign: 'left',
+          }}
+        >
+          <span>Trace &amp; Log Settings</span>
+          <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 8 }}>
+            {obsCfg
+              ? `trace: ${obsCfg.trace_mode ? `on (${(obsCfg.trace_sample_rate * 100).toFixed(0)}% sample)` : 'off'}  ·  instr timing: ${obsCfg.instruction_timing_enabled ? 'on' : 'off'}`
+              : 'loading…'}
+            {' '}{obsCfgOpen ? '▲' : '▼'}
+          </span>
+        </button>
+
+        {obsCfgOpen && (
+          <div style={{ padding: '0 14px 14px', borderTop: '1px solid var(--border)' }}>
+            <p style={{ margin: '10px 0 14px', fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+              These settings take effect immediately — no deploy needed. They control what the
+              gateway records at runtime. Changes are lost on gateway restart (use env vars for persistence).
+            </p>
+
+            {/* Trace mode */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 24px' }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Distributed Tracing</div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+                  <input type="checkbox" checked={draftTrace} onChange={e => setDraftTrace(e.target.checked)} />
+                  <span style={{ fontSize: 13 }}>Enable trace collection</span>
+                </label>
+                <p style={{ margin: '0 0 8px 0', fontSize: 11, color: 'var(--muted)' }}>
+                  When on, sampled requests get a full timeline of every instruction with its duration. View traces in the Traces section below.
+                </p>
+                {draftTrace && (
+                  <div>
+                    <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
+                      Sample rate: <strong style={{ color: 'var(--text)' }}>{(draftSampleRate * 100).toFixed(0)}%</strong>
+                    </label>
+                    <input type="range" min={0} max={1} step={0.01}
+                      value={draftSampleRate}
+                      onChange={e => setDraftSampleRate(Number(e.target.value))}
+                      style={{ width: '100%' }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--muted)' }}>
+                      <span>0% (off)</span><span>50%</span><span>100% (all requests)</span>
+                    </div>
+                    <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted)' }}>
+                      High sample rates add ~1–5µs per request. Start at 5–10% in production.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Instruction Timing</div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+                  <input type="checkbox" checked={draftInstrTiming} onChange={e => setDraftInstrTiming(e.target.checked)} />
+                  <span style={{ fontSize: 13 }}>Per-instruction timing</span>
+                </label>
+                <p style={{ margin: '0 0 16px', fontSize: 11, color: 'var(--muted)' }}>
+                  Records how long each step type takes on average. Visible in the "Slow Instructions" table above. Near-zero overhead (~10ns/instruction).
+                </p>
+
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Access Log</div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+                  <input type="checkbox" checked={draftInfoLog} onChange={e => setDraftInfoLog(e.target.checked)} />
+                  <span style={{ fontSize: 13 }}>Enable access log</span>
+                </label>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
+                    Log fields <span style={{ fontWeight: 400 }}>(comma-separated)</span>
+                  </label>
+                  <input
+                    className="input"
+                    placeholder="api_id, tenant_id, status, duration_ns"
+                    value={draftLogFields}
+                    onChange={e => setDraftLogFields(e.target.value)}
+                  />
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--muted)' }}>
+                    Available: api_id, tenant_id, status, duration_ns, gateway_duration_ns, upstream_duration_ns, upstream_calls, client_bytes_sent
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Per-step trace/log note */}
+            <div style={{
+              marginTop: 14, padding: '8px 12px', borderRadius: 6,
+              background: 'rgba(87,181,255,0.06)', border: '1px solid rgba(87,181,255,0.2)',
+              fontSize: 12, color: 'var(--muted)',
+            }}>
+              <strong style={{ color: 'var(--accent)' }}>Per-step controls</strong> — In the Flow Designer,
+              expand any step and use <em>Log result as</em> and <em>Capture in trace</em> to selectively
+              record individual step outputs without changing global settings.
+            </div>
+
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                className="btn primary"
+                onClick={saveObsConfig}
+                disabled={obsCfgSaving}
+              >
+                {obsCfgSaving ? 'Saving…' : 'Apply'}
+              </button>
+              <button className="btn muted" onClick={loadObsConfig}>Reset</button>
+              {obsCfgMsg && (
+                <span style={{ fontSize: 12, color: obsCfgMsg.startsWith('Error') ? '#f87171' : '#34d399' }}>
+                  {obsCfgMsg}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -845,8 +1049,9 @@ export default function Observability() {
                         </div>
                         {payload && typeof payload !== 'string' ? (
                           <>
+                            <IncomingRequestPanel payload={payload as TracePayload} />
                             <RouterTraceSummary payload={payload as TracePayload} />
-                            <BlockView payload={payload as TracePayload} />
+                            <TraceViewTabs payload={payload as TracePayload} />
                           </>
                         ) : payload ? (
                           <pre style={{
@@ -897,6 +1102,100 @@ function RouterField({ label, value, color }: { label: string; value: string; co
         >
           {expanded ? 'show less' : `show all (${value.length} chars)`}
         </button>
+      )}
+    </div>
+  )
+}
+
+function IncomingRequestPanel({ payload }: { payload: TracePayload }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const method = payload.summary?.method
+  const path = payload.summary?.path
+  const query = payload.query_string
+  const headers = payload.request_headers
+  const hasContent = method || path || query || (headers && Object.keys(headers).length > 0)
+  if (!hasContent) return null
+
+  return (
+    <div style={{
+      marginBottom: 10,
+      background: 'var(--bg)',
+      borderRadius: 6,
+      border: '1px solid var(--border)',
+      fontSize: 11,
+      overflow: 'hidden',
+    }}>
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          width: '100%', textAlign: 'left',
+          padding: '7px 12px',
+          background: 'rgba(255,255,255,0.03)',
+          border: 'none', borderBottom: collapsed ? 'none' : '1px solid var(--border)',
+          color: 'var(--muted)', fontSize: 12, cursor: 'pointer',
+        }}
+      >
+        <span style={{ fontSize: 10 }}>{collapsed ? '▶' : '▾'}</span>
+        <span>Incoming Request</span>
+        {method && path && (
+          <span style={{ marginLeft: 8, color: 'var(--text)', fontWeight: 600 }}>
+            {method} {path}{query ? '?' + query : ''}
+          </span>
+        )}
+      </button>
+      {!collapsed && (
+        <div style={{ padding: '8px 12px' }}>
+          {/* Method + path + query as a code line if not already shown */}
+          {(method || path) && (
+            <div style={{ marginBottom: 8, fontFamily: 'monospace', color: 'var(--text)', fontSize: 12 }}>
+              <span style={{ color: '#60a5fa', fontWeight: 700, marginRight: 8 }}>{method}</span>
+              <span>{path}</span>
+              {query && <span style={{ color: 'var(--muted)' }}>?{query}</span>}
+            </div>
+          )}
+
+          {/* Query params as individual rows */}
+          {query && (() => {
+            const params: Array<[string, string]> = []
+            try {
+              new URLSearchParams(query).forEach((v, k) => params.push([k, v]))
+            } catch { /* ignore */ }
+            if (params.length === 0) return null
+            return (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ color: 'var(--muted)', marginBottom: 4, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', fontSize: 10 }}>Query Params</div>
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <tbody>
+                    {params.map(([k, v]) => (
+                      <tr key={k}>
+                        <td style={{ padding: '2px 8px 2px 0', color: '#a78bfa', fontFamily: 'monospace', whiteSpace: 'nowrap', width: 1 }}>{k}</td>
+                        <td style={{ padding: '2px 0', color: 'var(--text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{v}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          })()}
+
+          {/* Request headers */}
+          {headers && Object.keys(headers).length > 0 && (
+            <div>
+              <div style={{ color: 'var(--muted)', marginBottom: 4, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', fontSize: 10 }}>Headers</div>
+              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <tbody>
+                  {Object.entries(headers).map(([k, v]) => (
+                    <tr key={k}>
+                      <td style={{ padding: '2px 8px 2px 0', color: '#34d399', fontFamily: 'monospace', whiteSpace: 'nowrap', width: 1 }}>{k}</td>
+                      <td style={{ padding: '2px 0', color: 'var(--text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
@@ -1182,6 +1481,7 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
     seq: number
     status?: number
     isGatewayPhase: boolean
+    sourceEvent?: TracePayloadEvent
   }
 
   const events: TimelineEvent[] = [
@@ -1201,11 +1501,12 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
     ...upstreamEvents.map((e) => ({
       kind: 'upstream' as const,
       rawName: e.name || '',
-      label: e.name || 'upstream',
+      label: e.host || e.name || 'upstream',
       durationNs: Number(e.total_ns ?? e.duration_ns ?? 0),
       seq: Number(e.seq ?? 0),
       status: e.status,
       isGatewayPhase: false,
+      sourceEvent: e,
     })),
   ].filter(e => e.durationNs >= 0)
 
@@ -1246,12 +1547,151 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
   )
 
   function EventBar({ e, i, dimmed }: { e: TimelineEvent; i: number; dimmed?: boolean }) {
+    const [phaseExpanded, setPhaseExpanded] = useState(false)
+    const [urlExpanded, setUrlExpanded] = useState(false)
+    const [reqHdrsExpanded, setReqHdrsExpanded] = useState(false)
+    const [resExpanded, setResExpanded] = useState(false)
+    const [resBodyExpanded, setResBodyExpanded] = useState(false)
     const widthPct = Math.max(2, (e.durationNs / maxNs) * 100)
     const color = e.kind === 'upstream' ? '#fbbf24' : dimmed ? 'rgba(87,181,255,0.35)' : '#57b5ff'
-    // Gateway phases get their seq assigned after flow execution, so the numbers
-    // are always out-of-order relative to their visual position. Only show seq
-    // for actual flow instructions (non-phase events).
     const seqLabel = (!e.isGatewayPhase && e.seq > 0) ? `${e.seq}. ` : ''
+    const src = e.sourceEvent
+
+    const upstreamMeta = e.kind === 'upstream' && src ? (
+      <div style={{ marginTop: 3, fontSize: 11 }}>
+        {src.url && (
+          <div style={{ color: 'var(--muted)', wordBreak: 'break-all', marginBottom: 2 }}>
+            <span style={{ color: '#fbbf24', marginRight: 4 }}>URL</span>
+            {src.url.length > 60 && !urlExpanded ? src.url.slice(0, 60) + '…' : src.url}
+            {src.url.length > 60 && (
+              <button
+                onClick={ev => { ev.stopPropagation(); setUrlExpanded(x => !x) }}
+                style={{ marginLeft: 4, fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              >
+                {urlExpanded ? 'less' : 'more'}
+              </button>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          {(src.bytes_sent !== undefined || src.bytes_received !== undefined) && (
+            <span style={{ color: 'var(--muted)' }}>
+              <span style={{ color: '#4ade80' }}>↑</span>{' '}{fmtBytes(src.bytes_sent)}
+              {'  '}
+              <span style={{ color: '#60a5fa' }}>↓</span>{' '}{fmtBytes(src.bytes_received)}
+            </span>
+          )}
+          {!!src.attempt && src.attempt > 0 && (
+            <span style={{ color: '#f97316' }}>retry #{src.attempt}</span>
+          )}
+          {src.conn_reused && (
+            <span style={{ color: 'var(--muted)' }}>conn reused</span>
+          )}
+          {src.err && (
+            <span style={{ color: '#f87171' }}>⚠ {src.err}</span>
+          )}
+        </div>
+        {(src.dns_duration_ns || src.connect_duration_ns || src.tls_duration_ns || src.ttfb_ns) && (
+          <div style={{ marginTop: 3 }}>
+            <button
+              onClick={ev => { ev.stopPropagation(); setPhaseExpanded(x => !x) }}
+              style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              {phaseExpanded ? '▾ hide timing' : '▸ show timing breakdown'}
+            </button>
+            {phaseExpanded && (
+              <div style={{ marginTop: 4, display: 'grid', gridTemplateColumns: 'auto auto', columnGap: 16, rowGap: 2, fontSize: 11, color: 'var(--muted)' }}>
+                {!!src.dns_duration_ns && <><span>DNS</span><span>{fmtNsAsMs(src.dns_duration_ns)}</span></>}
+                {!!src.connect_duration_ns && <><span>TCP connect</span><span>{fmtNsAsMs(src.connect_duration_ns)}</span></>}
+                {!!src.tls_duration_ns && <><span>TLS handshake</span><span>{fmtNsAsMs(src.tls_duration_ns)}</span></>}
+                {!!src.ttfb_ns && <><span>TTFB</span><span>{fmtNsAsMs(src.ttfb_ns)}</span></>}
+              </div>
+            )}
+          </div>
+        )}
+        {src.req_headers && Object.keys(src.req_headers).length > 0 && (
+          <div style={{ marginTop: 3 }}>
+            <button
+              onClick={ev => { ev.stopPropagation(); setReqHdrsExpanded(x => !x) }}
+              style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              {reqHdrsExpanded ? '▾ hide request headers' : `▸ request headers (${Object.keys(src.req_headers).length})`}
+            </button>
+            {reqHdrsExpanded && (
+              <table style={{ marginTop: 4, borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+                <tbody>
+                  {Object.entries(src.req_headers).map(([k, v]) => (
+                    <tr key={k}>
+                      <td style={{ padding: '1px 8px 1px 0', color: '#a78bfa', fontFamily: 'monospace', whiteSpace: 'nowrap', width: 1 }}>{k}</td>
+                      <td style={{ padding: '1px 0', color: v === '***' ? '#f87171' : 'var(--text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+        {(src.res_headers || src.res_body) && (
+          <div style={{ marginTop: 3 }}>
+            <button
+              onClick={ev => { ev.stopPropagation(); setResExpanded(x => !x) }}
+              style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              {resExpanded ? '▾ hide response' : '▸ show response'}
+            </button>
+            {resExpanded && (
+              <div style={{ marginTop: 4 }}>
+                {src.res_headers && Object.keys(src.res_headers).length > 0 && (
+                  <div style={{ marginBottom: 4 }}>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>Response Headers</div>
+                    <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 11 }}>
+                      <tbody>
+                        {Object.entries(src.res_headers).map(([k, v]) => (
+                          <tr key={k}>
+                            <td style={{ padding: '1px 8px 1px 0', color: '#34d399', fontFamily: 'monospace', whiteSpace: 'nowrap', width: 1 }}>{k}</td>
+                            <td style={{ padding: '1px 0', color: 'var(--text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{v}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {src.res_body && (
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
+                      Response Body {src.res_body.length >= 1024 ? '(first 1 KB)' : ''}
+                    </div>
+                    <pre style={{
+                      margin: 0, padding: '6px 8px',
+                      background: 'rgba(0,0,0,0.3)',
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                      color: 'var(--text)',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                      maxHeight: resBodyExpanded ? 'none' : 80,
+                      overflow: resBodyExpanded ? 'visible' : 'hidden',
+                    }}>
+                      {src.res_body}
+                    </pre>
+                    {src.res_body.length > 200 && (
+                      <button
+                        onClick={ev => { ev.stopPropagation(); setResBodyExpanded(x => !x) }}
+                        style={{ marginTop: 2, fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      >
+                        {resBodyExpanded ? 'collapse' : 'expand'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    ) : null
+
     return (
       <div key={`${e.kind}-${e.seq}-${i}`} style={{ marginBottom: 8, opacity: dimmed ? 0.7 : 1 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
@@ -1266,6 +1706,7 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
         <div style={{ height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
           <div style={{ width: `${widthPct}%`, height: '100%', background: color }} />
         </div>
+        {upstreamMeta}
       </div>
     )
   }
@@ -1319,6 +1760,202 @@ function TraceTimeline({ payload }: { payload: TracePayload }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Flow View ────────────────────────────────────────────────────
+// Groups instruction events by their source flow step index (step_idx),
+// giving users a flow-aligned trace view that matches the steps they built.
+
+function FlowView({ payload }: { payload: TracePayload }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const instructions = Array.isArray(payload.instructions) ? payload.instructions : []
+  const upstreams = Array.isArray(payload.upstreams) ? payload.upstreams : []
+
+  // Require at least one non-system step_idx to show this view.
+  const hasStepIdx = instructions.some(e => typeof e.step_idx === 'number' && e.step_idx >= 0)
+  if (!hasStepIdx) return <TraceTimeline payload={payload} />
+
+  // Partition: step_idx >= 0 are user steps; step_idx < 0 (or missing) are system.
+  const stepGroupMap = new Map<number, TracePayloadEvent[]>()
+  const systemEvents: TracePayloadEvent[] = []
+  for (const ev of instructions) {
+    const idx = typeof ev.step_idx === 'number' ? ev.step_idx : -1
+    if (idx < 0) {
+      systemEvents.push(ev)
+    } else {
+      if (!stepGroupMap.has(idx)) stepGroupMap.set(idx, [])
+      stepGroupMap.get(idx)!.push(ev)
+    }
+  }
+
+  const sortedIdxs = [...stepGroupMap.keys()].sort((a, b) => a - b)
+  const totalNs = Number(payload.summary?.duration_ns ?? 0)
+  const maxNs = Math.max(totalNs, 1)
+
+  function toggle(idx: number) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(idx) ? next.delete(idx) : next.add(idx)
+      return next
+    })
+  }
+
+  // Pick the primary label for a step group: first non-control name.
+  function stepLabel(events: TracePayloadEvent[]): string {
+    const SKIP = new Set(['GOTO', 'RET', 'STOP', 'CALL', 'LOOP_GATE', 'LOOP_GATE_SLOT', 'LOOP_REPEAT', 'WHILE_GATE', 'WHILE_REPEAT'])
+    for (const ev of events) {
+      const n = ev.name ?? ''
+      if (!n.startsWith('GATEWAY_PHASE_') && !SKIP.has(n)) return displayName(n)
+    }
+    return displayName(events[0]?.name)
+  }
+
+  function stepTotalNs(events: TracePayloadEvent[]): number {
+    return events.reduce((sum, e) => sum + Number(e.duration_ns ?? 0), 0)
+  }
+
+  // Detect if branch was taken for an if step (looks for COMPLEX_LOGIC_GATE variants).
+  function branchInfo(events: TracePayloadEvent[]): string | null {
+    const names = events.map(e => e.name ?? '')
+    const hasGate = names.some(n => n.includes('LOGIC_GATE') || n.includes('complex_logic'))
+    if (!hasGate) return null
+    // If there are instructions after the gate, heuristically determine which branch ran.
+    const gateIdx = names.findIndex(n => n.includes('LOGIC_GATE') || n.includes('complex_logic'))
+    const afterGate = names.slice(gateIdx + 1)
+    if (afterGate.length === 0) return 'no branch'
+    // We can't easily tell then vs else without more context; just note that a branch ran.
+    return `${afterGate.length} instruction${afterGate.length !== 1 ? 's' : ''} in branch`
+  }
+
+  return (
+    <div style={{ background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)', padding: '10px 12px' }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+        Flow Steps • total {fmtNsAsMs(totalNs)}
+      </div>
+
+      {sortedIdxs.map(idx => {
+        const events = stepGroupMap.get(idx)!
+        const ns = stepTotalNs(events)
+        const isExp = expanded.has(idx)
+        const widthPct = Math.max(2, (ns / maxNs) * 100)
+        const label = stepLabel(events)
+        const branch = branchInfo(events)
+
+        return (
+          <div key={idx} style={{ marginBottom: 6 }}>
+            <div
+              onClick={() => toggle(idx)}
+              style={{ cursor: 'pointer', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 12, userSelect: 'none' }}>
+                {isExp ? '▾' : '▸'}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', flex: 1 }}>
+                {idx + 1}. {label}
+                {branch && <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 400, marginLeft: 8 }}>({branch})</span>}
+              </span>
+              <span style={{ fontSize: 11, color: events.length > 1 ? 'var(--muted)' : 'var(--muted)', whiteSpace: 'nowrap' }}>
+                {events.length > 1 && <span style={{ marginRight: 6, color: 'rgba(255,255,255,0.3)' }}>{events.length} instr</span>}
+                {fmtNsAsMs(ns)}
+              </span>
+            </div>
+            <div style={{ height: 5, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden', marginLeft: 20, marginBottom: 2 }}>
+              <div style={{ width: `${widthPct}%`, height: '100%', background: '#57b5ff' }} />
+            </div>
+            {isExp && (
+              <div style={{ marginLeft: 20, marginTop: 2 }}>
+                {events.map((ev, j) => <InstructionEventRow key={ev.seq ?? j} ev={ev} />)}
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      {/* System instructions (auto-bind, infra) — collapsed by default */}
+      {systemEvents.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginBottom: 4 }}>
+            Infrastructure ({systemEvents.length} instructions — auto-bind, routing overhead)
+          </div>
+        </div>
+      )}
+
+      {/* Upstream calls */}
+      {upstreams.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Upstream Calls</div>
+          {upstreams.map((e, i) => {
+            const ns = Number(e.total_ns ?? e.duration_ns ?? 0)
+            const widthPct = Math.max(2, (ns / maxNs) * 100)
+            return (
+              <div key={i} style={{ marginBottom: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, gap: 8 }}>
+                  <div style={{ color: 'var(--text)', fontSize: 12 }}>
+                    {e.host || 'upstream'}{e.status ? ` (${e.status})` : ''}
+                    {e.err && <span style={{ color: '#f87171', marginLeft: 6 }}>⚠ {e.err}</span>}
+                  </div>
+                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>{fmtNsAsMs(ns)}</div>
+                </div>
+                <div style={{ height: 5, background: 'rgba(255,255,255,0.06)', borderRadius: 999, overflow: 'hidden' }}>
+                  <div style={{ width: `${widthPct}%`, height: '100%', background: '#fbbf24' }} />
+                </div>
+                {e.url && (
+                  <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {e.url}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Trace View Tabs ───────────────────────────────────────────────
+// Tab selector for the three trace views: Flow (step-aligned), Blocks, Timeline.
+
+function TraceViewTabs({ payload }: { payload: TracePayload }) {
+  const instructions = Array.isArray(payload.instructions) ? payload.instructions : []
+  const hasStepIdx = instructions.some(e => typeof e.step_idx === 'number' && e.step_idx >= 0)
+  const hasBlocks = buildBlockGroups(instructions).length > 0
+
+  // Default to Flow view if step_idx data is available, else Blocks, else Timeline.
+  const defaultView = hasStepIdx ? 'flow' : hasBlocks ? 'blocks' : 'timeline'
+  const [view, setView] = useState<'flow' | 'blocks' | 'timeline'>(defaultView)
+
+  const tabStyle = (active: boolean) => ({
+    padding: '4px 10px',
+    fontSize: 11,
+    fontWeight: active ? 700 : 400,
+    color: active ? 'var(--text)' : 'var(--muted)',
+    background: active ? 'rgba(87,181,255,0.12)' : 'transparent',
+    border: `1px solid ${active ? 'rgba(87,181,255,0.3)' : 'var(--border)'}`,
+    borderRadius: 4,
+    cursor: 'pointer',
+  })
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+        {hasStepIdx && (
+          <button onClick={() => setView('flow')} style={tabStyle(view === 'flow')}>
+            Flow
+          </button>
+        )}
+        <button onClick={() => setView('blocks')} style={tabStyle(view === 'blocks')}>
+          Blocks
+        </button>
+        <button onClick={() => setView('timeline')} style={tabStyle(view === 'timeline')}>
+          Timeline
+        </button>
+      </div>
+      {view === 'flow' && <FlowView payload={payload} />}
+      {view === 'blocks' && <BlockView payload={payload} />}
+      {view === 'timeline' && <TraceTimeline payload={payload} />}
     </div>
   )
 }

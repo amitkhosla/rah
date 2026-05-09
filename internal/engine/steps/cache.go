@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"time"
+
 	"rah/internal/engine"
 	"rah/internal/rctx"
 )
@@ -32,7 +34,12 @@ func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 			if len(key) == 0 {
 				return s.PC + 1
 			}
-			if val, ok := store.Get(ctx.TenantID, key); ok {
+			t0 := time.Now()
+			val, ok := store.Get(ctx.TenantID, key)
+			if ctx.Obs != nil {
+				ctx.Obs.RecordCacheOp("cache_get", ok, time.Since(t0).Nanoseconds())
+			}
+			if ok {
 				ctx.ByteSlots[destSlot] = val
 			}
 			return s.PC + 1
@@ -72,7 +79,12 @@ func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction 
 			if len(key) == 0 {
 				return s.PC + 1
 			}
-			if val, ok := store.Get(globalCacheTenantID, key); ok {
+			t0 := time.Now()
+			val, ok := store.Get(globalCacheTenantID, key)
+			if ctx.Obs != nil {
+				ctx.Obs.RecordCacheOp("cache_get_global", ok, time.Since(t0).Nanoseconds())
+			}
+			if ok {
 				ctx.ByteSlots[destSlot] = val
 			}
 			return s.PC + 1

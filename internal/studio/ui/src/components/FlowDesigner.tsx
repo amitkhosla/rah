@@ -1,6 +1,9 @@
-import { useMemo, useState } from 'react'
-import type { FieldDef, FlowStep, PaletteBlock, SavedFlow } from '../types'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, SavedFlow } from '../types'
 import { expandSteps, findSourceRefs, smartCondition } from '../utils/expressions'
+import { parseDSL, serializeDSL } from '../utils/dsl'
+import FlowMap from './FlowMap'
+import FlowGraph from './FlowGraph'
 
 interface Props {
   blocks: PaletteBlock[]
@@ -10,7 +13,26 @@ interface Props {
   setFlowName: (name: string) => void
   savedFlows: SavedFlow[]
   onSaveFlow: () => void
+  onNavigateToFlow?: (name: string) => void
+  /** Ordered list of flow names we navigated from (breadcrumb trail, excluding current). */
+  navStack?: string[]
+  /** Jump back to navStack[idx], popping everything above it. */
+  onNavigateBack?: (idx: number) => void
+  /** Reverse dependency map: which flows and APIs reference each named flow. */
+  impactMap?: Map<string, FlowImpact>
+  /** Navigate to the APIs tab (used from the impact warning banner). */
+  onNavigateToApis?: () => void
+  /** Open a named flow fresh for editing (clears navStack, loads into canvas). */
+  onOpenFlow?: (name: string) => void
 }
+
+// ── Branch path type for n-level nesting ─────────────────────────
+/**
+ * Addresses a nested step inside the top-level steps array.
+ * Example: [{ branch: 'then_steps', idx: 0 }, { branch: 'else_steps', idx: 2 }]
+ * means steps[topIdx].then_steps[0].else_steps[2]
+ */
+export type BranchPath = Array<{ branch: 'then_steps' | 'else_steps'; idx: number }>
 
 // ── Visual Mode recipe definitions ───────────────────────────────
 interface VisualRecipe {
@@ -113,10 +135,10 @@ const VISUAL_GROUPS: VisualGroup[] = [
     label: 'CACHE',
     icon: '🗄️',
     recipes: [
-      { title: 'Cache Read',         wraps: 'cache_get',         description: 'Read a value from the tenant cache' },
-      { title: 'Cache Write',        wraps: 'cache_put',         description: 'Write a value to the tenant cache with TTL' },
-      { title: 'Global Cache Read',  wraps: 'cache_get_global',  description: 'Read from the shared global cache' },
-      { title: 'Global Cache Write', wraps: 'cache_put_global',  description: 'Write to the shared global cache' },
+      { title: 'Cache Read · Per-Tenant',  wraps: 'cache_get',         description: 'Read a cached value — private to this tenant' },
+      { title: 'Cache Write · Per-Tenant', wraps: 'cache_put',         description: 'Store a value in this tenant\'s private cache with TTL' },
+      { title: 'Cache Read · Shared',      wraps: 'cache_get_global',  description: 'Read from the shared cache (same data for all tenants)' },
+      { title: 'Cache Write · Shared',     wraps: 'cache_put_global',  description: 'Write to the shared cache (visible to all tenants)' },
       { title: 'Extract JSON',       wraps: 'json_extract_emit', description: 'Extract fields from a JSON response body' },
     ],
   },
@@ -163,13 +185,44 @@ function serializeCases(cases: SwitchCase[]): string {
 
 // ── Component ─────────────────────────────────────────────────────
 export default function FlowDesigner({
-  blocks, steps, setSteps, flowName, setFlowName, savedFlows, onSaveFlow,
+  blocks, steps, setSteps, flowName, setFlowName, savedFlows, onSaveFlow, onNavigateToFlow,
+  navStack = [], onNavigateBack, impactMap, onNavigateToApis, onOpenFlow,
 }: Props) {
-  const [filter, setFilter]       = useState('')
-  const [dragOver, setDragOver]   = useState(false)
-  const [expanded, setExpanded]   = useState<Set<number>>(new Set())
-  const [justSaved, setJustSaved] = useState(false)
-  const [mode, setMode]           = useState<'visual' | 'expert'>('visual')
+  const [filter, setFilter]             = useState('')
+  const [dragOver, setDragOver]         = useState(false)
+  const [expanded, setExpanded]         = useState<Set<number>>(new Set())
+  const [justSaved, setJustSaved]       = useState(false)
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+  const [nestedExpanded, setNestedExpanded] = useState<Set<string>>(new Set())
+  const [dragOverBranch, setDragOverBranch] = useState<string | null>(null)
+  const [dropTargetIdx, setDropTargetIdx]   = useState<number | null>(null)
+  const [insertCursor, setInsertCursor]     = useState<number | null>(null)
+  const [showFlowMap, setShowFlowMap]   = useState(false)
+  const [viewMode,    setViewMode]      = useState<'visual' | 'code'>('visual')
+  const [dslText,     setDslText]       = useState('')
+  const [dslError,    setDslError]      = useState<string | null>(null)
+  const [showDslRef,  setShowDslRef]    = useState(false)
+  const [showFlowGraph, setShowFlowGraph] = useState(false)
+  // Variable picker popup: which step+field is currently showing the popup
+  const [varPopup, setVarPopup] = useState<{ stepIdx: number; field: string; anchor: DOMRect } | null>(null)
+  // Variable validation warnings: key = "stepIdx:fieldKey", value = warning message
+  const [validationWarnings, setValidationWarnings] = useState<Map<string, string>>(new Map())
+
+  // Track which side last triggered a change to break the sync loop
+  const dslChangeSource = useRef<'visual' | 'code'>('visual')
+
+  // Visual → Code: whenever steps change from visual edits, keep DSL text fresh
+  useEffect(() => {
+    if (dslChangeSource.current === 'code') {
+      // Steps were just updated by a code edit — don't re-serialize back
+      dslChangeSource.current = 'visual'
+      return
+    }
+    setDslText(serializeDSL(steps))
+  }, [steps])
+  const [selectMode, setSelectMode]     = useState(false)
+  const [selectedSteps, setSelectedSteps] = useState<Set<number>>(new Set())
+  const [extractName, setExtractName]   = useState('')
   // Pending (not-yet-saved) new claim rows, keyed by step index
   type DraftClaim = { key: string; mode: 'static' | 'var'; value: string }
   const [pendingClaims, setPendingClaims] = useState<Record<number, DraftClaim>>({})
@@ -229,12 +282,7 @@ export default function FlowDesigner({
   const filteredSaved = savedFlowBlocks.filter(b =>
     !filter || b.title.toLowerCase().includes(q) || 'my-flows'.includes(q),
   )
-  const filteredBlocks = blocks.filter(b =>
-    !filter ||
-    b.category.toLowerCase().includes(q) ||
-    b.title.toLowerCase().includes(q)     ||
-    b.type.toLowerCase().includes(q),
-  )
+
 
   // ── Mutations ───────────────────────────────────────────────────
   function handleDrop(e: React.DragEvent) {
@@ -248,6 +296,75 @@ export default function FlowDesigner({
     setExpanded(prev => new Set([...prev, idx]))
   }
 
+  function insertStepAt(block: PaletteBlock, atIdx: number) {
+    const newStep = { action: block.type, ...block.defaults }
+    const newSteps = [...steps]
+    newSteps.splice(atIdx, 0, newStep)
+    setSteps(newSteps)
+    setExpanded(prev => {
+      const next = new Set<number>()
+      prev.forEach(i => next.add(i >= atIdx ? i + 1 : i))
+      next.add(atIdx)
+      return next
+    })
+  }
+
+  function clickAddBlock(block: PaletteBlock) {
+    const newStep = { action: block.type, ...block.defaults }
+    if (insertCursor !== null) {
+      const cur = insertCursor
+      const newSteps = [...steps]
+      newSteps.splice(cur, 0, newStep)
+      setSteps(newSteps)
+      setExpanded(prev => {
+        const next = new Set<number>()
+        prev.forEach(i => next.add(i >= cur ? i + 1 : i))
+        next.add(cur)
+        return next
+      })
+      setInsertCursor(null)
+    } else {
+      setSteps([...steps, newStep])
+      setExpanded(prev => new Set([...prev, steps.length]))
+    }
+  }
+
+  function InterStepDropZone({ idx }: { idx: number }) {
+    const isOver = dropTargetIdx === idx
+    return (
+      <div
+        onDragOver={e => { e.preventDefault(); setDropTargetIdx(idx) }}
+        onDragLeave={() => setDropTargetIdx(null)}
+        onDrop={e => {
+          e.preventDefault()
+          e.stopPropagation()
+          setDropTargetIdx(null)
+          const raw = e.dataTransfer.getData('application/json')
+          if (!raw) return
+          insertStepAt(JSON.parse(raw) as PaletteBlock, idx)
+        }}
+        style={{
+          height: isOver ? 28 : 6,
+          margin: '0 4px',
+          borderRadius: 4,
+          background: isOver ? 'rgba(87,181,255,0.15)' : 'transparent',
+          border: isOver ? '1px dashed rgba(87,181,255,0.5)' : '1px dashed transparent',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'height 0.1s, background 0.1s',
+          cursor: 'copy',
+        }}
+      >
+        {isOver && (
+          <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>
+            + Insert here
+          </span>
+        )}
+      </div>
+    )
+  }
+
   function toggleExpand(i: number) {
     setExpanded(prev => {
       const next = new Set(prev)
@@ -258,6 +375,15 @@ export default function FlowDesigner({
 
   function updateStep(i: number, key: string, value: string) {
     setSteps(steps.map((s, idx) => idx === i ? { ...s, [key]: value } : s))
+    // Validate variable references
+    if (['source','input','as','key_identifier','condition','then','else','flow_name','url','url_var'].includes(key)) {
+      const mapKey = `${i}:${key}`
+      if (!isVarDefined(value, i)) {
+        setValidationWarnings(prev => new Map(prev).set(mapKey, `Variable "${value}" is not defined before step ${i + 1}`))
+      } else {
+        setValidationWarnings(prev => { const m = new Map(prev); m.delete(mapKey); return m })
+      }
+    }
   }
 
   function removeStep(i: number) {
@@ -269,11 +395,117 @@ export default function FlowDesigner({
     })
   }
 
+  // ── N-level tree updater ──────────────────────────────────────
+  /**
+   * Returns a new copy of `node` with the step at `path` replaced by `updater(step)`.
+   * `path` is a BranchPath relative to `node`.
+   * If path is empty, returns updater(node) directly.
+   */
+  function setNestedStep(
+    node: FlowStep,
+    path: BranchPath,
+    updater: (s: FlowStep) => FlowStep | null,  // null = delete
+  ): FlowStep {
+    if (path.length === 0) return updater(node) ?? node
+    const [head, ...rest] = path
+    const arr = [...((node[head.branch] as FlowStep[]) ?? [])]
+    if (rest.length === 0) {
+      // At the target level
+      const result = updater(arr[head.idx])
+      if (result === null) {
+        arr.splice(head.idx, 1)
+      } else {
+        arr[head.idx] = result
+      }
+    } else {
+      arr[head.idx] = setNestedStep(arr[head.idx], rest, updater)
+    }
+    return { ...node, [head.branch]: arr }
+  }
+
+  /** Update a field on a step at arbitrary depth. topIdx = index in top-level steps[]. */
+  function updateNestedStep(topIdx: number, path: BranchPath, key: string, value: unknown) {
+    setSteps(steps.map((s, i) =>
+      i !== topIdx ? s : setNestedStep(s, path, step => ({ ...step, [key]: value }))
+    ))
+  }
+
+  /** Remove a step at arbitrary depth. */
+  function removeNestedStep(topIdx: number, path: BranchPath) {
+    setSteps(steps.map((s, i) =>
+      i !== topIdx ? s : setNestedStep(s, path, () => null)
+    ))
+  }
+
+  /** Append a new step to a branch at arbitrary depth. */
+  function addToNestedBranch(topIdx: number, path: BranchPath, branch: 'then_steps' | 'else_steps', b: PaletteBlock) {
+    setSteps(steps.map((s, i) => {
+      if (i !== topIdx) return s
+      // Navigate to the parent node, then append
+      const navigate = (node: FlowStep, remaining: BranchPath): FlowStep => {
+        if (remaining.length === 0) {
+          const arr = [...((node[branch] as FlowStep[]) ?? []), { action: b.type, ...b.defaults }]
+          return { ...node, [branch]: arr }
+        }
+        const [head, ...rest] = remaining
+        const arr = [...((node[head.branch] as FlowStep[]) ?? [])]
+        arr[head.idx] = navigate(arr[head.idx], rest)
+        return { ...node, [head.branch]: arr }
+      }
+      return navigate(s, path)
+    }))
+  }
+
+  function switchToCode() {
+    setDslText(serializeDSL(steps))
+    setDslError(null)
+    setViewMode('code')
+  }
+
+  function applyDSL() {
+    // Steps are already live-synced from the textarea — just navigate to visual
+    setDslError(null)
+    setExpanded(new Set())
+    setNestedExpanded(new Set())
+    setViewMode('visual')
+  }
+
   function handleSave() {
     if (!flowName.trim() || steps.length === 0) return
     onSaveFlow()
     setJustSaved(true)
     setTimeout(() => setJustSaved(false), 1800)
+  }
+
+  function extractSubFlow() {
+    if (!extractName.trim() || selectedSteps.size === 0) return
+    const sorted = [...selectedSteps].sort((a, b) => a - b)
+    const subSteps = sorted.map(i => steps[i])
+    // Save the sub-flow
+    onSaveFlow  // We can't call onSaveFlow directly with different steps; use the prop
+    // We need the parent (App) to save, but we only have onSaveFlow which saves current steps.
+    // Instead, we fire the navigate callback with a sentinel to create a new named flow.
+    // For now: persist to localStorage directly under savedFlows key, then reload.
+    // This is the simplest approach that does not require a new prop.
+    const raw = localStorage.getItem('rah_studio_v1')
+    const snap = raw ? JSON.parse(raw) as { savedFlows?: Array<{ name: string; steps: FlowStep[] }> } : {}
+    const existingFlows: Array<{ name: string; steps: FlowStep[] }> = snap.savedFlows ?? []
+    const already = existingFlows.find(f => f.name === extractName.trim())
+    if (!already) {
+      existingFlows.push({ name: extractName.trim(), steps: subSteps })
+      localStorage.setItem('rah_studio_v1', JSON.stringify({ ...snap, savedFlows: existingFlows }))
+    }
+    // Replace selected steps with a single call step
+    const firstIdx = sorted[0]
+    const newSteps = steps.filter((_, i) => !selectedSteps.has(i))
+    const callStep: FlowStep = { action: 'call', flow_name: extractName.trim() }
+    newSteps.splice(firstIdx, 0, callStep)
+    setSteps(newSteps)
+    setSelectMode(false)
+    setSelectedSteps(new Set())
+    setExtractName('')
+    // Reload savedFlows from localStorage (App will re-read on next render cycle via its own useEffect)
+    window.dispatchEvent(new StorageEvent('storage', { key: 'rah_studio_v1' }))
   }
 
   // ── Field input with source-ref chips ──────────────────────────
@@ -288,17 +520,39 @@ export default function FlowDesigner({
     return (
       <div key={key} className="field-row">
         <label className="field-label">{def?.label ?? key}</label>
-        <input
-          className="input"
-          value={value ?? ''}
-          placeholder={def?.placeholder ?? key}
-          onChange={e => updateStep(stepIdx, key, e.target.value)}
-          onBlur={opts?.smart ? e => {
-            const normalised = smartCondition(e.target.value)
-            if (normalised !== e.target.value) updateStep(stepIdx, key, normalised)
-            opts.onBlur?.(normalised)
-          } : undefined}
-        />
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <input
+            className="input"
+            style={{ flex: 1 }}
+            value={value ?? ''}
+            placeholder={def?.placeholder ?? key}
+            onChange={e => updateStep(stepIdx, key, e.target.value)}
+            onBlur={opts?.smart ? e => {
+              const normalised = smartCondition(e.target.value)
+              if (normalised !== e.target.value) updateStep(stepIdx, key, normalised)
+              opts.onBlur?.(normalised)
+            } : undefined}
+          />
+          <button
+            tabIndex={-1}
+            title="Browse available variables"
+            onClick={e => {
+              const rect = e.currentTarget.getBoundingClientRect()
+              setVarPopup({ stepIdx, field: key, anchor: rect })
+            }}
+            style={{
+              marginLeft: 4,
+              padding: '2px 5px',
+              background: 'rgba(87,181,255,0.1)',
+              border: '1px solid rgba(87,181,255,0.25)',
+              borderRadius: 4,
+              color: 'var(--accent)',
+              fontSize: 11,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >$</button>
+        </div>
         {/* Source-ref chips */}
         {refs.length > 0 && (
           <div className="ref-chips">
@@ -309,52 +563,196 @@ export default function FlowDesigner({
             ))}
           </div>
         )}
+        {/* Validation warning */}
+        {(() => {
+          const warn = validationWarnings.get(`${stepIdx}:${key}`)
+          if (!warn) return null
+          return (
+            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>⚠</span><span>{warn}</span>
+            </div>
+          )
+        })()}
         {def?.description && <span className="field-desc">{def.description}</span>}
+      </div>
+    )
+  }
+
+  // ── Nested step card (inside if/else branches, any depth) ───────────
+  /**
+   * topIdx    = index in the top-level steps[] array
+   * path      = BranchPath from the top-level step down to (but not including) this step
+   *             e.g. [{ branch: 'then_steps', idx: 0 }] means this step is inside steps[topIdx].then_steps[0]
+   * ni        = index of this step within its immediate parent branch
+   * branch    = which branch of the immediate parent ('then_steps' | 'else_steps')
+   */
+  function renderNestedStepCard(
+    step: FlowStep,
+    ni: number,
+    topIdx: number,
+    branch: 'then_steps' | 'else_steps',
+    path: BranchPath,
+  ) {
+    const key = `${topIdx}-${path.map(p => `${p.branch}[${p.idx}]`).join('.')}-${branch}-${ni}`
+    const isExp = nestedExpanded.has(key)
+    const defs = fieldMap[step.action as string] ?? {}
+    // Path to THIS step (used for update/remove)
+    const stepPath: BranchPath = [...path, { branch, idx: ni }]
+    const fields = Object.entries(step).filter(([k]) => k !== 'action' && k !== 'then_steps' && k !== 'else_steps')
+    const isIf = step.action === 'if'
+
+    return (
+      <div key={key} style={{ margin: '4px 8px', borderRadius: 5, border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.02)' }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', cursor: 'pointer', userSelect: 'none' }}
+          onClick={() => setNestedExpanded(prev => {
+            const s = new Set(prev)
+            s.has(key) ? s.delete(key) : s.add(key)
+            return s
+          })}
+        >
+          <span style={{ fontSize: 10 }}>{isExp ? '▼' : '▶'}</span>
+          <strong style={{ fontSize: 12, flex: 1 }}>{ni + 1}. {step.action as string}</strong>
+          <button
+            className="btn muted step-remove"
+            style={{ fontSize: 11 }}
+            onClick={e => { e.stopPropagation(); removeNestedStep(topIdx, stepPath) }}
+          >×</button>
+        </div>
+        {isExp && (
+          <div style={{ padding: '0 8px 8px' }}>
+            {fields.map(([k, v]) => (
+              <div key={k} className="field-row">
+                <label className="field-label">{defs[k]?.label || k}</label>
+                <input className="input"
+                  placeholder={defs[k]?.placeholder || k}
+                  value={String(v ?? '')}
+                  onChange={e => updateNestedStep(topIdx, stepPath, k, e.target.value)} />
+              </div>
+            ))}
+            {fields.length === 0 && !isIf && (
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>No fields to configure.</span>
+            )}
+            {isIf && renderNestedBranches(step, topIdx, stepPath, defs)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /**
+   * Renders the THEN/ELSE sub-branches for an `if` step that is itself nested.
+   * stepPath = path to the `if` step itself (already includes its own branch+idx).
+   */
+  function renderNestedBranches(
+    step: FlowStep,
+    topIdx: number,
+    stepPath: BranchPath,
+    defs: Record<string, FieldDef>,
+  ) {
+    const thenSteps = (step.then_steps as FlowStep[]) ?? []
+    const elseSteps = (step.else_steps as FlowStep[]) ?? []
+    return (
+      <>
+        {thenSteps.length === 0 && (
+          <div className="field-row">
+            <label className="field-label">{defs['then']?.label ?? 'then'}</label>
+            <input className="input" placeholder={defs['then']?.placeholder ?? 'then'}
+              value={(step['then'] as string) ?? ''}
+              onChange={e => updateNestedStep(topIdx, stepPath, 'then', e.target.value)} />
+          </div>
+        )}
+        {renderBranch('✓ THEN', false, thenSteps, topIdx, 'then_steps', stepPath)}
+        {elseSteps.length === 0 && (
+          <div className="field-row">
+            <label className="field-label">{defs['else']?.label ?? 'else'}</label>
+            <input className="input" placeholder={defs['else']?.placeholder ?? 'else'}
+              value={(step['else'] as string) ?? ''}
+              onChange={e => updateNestedStep(topIdx, stepPath, 'else', e.target.value)} />
+          </div>
+        )}
+        {renderBranch('✗ ELSE', true, elseSteps, topIdx, 'else_steps', stepPath)}
+      </>
+    )
+  }
+
+  // ── Inline branch drop zone (then/else, any depth) ───────────────────
+  /**
+   * topIdx   = index in the top-level steps[] array (never changes as we recurse)
+   * branch   = 'then_steps' | 'else_steps' of the immediate parent
+   * parentPath = BranchPath to the parent `if` step (empty [] for top-level if steps)
+   */
+  function renderBranch(
+    label: string,
+    isElse: boolean,
+    branchSteps: FlowStep[],
+    topIdx: number,
+    branch: 'then_steps' | 'else_steps',
+    parentPath: BranchPath = [],
+  ) {
+    const branchKey = `${topIdx}-${parentPath.map(p => `${p.branch}[${p.idx}]`).join('.')}-${branch}`
+    const isDragOver = dragOverBranch === branchKey
+    const borderColor = isElse ? '#ef4444' : '#22c55e'
+    const labelColor  = isElse ? '#ef4444' : '#22c55e'
+
+    return (
+      <div style={{ marginTop: 8, borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', borderLeft: `3px solid ${borderColor}` }}>
+        <div style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', color: labelColor, background: 'rgba(255,255,255,0.03)', letterSpacing: '0.06em' }}>
+          {label}
+        </div>
+        {branchSteps.map((ns, ni) => renderNestedStepCard(ns, ni, topIdx, branch, parentPath))}
+        <div
+          style={{
+            margin: '6px 8px',
+            padding: '7px 10px',
+            border: `1.5px dashed ${isDragOver ? borderColor : 'rgba(255,255,255,0.15)'}`,
+            borderRadius: 5,
+            fontSize: 11,
+            color: isDragOver ? borderColor : 'var(--muted)',
+            background: isDragOver ? `${borderColor}10` : 'transparent',
+            cursor: 'default',
+            textAlign: 'center' as const,
+            transition: 'border-color 0.15s, background 0.15s, color 0.15s',
+          }}
+          onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverBranch(branchKey) }}
+          onDragLeave={e => { e.stopPropagation(); setDragOverBranch(null) }}
+          onDrop={e => {
+            e.preventDefault()
+            e.stopPropagation()
+            setDragOverBranch(null)
+            const raw = e.dataTransfer.getData('application/json')
+            if (!raw) return
+            const b: PaletteBlock = JSON.parse(raw) as PaletteBlock
+            addToNestedBranch(topIdx, parentPath, branch, b)
+          }}
+        >
+          {branchSteps.length === 0 ? '+ Drop step here' : '+ Drop another step'}
+        </div>
       </div>
     )
   }
 
   // ── Special step bodies ─────────────────────────────────────────
   function renderIfBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
+    const thenSteps = (step.then_steps as FlowStep[]) ?? []
+    const elseSteps = (step.else_steps as FlowStep[]) ?? []
     return (
       <div className="step-body">
-        {fieldInput(i, 'condition', step['condition'] ?? '', defs['condition'], { smart: true })}
-        <div className="branch-row">
-          <div className="branch-cell branch-then">
-            <div className="branch-label">✓ Then</div>
-            <input
-              className="input"
-              value={step['then'] ?? ''}
-              placeholder={defs['then']?.placeholder ?? 'flow name'}
-              onChange={e => updateStep(i, 'then', e.target.value)}
-            />
-            {defs['then']?.description && (
-              <span className="field-desc">{defs['then'].description}</span>
-            )}
-          </div>
-          <div className="branch-cell branch-else">
-            <div className="branch-label branch-label-else">✗ Else</div>
-            <input
-              className="input"
-              value={step['else'] ?? ''}
-              placeholder={defs['else']?.placeholder ?? 'flow name (optional)'}
-              onChange={e => updateStep(i, 'else', e.target.value)}
-            />
-            {defs['else']?.description && (
-              <span className="field-desc">{defs['else'].description}</span>
-            )}
-          </div>
-        </div>
+        {fieldInput(i, 'condition', (step['condition'] as string) ?? '', defs['condition'], { smart: true })}
+        {thenSteps.length === 0 && fieldInput(i, 'then', (step['then'] as string) ?? '', defs['then'])}
+        {renderBranch('✓ THEN', false, thenSteps, i, 'then_steps', [])}
+        {elseSteps.length === 0 && fieldInput(i, 'else', (step['else'] as string) ?? '', defs['else'])}
+        {renderBranch('✗ ELSE', true, elseSteps, i, 'else_steps', [])}
       </div>
     )
   }
 
   function renderSwitchBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
-    const cases = parseCases(step['cases'] ?? '')
+    const cases = parseCases((step['cases'] as string) ?? '')
     return (
       <div className="step-body">
         {/* Match slot — smart: accepts header.X-TID or bare "X-TID" */}
-        {fieldInput(i, 'as', step['as'] ?? '', defs['as'], { smart: true })}
+        {fieldInput(i, 'as', (step['as'] as string) ?? '', defs['as'], { smart: true })}
         <div className="switch-cases-header">
           <span className="field-label">Cases</span>
           {defs['cases']?.description && (
@@ -399,8 +797,144 @@ export default function FlowDesigner({
     )
   }
 
+  // ── Cache step editor ─────────────────────────────────────────
+  function renderCacheBody(step: FlowStep, i: number) {
+    const action      = step.action as string
+    const isGlobal    = action.includes('_global')
+    const isWrite     = action.includes('_put')
+    const keyVar      = (step['key_identifier'] ?? '') as string
+    const outputVar   = (step['as']             ?? '') as string
+    const valueVar    = (step['source']          ?? '') as string
+    const ttl         = (step['ttl']             ?? '300') as string
+    const prevVars    = slotsUpTo(i)
+
+    const scopeColor  = isGlobal ? '#f59e0b' : '#57b5ff'
+    const scopeLabel  = isGlobal ? 'SHARED · all tenants see this data' : 'PER-TENANT · private to this tenant'
+    const scopeTip    = isGlobal
+      ? 'The same cached value is readable by every tenant. Use for data that does not vary per tenant (e.g. a public product list).'
+      : 'Each tenant has their own isolated copy. Tenant A cannot read Tenant B\'s cache.'
+
+    return (
+      <div className="step-body">
+
+        {/* Scope badge */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 10px', marginBottom: 12,
+          borderRadius: 6,
+          background: isGlobal ? 'rgba(245,158,11,0.08)' : 'rgba(87,181,255,0.08)',
+          border: `1px solid ${isGlobal ? 'rgba(245,158,11,0.3)' : 'rgba(87,181,255,0.3)'}`,
+        }}>
+          <span style={{ fontSize: 14 }}>{isGlobal ? '🌐' : '🔒'}</span>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: scopeColor, letterSpacing: '0.04em' }}>
+              {scopeLabel}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 1 }}>{scopeTip}</div>
+          </div>
+        </div>
+
+        {/* Operation flow diagram */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '7px 10px', marginBottom: 12,
+          borderRadius: 6, background: 'rgba(255,255,255,0.03)',
+          fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace',
+        }}>
+          {isWrite ? (
+            <>
+              <span style={{ color: 'var(--text)' }}>{keyVar || '‹key var›'}</span>
+              <span>+</span>
+              <span style={{ color: 'var(--text)' }}>{valueVar || '‹value var›'}</span>
+              <span style={{ color: scopeColor }}>──→</span>
+              <span>cache write</span>
+              <span style={{ color: scopeColor }}>──→</span>
+              <span>expires in {ttl}s</span>
+            </>
+          ) : (
+            <>
+              <span style={{ color: 'var(--text)' }}>{keyVar || '‹key var›'}</span>
+              <span style={{ color: scopeColor }}>──→</span>
+              <span>cache lookup</span>
+              <span style={{ color: scopeColor }}>──→</span>
+              <span style={{ color: '#34d399' }}>{outputVar || '‹output var›'}</span>
+              <span style={{ color: 'var(--muted)', marginLeft: 4 }}>(on hit)</span>
+            </>
+          )}
+        </div>
+
+        {/* Cache key variable */}
+        <label className="field-label">
+          Cache key <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(variable name)</span>
+        </label>
+        {prevVars.length > 0 ? (
+          <select className="input" value={keyVar} onChange={e => updateStep(i, 'key_identifier', e.target.value)}>
+            <option value="">— pick a variable —</option>
+            {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="cache_key"
+            value={keyVar} onChange={e => updateStep(i, 'key_identifier', e.target.value)} />
+        )}
+        <span className="field-desc">The variable whose value acts as the lookup key — e.g. a user ID or request path.</span>
+
+        {isWrite ? (
+          <>
+            {/* Value variable */}
+            <label className="field-label" style={{ marginTop: 8 }}>
+              Value to cache <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(variable name)</span>
+            </label>
+            {prevVars.length > 0 ? (
+              <select className="input" value={valueVar} onChange={e => updateStep(i, 'source', e.target.value)}>
+                <option value="">— pick a variable —</option>
+                {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : (
+              <input className="input" placeholder="upstream_response"
+                value={valueVar} onChange={e => updateStep(i, 'source', e.target.value)} />
+            )}
+            <span className="field-desc">The variable holding the data you want to store — e.g. an upstream API response.</span>
+
+            {/* TTL */}
+            <label className="field-label" style={{ marginTop: 8 }}>
+              Expires after <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(seconds)</span>
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input className="input" type="number" style={{ width: 120 }} placeholder="300"
+                value={ttl} onChange={e => updateStep(i, 'ttl', e.target.value)} />
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                {Number(ttl) >= 3600 ? `${(Number(ttl)/3600).toFixed(1)}h`
+                  : Number(ttl) >= 60 ? `${Math.round(Number(ttl)/60)}m`
+                  : `${ttl}s`}
+              </span>
+            </div>
+            <span className="field-desc">Entry is removed automatically after this many seconds. Common values: 300 (5 min), 3600 (1 h).</span>
+          </>
+        ) : (
+          <>
+            {/* Output variable */}
+            <label className="field-label" style={{ marginTop: 8 }}>
+              Output variable <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(where to save the result)</span>
+            </label>
+            <input className="input" placeholder="cached_body"
+              value={outputVar} onChange={e => updateStep(i, 'as', e.target.value)} />
+            <span className="field-desc">
+              On a <span style={{ color: '#34d399', fontWeight: 600 }}>cache hit</span> the stored value is written here.{' '}
+              On a <span style={{ color: '#f87171', fontWeight: 600 }}>miss</span> this variable is <strong>empty</strong>{' '}
+              (if it is new) or keeps whatever value it had before this step.{' '}
+              Add an <code>if</code> step after this and check <code>{outputVar || 'this variable'} != ""</code> to branch on hit vs miss.
+            </span>
+          </>
+        )}
+      </div>
+    )
+  }
+
   function renderGenericBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
-    const params = Object.entries(step).filter(([k]) => k !== 'action')
+    // 'action' is the step type; obs meta-fields are rendered separately by renderObsFooter
+    // 'then_steps', 'else_steps', and 'trace_vars' are Studio-only fields, not generic params
+    const obsKeys = new Set(['action', 'log_as', 'trace_capture', 'trace_vars', 'then_steps', 'else_steps'])
+    const params = Object.entries(step).filter(([k]) => !obsKeys.has(k))
     if (params.length === 0) {
       return (
         <div className="step-body">
@@ -413,8 +947,147 @@ export default function FlowDesigner({
     return (
       <div className="step-body">
         {params.map(([k, v]) =>
-          fieldInput(i, k, v, defs[k], smartFields.has(k) ? { smart: true } : undefined)
+          fieldInput(i, k, String(v ?? ''), defs[k], smartFields.has(k) ? { smart: true } : undefined)
         )}
+      </div>
+    )
+  }
+
+  // ── Per-step observability footer ─────────────────────────────
+  // Rendered below the step body when the step is expanded.
+  // "Log result as" → emits a log_field instruction in the compiler.
+  // "Capture for trace" → emits trace_capture instructions in the compiler
+  //   for each variable in the trace_vars list (multi-variable selector).
+  //   Legacy trace_capture: 'true' (single checkbox) is still honoured for
+  //   backward-compat but migrated to trace_vars on first user interaction.
+  function renderObsFooter(step: FlowStep, i: number) {
+    const action = step.action as string
+    // Skip control-flow steps that don't produce a single output variable
+    const skipActions = new Set(['if','switch','call','return','fail','capture_error','batch_flush'])
+    if (skipActions.has(action)) return null
+
+    const logAs     = (step['log_as'] ?? '') as string
+    const outputVar = (step['as'] ?? step['destination'] ?? '') as string
+
+    // Resolve current trace vars — support legacy trace_capture bool
+    let traceVars: string[] = Array.isArray(step['trace_vars'])
+      ? (step['trace_vars'] as string[])
+      : ((step['trace_capture'] as string) === 'true' && outputVar ? [outputVar] : [])
+
+    // All variables reachable from this step (prior steps + own output)
+    const prevVars     = slotsUpTo(i)
+    const allVars      = [...new Set([...prevVars, outputVar].filter(Boolean))]
+    const unselected   = allVars.filter(v => !traceVars.includes(v))
+
+    function setTraceVars(next: string[]) {
+      setSteps(steps.map((s, idx) => idx !== i ? s : ({
+        ...s,
+        trace_vars: next,
+        trace_capture: '',   // clear legacy flag
+      } as FlowStep)))
+    }
+
+    function addTraceVar(varName: string) {
+      if (!varName || traceVars.includes(varName)) return
+      setTraceVars([...traceVars, varName])
+    }
+
+    function removeTraceVar(varName: string) {
+      setTraceVars(traceVars.filter(v => v !== varName))
+    }
+
+    return (
+      <div style={{
+        marginTop: 8,
+        padding: '8px 10px',
+        borderTop: '1px solid rgba(255,255,255,0.07)',
+        background: 'rgba(0,0,0,0.15)',
+        borderRadius: '0 0 6px 6px',
+      }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.05em', marginBottom: 8, textTransform: 'uppercase' }}>
+          Trace &amp; Log
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+
+          {/* Log result as */}
+          <div style={{ flex: '1 1 160px', minWidth: 140 }}>
+            <label className="field-label" style={{ fontSize: 10 }}>
+              Log output as <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(access log field name)</span>
+            </label>
+            <input
+              className="input"
+              style={{ fontSize: 11 }}
+              placeholder={outputVar ? `e.g. ${outputVar}` : 'field_name'}
+              value={logAs}
+              onChange={e => updateStep(i, 'log_as', e.target.value)}
+            />
+            {logAs && outputVar && (
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>
+                Writes <code style={{ color: '#34d399' }}>{outputVar}</code> → access log as <code style={{ color: '#f59e0b' }}>{logAs}</code>
+              </div>
+            )}
+            {logAs && !outputVar && (
+              <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>
+                Set an output variable (the "as" field) on this step first.
+              </div>
+            )}
+          </div>
+
+          {/* Capture for trace — multi-variable selector */}
+          <div style={{ flex: '1 1 200px', minWidth: 180 }}>
+            <label className="field-label" style={{ fontSize: 10 }}>
+              Capture for trace <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(variables to record)</span>
+            </label>
+
+            {/* Current trace vars as chips */}
+            {traceVars.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                {traceVars.map(v => (
+                  <span key={v} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    padding: '2px 7px', borderRadius: 4,
+                    background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)',
+                    fontSize: 11, color: '#a78bfa', fontFamily: 'monospace',
+                  }}>
+                    {v}
+                    <button
+                      onClick={() => removeTraceVar(v)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(167,139,250,0.6)', padding: 0, lineHeight: 1, fontSize: 13 }}
+                      title={`Remove ${v} from trace`}
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Add variable picker */}
+            {unselected.length > 0 ? (
+              <select
+                className="input"
+                style={{ fontSize: 11 }}
+                value=""
+                onChange={e => { if (e.target.value) addTraceVar(e.target.value) }}
+              >
+                <option value="">+ Add variable…</option>
+                {unselected.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : allVars.length === 0 ? (
+              <div style={{ fontSize: 10, color: 'var(--muted)' }}>
+                No variables available yet — add steps with output variables above.
+              </div>
+            ) : (
+              <div style={{ fontSize: 10, color: 'var(--muted)' }}>
+                All available variables are selected.
+              </div>
+            )}
+
+            {traceVars.length > 0 && (
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
+                {traceVars.length} variable{traceVars.length > 1 ? 's' : ''} will appear in trace output for this step.
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     )
   }
@@ -430,15 +1103,132 @@ export default function FlowDesigner({
     )
   }
 
+  // ── Variable picker popup close handler ────────────────────────
+  useEffect(() => {
+    if (!varPopup) return
+    function handleClick() { setVarPopup(null) }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [varPopup])
+
+  // ── VarPopup component ─────────────────────────────────────────
+  function VarPopup() {
+    if (!varPopup) return null
+    const available = slotsUpTo(varPopup.stepIdx)
+    if (available.length === 0) return null
+    return (
+      <div
+        style={{
+          position: 'fixed',
+          top: varPopup.anchor.bottom + 4,
+          left: varPopup.anchor.left,
+          zIndex: 9999,
+          background: 'var(--panel)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+          minWidth: 200,
+          maxWidth: 320,
+          maxHeight: 280,
+          overflowY: 'auto',
+          padding: 8,
+        }}
+        onMouseDown={e => e.preventDefault()}
+      >
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Variables available at step {varPopup.stepIdx + 1}
+        </div>
+        {available.map(v => (
+          <div
+            key={v}
+            onClick={() => {
+              const active = document.activeElement as HTMLInputElement | null
+              if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+                const start = active.selectionStart ?? active.value.length
+                const end = active.selectionEnd ?? active.value.length
+                const newVal = active.value.slice(0, start) + v + active.value.slice(end)
+                const nativeInput = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+                nativeInput?.set?.call(active, newVal)
+                active.dispatchEvent(new Event('input', { bubbles: true }))
+              }
+              setVarPopup(null)
+            }}
+            style={{
+              padding: '4px 8px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontSize: 12,
+              fontFamily: 'monospace',
+              color: 'var(--fg)',
+              background: 'rgba(255,255,255,0.03)',
+              marginBottom: 2,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(87,181,255,0.1)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
+          >
+            {v}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   // ── Collect variable names from prior steps (for pickers) ──────
   function slotsUpTo(upToIdx: number): string[] {
     const vars: string[] = []
-    for (let j = 0; j < upToIdx && j < steps.length; j++) {
-      const s = steps[j]
-      if (s['as'] && typeof s['as'] === 'string') vars.push(s['as'])
-      if (['bind_client_ip','store_internal_tx_id','bind_correlation_id'].includes(s.action) && s['key_identifier']) {
-        vars.push(s['key_identifier'] as string)
+    function collectFromSteps(stepList: FlowStep[], limit: number) {
+      for (let j = 0; j < limit && j < stepList.length; j++) {
+        const s = stepList[j]
+        // Primary output variable
+        if (s['as'] && typeof s['as'] === 'string') vars.push(s['as'] as string)
+        // Steps that bind into key_identifier field or out/output aliases
+        if (['bind_client_ip','store_internal_tx_id','bind_correlation_id',
+             'bind_header','bind_query','bind_path','bind_body',
+             'registry_lookup','load_service_url','load_identifier','load_secret',
+             'cache_get','cache_get_global','json_extract_emit',
+             'llm_call','http_call','mcp_call_tool','vector_search','embed_text',
+             'semantic_cache_get','token_validation','load_history',
+             'parse_tool_calls','execute_plan'].includes(s.action as string)) {
+          if (s['key_identifier'] && typeof s['key_identifier'] === 'string') vars.push(s['key_identifier'] as string)
+          if (s['out'] && typeof s['out'] === 'string') vars.push(s['out'] as string)
+        }
+        // For call steps: look into the referenced subflow's steps
+        if (s.action === 'call' && typeof s['flow_name'] === 'string') {
+          const subFlow = savedFlows.find(f => f.name === s['flow_name'])
+          if (subFlow) collectFromSteps(subFlow.steps, subFlow.steps.length)
+        }
+        // For if/else with inline steps: collect from branches
+        if (s.then_steps) collectFromSteps(s.then_steps as FlowStep[], (s.then_steps as FlowStep[]).length)
+        if (s.else_steps) collectFromSteps(s.else_steps as FlowStep[], (s.else_steps as FlowStep[]).length)
       }
+    }
+    collectFromSteps(steps, upToIdx)
+    return [...new Set(vars.filter(Boolean))]
+  }
+
+  // ── Variable validation helper ─────────────────────────────────
+  function isVarDefined(varName: string, atIdx: number): boolean {
+    if (!varName || !varName.trim()) return true // empty = ok, no warning
+    const available = slotsUpTo(atIdx)
+    // If varName starts with 'var.' or prefix, check it directly
+    if (varName.startsWith('var.') || varName.startsWith('_h_') ||
+        varName.startsWith('_q_') || varName.startsWith('_b_') ||
+        varName.startsWith('_p_')) {
+      return available.includes(varName)
+    }
+    // If it's a source ref like header.X-TID, body.userId — these are always valid
+    if (/^(header|queryparam|query|body|path)\./.test(varName)) return true
+    // Plain literal or number — always valid
+    return true
+  }
+
+  function computeFlowOutputs(flowSteps: FlowStep[]): string[] {
+    const vars: string[] = []
+    for (const s of flowSteps) {
+      if (s['as'] && typeof s['as'] === 'string') vars.push(s['as'] as string)
+      if (s['key_identifier'] && typeof s['key_identifier'] === 'string') vars.push(s['key_identifier'] as string)
+      if (s.then_steps) vars.push(...computeFlowOutputs(s.then_steps as FlowStep[]))
+      if (s.else_steps) vars.push(...computeFlowOutputs(s.else_steps as FlowStep[]))
     }
     return [...new Set(vars.filter(Boolean))]
   }
@@ -632,7 +1422,7 @@ export default function FlowDesigner({
       inputObj['jwt.validate_var'] ? [] :
       ('jwt.validate' in inputObj)
         ? splitComma(inputObj['jwt.validate'] ?? '')
-        : splitComma('signature,issuer,audience,expiry,not_before')
+        : splitComma('signature,expiry')
     )
     const validateMode = inputObj['jwt.validate_var'] ? 'var' : 'static'
     function toggleValidate(key: string) {
@@ -941,24 +1731,24 @@ export default function FlowDesigner({
     const prevVars = slotsUpTo(i)
     return (
       <div className="step-body">
-        <label className="field-label">Send variable as response body</label>
+        <label className="field-label">Response body — variable or literal</label>
         {prevVars.length > 0 ? (
           <>
             <select className="input" value={prevVars.includes(source) ? source : ''}
               onChange={e => updateStep(i, 'source', e.target.value)}>
-              <option value="">— pick a variable —</option>
+              <option value="">— pick a variable, or type a literal below —</option>
               {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
             </select>
-            {!prevVars.includes(source) && (
-              <input className="input" style={{ marginTop: 4 }} placeholder="var.body" value={source}
-                onChange={e => updateStep(i, 'source', e.target.value)} />
+            {(!prevVars.includes(source) || source === '') && (
+              <input className="input" style={{ marginTop: 4 }} placeholder='{"status":"ok"} or a variable name'
+                value={source} onChange={e => updateStep(i, 'source', e.target.value)} />
             )}
           </>
         ) : (
-          <input className="input" placeholder="var.body" value={source}
+          <input className="input" placeholder='{"status":"ok"} or a variable name' value={source}
             onChange={e => updateStep(i, 'source', e.target.value)} />
         )}
-        <span className="field-desc">The variable's value becomes the HTTP response body sent to the caller.</span>
+        <span className="field-desc">Type a variable name to use a computed value, or type a literal string / JSON directly.</span>
         {source && (
           <div style={{ marginTop: 6, fontSize: 11, color: '#34d399', fontFamily: 'monospace', opacity: 0.85 }}>
             → caller receives: {source}
@@ -1123,177 +1913,581 @@ export default function FlowDesigner({
 
   // ── Render ──────────────────────────────────────────────────────
   return (
+    <Fragment>
     <div className="two-col">
       {/* ── Palette ─────────────────────────────────────────────── */}
       <div className="panel">
-        <div className="panel-header">Instruction Palette</div>
-        <div className="panel-body">
-          {/* Mode toggle */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-            <button
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                borderRadius: 8,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 700,
-                background: mode === 'visual' ? 'var(--accent)' : '#27406b',
-                color: mode === 'visual' ? '#031427' : 'var(--muted)',
-                transition: 'background 0.15s, color 0.15s',
-              }}
-              onClick={() => setMode('visual')}
-            >
-              Visual {mode === 'visual' ? '●' : '○'}
-            </button>
-            <button
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                borderRadius: 8,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 700,
-                background: mode === 'expert' ? 'var(--accent)' : '#27406b',
-                color: mode === 'expert' ? '#031427' : 'var(--muted)',
-                transition: 'background 0.15s, color 0.15s',
-              }}
-              onClick={() => setMode('expert')}
-            >
-              Expert {mode === 'expert' ? '●' : '○'}
-            </button>
-          </div>
+        <div className="panel-header">
+          <span>Step Palette</span>
+        </div>
 
-          {mode === 'expert' ? (
-            /* ── Expert mode: original searchable block list ── */
-            <>
-              <input
-                className="input"
-                placeholder="filter by name or category"
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
-              />
-              <div className="block-list">
-                {filteredSaved.length > 0 && (
-                  <>
-                    <div className="palette-section-label">My Flows</div>
-                    {filteredSaved.map(b => (
-                      <div
-                        key={`saved-${b.title}`}
-                        className="block block-saved"
-                        draggable
-                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(b))}
-                      >
-                        <strong>{b.title}</strong>
-                        <div className="sub">call · {b.description}</div>
-                      </div>
-                    ))}
-                  </>
-                )}
-                {filteredBlocks.length === 0 && filteredSaved.length === 0 && (
-                  <span className="hint">No blocks match.</span>
-                )}
-                {/* Group Instructions by category */}
-                {(() => {
-                  const CAT_LABELS: Record<string,string> = {
-                    auth:      '🔒 Auth',
-                    routing:   '🔀 Routing',
-                    http:      '🌐 HTTP',
-                    llm:       '🧠 AI / LLM',
-                    transform: '⚙ Transform',
-                    cache:     '💾 Cache',
-                    registry:  '📋 Registry',
-                    mcp:       '🔧 MCP',
-                    vector:    '🔍 Vector',
-                    data:      '📊 Data',
-                    cost:      '💰 Cost',
-                    history:   '📜 History',
-                    ingest:    '📥 Ingest',
-                  }
-                  const grouped = filteredBlocks.reduce<Record<string, typeof filteredBlocks>>((acc, b) => {
-                    const key = CAT_LABELS[b.category] ?? b.category ?? 'Other'
-                    ;(acc[key] ??= []).push(b)
-                    return acc
-                  }, {})
-                  return Object.entries(grouped).map(([catLabel, catBlocks]) => (
-                    <div key={catLabel}>
-                      <div className="palette-section-label" style={{ marginTop: 8 }}>{catLabel}</div>
-                      {catBlocks.map(b => (
-                        <div key={b.type} className="block" draggable
-                          onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(b))}>
-                          <strong>{b.title}</strong>
-                          <div className="sub" style={{ marginTop: 2, opacity: 0.75 }}>{b.description}</div>
-                        </div>
-                      ))}
-                    </div>
-                  ))
-                })()}
+        <div className="panel-body">
+          {/* Filter input */}
+          <input
+            className="input"
+            placeholder="filter by name, category, or type"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+
+          {/* Unified palette with collapsible sections */}
+          <div className="block-list">
+            {/* My Flows section */}
+            <div>
+              <div
+                className="palette-section-label"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none', marginTop: 8 }}
+                onClick={() => setCollapsedSections(prev => {
+                  const s = new Set(prev)
+                  s.has('My Flows') ? s.delete('My Flows') : s.add('My Flows')
+                  return s
+                })}
+              >
+                <span>📋</span>
+                <span style={{ flex: 1 }}>My Flows {savedFlows.length > 0 ? `(${savedFlows.length})` : ''}</span>
+                <span style={{ fontSize: 10, opacity: 0.5 }}>{collapsedSections.has('My Flows') ? '▶' : '▼'}</span>
               </div>
-            </>
-          ) : (
-            /* ── Visual mode: grouped recipe blocks ── */
-            <div className="block-list">
-              {VISUAL_GROUPS.map(group => (
+              {!collapsedSections.has('My Flows') && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {savedFlows.length === 0 && (
+                    <span className="hint">No flows saved yet. Design a flow in the canvas and save it.</span>
+                  )}
+                  {savedFlows
+                    .filter(sf => !filter || sf.name.toLowerCase().includes(q))
+                    .map(sf => {
+                      const dragPayload = savedFlowBlocks.find(b => b.title === sf.name) ?? {
+                        type: 'call', title: sf.name, description: '', category: 'my-flows',
+                        capability: 'sub-flow', supports_nested: false,
+                        defaults: { flow_name: sf.name }, fields: callFieldDefs,
+                      }
+                      return (
+                        <div
+                          key={sf.name}
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(dragPayload))}
+                          onClick={() => clickAddBlock(dragPayload)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '8px 10px',
+                            borderRadius: 6,
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            background: sf.name === flowName ? 'rgba(87,181,255,0.07)' : 'rgba(255,255,255,0.03)',
+                            borderColor: sf.name === flowName ? 'rgba(87,181,255,0.3)' : 'rgba(255,255,255,0.08)',
+                            cursor: 'pointer',
+                            gap: 8,
+                          }}
+                        >
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontWeight: 600,
+                              fontSize: 13,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              color: sf.name === flowName ? 'var(--accent)' : 'var(--fg)',
+                            }}>
+                              {sf.name}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+                              {sf.steps.length} step{sf.steps.length !== 1 ? 's' : ''} · drag to call
+                            </div>
+                            {(() => {
+                              const outputs = computeFlowOutputs(sf.steps)
+                              if (outputs.length === 0) return null
+                              return (
+                                <div style={{ marginTop: 3, fontSize: 10, color: '#34d399', fontFamily: 'monospace' }}>
+                                  → {outputs.slice(0, 3).join(', ')}{outputs.length > 3 ? ` +${outputs.length - 3} more` : ''}
+                                </div>
+                              )
+                            })()}
+                          </div>
+                          <button
+                            className="btn muted"
+                            style={{ fontSize: 11, padding: '3px 8px', flexShrink: 0 }}
+                            title={`Edit "${sf.name}"`}
+                            onClick={e => { e.stopPropagation(); onOpenFlow?.(sf.name) }}
+                          >
+                            Edit ↗
+                          </button>
+                        </div>
+                      )
+                    })
+                  }
+                </div>
+              )}
+            </div>
+
+            {/* Step recipe groups */}
+            {VISUAL_GROUPS.map(group => {
+              const isSearching = filter.length > 0
+              const matchingRecipes = group.recipes.filter(r =>
+                !isSearching ||
+                r.title.toLowerCase().includes(q) ||
+                r.wraps.toLowerCase().includes(q) ||
+                (r.description ?? '').toLowerCase().includes(q),
+              )
+              if (isSearching && matchingRecipes.length === 0) return null
+              const isCollapsed = !isSearching && collapsedSections.has(group.label)
+              return (
                 <div key={group.label}>
                   <div
                     className="palette-section-label"
-                    style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none', marginTop: 8 }}
+                    onClick={() => setCollapsedSections(prev => {
+                      const s = new Set(prev)
+                      s.has(group.label) ? s.delete(group.label) : s.add(group.label)
+                      return s
+                    })}
                   >
                     <span>{group.icon}</span>
-                    <span>{group.label}</span>
+                    <span style={{ flex: 1 }}>{group.label}</span>
+                    <span style={{ fontSize: 10, opacity: 0.5 }}>{isCollapsed ? '▶' : '▼'}</span>
                   </div>
-                  {group.recipes.map(recipe => {
+                  {!isCollapsed && matchingRecipes.map(recipe => {
                     const payload = recipeToBlock(recipe)
                     return (
                       <div
                         key={`${group.label}-${recipe.wraps}-${recipe.title}`}
                         className="block"
                         draggable
-                        onDragStart={e =>
-                          e.dataTransfer.setData('application/json', JSON.stringify(payload))
-                        }
+                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                        onClick={() => clickAddBlock(payload)}
+                        style={{ cursor: 'pointer' }}
                       >
                         <strong>{recipe.title}</strong>
                         <div className="sub" style={{ marginTop: 2, opacity: 0.75 }}>
                           {recipe.description}
                         </div>
+                        <div className="sub" style={{ marginTop: 1, opacity: 0.4, fontSize: 10 }}>
+                          {recipe.wraps}
+                        </div>
                       </div>
                     )
                   })}
                 </div>
-              ))}
-            </div>
-          )}
+              )
+            })}
+
+            {/* No matches message */}
+            {filter.length > 0 &&
+              savedFlows.every(sf => !sf.name.toLowerCase().includes(q)) &&
+              VISUAL_GROUPS.every(g => g.recipes.every(r =>
+                !r.title.toLowerCase().includes(q) &&
+                !r.wraps.toLowerCase().includes(q) &&
+                !(r.description ?? '').toLowerCase().includes(q),
+              )) && (
+                <span className="hint">No blocks match.</span>
+              )}
+          </div>
         </div>
       </div>
 
       {/* ── Canvas ──────────────────────────────────────────────── */}
       <div className="panel">
-        <div className="panel-header">Flow Canvas</div>
+        <div className="panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>Flow Canvas</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {selectMode && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  className="input"
+                  placeholder="new sub-flow name"
+                  value={extractName}
+                  onChange={e => setExtractName(e.target.value)}
+                  style={{ width: 160 }}
+                />
+                <button
+                  className="btn accent"
+                  style={{ fontSize: 12 }}
+                  onClick={extractSubFlow}
+                  disabled={selectedSteps.size === 0 || !extractName.trim()}
+                >
+                  Extract ({selectedSteps.size})
+                </button>
+                <button
+                  className="btn muted"
+                  style={{ fontSize: 12 }}
+                  onClick={() => { setSelectMode(false); setSelectedSteps(new Set()); setExtractName('') }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+            {!selectMode && (
+              <button
+                className="btn muted"
+                style={{ fontSize: 12 }}
+                onClick={() => setSelectMode(true)}
+                title="Select steps to extract as a sub-flow"
+              >
+                ⊡ Extract
+              </button>
+            )}
+            <button
+              className={`btn muted${showFlowMap ? ' active' : ''}`}
+              style={{ fontSize: 12 }}
+              onClick={() => { setShowFlowMap(p => !p); setShowFlowGraph(false) }}
+              title="Flow dependency tree"
+            >
+              ⬡ Tree
+            </button>
+            <button
+              className={`btn muted${showFlowGraph ? ' active' : ''}`}
+              style={{ fontSize: 12 }}
+              onClick={() => { setShowFlowGraph(p => !p); setShowFlowMap(false) }}
+              title="Flow dependency graph"
+            >
+              ⬡ Graph
+            </button>
+          </div>
+        </div>
         <div className="panel-body">
+          {showFlowMap && (
+            <FlowMap
+              savedFlows={savedFlows}
+              currentFlow={flowName}
+              onNavigate={name => onNavigateToFlow?.(name)}
+            />
+          )}
+          {showFlowGraph && (
+            <FlowGraph
+              savedFlows={savedFlows}
+              currentFlow={flowName}
+              onNavigate={name => onNavigateToFlow?.(name)}
+            />
+          )}
+          <div style={{ display: 'flex', marginBottom: 6, borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.12)', width: 'fit-content' }}>
+            <button style={{ fontSize: 12, padding: '3px 14px', border: 'none', cursor: 'pointer', background: viewMode === 'visual' ? 'var(--accent)' : 'transparent', color: viewMode === 'visual' ? '#fff' : 'var(--muted)' }} onClick={() => setViewMode('visual')}>Visual</button>
+            <button style={{ fontSize: 12, padding: '3px 14px', border: 'none', cursor: 'pointer', background: viewMode === 'code'   ? 'var(--accent)' : 'transparent', color: viewMode === 'code'   ? '#fff' : 'var(--muted)' }} onClick={switchToCode}>Code</button>
+          </div>
+          {navStack.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0 2px', fontSize: 12, flexWrap: 'wrap' }}>
+              {navStack.map((name, idx) => (
+                <span key={idx} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button
+                    className="btn muted"
+                    style={{ fontSize: 12, padding: '1px 6px', borderRadius: 4 }}
+                    onClick={() => onNavigateBack?.(idx)}
+                  >
+                    {name}
+                  </button>
+                  <span style={{ color: 'var(--muted)', fontSize: 10 }}>›</span>
+                </span>
+              ))}
+              <span style={{ fontSize: 12, color: 'var(--fg)', fontWeight: 600 }}>{flowName}</span>
+            </div>
+          )}
+          {/* ── Impact warning: shown when this flow is referenced by others ── */}
+          {(() => {
+            const impact = flowName ? impactMap?.get(flowName) : undefined
+            const hasImpact = impact && (impact.flows.length > 0 || impact.apis.length > 0)
+            if (!hasImpact) return null
+            return (
+              <div style={{
+                margin: '6px 0',
+                padding: '8px 12px',
+                borderRadius: 6,
+                background: 'rgba(245,158,11,0.08)',
+                border: '1px solid rgba(245,158,11,0.35)',
+                fontSize: 12,
+                lineHeight: 1.6,
+              }}>
+                <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 4 }}>
+                  ⚠ Shared subflow — changes affect all callers
+                </div>
+                {impact.flows.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginBottom: impact.apis.length > 0 ? 4 : 0 }}>
+                    <span style={{ color: 'var(--muted)' }}>Used by flows:</span>
+                    {impact.flows.map(name => (
+                      <button
+                        key={name}
+                        onClick={() => onNavigateToFlow?.(name)}
+                        style={{
+                          background: 'rgba(245,158,11,0.12)',
+                          border: '1px solid rgba(245,158,11,0.4)',
+                          borderRadius: 4,
+                          color: '#fbbf24',
+                          fontSize: 11,
+                          padding: '1px 7px',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                        }}
+                        title={`Navigate to flow: ${name}`}
+                      >
+                        {name} ›
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {impact.apis.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+                    <span style={{ color: 'var(--muted)' }}>Used by APIs:</span>
+                    {impact.apis.map(name => (
+                      <span
+                        key={name}
+                        style={{
+                          background: 'rgba(245,158,11,0.12)',
+                          border: '1px solid rgba(245,158,11,0.4)',
+                          borderRadius: 4,
+                          color: '#fbbf24',
+                          fontSize: 11,
+                          padding: '1px 7px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        {name}
+                      </span>
+                    ))}
+                    {onNavigateToApis && (
+                      <button
+                        onClick={onNavigateToApis}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent)',
+                          fontSize: 11,
+                          cursor: 'pointer',
+                          padding: '1px 4px',
+                          textDecoration: 'underline',
+                        }}
+                      >
+                        Open APIs tab
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           <input
             className="input"
             placeholder="flow name (required to save)"
             value={flowName}
             onChange={e => setFlowName(e.target.value)}
           />
+          {insertCursor !== null && (
+            <div style={{
+              padding: '5px 10px',
+              borderRadius: 5,
+              background: 'rgba(87,181,255,0.1)',
+              border: '1px solid rgba(87,181,255,0.3)',
+              fontSize: 12,
+              color: 'var(--accent)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 6,
+            }}>
+              <span>Click a step in the palette to insert before step {insertCursor + 1}</span>
+              <button
+                onClick={() => setInsertCursor(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 12 }}
+              >
+                ✕ cancel
+              </button>
+            </div>
+          )}
+          {viewMode === 'code' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+              <textarea
+                spellCheck={false}
+                value={dslText}
+                onChange={e => {
+                  const text = e.target.value
+                  setDslText(text)
+                  setDslError(null)
+                  // Code → Visual: parse and update steps live so visual canvas stays in sync
+                  try {
+                    const parsed = parseDSL(text)
+                    dslChangeSource.current = 'code'
+                    setSteps(parsed)
+                  } catch (err) {
+                    setDslError(err instanceof Error ? err.message : 'Parse error')
+                  }
+                }}
+                style={{ flex: 1, minHeight: 440, width: '100%', resize: 'vertical', fontFamily: 'monospace', fontSize: 13, lineHeight: 1.65, padding: '12px 14px', background: 'rgba(0,0,0,0.28)', color: 'var(--fg)', border: `1px solid ${dslError ? '#ef4444' : 'rgba(255,255,255,0.12)'}`, borderRadius: 8, outline: 'none', boxSizing: 'border-box' }}
+                placeholder={'// RAH Flow DSL\nprofileId = path("user_profile")\ntoken     = header("Authorization")\nvalidate_token(token)\noutput.body = "Hello {profileId}"\nreturn(200)'}
+              />
+              {dslError && <div style={{ fontSize: 12, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '5px 10px', borderRadius: 5 }}>{dslError}</div>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button className="btn accent" style={{ fontSize: 13 }} onClick={applyDSL}>View Visual →</button>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>Canvas updates live as you type.</span>
+              </div>
+              {/* ── Quick Reference ── */}
+              <div style={{ borderRadius: 8, border: '1px solid rgba(255,255,255,0.10)', overflow: 'hidden' }}>
+                <button
+                  onClick={() => setShowDslRef(p => !p)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 12px', background: 'rgba(255,255,255,0.04)', border: 'none', cursor: 'pointer', color: 'var(--fg)', fontSize: 12, fontWeight: 600 }}
+                >
+                  <span>📖 DSL Quick Reference</span>
+                  <span style={{ fontSize: 10, color: 'var(--muted)' }}>{showDslRef ? '▲ hide' : '▼ show'}</span>
+                </button>
+                {showDslRef && (
+                  <div style={{ padding: '10px 14px', fontSize: 12, lineHeight: 1.7, color: 'var(--fg)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+                    {([
+                      ['Extract from request', [
+                        'token    = header("Authorization")',
+                        'userId   = body("user.id")',
+                        'mode     = query("mode")',
+                        'id       = path("user_id")',
+                        'ip       = client_ip()',
+                        'corrId   = correlation_id()   // echoes X-Correlation-ID header, or generates UUID',
+                        'txId     = transaction_id()   // gateway internal ID, unique per request',
+                      ]],
+                      ['Constants & templates', [
+                        'label    = "Hello"',
+                        'msg      = "Hi {userId}, welcome!"',
+                        'lower    = to_lower(token)',
+                        'len      = byte_length(token)',
+                        'combined = concat(label, userId)',
+                      ]],
+                      ['Cache', [
+                        'cached   = cache.get(token)',
+                        'cache.set(token, result, ttl: 300)',
+                        'shared   = shared_cache.get("cfg:v1")',
+                        'shared_cache.set("cfg:v1", val, ttl: 3600)',
+                      ]],
+                      ['Registry (multi-tenant)', [
+                        'registry.lookup(header("X-Tenant-ID"))',
+                        'upstream = registry.url("primary")',
+                        'apiKey   = registry.id("api_key")',
+                        'tier     = registry.meta("tier")',
+                      ]],
+                      ['HTTP & upstream', [
+                        'result = http.get("https://api.example.com/v1")',
+                        'result = http.post(url: upstream, timeout: 5000)',
+                        'set_upstream_header("X-User-ID", userId)',
+                      ]],
+                      ['Auth & secrets', [
+                        'validate_token(token)',
+                        'validate_token(token, checks: "signature,expiry",',
+                        '  jwks_url: "https://idp/.well-known/jwks.json")',
+                        'secret = load_secret("gsm://proj/secrets/key")',
+                        'secret = load_secret("env:MY_API_KEY")',
+                      ]],
+                      ['Rate limiting', [
+                        'rate_limit()',
+                        'assign_quota(tier, groups: \'{"free":"1","pro":"2"}\')',
+                        'rate_limit(groups: \'{"1":"free_rl","2":"pro_rl"}\')',
+                      ]],
+                      ['Output & return', [
+                        'output.body   = result',
+                        'output.body   = "Hello {userId}"',
+                        'output.status = 200',
+                        'output.header("X-ID") = corrId',
+                        'return(200)',
+                        'return(200, result)',
+                        'return(401, "unauthorized")',
+                        'fail(500, "upstream error")',
+                      ]],
+                      ['Conditionals', [
+                        'if (cached) {',
+                        '  output.body = cached',
+                        '  return(200)',
+                        '} else {',
+                        '  result = http.get(url: upstream)',
+                        '  return(200)',
+                        '}',
+                      ]],
+                      ['Switch & loops', [
+                        'switch (tier) {',
+                        '  "free": call free_flow',
+                        '  "pro":  call pro_flow',
+                        '}',
+                        'foreach (items as item) {',
+                        '  call process_item_flow',
+                        '}',
+                        'call auth_validation',
+                      ]],
+                      ['Logging & observability', [
+                        '# Write to access log',
+                        'log("client_id", var.client_id)',
+                        'log("tenant", var.tenant_alias)',
+                        '',
+                        '# Emit to ingest pipeline',
+                        'emit_event(kind="custom", payload=var.data)',
+                        'emit_event(kind="llm_request", deferred=true)',
+                      ]],
+                    ] as [string, string[]][]).map(([heading, lines]) => (
+                      <div key={heading} style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{heading}</div>
+                        <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, color: 'rgba(255,255,255,0.75)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{lines.join('\n')}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div
             className={`canvas${dragOver ? ' drag-over' : ''}`}
+            style={{ display: viewMode === 'code' ? 'none' : undefined }}
             onDragOver={e => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
           >
             {steps.length === 0 && (
-              <span className="hint">Drop instruction blocks here to build a flow</span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                <span className="hint">Drop instruction blocks here to build a flow</span>
+                <div style={{ marginTop: 12, fontSize: 11, color: 'var(--muted)', lineHeight: 1.7, maxWidth: 280, textAlign: 'center' }}>
+                  <strong style={{ color: 'var(--fg)' }}>Tip — Logging:</strong><br/>
+                  Use <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 4px', borderRadius: 3 }}>log</code> to write a value to the access log,
+                  or <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 4px', borderRadius: 3 }}>emit_event</code> to send structured events to the ingest pipeline.
+                  Both are in the <strong>Obs</strong> palette tab.
+                </div>
+              </div>
             )}
             {steps.map((step, i) => {
               const defs = fieldMap[step.action] ?? {}
               const isExpanded = expanded.has(i)
               return (
-                <div key={i} className="step">
+                <Fragment key={i}>
+                <InterStepDropZone idx={i} />
+                <div className="step" style={{ position: 'relative' }}>
+                  <div
+                    onClick={e => { e.stopPropagation(); setInsertCursor(i) }}
+                    title={`Insert new step before step ${i + 1}`}
+                    style={{
+                      position: 'absolute',
+                      left: -18,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      width: 14,
+                      height: 14,
+                      borderRadius: '50%',
+                      border: `1px solid ${insertCursor === i ? 'var(--accent)' : 'var(--muted)'}`,
+                      background: insertCursor === i ? 'var(--accent)' : 'transparent',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 10,
+                      color: insertCursor === i ? '#fff' : 'var(--muted)',
+                      opacity: 0.7,
+                    }}
+                  >
+                    +
+                  </div>
                   <div className="step-header" onClick={() => toggleExpand(i)}>
+                    {selectMode && (
+                      <input
+                        type="checkbox"
+                        checked={selectedSteps.has(i)}
+                        onChange={e => {
+                          e.stopPropagation()
+                          const next = new Set(selectedSteps)
+                          if (e.target.checked) {
+                            next.add(i)
+                          } else {
+                            next.delete(i)
+                          }
+                          setSelectedSteps(next)
+                        }}
+                        style={{ marginRight: 6, cursor: 'pointer' }}
+                      />
+                    )}
                     <span className="step-toggle">{isExpanded ? '▼' : '▶'}</span>
                     <strong className="step-title">{i + 1}. {step.action}</strong>
                     <button
@@ -1302,19 +2496,52 @@ export default function FlowDesigner({
                       onClick={e => { e.stopPropagation(); removeStep(i) }}
                     >×</button>
                   </div>
-                  {isExpanded && (
-                    step.action === 'if'                ? renderIfBody(step, i, defs)           :
-                    step.action === 'switch'            ? renderSwitchBody(step, i, defs)       :
-                    step.action === 'http_call'         ? renderHttpCallBody(step, i)            :
-                    step.action === 'token_validation'  ? renderTokenValidationBody(step, i)     :
-                    step.action === 'set_response_body' ? renderSetResponseBody(step, i)         :
-                    step.action === 'append_message'    ? renderAppendMessageBody(step, i)       :
-                    step.action === 'transform_messages'? renderTransformMessagesBody(step, i)   :
-                                                          renderGenericBody(step, i, defs)
-                  )}
+                  {isExpanded && (<>
+                    {step.action === 'if'                ? renderIfBody(step, i, defs)           :
+                     step.action === 'switch'            ? renderSwitchBody(step, i, defs)       :
+                     step.action === 'http_call'         ? renderHttpCallBody(step, i)            :
+                     step.action === 'token_validation'  ? renderTokenValidationBody(step, i)     :
+                     step.action === 'set_response_body' ? renderSetResponseBody(step, i)         :
+                     step.action === 'append_message'    ? renderAppendMessageBody(step, i)       :
+                     step.action === 'transform_messages'? renderTransformMessagesBody(step, i)   :
+                     step.action === 'log_field'         ? (() => (
+                       <div>
+                         {renderGenericBody(step, i, defs)}
+                         <div style={{
+                           marginTop: 8, padding: '6px 10px', borderRadius: 5,
+                           background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)',
+                           fontSize: 11, color: '#34d399', lineHeight: 1.5,
+                         }}>
+                           💡 Writes <strong>{String(step['key'] || 'field')}</strong> to the request access log.
+                           Value is read from slot <code>{String(step['source'] || '—')}</code> after response completes.
+                           View in access logs under the <strong>Extra</strong> field.
+                         </div>
+                       </div>
+                     ))() :
+                     step.action === 'emit_event'        ? (() => (
+                       <div>
+                         {renderGenericBody(step, i, defs)}
+                         <div style={{
+                           marginTop: 8, padding: '6px 10px', borderRadius: 5,
+                           background: 'rgba(87,181,255,0.08)', border: '1px solid rgba(87,181,255,0.2)',
+                           fontSize: 11, color: '#57b5ff', lineHeight: 1.5,
+                         }}>
+                           💡 Emits a structured event to the ingest pipeline (non-blocking).
+                           Set <strong>deferred=true</strong> to emit after the response is sent.
+                           Event kinds: <code>llm_request</code>, <code>llm_response</code>, <code>tool_call</code>, <code>cache_hit</code>, <code>custom</code>
+                         </div>
+                       </div>
+                     ))() :
+                     ['cache_get','cache_put','cache_get_global','cache_put_global'].includes(step.action)
+                                                         ? renderCacheBody(step, i)               :
+                                                           renderGenericBody(step, i, defs)}
+                    {renderObsFooter(step, i)}
+                  </>)}
                 </div>
+                </Fragment>
               )
             })}
+            <InterStepDropZone idx={steps.length} />
           </div>
 
           {/* Actions */}
@@ -1345,5 +2572,7 @@ export default function FlowDesigner({
         </div>
       </div>
     </div>
+    <VarPopup />
+    </Fragment>
   )
 }

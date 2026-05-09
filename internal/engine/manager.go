@@ -22,10 +22,18 @@ const (
 	StrategyParallel
 )
 
+// ConstantSlot is a pre-baked slot assignment for a route constant.
+// Resolved once at deploy time; applied at each request with zero allocation.
+type ConstantSlot struct {
+	SlotIdx int
+	Value   []byte // pre-allocated at bake time
+}
+
 type EngineState struct {
-	Router      *router.RahRouter
-	Definitions []*ApiDefinition
-	FlowLibrary map[string][]Instruction
+	Router         *router.RahRouter
+	Definitions    []*ApiDefinition
+	FlowLibrary    map[string][]Instruction
+	RouteConstants map[uint64][]ConstantSlot // key: apiID<<8|endpointID; nil = no constants
 }
 
 // OverflowMetrics counts how often requests exceeded the inline arena.
@@ -139,6 +147,17 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	endpoint := fm.resolveSubPath(ctx, def)
 	if endpoint == nil {
 		return
+	}
+
+	// 2a. Inject route constants (pre-baked at deploy time, zero alloc at request time).
+	// Direct array writes (~2 ns each) — no map lookup, no string key, no allocation.
+	if state.RouteConstants != nil {
+		key := uint64(ctx.ApiId)<<8 | uint64(ctx.EndpointId)
+		if slots := state.RouteConstants[key]; len(slots) > 0 {
+			for i := range slots {
+				ctx.ByteSlots[slots[i].SlotIdx] = slots[i].Value
+			}
+		}
 	}
 
 	// 3. Assign a globally-unique transaction ID for this request.

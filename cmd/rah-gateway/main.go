@@ -631,6 +631,7 @@ func main() {
 			if shouldStartTrace {
 				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
 				ctx.Trace = &trace
+				obs.CaptureRequestHeaders(ctx.Trace, req, req.URL.RawQuery)
 			}
 
 			ctx.ApiId = apiId

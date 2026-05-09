@@ -126,17 +126,19 @@ export function expandSteps(rawSteps: FlowStep[]): FlowStep[] {
   for (const step of rawSteps) {
     // ── Explicit extract steps ────────────────────────────────
     if (step.action === 'extract') {
-      const asVal = (step as Record<string, string>)['as']
+      const asVal = step['as'] as string | undefined
       if (asVal) injected.add(asVal)
       result.push(step)
       continue
     }
 
     // ── All other steps ───────────────────────────────────────
-    // Collect source refs from every field value
+    // Collect source refs from every field value (skip nested branch arrays and non-string fields)
+    // trace_vars is a string[] and must not be stringified through substituteRefs
+    const ARRAY_FIELDS = new Set(['then_steps', 'else_steps', 'trace_vars'])
     const allRefs: SourceRef[] = []
     for (const [k, v] of Object.entries(step)) {
-      if (k === 'action') continue
+      if (k === 'action' || ARRAY_FIELDS.has(k)) continue
       allRefs.push(...findSourceRefs(String(v ?? '')))
     }
 
@@ -151,18 +153,26 @@ export function expandSteps(rawSteps: FlowStep[]): FlowStep[] {
       } as unknown as FlowStep)
     }
 
-    // Substitute refs in field values
+    // Substitute refs in field values (preserve array fields verbatim)
+    let resultStep: FlowStep
     if (allRefs.length > 0) {
-      const expanded: Record<string, string> = {}
+      const expanded: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(step)) {
+        if (ARRAY_FIELDS.has(k)) { expanded[k] = v; continue }
         expanded[k] = k === 'action'
-          ? v
+          ? (v as string)
           : substituteRefs(String(v ?? ''), allRefs)
       }
-      result.push(expanded as unknown as FlowStep)
+      resultStep = expanded as unknown as FlowStep
     } else {
-      result.push(step)
+      resultStep = { ...step }
     }
+
+    // Recurse into inline branches
+    if (step.then_steps?.length) resultStep.then_steps = expandSteps(step.then_steps)
+    if (step.else_steps?.length) resultStep.else_steps = expandSteps(step.else_steps)
+
+    result.push(resultStep)
   }
 
   return result

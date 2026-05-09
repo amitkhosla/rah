@@ -35,6 +35,7 @@ type GatewayMetrics struct {
 	UpstreamTopSlow        []NameLatency `json:"upstream_top_slow"`
 	TenantTop5xx           []TenantError `json:"tenant_top_5xx"`
 	CustomMetricTop        []MetricAgg   `json:"custom_metric_top"`
+	CacheStats             []CacheStat   `json:"cache_stats"`
 }
 
 type NameLatency struct {
@@ -43,6 +44,16 @@ type NameLatency struct {
 	TotalLatencyNs uint64 `json:"total_latency_ns"`
 	BytesTx        uint64 `json:"bytes_tx"`
 	BytesRx        uint64 `json:"bytes_rx"`
+}
+
+// CacheStat is a snapshot of hit/miss and latency stats for one cache instruction.
+type CacheStat struct {
+	Name      string  `json:"name"`
+	Hits      uint64  `json:"hits"`
+	Misses    uint64  `json:"misses"`
+	HitRate   float64 `json:"hit_rate"`   // 0.0–1.0
+	AvgHitNs  uint64  `json:"avg_hit_ns"` // mean store latency on a hit
+	AvgMissNs uint64  `json:"avg_miss_ns"`// mean store latency on a miss
 }
 
 type TenantError struct {
@@ -78,34 +89,40 @@ type InstructionEvent struct {
 	Seq        uint32 `json:"seq"`
 	Name       string `json:"name"`
 	PC         int16  `json:"pc"`
+	StepIdx    int16  `json:"step_idx"`
 	DurationNs int64  `json:"duration_ns"`
 	Input      []KV   `json:"input,omitempty"`
 	Output     []KV   `json:"output,omitempty"`
 }
 
 type UpstreamEvent struct {
-	Seq               uint32 `json:"seq"`
-	Attempt           int    `json:"attempt"`
-	Host              string `json:"host"`
-	URL               string `json:"url"`
-	Model             string `json:"model,omitempty"`
-	Status            int    `json:"status"`
-	Err               string `json:"err,omitempty"`
-	ConnReused        bool   `json:"conn_reused"`
-	ConnIdle          bool   `json:"conn_idle"`
-	DNSDurationNs     int64  `json:"dns_duration_ns"`
-	ConnectDurationNs int64  `json:"connect_duration_ns"`
-	TLSDurationNs     int64  `json:"tls_duration_ns"`
-	TTFBNs            int64  `json:"ttfb_ns"`
-	TotalNs           int64  `json:"total_ns"`
-	BytesSent         int64  `json:"bytes_sent"`
-	BytesReceived     int64  `json:"bytes_received"`
+	Seq               uint32            `json:"seq"`
+	Attempt           int               `json:"attempt"`
+	Host              string            `json:"host"`
+	URL               string            `json:"url"`
+	Model             string            `json:"model,omitempty"`
+	Status            int               `json:"status"`
+	Err               string            `json:"err,omitempty"`
+	ConnReused        bool              `json:"conn_reused"`
+	ConnIdle          bool              `json:"conn_idle"`
+	DNSDurationNs     int64             `json:"dns_duration_ns"`
+	ConnectDurationNs int64             `json:"connect_duration_ns"`
+	TLSDurationNs     int64             `json:"tls_duration_ns"`
+	TTFBNs            int64             `json:"ttfb_ns"`
+	TotalNs           int64             `json:"total_ns"`
+	BytesSent         int64             `json:"bytes_sent"`
+	BytesReceived     int64             `json:"bytes_received"`
+	RequestHeaders    map[string]string `json:"req_headers,omitempty"`
+	ResponseHeaders   map[string]string `json:"res_headers,omitempty"`
+	ResponseBody      string            `json:"res_body,omitempty"`
 }
 
 type RequestTrace struct {
 	Summary        RequestSummary     `json:"summary"`
 	Instructions   []InstructionEvent `json:"instructions"`
 	Upstreams      []UpstreamEvent    `json:"upstreams"`
+	RequestHeaders map[string]string  `json:"request_headers,omitempty"`
+	QueryString    string             `json:"query_string,omitempty"`
 	instructionSeq uint32             `json:"-"`
 	upstreamSeq    uint32             `json:"-"`
 }
@@ -115,6 +132,15 @@ type counter struct {
 	totalNs uint64
 	bytesTx uint64
 	bytesRx uint64
+}
+
+// cacheCounter tracks hit/miss counts and store-call latency per cache instruction name.
+// Kept under t.mu (same lock as instr) — reads are snapshot-only, no hot-path contention.
+type cacheCounter struct {
+	hits    uint64
+	misses  uint64
+	hitNs   uint64 // cumulative store latency for hits
+	missNs  uint64 // cumulative store latency for misses
 }
 
 // apiStat tracks per-API request counts and latency using atomics.
@@ -144,6 +170,10 @@ type Config struct {
 	MetricQueueSize            int
 	InfoLogEnabled             bool
 	InfoLogFields              []string
+	// TraceHeaderNames lists the request header names to capture per trace.
+	// Default: ["Content-Type", "Accept"]. Auth headers are always excluded.
+	// Override with RAH_TRACE_CAPTURE_HEADERS (comma-separated, or "*" for all safe headers).
+	TraceHeaderNames []string
 }
 
 type MetricPoint struct {
@@ -185,12 +215,16 @@ type Telemetry struct {
 	droppedExports atomic.Uint64
 	metricDropped  atomic.Uint64
 
-	mu        sync.Mutex
-	instr     map[string]*counter
-	upstream  map[string]*counter
+	mu         sync.Mutex
+	instr      map[string]*counter
+	upstream   map[string]*counter
+	cacheStats map[string]*cacheCounter
 	tenant5xx map[uint16]uint64
 	traces    []RequestTrace
 	custom    map[string]*metricCounter
+
+	captureHeaders []string // immutable after New(); no sync needed
+	captureAll     bool     // true when RAH_TRACE_CAPTURE_HEADERS=*
 
 	exportCh   chan RequestTrace
 	metricCh   chan MetricPoint
@@ -204,7 +238,7 @@ type Telemetry struct {
 }
 
 func NewFromEnv() *Telemetry {
-	cfg := Config{Enabled: true, TraceMode: false, SampleRate: 0.0, MaxEvents: 128, MaxTraces: 128, InstructionTimingEnabled: true, UpstreamPhaseTimingEnabled: false, AlwaysExportSummary: true, ExportQueueSize: 4096, MetricQueueSize: 4096, InfoLogEnabled: true, InfoLogFields: []string{"api_id", "tenant_id", "status", "duration_ns", "upstream_duration_ns"}}
+	cfg := Config{Enabled: true, TraceMode: false, SampleRate: 0.0, MaxEvents: 128, MaxTraces: 128, InstructionTimingEnabled: true, UpstreamPhaseTimingEnabled: false, AlwaysExportSummary: true, ExportQueueSize: 4096, MetricQueueSize: 4096, InfoLogEnabled: true, InfoLogFields: []string{"api_id", "tenant_id", "status", "duration_ns", "upstream_duration_ns"}, TraceHeaderNames: []string{"Content-Type", "Accept"}}
 	if v := strings.TrimSpace(os.Getenv("RAH_OBS_ENABLED")); v != "" {
 		cfg.Enabled = v != "0" && strings.ToLower(v) != "false"
 	}
@@ -243,6 +277,20 @@ func NewFromEnv() *Telemetry {
 			}
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("RAH_TRACE_CAPTURE_HEADERS")); v != "" {
+		if v == "*" {
+			cfg.TraceHeaderNames = []string{"*"}
+		} else {
+			parts := strings.Split(v, ",")
+			cfg.TraceHeaderNames = cfg.TraceHeaderNames[:0]
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					cfg.TraceHeaderNames = append(cfg.TraceHeaderNames, p)
+				}
+			}
+		}
+	}
 	return New(cfg)
 }
 
@@ -253,7 +301,12 @@ func New(cfg Config) *Telemetry {
 	if cfg.MetricQueueSize <= 0 {
 		cfg.MetricQueueSize = 4096
 	}
-	t := &Telemetry{cfg: cfg, instr: make(map[string]*counter), upstream: make(map[string]*counter), tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	t := &Telemetry{cfg: cfg, instr: make(map[string]*counter), upstream: make(map[string]*counter), tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), cacheStats: make(map[string]*cacheCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	if len(cfg.TraceHeaderNames) == 1 && cfg.TraceHeaderNames[0] == "*" {
+		t.captureAll = true
+	} else {
+		t.captureHeaders = append([]string(nil), cfg.TraceHeaderNames...)
+	}
 	// Seed trace counter from crypto/rand so IDs are unique per process instance
 	// and never collide with rows from a previous container run in Postgres.
 	// Same approach as rctx.TxIDGenerator — entropy-seeded, not time-based.
@@ -384,6 +437,49 @@ func (t *Telemetry) StartRequest(apiID uint32, tenantID uint16, method, path str
 	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
 }
 
+// CaptureRequestHeaders records the incoming request headers (and query string)
+// onto the trace. Only headers listed in TraceHeaderNames are captured.
+// Authorization and X-API-Key are never captured regardless of configuration.
+// Call this immediately after StartRequest, only when ctx.Trace != nil.
+func (t *Telemetry) CaptureRequestHeaders(trace *RequestTrace, r *http.Request, queryString string) {
+	if trace == nil || r == nil {
+		return
+	}
+	if queryString != "" {
+		trace.QueryString = queryString
+	}
+	if !t.captureAll && len(t.captureHeaders) == 0 {
+		return
+	}
+
+	// Build a set of names to capture for fast lookup.
+	headers := make(map[string]string, 8)
+	if t.captureAll {
+		for name, vals := range r.Header {
+			lower := strings.ToLower(name)
+			if lower == "authorization" || lower == "x-api-key" || lower == "cookie" {
+				continue // always skip sensitive auth headers
+			}
+			if len(vals) > 0 {
+				headers[name] = vals[0]
+			}
+		}
+	} else {
+		for _, name := range t.captureHeaders {
+			lower := strings.ToLower(name)
+			if lower == "authorization" || lower == "x-api-key" || lower == "cookie" {
+				continue
+			}
+			if v := r.Header.Get(name); v != "" {
+				headers[name] = v
+			}
+		}
+	}
+	if len(headers) > 0 {
+		trace.RequestHeaders = headers
+	}
+}
+
 func (t *Telemetry) QueueMetric(point MetricPoint) {
 	if !t.Enabled() {
 		return
@@ -393,6 +489,29 @@ func (t *Telemetry) QueueMetric(point MetricPoint) {
 	default:
 		t.metricDropped.Add(1)
 	}
+}
+
+// RecordCacheOp records a single cache GET outcome: whether it was a hit or miss,
+// and how long the underlying store call took (excluding slot writes and overhead).
+// name should be the instruction name, e.g. "cache_get" or "cache_get_global".
+func (t *Telemetry) RecordCacheOp(name string, hit bool, durationNs int64) {
+	if !t.Enabled() || durationNs < 0 {
+		return
+	}
+	t.mu.Lock()
+	c := t.cacheStats[name]
+	if c == nil {
+		c = &cacheCounter{}
+		t.cacheStats[name] = c
+	}
+	if hit {
+		c.hits++
+		c.hitNs += uint64(durationNs)
+	} else {
+		c.misses++
+		c.missNs += uint64(durationNs)
+	}
+	t.mu.Unlock()
 }
 
 func (t *Telemetry) RecordInstruction(name string, d time.Duration) {
@@ -640,6 +759,33 @@ func topNFromMap(m map[string]*counter, n int) []NameLatency {
 	return out
 }
 
+func cacheStatsSlice(m map[string]*cacheCounter) []CacheStat {
+	out := make([]CacheStat, 0, len(m))
+	for name, c := range m {
+		total := c.hits + c.misses
+		hitRate := 0.0
+		if total > 0 {
+			hitRate = float64(c.hits) / float64(total)
+		}
+		avgHitNs := uint64(0)
+		if c.hits > 0 {
+			avgHitNs = c.hitNs / c.hits
+		}
+		avgMissNs := uint64(0)
+		if c.misses > 0 {
+			avgMissNs = c.missNs / c.misses
+		}
+		out = append(out, CacheStat{
+			Name: name, Hits: c.hits, Misses: c.misses,
+			HitRate: hitRate, AvgHitNs: avgHitNs, AvgMissNs: avgMissNs,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return (out[i].Hits + out[i].Misses) > (out[j].Hits + out[j].Misses)
+	})
+	return out
+}
+
 func topNMetrics(m map[string]*metricCounter, n int) []MetricAgg {
 	out := make([]MetricAgg, 0, len(m))
 	for k, v := range m {
@@ -674,6 +820,7 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	m.UpstreamTopSlow = topNFromMap(t.upstream, topN)
 	m.TenantTop5xx = topNTenants(t.tenant5xx, topN)
 	m.CustomMetricTop = topNMetrics(t.custom, topN)
+	m.CacheStats = cacheStatsSlice(t.cacheStats)
 	traces := append([]RequestTrace(nil), t.traces...)
 	t.mu.Unlock()
 	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.infoLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}

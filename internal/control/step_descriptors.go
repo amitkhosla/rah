@@ -75,6 +75,15 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "load_service_url_var", Title: "Load Service URL (Dynamic Key)", Category: "registry", Capability: "service-url",
+			Description: "Load a service URL using a key name from a slot (e.g. set via a route constant or earlier step). ~50–100 ns vs 2–5 ns for static Load Service URL. Use only when the key differs per API.",
+			Defaults: map[string]string{"key_identifier": "url_key", "as": "upstream_url"},
+			Fields: []StepField{
+				sf("key_identifier", "Key name slot", "Variable holding the URL key name at runtime (e.g. 'payments_url')", "url_key"),
+				sf("as", "Store as", "Variable to save the resolved URL into", "upstream_url"),
+			},
+		},
+		{
 			Type: "set_service_url", Title: "Set Service URL", Category: "registry", Capability: "write",
 			Description: "Write a service URL for the current tenant into the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
 			Defaults: map[string]string{"key": "primary", "source": "var.new_url"},
@@ -434,6 +443,16 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		{
+			Type: "set_const", Title: "Set Literal Value", Category: "string", Capability: "data",
+			Description: "Write a static literal string into a named slot. Use this to define a fixed response body, header value, or any constant before passing it to another step.",
+			Defaults: map[string]string{"value": `{"status":"ok"}`, "as": "var.result"},
+			Fields: []StepField{
+				sf("value", "Literal value", "The static string to store (plain text, JSON, etc.)", `{"status":"ok"}`),
+				sf("as", "Slot name", "Variable name that later steps can reference", "var.result"),
+			},
+		},
+
 		// ── Math ─────────────────────────────────────────────────────────────────
 		{
 			Type: "add", Title: "Add", Category: "math", Capability: "arithmetic",
@@ -478,41 +497,41 @@ func AllStepDescriptors() []StepDescriptor {
 
 		// ── Cache ─────────────────────────────────────────────────────────────────
 		{
-			Type: "cache_get", Title: "Cache Get (Tenant)", Category: "cache", Capability: "read",
-			Description: "Look up a key in the tenant-scoped cache. On hit, writes the value to the dest slot. On miss, the dest slot is unchanged. Follow with an `if` step checking whether the slot is non-empty to branch on hit vs miss.",
+			Type: "cache_get", Title: "Cache Read · Per-Tenant", Category: "cache", Capability: "read",
+			Description: "Read a cached value for this tenant. Each tenant has its own private cache — other tenants cannot see or affect this data. On a hit the value is saved to the output variable. On a miss the output variable is empty (if it was new) or keeps its previous value. Add an `if` step after this checking whether the output variable is non-empty to branch on hit vs miss.",
 			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
 			Fields: []StepField{
-				sf("key_identifier", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
-				sf("as", "Store as", "Slot to write the cached value into on a hit", "cached_body"),
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the lookup key — e.g. a user ID or request path", "cache_key"),
+				sf("as", "Output variable", "Variable to save the cached value into when there is a cache hit", "cached_body"),
 			},
 		},
 		{
-			Type: "cache_put", Title: "Cache Put (Tenant)", Category: "cache", Capability: "write",
-			Description: "Store a value in the tenant-scoped cache under the given key with a TTL in seconds. Skipped silently if key or value slot is empty.",
+			Type: "cache_put", Title: "Cache Write · Per-Tenant", Category: "cache", Capability: "write",
+			Description: "Store a value in this tenant's private cache. The entry expires after the TTL you set. Only this tenant can read back the value via Cache Read · Per-Tenant.",
 			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
 			Fields: []StepField{
-				sf("key_identifier", "Key slot", "Slot whose value is used as the cache key", "cache_key"),
-				sf("source", "Value slot", "Slot holding the value to cache", "upstream_response"),
-				sf("ttl", "TTL (seconds)", "How long to cache the value; routed to the nearest TTL tier", "300"),
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the cache key — must match the key used on the read step", "cache_key"),
+				sf("source", "Value to cache (variable)", "Variable holding the value you want to store — e.g. an upstream response body", "upstream_response"),
+				sf("ttl", "Expires after (seconds)", "How long to keep the entry before it is automatically removed. 300 = 5 minutes, 3600 = 1 hour.", "300"),
 			},
 		},
 		{
-			Type: "cache_get_global", Title: "Cache Get (Global)", Category: "cache", Capability: "read",
-			Description: "Look up a key in the shared (tenant-agnostic) cache namespace. Useful for caching data that is the same for all tenants (e.g. public API responses, config payloads). Behaviour is identical to cache_get but tenantID=0 is used.",
+			Type: "cache_get_global", Title: "Cache Read · Shared", Category: "cache", Capability: "read",
+			Description: "Read a value from the shared (global) cache — the same data is visible across all tenants. Use this for content that does not vary per tenant, such as public API responses or configuration payloads. On a hit the value is saved to the output variable. On a miss the output variable is empty (if it was new) or keeps its previous value. Add an `if` step after this checking whether the output variable is non-empty to branch on hit vs miss.",
 			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
 			Fields: []StepField{
-				sf("key_identifier", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
-				sf("as", "Store as", "Slot to write the cached value into on a hit", "cached_body"),
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the lookup key", "cache_key"),
+				sf("as", "Output variable", "Variable to save the cached value into when there is a cache hit", "cached_body"),
 			},
 		},
 		{
-			Type: "cache_put_global", Title: "Cache Put (Global)", Category: "cache", Capability: "write",
-			Description: "Store a value in the shared (tenant-agnostic) cache namespace with a TTL in seconds. The stored value is readable by all tenants via cache_get_global.",
+			Type: "cache_put_global", Title: "Cache Write · Shared", Category: "cache", Capability: "write",
+			Description: "Store a value in the shared (global) cache. The entry is readable by all tenants via Cache Read · Shared. Use only for data that is truly the same for every tenant.",
 			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
 			Fields: []StepField{
-				sf("key_identifier", "Key slot", "Slot whose value is used as the cache key", "cache_key"),
-				sf("source", "Value slot", "Slot holding the value to cache", "upstream_response"),
-				sf("ttl", "TTL (seconds)", "How long to cache the value; routed to the nearest TTL tier", "300"),
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the cache key — must match the key used on the read step", "cache_key"),
+				sf("source", "Value to cache (variable)", "Variable holding the value you want to store", "upstream_response"),
+				sf("ttl", "Expires after (seconds)", "How long to keep the entry before it is automatically removed. 300 = 5 minutes, 3600 = 1 hour.", "300"),
 			},
 		},
 
@@ -524,12 +543,12 @@ func AllStepDescriptors() []StepDescriptor {
 			Fields:   []StepField{},
 		},
 		{
-			Type: "cache_get_batched", Title: "Cache Get (Batched)", Category: "cache", Capability: "read",
-			Description: "Queue a cache GET into the op buffer. The result is written to the dest slot only after a batch_flush instruction executes. Use when multiple cache lookups can be batched before their results are needed.",
+			Type: "cache_get_batched", Title: "Cache Read (Batched)", Category: "cache", Capability: "read",
+			Description: "Queue a cache lookup into the batch buffer — the result is not available until a Batch Flush step runs. Use this when you need multiple cache lookups and want to issue them all in one round-trip for efficiency.",
 			Defaults: map[string]string{"variable": "cache_key", "destination": "cached_body"},
 			Fields: []StepField{
-				sf("variable", "Key slot", "Slot whose value is used as the cache lookup key", "cache_key"),
-				sf("destination", "Store as", "Slot to write the cached value into after batch_flush", "cached_body"),
+				sf("variable", "Cache key (variable)", "Variable whose value is used as the lookup key", "cache_key"),
+				sf("destination", "Output variable", "Variable to write the cached value into after the batch flush runs", "cached_body"),
 			},
 		},
 		{

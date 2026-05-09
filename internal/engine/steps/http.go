@@ -470,6 +470,24 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					reqBytesSent = req.ContentLength
 				}
 
+				// Capture outgoing request headers for tracing (only when trace is active).
+				if ctx.Trace != nil && len(req.Header) > 0 {
+					hdrs := make(map[string]string, len(req.Header))
+					for k, vals := range req.Header {
+						lower := strings.ToLower(k)
+						if lower == "authorization" || lower == "x-api-key" || lower == "cookie" {
+							hdrs[k] = "***"
+							continue
+						}
+						if len(vals) > 0 {
+							hdrs[k] = vals[0]
+						}
+					}
+					if len(hdrs) > 0 {
+						event.RequestHeaders = hdrs
+					}
+				}
+
 				resp, err := bundle.Client.Do(req)
 				cancel()
 				totalUpstream := time.Since(upstreamStart)
@@ -506,8 +524,27 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					return engine.StopPlan
 				}
 
+				// Capture response headers and first 1KB of body for tracing.
+				if ctx.Trace != nil {
+					if len(resp.Header) > 0 {
+						hdrs := make(map[string]string, len(resp.Header))
+						for k, vals := range resp.Header {
+							if len(vals) > 0 {
+								hdrs[k] = vals[0]
+							}
+						}
+						event.ResponseHeaders = hdrs
+					}
+					bodyPreview, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+					if len(bodyPreview) > 0 {
+						event.ResponseBody = string(bodyPreview)
+					}
+				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+				if ctx.Trace != nil {
+					respBytes += int64(len(event.ResponseBody))
+				}
 				event.BytesSent = reqBytesSent
 				event.BytesReceived = respBytes
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, respBytes)

@@ -40,10 +40,19 @@ export function fetchTargets(): Promise<TargetsResponse> {
 }
 
 export function deploy(body: DeployRequest): Promise<DeployResponse> {
+  const normalized: DeployRequest = body.payload
+    ? {
+        ...body,
+        payload: {
+          ...body.payload,
+          flows: body.payload.flows.map(f => ({ ...f, instructions: f.instructions.map(normalizeStep) })),
+        },
+      }
+    : body
   return request<DeployResponse>('/api/deploy', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(normalized),
   })
 }
 
@@ -265,12 +274,28 @@ export interface SyncStep {
 export interface SyncPayload {
   sync_uuid: string
   flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' }>
-  apis: Array<{ name: string; path: string; flow_name: string; action: 'upsert' }>
+  apis: Array<{
+    name: string
+    path: string
+    flow_name: string
+    action: 'upsert'
+    rate_limit?: string
+    alias_paths?: string[]
+    endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string; rate_limit?: string }>
+  }>
 }
 
 export interface GatewaySnapshot {
   flows: Array<{ name: string; instructions: SyncStep[] }>
-  apis:  Array<{ name: string; path: string; method?: string; flow_name: string }>
+  apis: Array<{
+    name: string
+    path: string
+    method?: string
+    flow_name: string
+    rate_limit?: string
+    endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string; rate_limit?: string }>
+    alias_paths?: string[]
+  }>
 }
 
 export async function fetchGatewaySnapshot(): Promise<GatewaySnapshot> {
@@ -279,11 +304,35 @@ export async function fetchGatewaySnapshot(): Promise<GatewaySnapshot> {
   return res.json()
 }
 
+// Fields that the Go backend expects as numbers (int or uint32) but the UI stores as strings
+const NUMERIC_STEP_FIELDS = new Set(['status', 'max_retries', 'timeout', 'ttl'])
+// Fields that the Go backend expects as booleans but palette defaults store as strings
+const BOOL_STEP_FIELDS = new Set(['generate_if_missing', 'trace_capture'])
+
+function normalizeStep(step: Record<string, unknown>): SyncStep {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(step)) {
+    if (NUMERIC_STEP_FIELDS.has(k) && typeof v === 'string' && v !== '') {
+      const n = Number(v)
+      out[k] = Number.isFinite(n) ? n : v
+    } else if (BOOL_STEP_FIELDS.has(k) && typeof v === 'string') {
+      out[k] = v === 'true'
+    } else {
+      out[k] = v
+    }
+  }
+  return out as SyncStep
+}
+
 export async function syncFlows(payload: SyncPayload): Promise<void> {
+  const normalized: SyncPayload = {
+    ...payload,
+    flows: payload.flows.map(f => ({ ...f, instructions: f.instructions.map(normalizeStep) })),
+  }
   const res = await fetch('/api/sync', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(normalized),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => `HTTP ${res.status}`)
@@ -392,4 +441,44 @@ export async function updateObsDetailLogConfig(cfg: ObsDetailLogConfig): Promise
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
+}
+
+// ── Observability runtime config (trace mode, sampling, log fields) ──
+
+export interface ObsRuntimeConfig {
+  trace_mode: boolean
+  trace_sample_rate: number          // 0.0–1.0
+  instruction_timing_enabled: boolean
+  info_log_enabled: boolean
+  info_log_fields: string[]          // field names included in access log
+}
+
+export async function fetchObsConfig(): Promise<ObsRuntimeConfig> {
+  const r = await fetch('/api/observability/config')
+  if (!r.ok) throw new Error(await r.text())
+  const body = await r.json()
+  // The config snapshot is nested under body.config
+  const c = body?.config ?? {}
+  return {
+    trace_mode:                  !!c.trace_mode,
+    trace_sample_rate:           c.trace_sample_rate ?? 0,
+    instruction_timing_enabled:  c.instruction_timing_enabled !== false,
+    info_log_enabled:            c.info_log_enabled !== false,
+    info_log_fields:             Array.isArray(c.info_log_fields) ? c.info_log_fields : [],
+  }
+}
+
+export async function updateObsConfig(patch: Partial<ObsRuntimeConfig>): Promise<void> {
+  const body: Record<string, unknown> = {}
+  if (patch.trace_mode                !== undefined) body.trace_mode                 = patch.trace_mode
+  if (patch.trace_sample_rate         !== undefined) body.trace_sample_rate          = patch.trace_sample_rate
+  if (patch.instruction_timing_enabled !== undefined) body.instruction_timing_enabled = patch.instruction_timing_enabled
+  if (patch.info_log_enabled          !== undefined) body.info_log_enabled           = patch.info_log_enabled
+  if (patch.info_log_fields           !== undefined) body.info_log_fields            = patch.info_log_fields
+  const r = await fetch('/api/observability/config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(await r.text())
 }

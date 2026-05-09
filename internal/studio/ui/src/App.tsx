@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema } from './api'
-import type { ApiDef, EndpointDef, ConnStatus, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
+import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
 import FlowDesigner  from './components/FlowDesigner'
 import APIsSection   from './components/APIsSection'
 import AISection     from './components/AISection'
@@ -39,24 +39,72 @@ function normalizeActionNames(steps: FlowStep[]): FlowStep[] {
 function collectFlowRefs(steps: FlowStep[]): string[] {
   const refs: string[] = []
   for (const step of steps) {
-    if (step['then']) refs.push(step['then'])
-    if (step['else']) refs.push(step['else'])
-    if (step['flow_name']) refs.push(step['flow_name'])
+    if (step['then']) refs.push(step['then'] as string)
+    if (step['else']) refs.push(step['else'] as string)
+    if (step['flow_name']) refs.push(step['flow_name'] as string)
     if (step['cases']) {
       // cases format: "val1=flowA,val2=flowB"
-      step['cases'].split(',').forEach(c => {
+      (step['cases'] as string).split(',').forEach(c => {
         const eq = c.indexOf('=')
         if (eq >= 0) refs.push(c.slice(eq + 1).trim())
       })
     }
+    // Recurse into inline branches
+    if (step.then_steps) refs.push(...collectFlowRefs(step.then_steps))
+    if (step.else_steps) refs.push(...collectFlowRefs(step.else_steps))
   }
   return refs.filter(Boolean)
+}
+
+// ── Reverse dependency (impact) map ─────────────────────────────
+// For each flow name, which flows and APIs reference it?
+function buildImpactMap(savedFlows: SavedFlow[], apis: ApiDef[]): Map<string, FlowImpact> {
+  const map = new Map<string, FlowImpact>()
+  function entry(name: string): FlowImpact {
+    if (!map.has(name)) map.set(name, { flows: [], apis: [] })
+    return map.get(name)!
+  }
+  // Inter-flow references
+  for (const flow of savedFlows) {
+    for (const ref of collectFlowRefs(flow.steps)) {
+      if (ref !== flow.name) {
+        const e = entry(ref)
+        if (!e.flows.includes(flow.name)) e.flows.push(flow.name)
+      }
+    }
+  }
+  // API → flow references
+  for (const api of apis) {
+    if (api.defaultFlow) {
+      const e = entry(api.defaultFlow)
+      if (!e.apis.includes(api.name)) e.apis.push(api.name)
+    }
+    for (const ep of api.endpoints) {
+      if (ep.flowName && ep.flowName !== api.defaultFlow) {
+        const e = entry(ep.flowName)
+        if (!e.apis.includes(api.name)) e.apis.push(api.name)
+      }
+    }
+  }
+  return map
 }
 
 // ── Sidebar structure ────────────────────────────────────────────────
 type NavItem =
   | { kind: 'item'; id: TabId; label: string }
   | { kind: 'section'; label: string }
+
+const NAV_ICONS: Record<string, string> = {
+  dashboard:     '⊞',
+  flows:         '⛶',
+  apis:          '⬡',
+  ai:            '⬡',
+  deploy:        '↑',
+  gateway:       '◉',
+  observability: '⊛',
+  tenants:       '☰',
+  settings:      '⚙',
+}
 
 const NAV: NavItem[] = [
   { kind: 'item',    id: 'dashboard', label: 'Dashboard' },
@@ -77,6 +125,7 @@ const NAV: NavItem[] = [
 
 export default function App() {
   const [tab, setTab] = useState<TabId>('dashboard')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   // Accent colour — applied immediately as a CSS custom property
   const [accent, setAccent] = useState('#57b5ff')
@@ -98,6 +147,10 @@ export default function App() {
   const [flowName, setFlowName] = useState('')
   const [steps,    setSteps]    = useState<FlowStep[]>([])
 
+  // Navigation stack: each entry is the flow name we navigated FROM (breadcrumb trail)
+  // e.g. ['root_flow', 'auth_flow'] means we drilled: root_flow → auth_flow → current
+  const [navStack, setNavStack] = useState<string[]>([])
+
   // All flows saved during this session (shared between designer + APIs section)
   const [savedFlows, setSavedFlows] = useState<SavedFlow[]>([])
 
@@ -115,6 +168,26 @@ export default function App() {
     })
   }
 
+  // Auto-save active flow to savedFlows whenever steps change so sync always sees latest.
+  // NOTE: depends only on `steps` — NOT `flowName`. Reacting to every flowName keystroke
+  // would create a new savedFlow entry for every character typed ("R", "Re", "Ret"...).
+  // The flow is registered under its final name when the user explicitly saves/publishes.
+  useEffect(() => {
+    if (!flowName.trim() || steps.length === 0) return
+    setSavedFlows(prev => {
+      const idx = prev.findIndex(f => f.name === flowName)
+      if (idx >= 0) {
+        const updated = [...prev]
+        updated[idx] = { ...updated[idx], steps: [...steps] }
+        return updated
+      }
+      // Only add a new entry if the name is already registered (e.g. loaded from gateway).
+      // New flows are added explicitly on save/publish, not on every keystroke.
+      return prev
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps])
+
   // Called from APIsSection when user creates a flow name without going to designer
   function createNamedFlow(name: string) {
     setSavedFlows(prev => {
@@ -123,10 +196,50 @@ export default function App() {
     })
   }
 
+  // Called from APIsSection when loading flows from gateway — preserves steps
+  function loadNamedFlow(name: string, steps: FlowStep[]) {
+    setSavedFlows(prev => {
+      if (prev.some(f => f.name === name)) return prev  // don't overwrite local edits
+      return [...prev, { name, steps }]
+    })
+  }
+
   // Clears the active flow and navigates to the designer
   function startNewFlow() {
     setFlowName('')
     setSteps([])
+    setTab('flows')
+  }
+
+  // Navigate to designer, optionally loading a named flow.
+  // If `pushCurrent` is true, the current flowName is pushed onto the navStack first
+  // (used when drilling into a sub-flow from FlowMap or a call step).
+  function navigateToDesigner(name?: string, pushCurrent?: boolean) {
+    if (name) {
+      const saved = savedFlows.find(f => f.name === name)
+      if (pushCurrent && flowName) {
+        setNavStack(prev => [...prev, flowName])
+      } else if (!pushCurrent) {
+        setNavStack([])
+      }
+      setFlowName(name)
+      setSteps(saved?.steps ?? [])
+    } else {
+      setFlowName('')
+      setSteps([])
+      setNavStack([])
+    }
+    setTab('flows')
+  }
+
+  // Navigate back to a specific stack index (0 = root).
+  // Pops everything above that index.
+  function navigateToStackIndex(idx: number) {
+    const target = navStack[idx]
+    const saved = savedFlows.find(f => f.name === target)
+    setFlowName(target)
+    setSteps(saved?.steps ?? [])
+    setNavStack(prev => prev.slice(0, idx))
     setTab('flows')
   }
 
@@ -176,49 +289,68 @@ export default function App() {
     return () => clearTimeout(id)
   }, [savedFlows, apis, accent])
 
+  // Reverse dependency map: flow name → { flows, apis } that reference it
+  const impactMap = useMemo(
+    () => buildImpactMap(savedFlows, apis),
+    [savedFlows, apis],
+  )
+
   const connLabel: Record<ConnStatus, string> = {
     connecting: 'connecting…',
     ok: '✓ connected',
     error: '⚠ backend unreachable',
   }
   const connClass = conn === 'ok' ? ' ok' : conn === 'error' ? ' err' : ''
+  const connColor = conn === 'ok' ? '#22c55e' : conn === 'error' ? '#ef4444' : '#f59e0b'
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* ── Sidebar ── */}
-      <aside className="sidebar">
-        <div className="sidebar-title">RAH Studio</div>
+      <aside className="sidebar" style={{ width: sidebarCollapsed ? 48 : 180 }}>
+        {/* Title */}
+        {sidebarCollapsed
+          ? <div style={{ height: 53, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>⊛</div>
+          : <div className="sidebar-title">RAH Studio</div>
+        }
 
         <nav style={{ flex: 1, overflowY: 'auto' }}>
           {NAV.map((item, i) => {
             if (item.kind === 'section') {
+              if (sidebarCollapsed) return null
               return (
                 <div key={i} className="sidebar-section-label">
                   {item.label}
                 </div>
               )
             }
+            const icon = NAV_ICONS[item.id] ?? '•'
             return (
               <div key={item.id}>
                 <button
-                  className={`sidebar-item${tab === item.id ? ' active' : ''}`}
+                  className={`sidebar-item${tab === item.id ? ' active' : ''}${sidebarCollapsed ? ' icon-only' : ''}`}
+                  title={sidebarCollapsed ? item.label : undefined}
                   onClick={() => setTab(item.id)}
                 >
-                  {item.label}
-                  {item.id === 'apis' && apis.length > 0 && (
-                    <span style={{
-                      marginLeft: 'auto',
-                      fontSize: 10,
-                      fontWeight: 700,
-                      background: 'rgba(255,255,255,0.15)',
-                      borderRadius: 8,
-                      padding: '1px 6px',
-                    }}>
-                      {apis.reduce((sum, a) => sum + a.endpoints.length, 0)}
-                    </span>
+                  <span style={{ fontSize: 14, flexShrink: 0 }}>{icon}</span>
+                  {!sidebarCollapsed && (
+                    <>
+                      <span>{item.label}</span>
+                      {item.id === 'apis' && apis.length > 0 && (
+                        <span style={{
+                          marginLeft: 'auto',
+                          fontSize: 10,
+                          fontWeight: 700,
+                          background: 'rgba(255,255,255,0.15)',
+                          borderRadius: 8,
+                          padding: '1px 6px',
+                        }}>
+                          {apis.reduce((sum, a) => sum + a.endpoints.length, 0)}
+                        </span>
+                      )}
+                    </>
                   )}
                 </button>
-                {item.id === 'flows' && (
+                {item.id === 'flows' && !sidebarCollapsed && (
                   <button
                     style={{
                       display: 'block',
@@ -244,29 +376,55 @@ export default function App() {
           })}
         </nav>
 
-        {/* ── Sidebar bottom: accent picker + connection status ── */}
-        <div className="sidebar-bottom">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="color"
-              className="color-input"
-              value={accent}
-              onChange={e => setAccent(e.target.value)}
-              title="Accent colour"
-              style={{ width: 24, height: 24, padding: 1 }}
-            />
-            <span style={{ fontSize: 10, color: 'var(--muted)' }}>Accent</span>
-          </div>
-          <span className={`conn-badge${connClass}`} style={{ fontSize: 11, marginTop: 6, display: 'block' }}>
-            {connLabel[conn]}
-          </span>
+        {/* ── Sidebar bottom: accent picker + connection status + collapse toggle ── */}
+        <div className="sidebar-bottom" style={{ padding: sidebarCollapsed ? '8px 4px' : undefined }}>
+          {sidebarCollapsed ? (
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 6 }} title={connLabel[conn]}>
+              <span style={{ fontSize: 12, color: connColor }}>●</span>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="color"
+                  className="color-input"
+                  value={accent}
+                  onChange={e => setAccent(e.target.value)}
+                  title="Accent colour"
+                  style={{ width: 24, height: 24, padding: 1 }}
+                />
+                <span style={{ fontSize: 10, color: 'var(--muted)' }}>Accent</span>
+              </div>
+              <span className={`conn-badge${connClass}`} style={{ fontSize: 11, marginTop: 6, display: 'block' }}>
+                {connLabel[conn]}
+              </span>
+            </>
+          )}
+          <button
+            onClick={() => setSidebarCollapsed(c => !c)}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            style={{
+              display: 'block',
+              width: '100%',
+              background: 'none',
+              border: 'none',
+              color: 'var(--muted)',
+              cursor: 'pointer',
+              fontSize: 14,
+              textAlign: 'center',
+              padding: '4px 0',
+              marginTop: 4,
+            }}
+          >
+            {sidebarCollapsed ? '»' : '«'}
+          </button>
         </div>
       </aside>
 
       {/* ── Main content ── */}
       <main className="main-content">
         {tab === 'dashboard' && <Dashboard conn={conn} />}
-        {tab === 'flows' && (
+        <div style={{ display: tab === 'flows' ? 'contents' : 'none' }}>
           <FlowDesigner
             blocks={blocks}
             steps={steps}
@@ -275,18 +433,25 @@ export default function App() {
             setFlowName={setFlowName}
             savedFlows={savedFlows}
             onSaveFlow={() => saveCurrentFlow([], {})}
+            onNavigateToFlow={(name) => navigateToDesigner(name, true)}
+            navStack={navStack}
+            onNavigateBack={navigateToStackIndex}
+            impactMap={impactMap}
+            onNavigateToApis={() => setTab('apis')}
+            onOpenFlow={(name) => navigateToDesigner(name, false)}
           />
-        )}
-        {tab === 'apis' && (
+        </div>
+        <div style={{ display: tab === 'apis' ? 'contents' : 'none' }}>
           <APIsSection
             flows={savedFlows}
             apis={apis}
             setApis={setApis}
             onCreateFlow={createNamedFlow}
-            onNavigateToDesigner={startNewFlow}
+            onLoadFlow={loadNamedFlow}
+            onNavigateToDesigner={navigateToDesigner}
             onNavigateToDeploy={() => setTab('deploy')}
           />
-        )}
+        </div>
         {tab === 'ai' && <AISection />}
         {tab === 'deploy' && (
           <Deploy
