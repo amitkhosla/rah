@@ -20,6 +20,21 @@ interface Props {
   savedFlows: SavedFlow[]
   currentFlow: string
   onNavigate: (name: string) => void
+  /** If set, only lay out the subgraph reachable from this flow. */
+  focusFlow?: string
+}
+
+/** Returns all flow names reachable from `start` via the call graph (BFS). */
+function getReachableFlows(start: string, graph: Map<string, string[]>, allFlows: SavedFlow[]): SavedFlow[] {
+  const visited = new Set<string>()
+  const queue = [start]
+  while (queue.length > 0) {
+    const name = queue.shift()!
+    if (visited.has(name)) continue
+    visited.add(name)
+    for (const c of graph.get(name) ?? []) queue.push(c)
+  }
+  return allFlows.filter(f => visited.has(f.name))
 }
 
 // ── Theme definitions ────────────────────────────────────────────────
@@ -124,7 +139,7 @@ function layoutGraph(flows: SavedFlow[], graph: Map<string, string[]>): LayoutNo
 }
 
 // ── Component ────────────────────────────────────────────────────────
-export default function FlowGraph({ savedFlows, currentFlow, onNavigate }: Props) {
+export default function FlowGraph({ savedFlows, currentFlow, onNavigate, focusFlow }: Props) {
   const [themeKey, setThemeKey] = useState<string>(() => {
     const saved = localStorage.getItem(LS_KEY)
     return saved && saved in THEMES ? saved : 'dark'
@@ -141,7 +156,11 @@ export default function FlowGraph({ savedFlows, currentFlow, onNavigate }: Props
   }
 
   const graph = useMemo(() => buildCallGraph(savedFlows), [savedFlows])
-  const nodes = useMemo(() => layoutGraph(savedFlows, graph), [savedFlows, graph])
+  const flowsToLayout = useMemo(
+    () => focusFlow ? getReachableFlows(focusFlow, graph, savedFlows) : savedFlows,
+    [focusFlow, graph, savedFlows]
+  )
+  const nodes = useMemo(() => layoutGraph(flowsToLayout, graph), [flowsToLayout, graph])
 
   if (nodes.length === 0) {
     return <div style={{ padding: 24, color: theme.edge, fontSize: 13 }}>No flows saved yet.</div>
@@ -175,6 +194,7 @@ export default function FlowGraph({ savedFlows, currentFlow, onNavigate }: Props
     <div style={{ borderRadius: 8, overflow: 'hidden', background: theme.bg, border: `1px solid ${theme.border}` }}>
 
       {/* Toolbar */}
+      {!focusFlow && (
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '5px 10px', background: theme.node, borderBottom: `1px solid ${theme.border}`,
@@ -237,6 +257,7 @@ export default function FlowGraph({ savedFlows, currentFlow, onNavigate }: Props
           )}
         </div>
       </div>
+      )}
 
       {/* Step detail panel */}
       {selectedFlow && (() => {

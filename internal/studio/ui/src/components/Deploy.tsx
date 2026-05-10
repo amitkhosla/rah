@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { deploy, fetchTargets } from '../api'
 import type { ApiDef, DeployRecord, ReleaseRecord, SavedFlow, Target } from '../types'
 import { flattenForDeploy } from '../utils/flatten'
+import { validateFlows } from '../utils/validateFlows'
+import type { ValidationError } from '../utils/validateFlows'
 
 interface Props {
   savedFlows: SavedFlow[]
@@ -33,6 +35,7 @@ export default function Deploy({ savedFlows, apis }: Props) {
   const [status,    setStatus]    = useState('')
   const [statusErr, setStatusErr] = useState(false)
   const [deploying, setDeploying] = useState(false)
+  const [ignoreWarnings, setIgnoreWarnings] = useState(false)
 
   async function load() {
     setLoadErr('')
@@ -57,6 +60,11 @@ export default function Deploy({ savedFlows, apis }: Props) {
   )]
   const flowsMissing   = usedFlowNames.filter(n => !savedFlows.find(f => f.name === n)?.steps.length)
 
+  const validationErrors: ValidationError[] = validateFlows(savedFlows, apis)
+  const blockingErrors = validationErrors.filter(e => e.severity === 'error')
+  const warnings       = validationErrors.filter(e => e.severity === 'warn')
+  const canDeploy = blockingErrors.length === 0 && (warnings.length === 0 || ignoreWarnings)
+
   function parseApiVersions(): Record<string, string> {
     const t = apiVersionsRaw.trim()
     if (!t) return {}
@@ -64,6 +72,11 @@ export default function Deploy({ savedFlows, apis }: Props) {
   }
 
   async function handleReleaseDeploy() {
+    if (blockingErrors.length > 0) {
+      setStatusErr(true)
+      setStatus(`Fix ${blockingErrors.length} error(s) before deploying — see the validation panel above.`)
+      return
+    }
     if (apis.length === 0) {
       setStatusErr(true); setStatus('No APIs defined — add endpoints in the APIs tab.'); return
     }
@@ -255,7 +268,33 @@ export default function Deploy({ savedFlows, apis }: Props) {
             style={{ minHeight: 60 }}
           />
 
-          <button className="btn mt8" onClick={handleReleaseDeploy} disabled={deploying}>
+          {validationErrors.length > 0 && (
+            <div style={{ marginBottom: 14, borderRadius: 8, border: `1px solid ${blockingErrors.length > 0 ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', background: blockingErrors.length > 0 ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)', fontSize: 12, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>
+                  {blockingErrors.length > 0
+                    ? `🚫 ${blockingErrors.length} error(s) must be fixed before deploy`
+                    : `⚠ ${warnings.length} warning(s)`}
+                </span>
+                {blockingErrors.length === 0 && warnings.length > 0 && (
+                  <label style={{ fontSize: 11, fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={ignoreWarnings} onChange={e => setIgnoreWarnings(e.target.checked)} />
+                    Deploy anyway
+                  </label>
+                )}
+              </div>
+              <div style={{ maxHeight: 200, overflowY: 'auto', padding: '6px 12px' }}>
+                {validationErrors.map((e, i) => (
+                  <div key={i} style={{ fontSize: 11, padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', color: e.severity === 'error' ? '#ef4444' : '#f59e0b' }}>
+                    <span style={{ fontFamily: 'monospace', marginRight: 6 }}>[{e.flow}]</span>
+                    {e.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button className="btn mt8" onClick={handleReleaseDeploy} disabled={deploying || !canDeploy}>
             {deploying ? 'Deploying…' : 'Create Release + Deploy'}
           </button>
 

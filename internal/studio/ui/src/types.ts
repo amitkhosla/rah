@@ -1,4 +1,4 @@
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 

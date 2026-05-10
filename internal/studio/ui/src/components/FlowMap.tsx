@@ -59,10 +59,12 @@ interface NodeProps {
   depth: number
   visited: Set<string>
   hideAuto: boolean
+  selected: Set<string>
+  onToggleSelect: (name: string) => void
 }
 
 function FlowMapNode({
-  name, callGraph, allNames, stepCount, savedFlows, onNavigate, currentFlow, depth, visited, hideAuto,
+  name, callGraph, allNames, stepCount, savedFlows, onNavigate, currentFlow, depth, visited, hideAuto, selected, onToggleSelect,
 }: NodeProps) {
   const [open, setOpen] = useState(depth === 0)
   const [stepsOpen, setStepsOpen] = useState(false)
@@ -94,6 +96,15 @@ function FlowMapNode({
           marginBottom: 1,
         }}
       >
+        {/* Checkbox for multi-select */}
+        <input
+          type="checkbox"
+          checked={selected.has(name)}
+          onChange={e => { e.stopPropagation(); onToggleSelect(name) }}
+          style={{ width: 12, height: 12, cursor: 'pointer', flexShrink: 0, accentColor: 'var(--accent)' }}
+          onClick={e => e.stopPropagation()}
+        />
+
         {/* Expand/collapse arrow for nodes with children */}
         <button
           onClick={() => hasChildren && setOpen(o => !o)}
@@ -240,6 +251,8 @@ function FlowMapNode({
               depth={depth + 1}
               visited={newVisited}
               hideAuto={hideAuto}
+              selected={selected}
+              onToggleSelect={onToggleSelect}
             />
           ))}
         </div>
@@ -254,10 +267,15 @@ interface Props {
   savedFlows: SavedFlow[]
   currentFlow: string
   onNavigate: (name: string) => void
+  onDeleteFlows?: (names: string[]) => void
+  /** If set, only show the subtree rooted at this flow (no other roots). */
+  focusFlow?: string
 }
 
-export default function FlowMap({ savedFlows, currentFlow, onNavigate }: Props) {
+export default function FlowMap({ savedFlows, currentFlow, onNavigate, onDeleteFlows, focusFlow }: Props) {
   const [hideAuto, setHideAuto] = useState(true)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   const visibleFlows = hideAuto
     ? savedFlows.filter(f => !f.name.startsWith('__auto_'))
@@ -275,7 +293,9 @@ export default function FlowMap({ savedFlows, currentFlow, onNavigate }: Props) 
   }
   const roots = visibleFlows.filter(f => !referenced.has(f.name))
   // Fallback: if everything is referenced (cyclic graph), show all visible flows as roots
-  const treeRoots = roots.length > 0 ? roots : visibleFlows
+  const treeRoots = focusFlow
+    ? visibleFlows.filter(f => f.name === focusFlow)
+    : (roots.length > 0 ? roots : visibleFlows)
 
   if (savedFlows.length === 0) {
     return (
@@ -305,15 +325,52 @@ export default function FlowMap({ savedFlows, currentFlow, onNavigate }: Props) 
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.05em', flex: 1 }}>
           FLOW MAP
         </span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--muted)', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={hideAuto}
-            onChange={e => setHideAuto(e.target.checked)}
-            style={{ cursor: 'pointer' }}
-          />
-          Hide auto-fragments
-        </label>
+        {!focusFlow && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--muted)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={hideAuto}
+              onChange={e => setHideAuto(e.target.checked)}
+              style={{ cursor: 'pointer' }}
+            />
+            Hide auto-fragments
+          </label>
+        )}
+        {selected.size > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>{selected.size} selected</span>
+            {deleteConfirm ? (
+              <>
+                <span style={{ fontSize: 11, color: '#f59e0b' }}>Delete {selected.size} flow{selected.size > 1 ? 's' : ''}?</span>
+                <button
+                  style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 4, cursor: 'pointer', color: '#ef4444' }}
+                  onClick={() => { onDeleteFlows?.([...selected]); setSelected(new Set()); setDeleteConfirm(false) }}
+                >
+                  Confirm
+                </button>
+                <button
+                  style={{ fontSize: 11, padding: '1px 7px', background: 'none', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, cursor: 'pointer', color: 'var(--muted)' }}
+                  onClick={() => setDeleteConfirm(false)}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                style={{ fontSize: 11, padding: '1px 7px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 4, cursor: 'pointer', color: '#ef4444' }}
+                onClick={() => setDeleteConfirm(true)}
+              >
+                🗑 Delete selected
+              </button>
+            )}
+            <button
+              style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}
+              onClick={() => setSelected(new Set())}
+            >
+              ✕ clear
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tree */}
@@ -331,6 +388,12 @@ export default function FlowMap({ savedFlows, currentFlow, onNavigate }: Props) 
             depth={0}
             visited={new Set()}
             hideAuto={hideAuto}
+            selected={selected}
+            onToggleSelect={name => setSelected(prev => {
+              const s = new Set(prev)
+              s.has(name) ? s.delete(name) : s.add(name)
+              return s
+            })}
           />
         ))}
       </div>

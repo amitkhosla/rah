@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, SavedFlow } from '../types'
+import FlowMap   from './FlowMap'
+import FlowGraph from './FlowGraph'
 import { expandSteps, findSourceRefs, smartCondition } from '../utils/expressions'
 import { parseDSL, serializeDSL } from '../utils/dsl'
-import FlowMap from './FlowMap'
-import FlowGraph from './FlowGraph'
 
 interface Props {
   blocks: PaletteBlock[]
@@ -199,17 +199,18 @@ export default function FlowDesigner({
   const [dragOverBranch, setDragOverBranch] = useState<string | null>(null)
   const [dropTargetIdx, setDropTargetIdx]   = useState<number | null>(null)
   const [insertCursor, setInsertCursor]     = useState<number | null>(null)
-  const [showFlowMap, setShowFlowMap]   = useState(false)
   const [viewMode,    setViewMode]      = useState<'visual' | 'code'>('visual')
   const [dslText,     setDslText]       = useState('')
   const [dslError,    setDslError]      = useState<string | null>(null)
   const [showDslRef,  setShowDslRef]    = useState(false)
-  const [showFlowGraph, setShowFlowGraph] = useState(false)
   // Variable picker popup: which step+field is currently showing the popup
   const [varPopup, setVarPopup] = useState<{ stepIdx: number; field: string; anchor: DOMRect } | null>(null)
   // Variable validation warnings: key = "stepIdx:fieldKey", value = warning message
   const [validationWarnings, setValidationWarnings] = useState<Map<string, string>>(new Map())
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  const [showThisFlow,   setShowThisFlow]   = useState(false)
+  const [thisFlowTab,    setThisFlowTab]    = useState<'steps' | 'tree' | 'graph'>('steps')
+  const [expandedCalls,  setExpandedCalls]  = useState<Set<string>>(new Set())
 
   // Track which side last triggered a change to break the sync loop
   const dslChangeSource = useRef<'visual' | 'code'>('visual')
@@ -226,10 +227,10 @@ export default function FlowDesigner({
   const [selectMode, setSelectMode]     = useState(false)
   const [selectedSteps, setSelectedSteps] = useState<Set<number>>(new Set())
   const [extractName, setExtractName]   = useState('')
-  // Pending (not-yet-saved) new claim rows, keyed by step index
+  // Pending (not-yet-saved) new claim rows, keyed by step index or nested key string
   type DraftClaim = { key: string; mode: 'static' | 'var'; value: string }
-  const [pendingClaims, setPendingClaims] = useState<Record<number, DraftClaim>>({})
-  function clearPendingClaim(stepIdx: number) {
+  const [pendingClaims, setPendingClaims] = useState<Record<string | number, DraftClaim>>({})
+  function clearPendingClaim(stepIdx: string | number) {
     setPendingClaims(prev => { const n = { ...prev }; delete n[stepIdx]; return n })
   }
 
@@ -279,6 +280,15 @@ export default function FlowDesigner({
     })),
     [savedFlows, callFieldDefs],
   )
+
+  // For "This Flow" panel: include the current canvas state even if not yet explicitly saved
+  // so Tree/Graph tabs always show the flow being edited.
+  const thisFlowEffective = useMemo(() => {
+    if (!flowName || steps.length === 0) return savedFlows
+    const exists = savedFlows.some(f => f.name === flowName)
+    if (exists) return savedFlows
+    return [...savedFlows, { name: flowName, steps }]
+  }, [savedFlows, flowName, steps])
 
   // Filtered lists
   const q = filter.toLowerCase()
@@ -364,6 +374,71 @@ export default function FlowDesigner({
             + Insert here
           </span>
         )}
+      </div>
+    )
+  }
+
+  // ── This Flow — Steps tab ──────────────────────────────────────────
+  const SICONS: Record<string, string> = {
+    'if':'🔀','switch':'🔀','call':'📞','return':'↩','fail':'✗',
+    'token_validation':'🔒','http_call':'🌐','llm_call':'🧠',
+    'cache_get':'🗄️','cache_put':'🗄️','cache_get_global':'🗄️','cache_put_global':'🗄️',
+    'bind_header':'📥','bind_query':'📥','bind_path':'📥','bind_body':'📥',
+    'emit_event':'📊','log_field':'📋','registry_lookup':'🏷️',
+    'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱',
+    'set_response_body':'📤','set_response_header':'📤','set_response_status':'📤',
+    'extract':'✂️','json_extract_emit':'✂️','mcp_call_tool':'🔧',
+    'vector_search':'🔍','embed_text':'🔢','store_internal_tx_id':'🔖',
+    'bind_correlation_id':'🔖','bind_client_ip':'🌐',
+  }
+  function sicon(a: string) { return SICONS[a] ?? '•' }
+
+  function FlowStepList({ stepList, depth, flowLabel }: {
+    stepList: FlowStep[]; depth: number; flowLabel?: string
+  }) {
+    if (depth > 8) return <div style={{ fontSize: 10, color: 'var(--muted)', padding: '1px 6px' }}>…</div>
+    if (stepList.length === 0) return (
+      <div style={{ fontSize: 11, color: 'var(--muted)', padding: '2px 6px', fontStyle: 'italic' }}>(empty)</div>
+    )
+    return (
+      <div style={{ borderLeft: depth > 0 ? '1px solid rgba(255,255,255,0.08)' : 'none', paddingLeft: depth > 0 ? 8 : 0 }}>
+        {flowLabel && (
+          <div style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 700, padding: '2px 0', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+            {flowLabel}
+          </div>
+        )}
+        {stepList.map((s, si) => {
+          const ck      = `${depth}:${si}:${String(s['flow_name'] ?? '')}`
+          const isCall  = s.action === 'call'
+          const isIf    = s.action === 'if' || s.action === 'switch'
+          const outVar  = s['as'] as string | undefined
+          const target  = s['flow_name'] as string | undefined
+          const sub     = isCall && target ? savedFlows.find(f => f.name === target) : undefined
+          const open    = expandedCalls.has(ck)
+          return (
+            <div key={si}>
+              <div
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'2px 5px', borderRadius:3, marginBottom:1, background:'rgba(255,255,255,0.015)', cursor: isCall && sub ? 'pointer' : 'default' }}
+                onClick={() => {
+                  if (!isCall || !sub) return
+                  setExpandedCalls(prev => { const s2=new Set(prev); s2.has(ck)?s2.delete(ck):s2.add(ck); return s2 })
+                }}
+              >
+                <span style={{ fontSize:12, width:16, textAlign:'center', flexShrink:0 }}>{sicon(s.action)}</span>
+                <span style={{ fontSize:11, color:'var(--fg)', flex:1 }}>{s.action}</span>
+                {outVar && <span style={{ fontSize:10, color:'#34d399', fontFamily:'monospace' }}>→ {outVar}</span>}
+                {isIf && <span style={{ fontSize:10, color:'#f59e0b' }}>{String(s['then']??'?')}/{String(s['else']??'?')}</span>}
+                {isCall && target && sub  && <span style={{ fontSize:10, color:'var(--accent)' }}>{open?'▲':'▶'} {target}</span>}
+                {isCall && target && !sub && <span style={{ fontSize:10, color:'#f59e0b' }}>⚠ {target}</span>}
+              </div>
+              {isCall && open && sub && (
+                <div style={{ marginLeft:8, marginTop:1, marginBottom:3 }}>
+                  <FlowStepList stepList={sub.steps} depth={depth+1} flowLabel={target} />
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -624,19 +699,29 @@ export default function FlowDesigner({
         </div>
         {isExp && (
           <div style={{ padding: '0 8px 8px' }}>
-            {fields.map(([k, v]) => (
-              <div key={k} className="field-row">
-                <label className="field-label">{defs[k]?.label || k}</label>
-                <input className="input"
-                  placeholder={defs[k]?.placeholder || k}
-                  value={String(v ?? '')}
-                  onChange={e => updateNestedStep(topIdx, stepPath, k, e.target.value)} />
-              </div>
-            ))}
-            {fields.length === 0 && !isIf && (
-              <span style={{ fontSize: 11, color: 'var(--muted)' }}>No fields to configure.</span>
-            )}
-            {isIf && renderNestedBranches(step, topIdx, stepPath, defs)}
+            {step.action === 'token_validation'
+              ? renderTokenValidationBody(
+                  step,
+                  (k, v) => updateNestedStep(topIdx, stepPath, k, v),
+                  slotsUpTo(topIdx),
+                  key,
+                )
+              : (<>
+                  {fields.map(([k, v]) => (
+                    <div key={k} className="field-row">
+                      <label className="field-label">{defs[k]?.label || k}</label>
+                      <input className="input"
+                        placeholder={defs[k]?.placeholder || k}
+                        value={String(v ?? '')}
+                        onChange={e => updateNestedStep(topIdx, stepPath, k, e.target.value)} />
+                    </div>
+                  ))}
+                  {fields.length === 0 && !isIf && (
+                    <span style={{ fontSize: 11, color: 'var(--muted)' }}>No fields to configure.</span>
+                  )}
+                  {isIf && renderNestedBranches(step, topIdx, stepPath, defs)}
+                </>)
+            }
           </div>
         )}
       </div>
@@ -1311,7 +1396,12 @@ export default function FlowDesigner({
   }
 
   // ── B6: token_validation editor (7 sections) ───────────────────
-  function renderTokenValidationBody(step: FlowStep, i: number) {
+  function renderTokenValidationBody(
+    step: FlowStep,
+    onUpdateField: (key: string, value: string) => void,
+    prevVars: string[],
+    claimKey: string | number,
+  ) {
     let inputObj: Record<string, string> = {}
     try { inputObj = JSON.parse((step['input'] ?? '{}') as string) } catch { /* ignore */ }
 
@@ -1322,13 +1412,11 @@ export default function FlowDesigner({
       for (const [k, v] of Object.entries(updates)) {
         if (v) next[k] = v; else delete next[k]
       }
-      updateStep(i, 'input', JSON.stringify(next))
+      onUpdateField('input', JSON.stringify(next))
     }
     function updateInputKey(key: string, value: string) {
       updateInputKeys({ [key]: value })
     }
-
-    const prevVars = slotsUpTo(i)
 
     function splitComma(s: string): string[] {
       return s.split(',').map(x => x.trim()).filter(Boolean)
@@ -1450,7 +1538,7 @@ export default function FlowDesigner({
       const next = { ...inputObj }
       if (Object.keys(ns).length > 0) next['jwt.custom_claims'] = JSON.stringify(ns); else delete next['jwt.custom_claims']
       if (Object.keys(nv).length > 0) next['jwt.custom_claims_vars'] = JSON.stringify(nv); else delete next['jwt.custom_claims_vars']
-      updateStep(i, 'input', JSON.stringify(next))
+      onUpdateField('input', JSON.stringify(next))
     }
 
     // ── Section 7: failure mode ──
@@ -1466,7 +1554,7 @@ export default function FlowDesigner({
         <div style={{ marginBottom: 10 }}>
           <label className="field-label">Where to read the token</label>
           <select className="input" value={commonSources.includes(keyId) ? keyId : prevVars.includes(keyId) ? keyId : '__custom__'}
-            onChange={e => { if (e.target.value !== '__custom__') updateStep(i, 'key_identifier', e.target.value) }}>
+            onChange={e => { if (e.target.value !== '__custom__') onUpdateField('key_identifier', e.target.value) }}>
             {commonSources.map(s => <option key={s} value={s}>{s}</option>)}
             {prevVars.length > 0 && <option disabled>--- Variables ---</option>}
             {prevVars.map(v => <option key={v} value={v}>{v} (variable)</option>)}
@@ -1475,7 +1563,7 @@ export default function FlowDesigner({
           </select>
           {!commonSources.includes(keyId) && !prevVars.includes(keyId) && (
             <input className="input" style={{ marginTop: 4 }} placeholder="header.Authorization"
-              value={keyId} onChange={e => updateStep(i, 'key_identifier', e.target.value)} />
+              value={keyId} onChange={e => onUpdateField('key_identifier', e.target.value)} />
           )}
         </div>
 
@@ -1490,10 +1578,10 @@ export default function FlowDesigner({
         <SourceField label="Clock leeway (seconds)" staticKey="jwt.leeway_seconds" varKey="jwt.leeway_var"
           staticType="number" placeholder="30" defaultVal="30" />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <input type="checkbox" id={`prefetch_${i}`}
+          <input type="checkbox" id={`prefetch_${claimKey}`}
             checked={inputObj['jwt.prefetch_jwks'] !== 'false'}
             onChange={e => updateInputKey('jwt.prefetch_jwks', e.target.checked ? 'true' : 'false')} />
-          <label htmlFor={`prefetch_${i}`} className="field-label" style={{ margin: 0 }}>
+          <label htmlFor={`prefetch_${claimKey}`} className="field-label" style={{ margin: 0 }}>
             Prefetch JWKS at deploy time
           </label>
         </div>
@@ -1551,7 +1639,7 @@ export default function FlowDesigner({
           return (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <input type="checkbox" id={`validate_scopes_${i}`}
+                <input type="checkbox" id={`validate_scopes_${claimKey}`}
                   checked={scopesOn}
                   onChange={e => {
                     if (e.target.checked) {
@@ -1565,7 +1653,7 @@ export default function FlowDesigner({
                       })
                     }
                   }} />
-                <label htmlFor={`validate_scopes_${i}`} className="field-label" style={{ margin: 0 }}>
+                <label htmlFor={`validate_scopes_${claimKey}`} className="field-label" style={{ margin: 0 }}>
                   Validate scopes
                 </label>
               </div>
@@ -1617,22 +1705,22 @@ export default function FlowDesigner({
           </div>
         ))}
         {/* Pending new claim row — lives in component state until the user types a key */}
-        {pendingClaims[i] && (() => {
-          const draft = pendingClaims[i]
+        {pendingClaims[claimKey] && (() => {
+          const draft = pendingClaims[claimKey]
           function updateDraft(patch: Partial<DraftClaim>) {
-            setPendingClaims(prev => ({ ...prev, [i]: { ...draft, ...patch } }))
+            setPendingClaims(prev => ({ ...prev, [claimKey]: { ...draft, ...patch } }))
           }
           function commitDraft() {
-            if (!draft.key.trim()) { clearPendingClaim(i); return }
+            if (!draft.key.trim()) { clearPendingClaim(claimKey); return }
             saveClaimRows([...claimRows, draft])
-            clearPendingClaim(i)
+            clearPendingClaim(claimKey)
           }
           return (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, padding: '6px 8px', borderRadius: 6, border: '1px dashed rgba(87,181,255,0.4)', background: 'rgba(87,181,255,0.04)' }}>
               <input className="input" style={{ flex: 1 }} placeholder="claim key (e.g. role)" autoFocus
                 value={draft.key}
                 onChange={e => updateDraft({ key: e.target.value })}
-                onKeyDown={e => { if (e.key === 'Enter') commitDraft(); if (e.key === 'Escape') clearPendingClaim(i) }} />
+                onKeyDown={e => { if (e.key === 'Enter') commitDraft(); if (e.key === 'Escape') clearPendingClaim(claimKey) }} />
               <div style={{ display: 'flex', borderRadius: 4, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.12)', fontSize: 10 }}>
                 <button style={{ padding: '2px 6px', background: draft.mode === 'static' ? 'var(--accent)' : 'transparent', color: draft.mode === 'static' ? '#000' : 'var(--muted)', border: 'none', cursor: 'pointer' }}
                   onClick={() => updateDraft({ mode: 'static' })}>Static</button>
@@ -1643,7 +1731,7 @@ export default function FlowDesigner({
                 <input className="input" style={{ flex: 1 }} placeholder="expected value"
                   value={draft.value}
                   onChange={e => updateDraft({ value: e.target.value })}
-                  onKeyDown={e => { if (e.key === 'Enter') commitDraft(); if (e.key === 'Escape') clearPendingClaim(i) }} />
+                  onKeyDown={e => { if (e.key === 'Enter') commitDraft(); if (e.key === 'Escape') clearPendingClaim(claimKey) }} />
               ) : (
                 <select className="input" style={{ flex: 1 }} value={draft.value}
                   onChange={e => updateDraft({ value: e.target.value })}>
@@ -1654,12 +1742,12 @@ export default function FlowDesigner({
               <button style={{ padding: '2px 7px', borderRadius: 4, border: 'none', background: 'var(--accent)', color: '#000', cursor: 'pointer', fontWeight: 700, fontSize: 11 }}
                 onClick={commitDraft} title="Save (Enter)">✓</button>
               <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16, lineHeight: 1 }}
-                onClick={() => clearPendingClaim(i)} title="Cancel (Esc)">×</button>
+                onClick={() => clearPendingClaim(claimKey)} title="Cancel (Esc)">×</button>
             </div>
           )
         })()}
         <button className="btn muted" style={{ marginBottom: 10, fontSize: 11 }}
-          onClick={() => setPendingClaims(prev => ({ ...prev, [i]: { key: '', mode: 'static', value: '' } }))}>
+          onClick={() => setPendingClaims(prev => ({ ...prev, [claimKey]: { key: '', mode: 'static' as const, value: '' } }))}>
           ＋ Add claim check
         </button>
         <span className="field-desc">All listed claims must match the JWT exactly. Press Enter to save or Esc to cancel.</span>
@@ -2045,7 +2133,7 @@ export default function FlowDesigner({
                           key={sf.name}
                           draggable
                           onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(dragPayload))}
-                          onClick={() => clickAddBlock(dragPayload)}
+                          onClick={() => onOpenFlow?.(sf.name)}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -2225,37 +2313,60 @@ export default function FlowDesigner({
               </button>
             )}
             <button
-              className={`btn muted${showFlowMap ? ' active' : ''}`}
+              className={`btn muted${showThisFlow ? ' active' : ''}`}
               style={{ fontSize: 12 }}
-              onClick={() => { setShowFlowMap(p => !p); setShowFlowGraph(false) }}
-              title="Flow dependency tree"
+              onClick={() => setShowThisFlow(p => !p)}
+              title="Show this flow's full hierarchy"
             >
-              ⬡ Tree
-            </button>
-            <button
-              className={`btn muted${showFlowGraph ? ' active' : ''}`}
-              style={{ fontSize: 12 }}
-              onClick={() => { setShowFlowGraph(p => !p); setShowFlowMap(false) }}
-              title="Flow dependency graph"
-            >
-              ⬡ Graph
+              ⬡ This Flow
             </button>
           </div>
         </div>
         <div className="panel-body">
-          {showFlowMap && (
-            <FlowMap
-              savedFlows={savedFlows}
-              currentFlow={flowName}
-              onNavigate={name => onNavigateToFlow?.(name)}
-            />
-          )}
-          {showFlowGraph && (
-            <FlowGraph
-              savedFlows={savedFlows}
-              currentFlow={flowName}
-              onNavigate={name => onNavigateToFlow?.(name)}
-            />
+          {showThisFlow && (
+            <div style={{ marginBottom: 12, borderRadius: 8, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.015)', overflow: 'hidden' }}>
+              {/* Panel header */}
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 12px', borderBottom:'1px solid var(--border)' }}>
+                <span style={{ fontWeight:700, fontSize:12 }}>
+                  {flowName || '(untitled)'} &nbsp;
+                  <span style={{ fontWeight:400, color:'var(--muted)', fontSize:11 }}>{steps.length} steps</span>
+                </span>
+                <div style={{ display:'flex', borderRadius:5, overflow:'hidden', border:'1px solid rgba(255,255,255,0.1)' }}>
+                  {(['steps','tree','graph'] as const).map(t => (
+                    <button key={t} onClick={() => setThisFlowTab(t)} style={{ fontSize:11, padding:'2px 9px', border:'none', cursor:'pointer', background: thisFlowTab===t ? 'var(--accent)' : 'transparent', color: thisFlowTab===t ? '#fff' : 'var(--muted)', textTransform:'capitalize' }}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Panel body */}
+              <div style={{ maxHeight: 320, overflowY: 'auto', padding: thisFlowTab === 'steps' ? 10 : 0 }}>
+                {thisFlowTab === 'steps' && (
+                  <>
+                    <FlowStepList stepList={steps} depth={0} />
+                    <button onClick={() => setExpandedCalls(new Set())} style={{ marginTop:8, fontSize:10, background:'none', border:'none', color:'var(--muted)', cursor:'pointer' }}>
+                      collapse all
+                    </button>
+                  </>
+                )}
+                {thisFlowTab === 'tree' && flowName && (
+                  <FlowMap
+                    savedFlows={thisFlowEffective}
+                    currentFlow={flowName}
+                    onNavigate={name => onNavigateToFlow?.(name)}
+                    focusFlow={flowName}
+                  />
+                )}
+                {thisFlowTab === 'graph' && flowName && (
+                  <FlowGraph
+                    savedFlows={thisFlowEffective}
+                    currentFlow={flowName}
+                    onNavigate={name => onNavigateToFlow?.(name)}
+                    focusFlow={flowName}
+                  />
+                )}
+              </div>
+            </div>
           )}
           <div style={{ display: 'flex', marginBottom: 6, borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.12)', width: 'fit-content' }}>
             <button style={{ fontSize: 12, padding: '3px 14px', border: 'none', cursor: 'pointer', background: viewMode === 'visual' ? 'var(--accent)' : 'transparent', color: viewMode === 'visual' ? '#fff' : 'var(--muted)' }} onClick={() => setViewMode('visual')}>Visual</button>
@@ -2599,7 +2710,7 @@ export default function FlowDesigner({
                     {step.action === 'if'                ? renderIfBody(step, i, defs)           :
                      step.action === 'switch'            ? renderSwitchBody(step, i, defs)       :
                      step.action === 'http_call'         ? renderHttpCallBody(step, i)            :
-                     step.action === 'token_validation'  ? renderTokenValidationBody(step, i)     :
+                     step.action === 'token_validation'  ? renderTokenValidationBody(step, (k, v) => updateStep(i, k, v), slotsUpTo(i), i) :
                      step.action === 'set_response_body' ? renderSetResponseBody(step, i)         :
                      step.action === 'append_message'    ? renderAppendMessageBody(step, i)       :
                      step.action === 'transform_messages'? renderTransformMessagesBody(step, i)   :

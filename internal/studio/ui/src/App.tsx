@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema } from './api'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
 import FlowDesigner  from './components/FlowDesigner'
+import FlowMap       from './components/FlowMap'
+import FlowGraph     from './components/FlowGraph'
 import APIsSection   from './components/APIsSection'
 import AISection     from './components/AISection'
 import Deploy        from './components/Deploy'
@@ -98,6 +100,7 @@ const NAV_ICONS: Record<string, string> = {
   dashboard:     '⊞',
   flows:         '⛶',
   apis:          '⬡',
+  flowmap:       '🗺',
   ai:            '⬡',
   deploy:        '↑',
   gateway:       '◉',
@@ -111,6 +114,7 @@ const NAV: NavItem[] = [
   { kind: 'section', label: 'FLOWS' },
   { kind: 'item',    id: 'flows',     label: 'Designer' },
   { kind: 'item',    id: 'apis',      label: 'APIs' },
+  { kind: 'item',    id: 'flowmap',   label: 'Flow Map' },
   { kind: 'section', label: 'AI' },
   { kind: 'item',    id: 'ai',        label: 'Models / MCP' },
   { kind: 'section', label: 'GATEWAY' },
@@ -126,6 +130,7 @@ const NAV: NavItem[] = [
 export default function App() {
   const [tab, setTab] = useState<TabId>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [flowMapView, setFlowMapView] = useState<'tree' | 'graph'>('tree')
 
   // Accent colour — applied immediately as a CSS custom property
   const [accent, setAccent] = useState('#57b5ff')
@@ -453,6 +458,37 @@ export default function App() {
             onNavigateToDeploy={() => setTab('deploy')}
           />
         </div>
+        {tab === 'flowmap' && (
+          <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12, height: '100%', minHeight: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontWeight: 700, fontSize: 15 }}>Flow Map</span>
+              <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.12)', marginLeft: 8 }}>
+                <button
+                  style={{ fontSize: 12, padding: '3px 12px', border: 'none', cursor: 'pointer', background: flowMapView === 'tree' ? 'var(--accent)' : 'transparent', color: flowMapView === 'tree' ? '#fff' : 'var(--muted)' }}
+                  onClick={() => setFlowMapView('tree')}
+                >⬡ Tree</button>
+                <button
+                  style={{ fontSize: 12, padding: '3px 12px', border: 'none', cursor: 'pointer', background: flowMapView === 'graph' ? 'var(--accent)' : 'transparent', color: flowMapView === 'graph' ? '#fff' : 'var(--muted)' }}
+                  onClick={() => setFlowMapView('graph')}
+                >⬡ Graph</button>
+              </div>
+            </div>
+            {flowMapView === 'tree' ? (
+              <FlowMap
+                savedFlows={savedFlows}
+                currentFlow={flowName}
+                onNavigate={name => navigateToDesigner(name, false)}
+                onDeleteFlows={names => setSavedFlows(prev => prev.filter(f => !names.includes(f.name)))}
+              />
+            ) : (
+              <FlowGraph
+                savedFlows={savedFlows}
+                currentFlow={flowName}
+                onNavigate={name => navigateToDesigner(name, false)}
+              />
+            )}
+          </div>
+        )}
         {tab === 'ai' && <AISection />}
         {tab === 'deploy' && (
           <Deploy
