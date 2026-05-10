@@ -24,6 +24,8 @@ interface Props {
   onNavigateToApis?: () => void
   /** Open a named flow fresh for editing (clears navStack, loads into canvas). */
   onOpenFlow?: (name: string) => void
+  /** Permanently delete a saved flow by name. */
+  onDeleteFlow?: (name: string) => void
 }
 
 // ── Branch path type for n-level nesting ─────────────────────────
@@ -186,7 +188,7 @@ function serializeCases(cases: SwitchCase[]): string {
 // ── Component ─────────────────────────────────────────────────────
 export default function FlowDesigner({
   blocks, steps, setSteps, flowName, setFlowName, savedFlows, onSaveFlow, onNavigateToFlow,
-  navStack = [], onNavigateBack, impactMap, onNavigateToApis, onOpenFlow,
+  navStack = [], onNavigateBack, impactMap, onNavigateToApis, onOpenFlow, onDeleteFlow,
 }: Props) {
   const [filter, setFilter]             = useState('')
   const [dragOver, setDragOver]         = useState(false)
@@ -207,6 +209,7 @@ export default function FlowDesigner({
   const [varPopup, setVarPopup] = useState<{ stepIdx: number; field: string; anchor: DOMRect } | null>(null)
   // Variable validation warnings: key = "stepIdx:fieldKey", value = warning message
   const [validationWarnings, setValidationWarnings] = useState<Map<string, string>>(new Map())
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   // Track which side last triggered a change to break the sync loop
   const dslChangeSource = useRef<'visual' | 'code'>('visual')
@@ -1901,6 +1904,82 @@ export default function FlowDesigner({
     )
   }
 
+  // ── Delete impact panel ───────────────────────────────────────────
+  function DeleteImpactPanel({ flowName, impact, onConfirm, onCancel, onOpenFlow, onNavigateToApis }: {
+    flowName: string
+    impact?: { flows: string[]; apis: string[] }
+    onConfirm: () => void
+    onCancel: () => void
+    onOpenFlow?: (name: string) => void
+    onNavigateToApis?: () => void
+  }) {
+    const callerFlows = impact?.flows ?? []
+    const callerApis  = impact?.apis  ?? []
+    const hasImpact   = callerFlows.length + callerApis.length > 0
+    return (
+      <div
+        style={{
+          position: 'absolute', right: 8, top: 32, zIndex: 200,
+          background: 'var(--panel)', border: `1px solid ${hasImpact ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.3)'}`,
+          borderRadius: 8, padding: 10, minWidth: 220, maxWidth: 300,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 7, color: hasImpact ? '#f59e0b' : 'var(--fg)' }}>
+          {hasImpact ? `⚠ "${flowName}" is in use` : `Delete "${flowName}"?`}
+        </div>
+        {callerFlows.length > 0 && (
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Used by flows</div>
+            {callerFlows.map(f => (
+              <button
+                key={f}
+                onClick={() => onOpenFlow?.(f)}
+                style={{ display: 'block', fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 0', textDecoration: 'underline', textAlign: 'left' }}
+              >
+                ⛶ {f} ↗
+              </button>
+            ))}
+          </div>
+        )}
+        {callerApis.length > 0 && (
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Used by APIs</div>
+            {callerApis.map(a => (
+              <button
+                key={a}
+                onClick={() => onNavigateToApis?.()}
+                style={{ display: 'block', fontSize: 11, color: '#34d399', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 0', textDecoration: 'underline', textAlign: 'left' }}
+              >
+                ⬡ {a} ↗
+              </button>
+            ))}
+          </div>
+        )}
+        {hasImpact && (
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>
+            Update or remove these references before deleting, or delete anyway.
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6 }}>
+          <button
+            style={{ fontSize: 11, padding: '2px 8px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 4, cursor: 'pointer', color: '#ef4444' }}
+            onClick={onConfirm}
+          >
+            Delete
+          </button>
+          <button
+            style={{ fontSize: 11, padding: '2px 8px', background: 'none', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, cursor: 'pointer', color: 'var(--muted)' }}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   // ── Preview JSON (compiled — source refs auto-expanded) ─────────
   const compiledSteps = expandSteps(steps)
   const hasExpansions = compiledSteps.length !== steps.length
@@ -1977,6 +2056,7 @@ export default function FlowDesigner({
                             borderColor: sf.name === flowName ? 'rgba(87,181,255,0.3)' : 'rgba(255,255,255,0.08)',
                             cursor: 'pointer',
                             gap: 8,
+                            position: 'relative',
                           }}
                         >
                           <div style={{ flex: 1, minWidth: 0 }}>
@@ -2003,14 +2083,33 @@ export default function FlowDesigner({
                               )
                             })()}
                           </div>
-                          <button
-                            className="btn muted"
-                            style={{ fontSize: 11, padding: '3px 8px', flexShrink: 0 }}
-                            title={`Edit "${sf.name}"`}
-                            onClick={e => { e.stopPropagation(); onOpenFlow?.(sf.name) }}
-                          >
-                            Edit ↗
-                          </button>
+                          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                            <button
+                              style={{ fontSize: 13, padding: '2px 5px', background: 'none', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, cursor: 'pointer', color: 'var(--accent)' }}
+                              title={`Edit "${sf.name}"`}
+                              onClick={e => { e.stopPropagation(); onOpenFlow?.(sf.name) }}
+                            >
+                              ✎
+                            </button>
+                            {deleteConfirm === sf.name ? (
+                              <DeleteImpactPanel
+                                flowName={sf.name}
+                                impact={impactMap?.get(sf.name)}
+                                onConfirm={() => { onDeleteFlow?.(sf.name); setDeleteConfirm(null) }}
+                                onCancel={() => setDeleteConfirm(null)}
+                                onOpenFlow={onOpenFlow}
+                                onNavigateToApis={onNavigateToApis}
+                              />
+                            ) : (
+                              <button
+                                style={{ fontSize: 12, padding: '2px 5px', background: 'none', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 4, cursor: 'pointer', color: 'var(--muted)' }}
+                                title={`Delete "${sf.name}"`}
+                                onClick={e => { e.stopPropagation(); setDeleteConfirm(sf.name) }}
+                              >
+                                🗑
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )
                     })

@@ -439,6 +439,7 @@ export default function App() {
             impactMap={impactMap}
             onNavigateToApis={() => setTab('apis')}
             onOpenFlow={(name) => navigateToDesigner(name, false)}
+            onDeleteFlow={(name) => setSavedFlows(prev => prev.filter(f => f.name !== name))}
           />
         </div>
         <div style={{ display: tab === 'apis' ? 'contents' : 'none' }}>
