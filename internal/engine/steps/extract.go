@@ -158,3 +158,52 @@ func JSONForeachEmit(bodySlot int, arrayPath string, ops []ExtractOp) engine.Ins
 		},
 	}
 }
+
+// JsonSetStep sets a value at a JSON path in a ByteSlot, using gjson to locate
+// the field and hand-rolled splicing to replace it. If valueSlot is >= 0, reads
+// the value from that slot; otherwise uses staticValue.
+func JsonSetStep(srcSlot, dstSlot int, path string, staticValue []byte, valueSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "JSON_SET",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			src := ctx.ByteSlots[srcSlot]
+			if len(src) == 0 {
+				ctx.ByteSlots[dstSlot] = src
+				return state.PC + 1
+			}
+
+			var val []byte
+			if valueSlot >= 0 {
+				val = ctx.ByteSlots[valueSlot]
+			} else {
+				val = staticValue
+			}
+
+			// Use gjson to find the field and get its byte range.
+			r := gjson.GetBytes(src, path)
+			if !r.Exists() {
+				// Key not found: copy source unchanged.
+				ctx.ByteSlots[dstSlot] = src
+				return state.PC + 1
+			}
+
+			// Replace the found value with val.
+			// r.Index is the byte offset into src where the value begins.
+			// r.Raw is the matched text (as a string) — we need len(r.Raw) to find the end.
+			startIdx := r.Index
+			endIdx := r.Index + len(r.Raw)
+
+			// Allocate output: prefix + val + suffix
+			totalLen := startIdx + len(val) + (len(src) - endIdx)
+			out := ctx.Alloc(totalLen)
+
+			pos := 0
+			pos += copy(out[pos:], src[:startIdx])
+			pos += copy(out[pos:], val)
+			copy(out[pos:], src[endIdx:])
+
+			ctx.ByteSlots[dstSlot] = out
+			return state.PC + 1
+		},
+	}
+}

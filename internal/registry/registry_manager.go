@@ -293,6 +293,123 @@ func (m *RegistryManager) AddMeta(alias string, name string, value []byte) {
 	m.persistMetadata(rec.Aliases[0], name, string(value))
 }
 
+// DeleteServiceURL removes a service URL for the tenant identified by alias.
+// If the tenant or key does not exist, this is a no-op.
+// name is the URL key (e.g. "primary", "fallback") without any prefix.
+func (m *RegistryManager) DeleteServiceURL(alias string, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	// Resolve alias → tenantID (no create)
+	tID, found := m.aliasMap[alias]
+	if !found {
+		return
+	}
+
+	reg := m.activeOrEmpty()
+
+	// Resolve key → keyID (no create)
+	kID, found := findKeyID(reg.URLs.Keys, reg.URLs.StringPool, name)
+	if !found {
+		return
+	}
+
+	// Set matrix cell to 0 (delete the entry)
+	idx := uint32(tID)*reg.URLs.Stride + uint32(kID)
+	if idx < uint32(len(reg.URLs.Matrix)) {
+		atomic.StoreUint32(&reg.URLs.Matrix[idx], 0)
+	}
+
+	// Remove from tenantData map
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.ServiceURLs != nil {
+		delete(rec.ServiceURLs, name)
+	}
+
+	State.Active.Store(reg)
+	m.persistServiceURL(rec.Aliases[0], name, "")
+}
+
+// DeleteIdentifier removes an identifier for the tenant identified by alias.
+// If the tenant or key does not exist, this is a no-op.
+// name is the identifier key (e.g. "api_key", "client_id") without any prefix.
+func (m *RegistryManager) DeleteIdentifier(alias string, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	// Resolve alias → tenantID (no create)
+	tID, found := m.aliasMap[alias]
+	if !found {
+		return
+	}
+
+	reg := m.activeOrEmpty()
+
+	// Resolve key → keyID (no create)
+	kID, found := findKeyID(reg.IDs.Keys, reg.IDs.StringPool, name)
+	if !found {
+		return
+	}
+
+	// Set matrix cell to 0 (delete the entry)
+	idx := uint32(tID)*reg.IDs.Stride + uint32(kID)
+	if idx < uint32(len(reg.IDs.Matrix)) {
+		atomic.StoreUint32(&reg.IDs.Matrix[idx], 0)
+	}
+
+	// Remove from tenantData map
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.Identifiers != nil {
+		delete(rec.Identifiers, name)
+	}
+
+	State.Active.Store(reg)
+	m.persistIdentifier(rec.Aliases[0], name, "")
+}
+
+// DeleteMeta removes a metadata value for the tenant identified by alias.
+// If the tenant or key does not exist, this is a no-op.
+// name is the metadata key (e.g. "tier", "region") without any prefix.
+func (m *RegistryManager) DeleteMeta(alias string, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	// Resolve alias → tenantID (no create)
+	tID, found := m.aliasMap[alias]
+	if !found {
+		return
+	}
+
+	reg := m.activeOrEmpty()
+
+	// Resolve key → keyID (no create)
+	kID, found := findKeyID(reg.Meta.Keys, reg.Meta.StringPool, name)
+	if !found {
+		return
+	}
+
+	// Set matrix cell to 0 (delete the entry)
+	idx := uint32(tID)*reg.Meta.Stride + uint32(kID)
+	if idx < uint32(len(reg.Meta.Matrix)) {
+		atomic.StoreUint32(&reg.Meta.Matrix[idx], 0)
+	}
+
+	// Remove from tenantData map
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if rec.Metadata != nil {
+		delete(rec.Metadata, name)
+	}
+
+	State.Active.Store(reg)
+	m.persistMetadata(rec.Aliases[0], name, "")
+}
+
 // ensureTenantRecord ensures m.tenantData[tID] exists, populating aliases from aliasMap.
 // Must be called under the manager mutex.
 func (m *RegistryManager) ensureTenantRecord(tID uint16) {

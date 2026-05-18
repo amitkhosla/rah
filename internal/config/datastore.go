@@ -42,9 +42,12 @@ const (
 	DomainFlows          DataDomain = "flows"           // instruction sets (compiled flows)
 
 	// Mutable / management-plane data — typically fast KV or relational
-	DomainTenantRegistry DataDomain = "tenant_data"   // aliases, service URLs, identifiers, metadata
-	DomainRateLimit      DataDomain = "rate_limit"     // named rate limit configs + counters
-	DomainCustomerData   DataDomain = "customer_data"  // arbitrary per-tenant custom data
+	DomainTenantRegistry    DataDomain = "tenant_data"        // aliases, service URLs, identifiers, metadata
+	DomainRateLimit         DataDomain = "rate_limit"         // named rate limit configs + counters
+	DomainRateLimitConfigsV2 DataDomain = "rl_configs_v2"    // V2 multi-window rate limit configs
+	DomainTiers             DataDomain = "tiers"              // tier definitions (rate limit groupings)
+	DomainUpstreamServices  DataDomain = "upstream_services"  // upstream service URL-pattern RL definitions
+	DomainCustomerData      DataDomain = "customer_data"      // arbitrary per-tenant custom data
 
 	// Hot-path / ephemeral — typically in-memory or Redis
 	DomainCache DataDomain = "cache" // request-level response cache

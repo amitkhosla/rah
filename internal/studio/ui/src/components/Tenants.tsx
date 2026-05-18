@@ -3,9 +3,10 @@ import {
   listTenants, getTenant, upsertTenant, deleteTenant, addAlias,
   listRateLimitConfigs, upsertRateLimitConfig,
   listCredentials, setCredential, deleteCredential,
+  listTiers,
 } from '../api'
 import type {
-  TenantSummary, TenantDetail, RateLimitRecord, UpsertTenantRequest,
+  TenantSummary, TenantDetail, RateLimitRecord, UpsertTenantRequest, TierDef,
 } from '../types'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -219,16 +220,33 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
   const [aliasErr, setAliasErr] = useState('')
   const [delConfirm, setDelConfirm] = useState(false)
   const [tab, setTab] = useState<'properties' | 'credentials'>('properties')
+  const [editMode, setEditMode] = useState(false)
+  const [tier, setTier]       = useState('')
+  const [rlMultiplier, setRlMultiplier] = useState('')
+  const [tiers, setTiers]     = useState<TierDef[]>([])
+  const [saveErr, setSaveErr] = useState('')
+  const [saving, setSaving]   = useState(false)
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
     getTenant(alias)
-      .then(setDetail)
+      .then(detail => {
+        setDetail(detail)
+        setTier(detail.tier ?? '')
+        setRlMultiplier(detail.rl_multiplier != null ? String(detail.rl_multiplier) : '')
+      })
       .catch(e => setErr(String(e)))
       .finally(() => setLoading(false))
   }, [alias])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    listTiers()
+      .then(r => setTiers(r.items ?? []))
+      .catch(() => {
+        // Silently fail to load tiers
+      })
+  }, [load])
 
   async function handleAddAlias() {
     if (!newAlias.trim()) return
@@ -246,6 +264,22 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
       await deleteTenant(alias)
       onDeleted()
     } catch (e) { setErr(String(e)) }
+  }
+
+  async function handleSaveTierAndRL() {
+    setSaving(true); setSaveErr('')
+    const body: UpsertTenantRequest = {
+      aliases: detail?.aliases ?? [],
+      tier: tier || undefined,
+      rl_multiplier: rlMultiplier ? parseFloat(rlMultiplier) : undefined,
+    }
+    try {
+      await upsertTenant(body)
+      setSaveErr('')
+      setEditMode(false)
+      load()
+    } catch (e) { setSaveErr(String(e)) }
+    finally { setSaving(false) }
   }
 
   if (loading) return <div className="panel-empty">Loading…</div>
@@ -312,11 +346,74 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
       {/* Properties tab */}
       {tab === 'properties' && (
         <>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div style={{ fontWeight: 600, color: 'var(--accent)', marginBottom: 0 }}>Tier & Rate Limit</div>
+              {!editMode && (
+                <button
+                  className="btn"
+                  style={{ fontSize: 11 }}
+                  onClick={() => setEditMode(true)}
+                >Edit</button>
+              )}
+            </div>
+            {!editMode ? (
+              <div style={{ fontSize: 13 }}>
+                <div style={{ marginBottom: 8 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Tier: </span>
+                  <span style={{ fontWeight: 600 }}>{detail.tier || '—'}</span>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>RL Multiplier: </span>
+                  <span style={{ fontWeight: 600 }}>{detail.rl_multiplier != null ? detail.rl_multiplier : '—'}</span>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Tier</label>
+                  <select className="input" style={{ width: '100%' }}
+                    value={tier} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTier(e.target.value)}>
+                    <option value="">— none —</option>
+                    {tiers.map(t => (
+                      <option key={t.name} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>RL Multiplier</label>
+                  <input className="input" style={{ width: '100%' }}
+                    type="number" min="0.1" step="0.1" placeholder="1.0 (default)"
+                    value={rlMultiplier} onChange={e => setRlMultiplier(e.target.value)} />
+                </div>
+                {saveErr && <div style={{ color: '#f87171', fontSize: 12, marginBottom: 8 }}>{saveErr}</div>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11 }}
+                    onClick={handleSaveTierAndRL}
+                    disabled={saving}
+                  >{saving ? 'Saving…' : 'Save'}</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11 }}
+                    onClick={() => {
+                      setEditMode(false)
+                      setTier(detail.tier ?? '')
+                      setRlMultiplier(detail.rl_multiplier != null ? String(detail.rl_multiplier) : '')
+                      setSaveErr('')
+                    }}
+                  >Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <KVTable title="Service URLs" data={urls} />
           <KVTable title="Identifiers"  data={ids} />
           <KVTable title="Metadata"     data={meta} />
 
-          {Object.keys(detail.properties).length === 0 && (
+          {Object.keys(detail.properties).length === 0 && !detail.tier && detail.rl_multiplier == null && (
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No properties stored.</div>
           )}
         </>
@@ -337,8 +434,19 @@ function NewTenantForm({ onCreated }: { onCreated: () => void }) {
   const [urlsRaw, setUrlsRaw]   = useState('')
   const [idsRaw, setIdsRaw]     = useState('')
   const [metaRaw, setMetaRaw]   = useState('')
+  const [tier, setTier]         = useState('')
+  const [rlMultiplier, setRlMultiplier] = useState('')
+  const [tiers, setTiers]       = useState<TierDef[]>([])
   const [err, setErr]           = useState('')
   const [saving, setSaving]     = useState(false)
+
+  useEffect(() => {
+    listTiers()
+      .then(r => setTiers(r.items ?? []))
+      .catch(() => {
+        // Silently fail to load tiers, don't block form
+      })
+  }, [])
 
   function parseKV(raw: string): Record<string, string> {
     const out: Record<string, string> = {}
@@ -359,10 +467,12 @@ function NewTenantForm({ onCreated }: { onCreated: () => void }) {
       service_urls: parseKV(urlsRaw) || undefined,
       identifiers:  parseKV(idsRaw)  || undefined,
       metadata:     parseKV(metaRaw) || undefined,
+      tier: tier || undefined,
+      rl_multiplier: rlMultiplier ? parseFloat(rlMultiplier) : undefined,
     }
     try {
       await upsertTenant(body)
-      setAliases(''); setUrlsRaw(''); setIdsRaw(''); setMetaRaw('')
+      setAliases(''); setUrlsRaw(''); setIdsRaw(''); setMetaRaw(''); setTier(''); setRlMultiplier('')
       onCreated()
     } catch (e) { setErr(String(e)) }
     finally { setSaving(false) }
@@ -388,9 +498,23 @@ function NewTenantForm({ onCreated }: { onCreated: () => void }) {
         value={idsRaw} onChange={e => setIdsRaw(e.target.value)} />
 
       <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>Metadata (key=value, one per line)</label>
-      <textarea className="input" style={{ width: '100%', height: 60, marginBottom: 16, resize: 'vertical' }}
+      <textarea className="input" style={{ width: '100%', height: 60, marginBottom: 12, resize: 'vertical' }}
         placeholder={'tier=premium\nregion=us-east'}
         value={metaRaw} onChange={e => setMetaRaw(e.target.value)} />
+
+      <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>Tier</label>
+      <select className="input" style={{ width: '100%', marginBottom: 12 }}
+        value={tier} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTier(e.target.value)}>
+        <option value="">— none —</option>
+        {tiers.map(t => (
+          <option key={t.name} value={t.name}>{t.name}</option>
+        ))}
+      </select>
+
+      <label style={{ fontSize: 12, color: 'var(--text-muted)' }}>RL Multiplier</label>
+      <input className="input" style={{ width: '100%', marginBottom: 16 }}
+        type="number" min="0.1" step="0.1" placeholder="1.0 (default)"
+        value={rlMultiplier} onChange={e => setRlMultiplier(e.target.value)} />
 
       {err && <div style={{ color: '#f87171', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       <button className="btn" onClick={handleSave} disabled={saving}>

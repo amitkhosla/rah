@@ -1,9 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, SavedFlow } from '../types'
+import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, PatternCondition, SavedFlow, TemplatePatternStep } from '../types'
 import FlowMap   from './FlowMap'
 import FlowGraph from './FlowGraph'
 import { expandSteps, findSourceRefs, smartCondition } from '../utils/expressions'
 import { parseDSL, serializeDSL } from '../utils/dsl'
+import PatternConditionBuilder from './PatternConditionBuilder'
+import TemplatePatternBuilder from './TemplatePatternBuilder'
+import { isPatternCondition } from '../types'
 
 interface Props {
   blocks: PaletteBlock[]
@@ -93,6 +96,7 @@ const VISUAL_GROUPS: VisualGroup[] = [
     icon: '🔒',
     recipes: [
       { title: 'Validate Token',   wraps: 'token_validation',   description: 'Validate JWT or API key' },
+      { title: 'API Rate Limits',  wraps: 'api_rate_limits',    description: 'Enforce rate limits configured in the API definition. Drag to control where in the flow enforcement happens. If absent, limits are auto-injected at the start of the flow.' },
       { title: 'Check Rate Limit', wraps: 'check_rate_limit',  description: 'Enforce request rate limits' },
       { title: 'Load Credential',  wraps: 'load_identifier',   description: 'Fetch a stored credential' },
       { title: 'IP Restriction',   wraps: 'ip_restriction',    description: 'Allow or deny requests by IP CIDR range' },
@@ -139,8 +143,10 @@ const VISUAL_GROUPS: VisualGroup[] = [
     recipes: [
       { title: 'Cache Read · Per-Tenant',  wraps: 'cache_get',         description: 'Read a cached value — private to this tenant' },
       { title: 'Cache Write · Per-Tenant', wraps: 'cache_put',         description: 'Store a value in this tenant\'s private cache with TTL' },
-      { title: 'Cache Read · Shared',      wraps: 'cache_get_global',  description: 'Read from the shared cache (same data for all tenants)' },
-      { title: 'Cache Write · Shared',     wraps: 'cache_put_global',  description: 'Write to the shared cache (visible to all tenants)' },
+      { title: 'Cache Read · Shared',        wraps: 'cache_get_global',    description: 'Read from the shared cache (same data for all tenants)' },
+      { title: 'Cache Write · Shared',       wraps: 'cache_put_global',    description: 'Write to the shared cache (visible to all tenants)' },
+      { title: 'Cache Invalidate · Per-Tenant', wraps: 'cache_delete',     description: 'Remove a specific key from this tenant\'s private cache' },
+      { title: 'Cache Invalidate · Shared',     wraps: 'cache_delete_global', description: 'Remove a specific key from the shared cache' },
       { title: 'Extract JSON',       wraps: 'json_extract_emit', description: 'Extract fields from a JSON response body' },
     ],
   },
@@ -211,6 +217,12 @@ export default function FlowDesigner({
   const [showThisFlow,   setShowThisFlow]   = useState(false)
   const [thisFlowTab,    setThisFlowTab]    = useState<'steps' | 'tree' | 'graph'>('steps')
   const [expandedCalls,  setExpandedCalls]  = useState<Set<string>>(new Set())
+
+  // ── Pattern condition builder state ───────────────────────────────────────
+  // patternBuilderTarget: which step index is currently being edited (null = closed)
+  const [patternBuilderTarget, setPatternBuilderTarget] = useState<number | null>(null)
+  // Staged condition: the condition being edited before Save is pressed
+  const [patternBuilderCondition, setPatternBuilderCondition] = useState<PatternCondition | null>(null)
 
   // Track which side last triggered a change to break the sync loop
   const dslChangeSource = useRef<'visual' | 'code'>('visual')
@@ -382,10 +394,10 @@ export default function FlowDesigner({
   const SICONS: Record<string, string> = {
     'if':'🔀','switch':'🔀','call':'📞','return':'↩','fail':'✗',
     'token_validation':'🔒','http_call':'🌐','llm_call':'🧠',
-    'cache_get':'🗄️','cache_put':'🗄️','cache_get_global':'🗄️','cache_put_global':'🗄️',
+    'cache_get':'🗄️','cache_put':'🗄️','cache_get_global':'🗄️','cache_put_global':'🗄️','cache_delete':'🗄️','cache_delete_global':'🗄️',
     'bind_header':'📥','bind_query':'📥','bind_path':'📥','bind_body':'📥',
     'emit_event':'📊','log_field':'📋','registry_lookup':'🏷️',
-    'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱',
+    'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱','api_rate_limits':'📍',
     'set_response_body':'📤','set_response_header':'📤','set_response_status':'📤',
     'extract':'✂️','json_extract_emit':'✂️','mcp_call_tool':'🔧',
     'vector_search':'🔍','embed_text':'🔢','store_internal_tx_id':'🔖',
@@ -471,6 +483,34 @@ export default function FlowDesigner({
       prev.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1) })
       return next
     })
+  }
+
+  // ── Pattern condition builder helpers ────────────────────────────────────
+  /** Open the pattern builder for a specific `if` step index. */
+  function openPatternBuilder(stepIdx: number) {
+    const step = steps[stepIdx]
+    const existingCond = step?.condition
+    const initial: PatternCondition | null =
+      existingCond && typeof existingCond === 'object' && isPatternCondition(existingCond)
+        ? (existingCond as PatternCondition)
+        : null
+    setPatternBuilderCondition(initial)
+    setPatternBuilderTarget(stepIdx)
+  }
+
+  /** Called when user clicks Save in the builder. */
+  function applyPatternCondition(cond: PatternCondition) {
+    if (patternBuilderTarget === null) return
+    setSteps(steps.map((s, i) =>
+      i === patternBuilderTarget ? { ...s, condition: cond as unknown as string } : s
+    ))
+  }
+
+  /** Remove a pattern condition from an `if` step (revert to text condition). */
+  function clearPatternCondition(stepIdx: number) {
+    setSteps(steps.map((s, i) =>
+      i === stepIdx ? { ...s, condition: '' } : s
+    ))
   }
 
   // ── N-level tree updater ──────────────────────────────────────
@@ -824,9 +864,65 @@ export default function FlowDesigner({
   function renderIfBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
     const thenSteps = (step.then_steps as FlowStep[]) ?? []
     const elseSteps = (step.else_steps as FlowStep[]) ?? []
+    const rawCond = step['condition']
+    const isPatternCond = rawCond != null && typeof rawCond === 'object' && isPatternCondition(rawCond)
+    const patternCond = isPatternCond ? (rawCond as PatternCondition) : null
     return (
       <div className="step-body">
-        {fieldInput(i, 'condition', (step['condition'] as string) ?? '', defs['condition'], { smart: true })}
+        {/* Condition row: pattern badge OR text field + toggle button */}
+        <div className="field-row">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <label className="field-label" style={{ margin: 0 }}>
+              {defs['condition']?.label ?? 'Condition'}
+            </label>
+            <button
+              className="btn muted"
+              style={{ width: 'auto', padding: '2px 8px', fontSize: 11, marginLeft: 'auto' }}
+              title={isPatternCond ? 'Edit pattern condition' : 'Build a pattern condition visually'}
+              onClick={() => openPatternBuilder(i)}
+            >
+              {isPatternCond ? '✎ Edit Pattern' : '+ Pattern'}
+            </button>
+            {isPatternCond && (
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '2px 8px', fontSize: 11, color: '#e87070' }}
+                title="Remove pattern condition and use text condition instead"
+                onClick={() => clearPatternCondition(i)}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          {isPatternCond ? (
+            /* Show pattern condition summary */
+            <div style={{
+              background: '#0b1220',
+              border: '1px solid #22355d',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              fontSize: 12,
+              color: '#ecf0f9',
+            }}>
+              <span style={{ color: '#93a1bf' }}>
+                {patternCond!.source}
+                {patternCond!.sourceKey ? `[${patternCond!.sourceKey}]` : ''}
+                {' matches '}
+              </span>
+              <span style={{ color: '#57b5ff' }}>{patternCond!.pattern}</span>
+              {patternCond!.flags && (
+                <span style={{ color: '#93a1bf' }}> (flags: {patternCond!.flags})</span>
+              )}
+              {patternCond!.strategy && patternCond!.strategy !== 'auto' && (
+                <span style={{ color: '#93a1bf' }}> [{patternCond!.strategy}]</span>
+              )}
+            </div>
+          ) : (
+            /* Show normal text condition input */
+            fieldInput(i, 'condition', (rawCond as string) ?? '', defs['condition'], { smart: true })
+          )}
+        </div>
         {thenSteps.length === 0 && fieldInput(i, 'then', (step['then'] as string) ?? '', defs['then'])}
         {renderBranch('✓ THEN', false, thenSteps, i, 'then_steps', [])}
         {elseSteps.length === 0 && fieldInput(i, 'else', (step['else'] as string) ?? '', defs['else'])}
@@ -882,6 +978,26 @@ export default function FlowDesigner({
           >+ Add case</button>
         </div>
       </div>
+    )
+  }
+
+  // ── Template pattern editor ──────────────────────────────────────
+  function renderTemplatePatternBody(step: TemplatePatternStep, i: number, action: 'validate_pattern' | 'extract_pattern') {
+    return (
+      <TemplatePatternBuilder
+        action={action}
+        step={step}
+        onChange={(updatedStep) => {
+          // Update the step with all changed fields
+          const newStep = { ...step }
+          if (updatedStep.source !== step.source) newStep.source = updatedStep.source
+          if (updatedStep.input !== step.input) newStep.input = updatedStep.input
+          if (action === 'validate_pattern' && updatedStep.as !== step.as) newStep.as = updatedStep.as
+
+          // Apply changes to steps array
+          setSteps(steps.map((s, idx) => idx === i ? newStep : s))
+        }}
+      />
     )
   }
 
@@ -2700,6 +2816,14 @@ export default function FlowDesigner({
                     )}
                     <span className="step-toggle">{isExpanded ? '▼' : '▶'}</span>
                     <strong className="step-title">{i + 1}. {step.action}</strong>
+                    {step.action === 'api_rate_limits' && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                        padding: '2px 6px', borderRadius: 8, marginLeft: 4,
+                        background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.35)',
+                        color: '#a78bfa', whiteSpace: 'nowrap',
+                      }}>API POLICY</span>
+                    )}
                     <button
                       className="btn muted step-remove"
                       title="Remove step"
@@ -2707,7 +2831,31 @@ export default function FlowDesigner({
                     >×</button>
                   </div>
                   {isExpanded && (<>
-                    {step.action === 'if'                ? renderIfBody(step, i, defs)           :
+                    {step.action === 'api_rate_limits'   ? (() => (
+                       <div style={{ padding: '10px 12px' }}>
+                         <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, marginBottom: 10 }}>
+                           Enforces the rate limits configured in the API definition at this position in the flow.
+                           If this block is absent, limits are auto-injected at the start of the flow.
+                         </div>
+                         <div style={{
+                           padding: '6px 10px', borderRadius: 5,
+                           background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.25)',
+                           fontSize: 11, color: '#a78bfa', lineHeight: 1.5, marginBottom: 8,
+                         }}>
+                           📍 Position marker — no configuration needed here. Rate limit rules are defined in the API definition.
+                         </div>
+                         {onNavigateToApis && (
+                           <button
+                             className="btn muted"
+                             style={{ fontSize: 11 }}
+                             onClick={e => { e.stopPropagation(); onNavigateToApis() }}
+                           >
+                             Configure in API Definition →
+                           </button>
+                         )}
+                       </div>
+                     ))() :
+                     step.action === 'if'                ? renderIfBody(step, i, defs)           :
                      step.action === 'switch'            ? renderSwitchBody(step, i, defs)       :
                      step.action === 'http_call'         ? renderHttpCallBody(step, i)            :
                      step.action === 'token_validation'  ? renderTokenValidationBody(step, (k, v) => updateStep(i, k, v), slotsUpTo(i), i) :
@@ -2742,7 +2890,9 @@ export default function FlowDesigner({
                          </div>
                        </div>
                      ))() :
-                     ['cache_get','cache_put','cache_get_global','cache_put_global'].includes(step.action)
+                     step.action === 'validate_pattern' ? renderTemplatePatternBody(step as TemplatePatternStep, i, 'validate_pattern') :
+                     step.action === 'extract_pattern' ? renderTemplatePatternBody(step as TemplatePatternStep, i, 'extract_pattern') :
+                     ['cache_get','cache_put','cache_get_global','cache_put_global','cache_delete','cache_delete_global'].includes(step.action)
                                                          ? renderCacheBody(step, i)               :
                                                            renderGenericBody(step, i, defs)}
                     {renderObsFooter(step, i)}
@@ -2783,6 +2933,20 @@ export default function FlowDesigner({
       </div>
     </div>
     <VarPopup />
+    {/* ── Pattern Condition Builder modal ── */}
+    {patternBuilderTarget !== null && (
+      <PatternConditionBuilder
+        condition={patternBuilderCondition}
+        onChange={(cond) => {
+          applyPatternCondition(cond)
+          setPatternBuilderCondition(cond)
+        }}
+        onClose={() => {
+          setPatternBuilderTarget(null)
+          setPatternBuilderCondition(null)
+        }}
+      />
+    )}
     </Fragment>
   )
 }

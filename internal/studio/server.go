@@ -211,8 +211,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tenants/", s.tenantsMgmtProxy)
 	mux.HandleFunc("/api/rate-limit-configs", s.rateLimitConfigsMgmtProxy)
 	mux.HandleFunc("/api/rate-limit-configs/", s.rateLimitConfigsMgmtProxy)
+	mux.HandleFunc("/api/rate-limit-configs-v2", s.rateLimitConfigsV2MgmtProxy)
+	mux.HandleFunc("/api/rate-limit-configs-v2/", s.rateLimitConfigsV2MgmtProxy)
+	mux.HandleFunc("/api/tiers", s.tiersMgmtProxy)
+	mux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
+	mux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
+	mux.HandleFunc("/api/upstream-services/", s.upstreamServicesMgmtProxy)
 	mux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	mux.HandleFunc("/api/ai", s.aiMgmtProxy)
+	mux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
 	mux.HandleFunc("/mcp", s.MCPHandler)
 
 	// Observability routes: serve from own store if configured, else proxy to gateway.
@@ -899,6 +906,26 @@ func (s *Server) tenantsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 
 // rateLimitConfigsMgmtProxy forwards /api/rate-limit-configs[/...] → /rate-limit-configs[/...].
 func (s *Server) rateLimitConfigsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// cacheMgmtProxy forwards /api/cache/{alias}/{key} → /cache/{alias}/{key} on the management server.
+func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// rateLimitConfigsV2MgmtProxy forwards /api/rate-limit-configs-v2[/...] → /rate-limit-configs-v2[/...].
+func (s *Server) rateLimitConfigsV2MgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// tiersMgmtProxy forwards /api/tiers[/...] → /tiers[/...] on the management server.
+func (s *Server) tiersMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// upstreamServicesMgmtProxy forwards /api/upstream-services[/...] → /upstream-services[/...].
+func (s *Server) upstreamServicesMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 

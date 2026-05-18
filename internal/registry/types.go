@@ -202,6 +202,84 @@ type RegistrySnapshot struct {
 	RateLimits []RateLimitRecord `json:"rate_limits"`
 }
 
+// ─── V2 Rate Limit Design — multi-window, multi-dimension ────────────────────
+
+// RateLimitWindow defines a single time window for multi-window rate limiting.
+// Multiple windows can coexist in one config; ALL must pass for the request to proceed.
+type RateLimitWindow struct {
+	Period      string `json:"period"`                 // "1s", "30s", "5m", "1h", "1d"
+	PeriodSecs  uint32 `json:"period_secs,omitempty"`  // computed from Period at bake time
+	Limit       uint32 `json:"limit"`                  // max requests per window; 0 = blocked (deny all)
+	BurstFactor uint32 `json:"burst_factor,omitempty"` // burst percentage; 0 or 100 = no burst
+}
+
+// RateLimitHeaderNames allows overriding the standard rate limit response header names.
+type RateLimitHeaderNames struct {
+	Limit      string `json:"limit,omitempty"`       // default "X-RateLimit-Limit"
+	Remaining  string `json:"remaining,omitempty"`   // default "X-RateLimit-Remaining"
+	Reset      string `json:"reset,omitempty"`       // default "X-RateLimit-Reset"
+	RetryAfter string `json:"retry_after,omitempty"` // default "Retry-After"
+}
+
+// RateLimitConfigV2 is the new multi-window rate limit configuration.
+// Replaces the flat per_sec/per_min model in the legacy RateLimitConfig.
+//
+// REST API shapes (Management Server):
+//
+//	POST   /api/rate-limit-configs       → upsert RateLimitConfigV2
+//	GET    /api/rate-limit-configs       → list []RateLimitConfigV2
+//	DELETE /api/rate-limit-configs/{name}
+//	POST   /api/tiers                    → upsert TierDef
+//	GET    /api/tiers                    → list []TierDef
+//	DELETE /api/tiers/{name}
+//	POST   /api/upstream-services        → upsert UpstreamServiceDef
+//	GET    /api/upstream-services        → list []UpstreamServiceDef
+//	DELETE /api/upstream-services/{name}
+type RateLimitConfigV2 struct {
+	Name           string               `json:"name"`
+	Enforcement    string               `json:"enforcement"`                 // "approximate" | "strict"
+	RedisUnavail   string               `json:"redis_unavailable,omitempty"` // "fail_open" (default) | "fail_closed"
+	Windows        []RateLimitWindow    `json:"windows"`
+	ExceededStatus int                  `json:"exceeded_status,omitempty"` // default 429
+	ExceededBody   string               `json:"exceeded_body,omitempty"`
+	ExceededCType  string               `json:"exceeded_content_type,omitempty"`
+	EmitHeaders    bool                 `json:"emit_headers,omitempty"`
+	HeaderNames    RateLimitHeaderNames `json:"header_names,omitempty"`
+	CaseSensitive  bool                 `json:"case_sensitive,omitempty"`
+	OnEmptyKey     uint8                `json:"on_empty_key,omitempty"` // 0=fail, 1=skip, 2=fallback_tenant
+}
+
+// RateLimitConfigV2Record pairs a name with a V2 config for persistence.
+type RateLimitConfigV2Record struct {
+	Name   string           `json:"name"`
+	Config RateLimitConfigV2 `json:"config"`
+}
+
+// TierDef defines a rate limit tier that can be assigned to tenants.
+// A tier groups a rate limit config with API entitlement rules.
+type TierDef struct {
+	Name        string   `json:"name"`
+	ConfigName  string   `json:"config_name,omitempty"`  // rate limit config for API/endpoint level
+	OverallName string   `json:"overall_name,omitempty"` // cross-API overall quota config
+	AllowedAPIs []string `json:"allowed_apis,omitempty"` // nil = all APIs allowed
+	BlockedAPIs []string `json:"blocked_apis,omitempty"`
+}
+
+// UpstreamPattern maps a URL pattern to a named rate limit config.
+type UpstreamPattern struct {
+	Pattern    string `json:"pattern"`     // e.g. "https://api.openai.com/*"
+	ConfigName string `json:"config_name"` // rate limit config to apply for this pattern
+}
+
+// UpstreamServiceDef defines a named upstream service with URL-pattern-based rate limiting.
+// At request time the upstream URL is matched against Patterns (longest match wins).
+type UpstreamServiceDef struct {
+	Name       string            `json:"name"`
+	Patterns   []UpstreamPattern `json:"patterns"`
+	Unmatched  string            `json:"unmatched,omitempty"`      // "fail_open" (default) | "fail_closed" | "default_config"
+	DefaultCfg string            `json:"default_config,omitempty"` // config name used when Unmatched = "default_config"
+}
+
 // ─── Registry Persistence Interface ──────────────────────────────────────────
 //
 // RegistryDatastore is the domain-specific persistence contract for the tenant

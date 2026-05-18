@@ -1,4 +1,4 @@
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'cache' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
@@ -110,8 +110,24 @@ export interface EndpointDef {
   subPath: string     // e.g. "/" or "/{id}" or "/search"
   method: string      // GET | POST | PUT | PATCH | DELETE
   flowName?: string   // if set, overrides the API's defaultFlow for this endpoint
-  rateLimitName?: string   // optional rate limit config name for this endpoint
-  constants?: Record<string, string>   // NEW: pre-loaded named slots for this endpoint
+  /** @deprecated Migrated to rateLimitConfig */
+  rateLimitName?: string
+  /** @deprecated Migrated to rateLimitConfig */
+  rateLimitVar?: RateLimitVar
+  rateLimitCountBy?: RateLimitCountBy       // Dimension A: who is counted (legacy)
+  rateLimitConfig?: RateLimitConfigSource   // Dimension B: which config to apply (legacy)
+  // V2 rate limit fields — multi-window design. Use these for new configurations.
+  rlCountBy?: RateLimitCountByV2          // V2 count-by (who is counted)
+  rlConfigRef?: RateLimitConfigRef        // V2 config reference (which config to apply)
+  upstreamService?: string                // upstream service name for URL-pattern rate limiting
+  // Pre-set Variables: key-value pairs injected into flow slots before execution.
+  // Endpoint-level values override API-level values for the same key.
+  constants?: Record<string, string>
+  upstreamUrl?: UpstreamUrlConfig
+  /** Multi-entry rate limit policies (new design). Replaces scattered rl* fields for new configs. */
+  rateLimitPolicies?: APIRateLimitEntry[]
+  /** When true, no rate limiting is applied and no warnings are shown. */
+  skipRateLimit?: boolean
 }
 
 // Basepath-level API with multiple endpoints
@@ -122,8 +138,125 @@ export interface ApiDef {
   aliasPaths?: string[]   // additional basepaths → same ApiID in gateway router
   defaultFlow: string     // flow inherited by all endpoints that don't override
   endpoints: EndpointDef[]
-  rateLimitName?: string   // optional rate limit config name for this API
-  constants?: Record<string, string>   // NEW: pre-loaded named slots (endpoint overrides api)
+  /** @deprecated Migrated to rateLimitConfig */
+  rateLimitName?: string
+  /** @deprecated Migrated to rateLimitConfig */
+  rateLimitVar?: RateLimitVar
+  rateLimitCountBy?: RateLimitCountBy       // Dimension A: who is counted (legacy)
+  rateLimitConfig?: RateLimitConfigSource   // Dimension B: which config to apply (legacy)
+  // V2 rate limit fields — multi-window design. Use these for new configurations.
+  rlCountBy?: RateLimitCountByV2          // V2 count-by (who is counted)
+  rlConfigRef?: RateLimitConfigRef        // V2 config reference (which config to apply)
+  upstreamService?: string                // upstream service name for URL-pattern rate limiting
+  // Pre-set Variables: key-value pairs injected into flow slots before execution.
+  // Endpoint-level values override API-level values for the same key.
+  constants?: Record<string, string>
+  upstreamUrl?: UpstreamUrlConfig
+  /** Multi-entry rate limit policies (new design). Replaces scattered rl* fields for new configs. */
+  rateLimitPolicies?: APIRateLimitEntry[]
+  /** When true, no rate limiting is applied and no warnings are shown. */
+  skipRateLimit?: boolean
+}
+
+export interface UpstreamUrlConfig {
+  source: 'static' | 'registry' | 'cache' | 'header' | 'queryparam'
+  value: string  // URL when source='static'; key name for all others
+}
+
+/** @deprecated Use RateLimitConfigSource instead */
+export interface RateLimitVar {
+  source: 'registry' | 'cache' | 'header' | 'queryparam'
+  key: string
+}
+
+// ── Rate Limit — two orthogonal dimensions (legacy) ──────────────
+
+/** Dimension A: WHAT to count (who is being limited) */
+export type RateLimitCountBy =
+  | { kind: 'tenant' }
+  | { kind: 'ip'; xffIndex?: number }
+  | { kind: 'slot'; variableName: string }
+  | { kind: 'global' }  // tenant-agnostic: all tenants share a single counter bucket
+
+/** Dimension B: WHICH config to apply */
+export type RateLimitConfigSource =
+  | { kind: 'named'; name: string }
+  | { kind: 'dynamic'; source: 'registry' | 'cache' | 'header' | 'queryparam'; key: string }
+
+// ── Rate Limit V2 — multi-window, multi-dimension design ──────────
+
+export type OnEmptyKey = 'fail' | 'skip' | 'fallback_tenant'
+export type Enforcement = 'approximate' | 'strict'
+export type RedisUnavailable = 'fail_open' | 'fail_closed'
+
+export interface RateLimitWindow {
+  period: string          // "1s" | "30s" | "5m" | "1h" | "1d" | custom
+  limit: number           // max requests per window; 0 = blocked (deny all)
+  burst_factor?: number   // burst percentage: 150 = 150%; 0 or 100 = no burst
+}
+
+export interface RateLimitHeaderNames {
+  limit?: string        // default "X-RateLimit-Limit"
+  remaining?: string    // default "X-RateLimit-Remaining"
+  reset?: string        // default "X-RateLimit-Reset"
+  retry_after?: string  // default "Retry-After"
+}
+
+/** V2 multi-window rate limit configuration. Replaces the flat per_sec/per_min model. */
+export interface RateLimitConfigV2 {
+  name: string
+  enforcement: Enforcement
+  redis_unavailable?: RedisUnavailable   // only relevant for enforcement='strict'
+  windows: RateLimitWindow[]
+  exceeded_status?: number               // default 429
+  exceeded_body?: string
+  exceeded_content_type?: string
+  emit_headers?: boolean
+  header_names?: RateLimitHeaderNames
+  case_sensitive?: boolean
+  on_empty_key?: OnEmptyKey
+}
+
+/** V2 count-by configuration — richer than the legacy union type */
+export interface RateLimitCountByV2 {
+  kind: 'tenant' | 'ip' | 'slot' | 'static' | 'composite' | 'global'
+  slot_name?: string          // for kind='slot': name of the ByteSlot variable
+  static_value?: string       // for kind='static': static key string
+  composite_slots?: string[]  // for kind='composite': slot names to concatenate
+  xff_index?: number          // for kind='ip': XFF entry index (0 = leftmost = true client)
+  on_empty_key?: OnEmptyKey   // behavior when key slot is empty
+  fail_fast?: boolean         // default false: count all windows even after first failure
+}
+
+/** V2 config reference — named or dynamically resolved */
+export interface RateLimitConfigRef {
+  kind: 'named' | 'dynamic'
+  name?: string                                                     // for kind='named'
+  source?: 'registry' | 'cache' | 'header' | 'queryparam'  // for kind='dynamic'
+  key?: string                                                       // for kind='dynamic'
+}
+
+/** Tier definition — groups a rate limit config with API entitlement rules */
+export interface TierDef {
+  name: string
+  config_name?: string    // rate limit config for API/endpoint level
+  overall_name?: string   // cross-API overall quota config
+  allowed_apis?: string[] // undefined = all APIs allowed
+  blocked_apis?: string[]
+}
+
+/** URL pattern mapped to a named rate limit config */
+export interface UpstreamPattern {
+  pattern: string         // e.g. "https://api.openai.com/*"
+  config_name: string     // rate limit config to apply for requests matching this pattern
+}
+
+/** Named upstream service with URL-pattern-based rate limiting */
+export interface UpstreamServiceDef {
+  name: string
+  patterns: UpstreamPattern[]
+  unmatched?: 'fail_open' | 'fail_closed' | 'default_config'
+  default_config?: string   // used when unmatched = 'default_config'
 }
 
 // ── Request bodies ────────────────────────────────────────────────
@@ -186,6 +319,8 @@ export interface TenantDetail {
   tenant_id: number
   aliases: string[]
   properties: Record<string, string>  // prefixed: "url:primary", "id:api_key", "meta:tier"
+  tier?: string
+  rl_multiplier?: number
 }
 
 export interface RateLimitConfig {
@@ -209,6 +344,8 @@ export interface UpsertTenantRequest {
   service_urls?: Record<string, string>
   identifiers?: Record<string, string>
   metadata?: Record<string, string>
+  tier?: string
+  rl_multiplier?: number
 }
 
 export interface UpsertRateLimitRequest {
@@ -216,6 +353,74 @@ export interface UpsertRateLimitRequest {
   per_sec: number
   per_min: number
   burst_factor: number
+}
+
+// V2 rate limit config management (multi-window design)
+export interface RateLimitConfigV2Record {
+  name: string
+  config: RateLimitConfigV2
+}
+
+export interface RateLimitConfigV2ListResponse {
+  items: RateLimitConfigV2Record[]
+  count: number
+}
+
+// ── Rate Limit Policy (new multi-entry design) ────────────────────
+
+/** How a rate limit entry's config is specified */
+export type RLEntryKind = 'named' | 'fixed' | 'dynamic'
+
+/** Which dimension to count requests by */
+export type RLCountBy = 'tenant' | 'ip' | 'global' | 'slot' | 'static' | 'composite'
+
+/** One inline window for a 'fixed' rate limit entry */
+export interface RLFixedWindow {
+  epoch_sec: number   // 1=per-second | 60=per-minute | 3600=per-hour | 86400=per-day
+  limit: number       // max requests per window
+}
+
+/** Runtime dispatch mapping for a 'dynamic' rate limit entry */
+export interface RLDynamicMapping {
+  source: string                    // e.g. "meta.tier", "header.X-Plan", "slot.plan"
+  mappings: Record<string, string>  // runtime value → config name, e.g. {"free":"free_rl"}
+}
+
+/** One row in the API definition's rate limit policy table */
+export interface APIRateLimitEntry {
+  kind: RLEntryKind
+  config?: string            // named: RateLimitConfigV2 name to enforce
+  count_by: RLCountBy
+  slot_source?: string       // count_by=slot: slot name holding the counter key
+  static_key?: string        // count_by=static: literal key string
+  windows?: RLFixedWindow[]  // fixed kind: inline window definitions
+  dynamic?: RLDynamicMapping // dynamic kind: runtime dispatch config
+}
+
+// ── Rate Limit Warnings (returned by backend after sync) ──────────
+
+/** Classification codes for rate limit advisory warnings */
+export type RLWarnCode = 'no_flow' | 'not_enforced' | 'slot_unfilled' | 'config_missing'
+
+/** A single advisory from the compiler validation pass. Non-blocking. */
+export interface RateLimitWarning {
+  code: RLWarnCode
+  message: string
+  api?: string    // which API triggered the warning
+  row?: number    // which APIRateLimitEntry (0-indexed); absent for api-level warnings
+  slot?: string   // slot name for slot_unfilled
+}
+
+// Tier management
+export interface TierListResponse {
+  items: TierDef[]
+  count: number
+}
+
+// Upstream service management
+export interface UpstreamServiceListResponse {
+  items: UpstreamServiceDef[]
+  count: number
 }
 
 // ── AI / LLM ──────────────────────────────────────────────────────
@@ -371,4 +576,43 @@ export interface GatewayState {
   sync_uuid: string
   flows: GatewayFlow[]
   apis: GatewayApi[]
+}
+
+// ── Pattern Matching Condition ─────────────────────────────────────
+
+export interface PatternCondition {
+  type: 'pattern_match'
+  source: 'header' | 'query' | 'body' | 'path'
+  sourceKey?: string     // header name, query param name, etc.
+  pattern: string        // regex pattern
+  strategy?: 'auto' | 'exact' | 'prefix' | 'suffix' | 'contains' | 'regex' | 'sequential'
+  flags?: string         // regex flags: 'i' | 'm' | 's' | 'x'
+}
+
+// Extend FlowStep to support pattern conditions
+export interface IfStep extends FlowStep {
+  action: 'if'
+  condition?: PatternCondition | string  // support both PatternCondition and expression string
+  then_steps?: FlowStep[]
+  else_steps?: FlowStep[]
+}
+
+export interface SwitchStep extends FlowStep {
+  action: 'switch'
+  path?: string
+  cases?: Record<string, FlowStep[]>
+}
+
+// Type guard for pattern conditions
+export function isPatternCondition(cond: any): cond is PatternCondition {
+  return cond && cond.type === 'pattern_match'
+}
+
+// ── Template Pattern Steps ─────────────────────────────────────────
+
+export interface TemplatePatternStep extends FlowStep {
+  action: 'validate_pattern' | 'extract_pattern'
+  source: string          // slot name e.g. 'header.X-My-Header'
+  input: { pattern: string }
+  as?: string             // only for validate_pattern; undefined for extract_pattern
 }

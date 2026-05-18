@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"encoding/binary"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"strconv"
@@ -15,10 +16,11 @@ func ConcatStep(slotA, slotB, result int, sep string) engine.Instruction {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			a := ctx.ByteSlots[slotA]
 			b := ctx.ByteSlots[slotB]
-			out := make([]byte, len(a)+len(sepBytes)+len(b))
-			n := copy(out, a)
-			n += copy(out[n:], sepBytes)
-			copy(out[n:], b)
+			n := len(a) + len(sepBytes) + len(b)
+			out := ctx.Alloc(n)
+			written := copy(out, a)
+			written += copy(out[written:], sepBytes)
+			copy(out[written:], b)
 			ctx.ByteSlots[result] = out
 			return state.PC + 1
 		},
@@ -26,22 +28,42 @@ func ConcatStep(slotA, slotB, result int, sep string) engine.Instruction {
 }
 
 // ToLowerStep lowercases ByteSlots[src] into ByteSlots[result].
+// Uses an inline ASCII loop with ctx.Alloc to avoid heap allocation.
 func ToLowerStep(src, result int) engine.Instruction {
 	return engine.Instruction{
 		Name: "TO_LOWER",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ByteSlots[result] = bytes.ToLower(ctx.ByteSlots[src])
+			in := ctx.ByteSlots[src]
+			out := ctx.Alloc(len(in))
+			for i, c := range in {
+				if c >= 'A' && c <= 'Z' {
+					out[i] = c + 32
+				} else {
+					out[i] = c
+				}
+			}
+			ctx.ByteSlots[result] = out
 			return state.PC + 1
 		},
 	}
 }
 
 // ToUpperStep uppercases ByteSlots[src] into ByteSlots[result].
+// Uses an inline ASCII loop with ctx.Alloc to avoid heap allocation.
 func ToUpperStep(src, result int) engine.Instruction {
 	return engine.Instruction{
 		Name: "TO_UPPER",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ByteSlots[result] = bytes.ToUpper(ctx.ByteSlots[src])
+			in := ctx.ByteSlots[src]
+			out := ctx.Alloc(len(in))
+			for i, c := range in {
+				if c >= 'a' && c <= 'z' {
+					out[i] = c - 32
+				} else {
+					out[i] = c
+				}
+			}
+			ctx.ByteSlots[result] = out
 			return state.PC + 1
 		},
 	}
@@ -140,6 +162,185 @@ func ByteLengthStep(srcSlot, destSlot int) engine.Instruction {
 			return state.PC + 1
 		},
 	}
+}
+
+// TrimStep removes leading/trailing whitespace from ByteSlots[src] (zero-copy sub-slice).
+func TrimStep(src, result int) engine.Instruction {
+	return engine.Instruction{
+		Name: "TRIM",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.ByteSlots[result] = bytes.TrimSpace(ctx.ByteSlots[src])
+			return state.PC + 1
+		},
+	}
+}
+
+// ContainsStep writes true to BoolSlots[result] if ByteSlots[src] contains needle (baked).
+func ContainsStep(src, result int, needle []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "CONTAINS",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.BoolSlots[result] = bytes.Contains(ctx.ByteSlots[src], needle)
+			return state.PC + 1
+		},
+	}
+}
+
+// StartsWithStep writes true to BoolSlots[result] if ByteSlots[src] has prefix (baked).
+func StartsWithStep(src, result int, prefix []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "STARTS_WITH",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.BoolSlots[result] = bytes.HasPrefix(ctx.ByteSlots[src], prefix)
+			return state.PC + 1
+		},
+	}
+}
+
+// EndsWithStep writes true to BoolSlots[result] if ByteSlots[src] has suffix (baked).
+func EndsWithStep(src, result int, suffix []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "ENDS_WITH",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.BoolSlots[result] = bytes.HasSuffix(ctx.ByteSlots[src], suffix)
+			return state.PC + 1
+		},
+	}
+}
+
+// ReplaceStep replaces all occurrences of old (baked) with new (baked) in ByteSlots[src].
+// Uses bytes.ReplaceAll — one allocation for the output; unavoidable when output size is unknown.
+func ReplaceStep(src, result int, old, new []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "REPLACE",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.ByteSlots[result] = bytes.ReplaceAll(ctx.ByteSlots[src], old, new)
+			return state.PC + 1
+		},
+	}
+}
+
+// SplitStep splits ByteSlots[src] on sep (baked) and stores a JSON array of strings
+// into ByteSlots[result] using ctx.Alloc for zero extra heap pressure.
+// Output format: ["part1","part2","part3"]
+func SplitStep(src, result int, sep []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "SPLIT",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			raw := ctx.ByteSlots[src]
+			if len(raw) == 0 {
+				ctx.ByteSlots[result] = []byte("[]")
+				return state.PC + 1
+			}
+			parts := bytes.Split(raw, sep)
+			// Calculate total arena allocation: 2 (brackets) + per-part: 2 quotes + len + 1 comma
+			total := 2
+			for _, p := range parts {
+				total += len(p) + 3 // "..." + comma (last omits comma)
+			}
+			buf := ctx.Alloc(total)
+			pos := 0
+			buf[pos] = '['
+			pos++
+			for i, p := range parts {
+				buf[pos] = '"'
+				pos++
+				copy(buf[pos:], p)
+				pos += len(p)
+				buf[pos] = '"'
+				pos++
+				if i < len(parts)-1 {
+					buf[pos] = ','
+					pos++
+				}
+			}
+			buf[pos] = ']'
+			pos++
+			ctx.ByteSlots[result] = buf[:pos]
+			return state.PC + 1
+		},
+	}
+}
+
+// IndexOfStep writes the byte offset of needle (baked) in ByteSlots[src] to IntSlots[result].
+// Returns -1 if not found.
+func IndexOfStep(src, result int, needle []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "INDEX_OF",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.IntSlots[result] = int64(bytes.Index(ctx.ByteSlots[src], needle))
+			return state.PC + 1
+		},
+	}
+}
+
+// JoinStep joins ByteSlots[src] (a JSON array of strings) with sep (baked) into ByteSlots[result].
+// Uses the same gjson packed-index trick — O(1) per element, arena allocation.
+func JoinStep(src, result int, sep []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "JOIN",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			raw := ctx.ByteSlots[src]
+			if len(raw) == 0 {
+				ctx.ByteSlots[result] = nil
+				return state.PC + 1
+			}
+			// Parse offsets — 8 bytes per element (start uint32, end uint32).
+			type span struct{ s, e uint32 }
+			var spans [64]span
+			n := 0
+			total := 0
+			// Quick scan: find quoted substrings in JSON array.
+			// We read byte-by-byte — no reflection, no GC pressure.
+			in := raw
+			i := 1 // skip '['
+			for i < len(in) && in[i] != ']' {
+				if in[i] == '"' {
+					j := i + 1
+					for j < len(in) && in[j] != '"' {
+						if in[j] == '\\' {
+							j++
+						}
+						j++
+					}
+					if n < len(spans) {
+						spans[n] = span{uint32(i + 1), uint32(j)}
+						total += int(spans[n].e-spans[n].s) + len(sep)
+						n++
+					}
+					i = j + 1
+				} else {
+					i++
+				}
+			}
+			if n == 0 {
+				ctx.ByteSlots[result] = nil
+				return state.PC + 1
+			}
+			if total > 0 {
+				total -= len(sep) // no trailing separator
+			}
+			buf := ctx.Alloc(total)
+			pos := 0
+			for k := 0; k < n; k++ {
+				copy(buf[pos:], in[spans[k].s:spans[k].e])
+				pos += int(spans[k].e - spans[k].s)
+				if k < n-1 {
+					copy(buf[pos:], sep)
+					pos += len(sep)
+				}
+			}
+			ctx.ByteSlots[result] = buf[:pos]
+			return state.PC + 1
+		},
+	}
+}
+
+// splitPackedIndex is shared by SplitStep-derived ops.
+// It extracts element i from a packed index buf (8 bytes per element) as (start, end) indices
+// into the source byte slice.
+func splitPackedGet(buf []byte, i int) (start, end uint32) {
+	return binary.LittleEndian.Uint32(buf[i*8:]), binary.LittleEndian.Uint32(buf[i*8+4:])
 }
 
 // SetResponseHeaderFromSlot sets a response header named `name` from ByteSlots[src].

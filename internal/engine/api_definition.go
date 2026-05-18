@@ -19,11 +19,21 @@ const (
 	AsyncForced   AsyncMode = 2 // always async regardless of client preference
 )
 
+// RateLimitMode controls how the rate limit counter key is scoped for an endpoint.
+// The zero value (RateLimitModeTenant) is the default and preserves existing behaviour.
+type RateLimitMode uint8
+
+const (
+	RateLimitModeTenant RateLimitMode = 0 // counter key includes TenantID (default)
+	RateLimitModeGlobal RateLimitMode = 1 // counter key is tenant-agnostic (shared across all tenants)
+)
+
 type Endpoint struct {
-	EndpointId          uint8     // sequential within ApiDefinition (0–255)
-	AsyncMode           AsyncMode // set at bake time from ApiConfig.Async
-	APIRateLimitId      uint16    // rate limit config at API level; 0 = gateway default
-	EndpointRateLimitId uint16    // rate limit config at endpoint level; 0 = inherit API
+	EndpointId          uint8         // sequential within ApiDefinition (0–255)
+	AsyncMode           AsyncMode     // set at bake time from ApiConfig.Async
+	RateLimitMode       RateLimitMode // 0=tenant (default), 1=global (all tenants share counter)
+	APIRateLimitId      uint16        // rate limit config at API level; 0 = gateway default
+	EndpointRateLimitId uint16        // rate limit config at endpoint level; 0 = inherit API
 	Plan                []Instruction
 }
 

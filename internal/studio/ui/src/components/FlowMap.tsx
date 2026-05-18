@@ -6,11 +6,11 @@ import type { FlowStep, SavedFlow } from '../types'
 const STEP_ICONS: Record<string, string> = {
   'if': '🔀', 'switch': '🔀', 'call': '📞', 'return': '↩', 'fail': '✗',
   'token_validation': '🔒', 'http_call': '🌐', 'llm_call': '🧠',
-  'cache_get': '🗄️', 'cache_get_global': '🗄️', 'cache_put': '🗄️', 'cache_put_global': '🗄️',
+  'cache_get': '🗄️', 'cache_get_global': '🗄️', 'cache_put': '🗄️', 'cache_put_global': '🗄️', 'cache_delete': '🗄️', 'cache_delete_global': '🗄️',
   'bind_header': '📥', 'bind_query': '📥', 'bind_path': '📥', 'bind_body': '📥',
   'bind_client_ip': '🌐', 'emit_event': '📊', 'log_field': '📋',
   'registry_lookup': '🏷️', 'load_service_url': '🔗', 'load_identifier': '🔑',
-  'check_rate_limit': '⏱', 'set_response_body': '📤', 'set_response_header': '📤',
+  'check_rate_limit': '⏱', 'api_rate_limits': '📍', 'set_response_body': '📤', 'set_response_header': '📤',
   'set_response_status': '📤', 'extract': '✂️', 'json_extract_emit': '✂️',
   'mcp_call_tool': '🔧', 'vector_search': '🔍', 'embed_text': '🔢',
   'store_internal_tx_id': '🔖', 'bind_correlation_id': '🔖',

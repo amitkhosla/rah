@@ -11,6 +11,12 @@ import type {
   RateLimitRecord,
   UpsertTenantRequest,
   UpsertRateLimitRequest,
+  RateLimitConfigV2,
+  RateLimitConfigV2ListResponse,
+  TierDef,
+  TierListResponse,
+  UpstreamServiceDef,
+  UpstreamServiceListResponse,
   CredentialListResponse,
   AIEnvelope,
   LLMModel,
@@ -20,6 +26,7 @@ import type {
   MCPPingResult,
   APIToolDef,
   VirtualMCPServer,
+  RateLimitWarning,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -116,6 +123,60 @@ export function upsertRateLimitConfig(body: UpsertRateLimitRequest): Promise<voi
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+// ── Rate Limit Configs V2 ──────────────────────────────────────────
+
+export function listRateLimitConfigsV2(): Promise<RateLimitConfigV2ListResponse> {
+  return request<RateLimitConfigV2ListResponse>('/api/rate-limit-configs-v2')
+}
+
+export function upsertRateLimitConfigV2(body: RateLimitConfigV2): Promise<void> {
+  return request<void>('/api/rate-limit-configs-v2', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteRateLimitConfigV2(name: string): Promise<void> {
+  return request<void>(`/api/rate-limit-configs-v2/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+// ── Tenant Tiers ───────────────────────────────────────────────────
+
+export function listTiers(): Promise<TierListResponse> {
+  return request<TierListResponse>('/api/tiers')
+}
+
+export function upsertTier(body: TierDef): Promise<void> {
+  return request<void>('/api/tiers', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteTier(name: string): Promise<void> {
+  return request<void>(`/api/tiers/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+// ── Upstream Services ──────────────────────────────────────────────
+
+export function listUpstreamServices(): Promise<UpstreamServiceListResponse> {
+  return request<UpstreamServiceListResponse>('/api/upstream-services')
+}
+
+export function upsertUpstreamService(body: UpstreamServiceDef): Promise<void> {
+  return request<void>('/api/upstream-services', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteUpstreamService(name: string): Promise<void> {
+  return request<void>(`/api/upstream-services/${encodeURIComponent(name)}`, { method: 'DELETE' })
 }
 
 // ── Credentials ────────────────────────────────────────────────────
@@ -281,7 +342,38 @@ export interface SyncPayload {
     action: 'upsert'
     rate_limit?: string
     alias_paths?: string[]
-    endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string; rate_limit?: string }>
+    rl_count_by?: string
+    rl_slot?: string
+    rl_slots?: string
+    rl_static_key?: string
+    rl_xff_index?: number
+    rl_on_empty?: string
+    rl_fail_fast?: boolean
+    rl_config?: string
+    rl_dyn_source?: string
+    rl_dyn_key?: string
+    upstream_svc?: string
+    rate_limit_policies?: import('./types').APIRateLimitEntry[]
+    skip_rate_limit?: boolean
+    endpoint_configs?: Array<{
+      path: string
+      method?: string
+      flow_name?: string
+      rate_limit?: string
+      rl_count_by?: string
+      rl_slot?: string
+      rl_slots?: string
+      rl_static_key?: string
+      rl_xff_index?: number
+      rl_on_empty?: string
+      rl_fail_fast?: boolean
+      rl_config?: string
+      rl_dyn_source?: string
+      rl_dyn_key?: string
+      upstream_svc?: string
+      rate_limit_policies?: import('./types').APIRateLimitEntry[]
+      skip_rate_limit?: boolean
+    }>
   }>
 }
 
@@ -293,8 +385,35 @@ export interface GatewaySnapshot {
     method?: string
     flow_name: string
     rate_limit?: string
-    endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string; rate_limit?: string }>
     alias_paths?: string[]
+    rl_count_by?: string
+    rl_slot?: string
+    rl_slots?: string
+    rl_static_key?: string
+    rl_xff_index?: number
+    rl_on_empty?: string
+    rl_fail_fast?: boolean
+    rl_config?: string
+    rl_dyn_source?: string
+    rl_dyn_key?: string
+    upstream_svc?: string
+    endpoint_configs?: Array<{
+      path: string
+      method?: string
+      flow_name?: string
+      rate_limit?: string
+      rl_count_by?: string
+      rl_slot?: string
+      rl_slots?: string
+      rl_static_key?: string
+      rl_xff_index?: number
+      rl_on_empty?: string
+      rl_fail_fast?: boolean
+      rl_config?: string
+      rl_dyn_source?: string
+      rl_dyn_key?: string
+      upstream_svc?: string
+    }>
   }>
 }
 
@@ -324,7 +443,12 @@ function normalizeStep(step: Record<string, unknown>): SyncStep {
   return out as SyncStep
 }
 
-export async function syncFlows(payload: SyncPayload): Promise<void> {
+export interface SyncResponse {
+  status: string
+  rate_limit_warnings?: RateLimitWarning[]
+}
+
+export async function syncFlows(payload: SyncPayload): Promise<SyncResponse> {
   const normalized: SyncPayload = {
     ...payload,
     flows: payload.flows.map(f => ({ ...f, instructions: f.instructions.map(normalizeStep) })),
@@ -338,6 +462,7 @@ export async function syncFlows(payload: SyncPayload): Promise<void> {
     const text = await res.text().catch(() => `HTTP ${res.status}`)
     throw new Error(text || `HTTP ${res.status}`)
   }
+  return res.json().catch(() => ({ status: 'success' })) as Promise<SyncResponse>
 }
 
 // ── AI Route configs (server-side persistence) ─────────────────────
@@ -481,4 +606,19 @@ export async function updateObsConfig(patch: Partial<ObsRuntimeConfig>): Promise
     body: JSON.stringify(body),
   })
   if (!r.ok) throw new Error(await r.text())
+}
+
+// ── Cache Management ────────────────────────────────────────────────
+
+export function getCacheEntry(tenant: string, key: string): Promise<{ found: boolean; value: string }> {
+  return request<{ found: boolean; value: string }>(
+    `/api/cache/${encodeURIComponent(tenant)}/${encodeURIComponent(key)}`
+  )
+}
+
+export function deleteCacheEntry(tenant: string, key: string): Promise<void> {
+  return request<void>(
+    `/api/cache/${encodeURIComponent(tenant)}/${encodeURIComponent(key)}`,
+    { method: 'DELETE' }
+  )
 }

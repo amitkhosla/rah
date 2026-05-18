@@ -62,10 +62,6 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 		return fmt.Errorf("bootstrap: read apis: %w", err)
 	}
 
-	if len(flowsSnapshot) == 0 && len(apisSnapshot) == 0 {
-		return nil
-	}
-
 	req := UnifiedSyncRequest{SyncUUID: "bootstrap"}
 
 	for name, raw := range flowsSnapshot {
@@ -87,25 +83,82 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 			api.ApiID = name
 		}
 		req.Apis = append(req.Apis, ApiUpdate{
-			Name:            api.ApiID,
-			Path:            api.Path,
-			Method:          api.Method,
-			FlowName:        api.FlowName,
-			RateLimitName:   api.RateLimitName,
-			EndpointConfigs: api.EndpointConfigs,
-			Async:           api.Async,
-			Action:          "upsert",
+			Name:              api.ApiID,
+			Path:              api.Path,
+			Method:            api.Method,
+			FlowName:          api.FlowName,
+			RateLimitName:     api.RateLimitName,
+			EndpointConfigs:   api.EndpointConfigs,
+			Async:             api.Async,
+			RateLimitPolicies: api.RateLimitPolicies,
+			SkipRateLimit:     api.SkipRateLimit,
+			Action:            "upsert",
 		})
 	}
 
-	if len(req.Flows) == 0 && len(req.Apis) == 0 {
+	// Read V2 rate limit configs.
+	if rlv2Snapshot, serr := dsm.ReadRateLimitConfigsV2Snapshot(ctx); serr == nil {
+		for name, raw := range rlv2Snapshot {
+			var cfg registrypkg.RateLimitConfigV2
+			if json.Unmarshal(raw, &cfg) == nil {
+				if cfg.Name == "" {
+					cfg.Name = name
+				}
+				req.RateLimitConfigsV2 = append(req.RateLimitConfigsV2, cfg)
+			} else {
+				log.Printf("[Bootstrap] Skipping unparseable rate_limit_config_v2 %q", name)
+			}
+		}
+	}
+
+	// Read tier definitions.
+	if tierSnapshot, serr := dsm.ReadTiersSnapshot(ctx); serr == nil {
+		for name, raw := range tierSnapshot {
+			var t registrypkg.TierDef
+			if json.Unmarshal(raw, &t) == nil {
+				if t.Name == "" {
+					t.Name = name
+				}
+				req.Tiers = append(req.Tiers, t)
+			} else {
+				log.Printf("[Bootstrap] Skipping unparseable tier %q", name)
+			}
+		}
+	}
+
+	// Read upstream service definitions.
+	if svcSnapshot, serr := dsm.ReadUpstreamServicesSnapshot(ctx); serr == nil {
+		for name, raw := range svcSnapshot {
+			var svc registrypkg.UpstreamServiceDef
+			if json.Unmarshal(raw, &svc) == nil {
+				if svc.Name == "" {
+					svc.Name = name
+				}
+				req.UpstreamServices = append(req.UpstreamServices, svc)
+			} else {
+				log.Printf("[Bootstrap] Skipping unparseable upstream_service %q", name)
+			}
+		}
+	}
+
+	if len(req.Flows) == 0 && len(req.Apis) == 0 &&
+		len(req.RateLimitConfigsV2) == 0 && len(req.Tiers) == 0 && len(req.UpstreamServices) == 0 {
 		return nil
 	}
 
 	if err := s.ApplyUnifiedSync(req); err != nil {
 		return fmt.Errorf("bootstrap: apply sync: %w", err)
 	}
-	log.Printf("[Bootstrap] Loaded %d flow(s) and %d api(s)", len(req.Flows), len(req.Apis))
+	log.Printf("[Bootstrap] Loaded %d flow(s), %d api(s), %d rl_v2(s), %d tier(s), %d upstream_svc(s)",
+		len(req.Flows), len(req.Apis), len(req.RateLimitConfigsV2), len(req.Tiers), len(req.UpstreamServices))
+
+	// Sync per-tenant rate-limit multipliers into the engine's fixed array.
+	if s.RegMgr != nil {
+		reg := registrypkg.State.Active.Load()
+		registrypkg.BakeMultipliers(reg, s.RegMgr, engine.SetTenantMultiplier)
+		log.Printf("[Bootstrap] BakeMultipliers complete")
+	}
+
 	return nil
 }
 
@@ -136,17 +189,61 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-	} else {
-		if err := s.ApplyUnifiedSync(req); err != nil {
-			log.Printf("[Management] sync failed: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+		return
+	}
+
+	if err := s.ApplyUnifiedSync(req); err != nil {
+		log.Printf("[Management] sync failed: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Run the RL validation pass after a successful sync so the Studio can
+	// display per-row warnings without blocking the deploy.
+	warnings := s.buildSyncWarnings(req)
+	if len(warnings) > 0 {
+		log.Printf("[Management] sync completed with %d rate limit warning(s)", len(warnings))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":               "success",
+		"rate_limit_warnings": warnings,
+	})
+}
+
+// buildSyncWarnings runs the rate limit validation pass over every API upsert
+// in req and returns aggregated advisory warnings. It reads the current
+// flowConfigs (post-sync) under the read lock so it is safe to call immediately
+// after ApplyUnifiedSync completes.
+func (s *ManagementServer) buildSyncWarnings(req UnifiedSyncRequest) []RateLimitWarning {
+	s.mu.RLock()
+	flowCfgs := make(map[string][]StepConfig, len(s.flowConfigs))
+	for k, v := range s.flowConfigs {
+		flowCfgs[k] = v
+	}
+	s.mu.RUnlock()
+
+	var all []RateLimitWarning
+	for _, a := range req.Apis {
+		if a.Action == "delete" {
+			continue
+		}
+		warns := validateRLPolicies(
+			a.Name,
+			a.FlowName,
+			a.RateLimitPolicies,
+			a.SkipRateLimit,
+			flowCfgs,
+			s.Compiler.RegMgr,
+		)
+		all = append(all, warns...)
+	}
+	return all
 }
 
 // applyDraftSync compiles req into DraftState without touching the live State.
@@ -176,6 +273,10 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	newRouteConstants := make(map[uint64][]engine.ConstantSlot)
 	for k, v := range oldState.RouteConstants {
 		newRouteConstants[k] = v
+	}
+	newRouteUpstreamUrls := make(map[uint64]*engine.UpstreamUrlInfo)
+	for k, v := range oldState.RouteUpstreamUrls {
+		newRouteUpstreamUrls[k] = v
 	}
 
 	// 2. Update Shared Flows (The Instruction Library)
@@ -208,6 +309,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 				newDefs[id] = nil
 				for ep := uint64(0); ep < 256; ep++ {
 					delete(newRouteConstants, uint64(id)<<8|ep)
+					delete(newRouteUpstreamUrls, uint64(id)<<8|ep)
 				}
 			}
 			delete(newApiConfigs, a.Name)
@@ -217,6 +319,16 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 				log.Printf("[Draft] Error: API %s references missing flow %s", a.Name, a.FlowName)
 				continue
 			}
+
+			// Resolve and register multi-entry RL policies at API level (must happen
+			// before CompileExecutable so the compiler can find anonymous fixed configs).
+			if len(a.RateLimitPolicies) > 0 {
+				a.RateLimitPolicies = resolveAndRegisterRLPolicies(a.Name, a.RateLimitPolicies)
+			}
+
+			// Wire API-level RL policies into the compiler for marker + auto-inject.
+			s.Compiler.currentAPIPolicies = a.RateLimitPolicies
+			s.Compiler.currentAPISkipRL = a.SkipRateLimit
 
 			instructions, err := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
 			if err != nil {
@@ -241,6 +353,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 					apiRLId = rlid
 				}
 			}
+
 			asyncMode := engine.AsyncDisabled
 			switch a.Async {
 			case "allowed":
@@ -249,21 +362,35 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 				asyncMode = engine.AsyncForced
 			}
 
-			// Clear stale constant slots for this API before registering new ones.
+			// Clear stale constant slots and upstream URLs for this API before registering new ones.
 			for ep := uint64(0); ep < 256; ep++ {
 				delete(newRouteConstants, uint64(id)<<8|ep)
+				delete(newRouteUpstreamUrls, uint64(id)<<8|ep)
 			}
 
 			if len(a.EndpointConfigs) == 0 {
 				epID := uint8(len(def.Endpoints))
+				routeKey := uint64(id)<<8 | uint64(epID)
 				if len(a.Constants) > 0 {
 					if constSlots, cerr := s.Compiler.AllocConstantSlots(a.Constants); cerr == nil && len(constSlots) > 0 {
-						newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+						newRouteConstants[routeKey] = constSlots
+					}
+				}
+				if a.UpstreamUrl != nil {
+					if slotIdx, serr := s.Compiler.AllocUpstreamUrlSlot(); serr == nil {
+						newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(a.UpstreamUrl, slotIdx, s.RegMgr)
 					}
 				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 			} else {
-				for _, ec := range a.EndpointConfigs {
+				for ecIdx, ec := range a.EndpointConfigs {
+					// Resolve and register multi-entry RL policies at endpoint level.
+					if len(ec.RateLimitPolicies) > 0 {
+						ec.RateLimitPolicies = resolveAndRegisterRLPolicies(
+							fmt.Sprintf("%s_ep%d", a.Name, ecIdx), ec.RateLimitPolicies)
+						a.EndpointConfigs[ecIdx].RateLimitPolicies = ec.RateLimitPolicies
+					}
+
 					epRLId := uint16(0)
 					if ec.RateLimitName != "" && s.RegMgr != nil {
 						if rlid, ok := s.RegMgr.GetRateLimitConfigId(ec.RateLimitName); ok {
@@ -280,11 +407,21 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 					}
 					isStrict := len(epPath) > 1 && !strings.HasSuffix(epPath, "/")
 					epID := uint8(len(def.Endpoints))
+					routeKey := uint64(id)<<8 | uint64(epID)
 					s.Compiler.RestoreSlots(defaultSlotSnap, defaultNextSlot)
 					mergedConsts := mergeConstants(a.Constants, ec.Constants)
 					if len(mergedConsts) > 0 {
 						if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
-							newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+							newRouteConstants[routeKey] = constSlots
+						}
+					}
+					effectiveUpstream := a.UpstreamUrl
+					if ec.UpstreamUrl != nil {
+						effectiveUpstream = ec.UpstreamUrl
+					}
+					if effectiveUpstream != nil {
+						if slotIdx, serr := s.Compiler.AllocUpstreamUrlSlot(); serr == nil {
+							newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(effectiveUpstream, slotIdx, s.RegMgr)
 						}
 					}
 					s.Compiler.BakeSubRouter(def, epPath, method, instructions, isStrict, apiRLId, epRLId, asyncMode)
@@ -321,10 +458,11 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 
 	// 6. Store in DraftState — does NOT touch FlowManager.State.
 	s.FlowManager.DraftState.Store(&engine.EngineState{
-		Router:         draftRouter,
-		Definitions:    newDefs,
-		FlowLibrary:    newLibrary,
-		RouteConstants: newRouteConstants,
+		Router:            draftRouter,
+		Definitions:       newDefs,
+		FlowLibrary:       newLibrary,
+		RouteConstants:    newRouteConstants,
+		RouteUpstreamUrls: newRouteUpstreamUrls,
 	})
 
 	log.Printf("[Draft] Sync Complete. Stored in DraftState (not live).")
@@ -355,6 +493,19 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		s.Compiler.LLMCfg = s.LLMProvider()
 	}
 
+	// Apply V2 rate limit configs — in-memory store only; persistence handled below.
+	for _, cfg := range req.RateLimitConfigsV2 {
+		registrypkg.UpsertRateLimitConfigV2(cfg)
+	}
+	// Apply tier definitions.
+	for _, t := range req.Tiers {
+		registrypkg.UpsertTier(t)
+	}
+	// Apply upstream service definitions.
+	for _, svc := range req.UpstreamServices {
+		registrypkg.UpsertUpstreamService(svc)
+	}
+
 	oldState := s.FlowManager.State.Load()
 
 	s.mu.RLock()
@@ -379,14 +530,37 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	for k, v := range oldState.RouteConstants {
 		newRouteConstants[k] = v
 	}
+	newRouteUpstreamUrls := make(map[uint64]*engine.UpstreamUrlInfo)
+	for k, v := range oldState.RouteUpstreamUrls {
+		newRouteUpstreamUrls[k] = v
+	}
 
 	// Track changes for persistence after the atomic swap.
 	type persistOp struct {
-		kind    string // "flow_upsert", "flow_delete", "api_upsert", "api_delete"
+		kind    string // "flow_upsert", "flow_delete", "api_upsert", "api_delete", "rlv2_upsert", "tier_upsert", "upstreamsvc_upsert"
 		name    string
 		payload []byte // nil for deletes
 	}
 	var pendingPersist []persistOp
+
+	// Queue V2 rate limit configs for persistence.
+	for _, cfg := range req.RateLimitConfigsV2 {
+		if data, merr := json.Marshal(cfg); merr == nil {
+			pendingPersist = append(pendingPersist, persistOp{kind: "rlv2_upsert", name: cfg.Name, payload: data})
+		}
+	}
+	// Queue tier definitions for persistence.
+	for _, t := range req.Tiers {
+		if data, merr := json.Marshal(t); merr == nil {
+			pendingPersist = append(pendingPersist, persistOp{kind: "tier_upsert", name: t.Name, payload: data})
+		}
+	}
+	// Queue upstream service definitions for persistence.
+	for _, svc := range req.UpstreamServices {
+		if data, merr := json.Marshal(svc); merr == nil {
+			pendingPersist = append(pendingPersist, persistOp{kind: "upstreamsvc_upsert", name: svc.Name, payload: data})
+		}
+	}
 
 	// 2. Update Shared Flows (The Instruction Library)
 	var deletedFlows []string
@@ -423,9 +597,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			if int(id) < len(newDefs) && newDefs[id] != nil {
 				newDefs[id] = nil
 				routerChanged = true
-				// Clear all constant slots for this API (up to 256 endpoints).
+				// Clear all constant slots and upstream URLs for this API (up to 256 endpoints).
 				for ep := uint64(0); ep < 256; ep++ {
 					delete(newRouteConstants, uint64(id)<<8|ep)
+					delete(newRouteUpstreamUrls, uint64(id)<<8|ep)
 				}
 			}
 			delete(newApiConfigs, a.Name)
@@ -436,6 +611,18 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				log.Printf("[Management] Error: API %s references missing flow %s", a.Name, a.FlowName)
 				continue
 			}
+
+			// Resolve and register multi-entry RL policies at API level (must happen
+			// before CompileExecutable so the compiler can find anonymous fixed configs).
+			if len(a.RateLimitPolicies) > 0 {
+				a.RateLimitPolicies = resolveAndRegisterRLPolicies(a.Name, a.RateLimitPolicies)
+				log.Printf("[Management] API %s: resolved %d RL policy entry/entries", a.Name, len(a.RateLimitPolicies))
+			}
+
+			// Wire API-level RL policies into the compiler so CompileExecutable can
+			// handle "api_rate_limits" marker steps and perform auto-injection.
+			s.Compiler.currentAPIPolicies = a.RateLimitPolicies
+			s.Compiler.currentAPISkipRL = a.SkipRateLimit
 
 			instructions, err := s.Compiler.CompileExecutable(flowCfg, newFlowConfigs)
 			if err != nil {
@@ -456,6 +643,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					apiRLId = rlid
 				}
 			}
+
 			// Parse async mode from the api update config
 			asyncMode := engine.AsyncDisabled
 			switch a.Async {
@@ -465,23 +653,40 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				asyncMode = engine.AsyncForced
 			}
 
-			// Clear stale constant slots for this API before registering new ones.
+			// Clear stale constant slots and upstream URLs for this API before registering new ones.
 			for ep := uint64(0); ep < 256; ep++ {
 				delete(newRouteConstants, uint64(id)<<8|ep)
+				delete(newRouteUpstreamUrls, uint64(id)<<8|ep)
 			}
 
 			if len(a.EndpointConfigs) == 0 {
 				// No sub-route config — register root for all methods.
 				epID := uint8(len(def.Endpoints)) // = 0 before BakeSubRouter
+				routeKey := uint64(id)<<8 | uint64(epID)
 				mergedConsts := a.Constants
 				if len(mergedConsts) > 0 {
 					if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
-						newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+						newRouteConstants[routeKey] = constSlots
+					}
+				}
+				// Bake gateway-native upstream URL (API-level config, no endpoint override).
+				if a.UpstreamUrl != nil {
+					if slotIdx, serr := s.Compiler.AllocUpstreamUrlSlot(); serr == nil {
+						newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(a.UpstreamUrl, slotIdx, s.RegMgr)
+					} else {
+						log.Printf("[Management] Warning: cannot allocate upstream_url slot for API %s: %v", a.Name, serr)
 					}
 				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 			} else {
-				for _, ec := range a.EndpointConfigs {
+				for ecIdx, ec := range a.EndpointConfigs {
+					// Resolve and register multi-entry RL policies at endpoint level.
+					if len(ec.RateLimitPolicies) > 0 {
+						ec.RateLimitPolicies = resolveAndRegisterRLPolicies(
+							fmt.Sprintf("%s_ep%d", a.Name, ecIdx), ec.RateLimitPolicies)
+						a.EndpointConfigs[ecIdx].RateLimitPolicies = ec.RateLimitPolicies
+					}
+
 					epRLId := uint16(0)
 					if ec.RateLimitName != "" && s.RegMgr != nil {
 						if rlid, ok := s.RegMgr.GetRateLimitConfigId(ec.RateLimitName); ok {
@@ -500,18 +705,27 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 					// Capture endpointID before BakeSubRouter appends the new endpoint.
 					epID := uint8(len(def.Endpoints))
+					routeKey := uint64(id)<<8 | uint64(epID)
 
 					// Resolve endpoint-level flow override.
 					epInstructions := instructions
 					overrideCompiled := false
 					if ec.FlowName != "" && ec.FlowName != a.FlowName {
 						if epFlowCfg, ok := newFlowConfigs[ec.FlowName]; ok {
+							// Endpoint-level RL policies take precedence for the override flow.
+							if len(ec.RateLimitPolicies) > 0 || ec.SkipRateLimit {
+								s.Compiler.currentAPIPolicies = ec.RateLimitPolicies
+								s.Compiler.currentAPISkipRL = ec.SkipRateLimit
+							}
 							if compiled, cerr := s.Compiler.CompileExecutable(epFlowCfg, newFlowConfigs); cerr == nil {
 								epInstructions = compiled
 								overrideCompiled = true
 							} else {
 								log.Printf("[Management] Error compiling endpoint flow %s for API %s: %v", ec.FlowName, a.Name, cerr)
 							}
+							// Restore API-level policies for subsequent endpoints.
+							s.Compiler.currentAPIPolicies = a.RateLimitPolicies
+							s.Compiler.currentAPISkipRL = a.SkipRateLimit
 						} else {
 							log.Printf("[Management] Warning: endpoint flow %s not found for API %s, using API default", ec.FlowName, a.Name)
 						}
@@ -526,7 +740,21 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					mergedConsts := mergeConstants(a.Constants, ec.Constants)
 					if len(mergedConsts) > 0 {
 						if constSlots, cerr := s.Compiler.AllocConstantSlots(mergedConsts); cerr == nil && len(constSlots) > 0 {
-							newRouteConstants[uint64(id)<<8|uint64(epID)] = constSlots
+							newRouteConstants[routeKey] = constSlots
+						}
+					}
+
+					// Bake gateway-native upstream URL.
+					// Endpoint-level config takes priority over API-level config.
+					effectiveUpstream := a.UpstreamUrl
+					if ec.UpstreamUrl != nil {
+						effectiveUpstream = ec.UpstreamUrl
+					}
+					if effectiveUpstream != nil {
+						if slotIdx, serr := s.Compiler.AllocUpstreamUrlSlot(); serr == nil {
+							newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(effectiveUpstream, slotIdx, s.RegMgr)
+						} else {
+							log.Printf("[Management] Warning: cannot allocate upstream_url slot for API %s endpoint %s: %v", a.Name, ec.Path, serr)
 						}
 					}
 
@@ -545,14 +773,16 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			log.Printf("[Management] Linked API %s -> Flow %s", cleanPath, a.FlowName)
 
 			apiCfg := ApiConfig{
-				ApiID:           a.Name,
-				Path:            a.Path,
-				Method:          a.Method,
-				FlowName:        a.FlowName,
-				RateLimitName:   a.RateLimitName,
-				EndpointConfigs: a.EndpointConfigs,
-				Async:           a.Async,
-				AliasPaths:      a.AliasPaths,
+				ApiID:             a.Name,
+				Path:              a.Path,
+				Method:            a.Method,
+				FlowName:          a.FlowName,
+				RateLimitName:     a.RateLimitName,
+				EndpointConfigs:   a.EndpointConfigs,
+				Async:             a.Async,
+				AliasPaths:        a.AliasPaths,
+				RateLimitPolicies: a.RateLimitPolicies,
+				SkipRateLimit:     a.SkipRateLimit,
 			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
@@ -589,10 +819,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	// 6. Atomic Swap — live traffic sees new state immediately after this line.
 	s.FlowManager.SetState(&engine.EngineState{
-		Router:         finalRouter,
-		Definitions:    newDefs,
-		FlowLibrary:    newLibrary,
-		RouteConstants: newRouteConstants,
+		Router:            finalRouter,
+		Definitions:       newDefs,
+		FlowLibrary:       newLibrary,
+		RouteConstants:    newRouteConstants,
+		RouteUpstreamUrls: newRouteUpstreamUrls,
 	})
 
 	s.mu.Lock()
@@ -625,6 +856,18 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				if s.dataStore.IsConfigured(config.DomainAPIDefinitions) {
 					err = s.dataStore.DeleteGlobal(ctx, config.DomainAPIDefinitions, op.name)
 				}
+			case "rlv2_upsert":
+				if s.dataStore.IsConfigured(config.DomainRateLimitConfigsV2) {
+					err = s.dataStore.PutGlobal(ctx, config.DomainRateLimitConfigsV2, op.name, op.payload)
+				}
+			case "tier_upsert":
+				if s.dataStore.IsConfigured(config.DomainTiers) {
+					err = s.dataStore.PutGlobal(ctx, config.DomainTiers, op.name, op.payload)
+				}
+			case "upstreamsvc_upsert":
+				if s.dataStore.IsConfigured(config.DomainUpstreamServices) {
+					err = s.dataStore.PutGlobal(ctx, config.DomainUpstreamServices, op.name, op.payload)
+				}
 			}
 			if err != nil {
 				log.Printf("[Management] Failed to persist %s %q: %v", op.kind, op.name, err)
@@ -638,6 +881,98 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 // StepsMetaHandler handles GET /meta/steps.
 // Returns the full step catalog — the single source of truth for every action
+// buildUpstreamUrlInfo converts an UpstreamUrlConfig into a baked UpstreamUrlInfo.
+// slotIdx is the resolved ByteSlot index for the "upstream_url" slot.
+// regMgr is optional; when nil, registry source is left with KeyID=0 (resolved at runtime).
+func buildUpstreamUrlInfo(cfg *UpstreamUrlConfig, slotIdx int, regMgr *registrypkg.RegistryManager) *engine.UpstreamUrlInfo {
+	if cfg == nil {
+		return nil
+	}
+	info := &engine.UpstreamUrlInfo{
+		SlotIdx: slotIdx,
+		Value:   []byte(cfg.Value),
+	}
+	switch cfg.Source {
+	case "static":
+		info.Source = engine.UpstreamUrlSourceStatic
+	case "registry":
+		info.Source = engine.UpstreamUrlSourceRegistry
+		if regMgr != nil {
+			info.RegistryKeyID = regMgr.EnsureURLKeyID(cfg.Value)
+		}
+	case "cache":
+		info.Source = engine.UpstreamUrlSourceCache
+	case "header":
+		info.Source = engine.UpstreamUrlSourceHeader
+	case "queryparam":
+		info.Source = engine.UpstreamUrlSourceQueryParam
+	default:
+		// Unknown source — treat as static to avoid silent no-ops.
+		info.Source = engine.UpstreamUrlSourceStatic
+	}
+	return info
+}
+
+// resolveAndRegisterRLPolicies processes an APIRateLimitEntry slice at bake time:
+//   - named:   validates the referenced RateLimitConfigV2 exists (logs warning if absent).
+//   - fixed:   builds and registers an anonymous RateLimitConfigV2 with a deterministic
+//              name "__fixed__{scopeID}_{rowIdx}" so the compiler can find it via name.
+//              Sets entry.Config to the anonymous name on success.
+//   - dynamic: validates each mapping target config exists (logs warnings for missing ones).
+//
+// Returns the (possibly mutated) slice. The input is not modified in place.
+func resolveAndRegisterRLPolicies(scopeID string, policies []APIRateLimitEntry) []APIRateLimitEntry {
+	if len(policies) == 0 {
+		return policies
+	}
+	result := make([]APIRateLimitEntry, len(policies))
+	copy(result, policies)
+	for i := range result {
+		entry := &result[i]
+		switch entry.Kind {
+		case RLEntryNamed:
+			if entry.Config == "" {
+				log.Printf("[Management] RL policy %s row %d (named): empty config name — skipped", scopeID, i)
+				continue
+			}
+			if registrypkg.GetRateLimitConfigV2(entry.Config) == nil {
+				log.Printf("[Management] RL policy %s row %d (named): config %q not found — will produce warning at compile time", scopeID, i, entry.Config)
+			}
+		case RLEntryFixed:
+			if len(entry.Windows) == 0 {
+				log.Printf("[Management] RL policy %s row %d (fixed): no windows defined — skipped", scopeID, i)
+				continue
+			}
+			anonName := fmt.Sprintf("__fixed__%s_%d", scopeID, i)
+			windows := make([]registrypkg.RateLimitWindow, 0, len(entry.Windows))
+			for _, w := range entry.Windows {
+				windows = append(windows, registrypkg.RateLimitWindow{
+					PeriodSecs: w.EpochSec,
+					Limit:      w.Limit,
+				})
+			}
+			registrypkg.UpsertRateLimitConfigV2(registrypkg.RateLimitConfigV2{
+				Name:        anonName,
+				Enforcement: "approximate",
+				Windows:     windows,
+			})
+			entry.Config = anonName
+			log.Printf("[Management] RL policy %s row %d (fixed): registered anonymous config %q (%d window(s))", scopeID, i, anonName, len(windows))
+		case RLEntryDynamic:
+			if entry.Dynamic == nil || len(entry.Dynamic.Mappings) == 0 {
+				log.Printf("[Management] RL policy %s row %d (dynamic): empty mapping — skipped", scopeID, i)
+				continue
+			}
+			for runtimeVal, cfgName := range entry.Dynamic.Mappings {
+				if registrypkg.GetRateLimitConfigV2(cfgName) == nil {
+					log.Printf("[Management] RL policy %s row %d (dynamic): mapping[%q]=%q config not found", scopeID, i, runtimeVal, cfgName)
+				}
+			}
+		}
+	}
+	return result
+}
+
 // mergeConstants returns a new map with apiConsts as the base, overridden by epConsts.
 // Returns nil when both inputs are empty.
 func mergeConstants(apiConsts, epConsts map[string]string) map[string]string {

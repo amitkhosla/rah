@@ -284,6 +284,13 @@ With upstream call ~100-500ms (2000-10000x slower)
 | Many routes | No degradation | Arena pre-computed, immutable |
 | High concurrency | Linear to #cores | Lock-free reads, sharded writes |
 
+### Pattern Matching Performance
+- **Instruction latency**: 400-500ns per condition (zero allocations)
+- **Compilation**: One-time at deploy, zero runtime cost
+- **Budget impact**: ~8-10% of gateway's <5µs total budget
+- **Scaling**: Linear with number of conditions, constant time per pattern
+- **Details**: See `docs/PERFORMANCE_PATTERN_MATCHING.md`
+
 ---
 
 ## Operational Considerations

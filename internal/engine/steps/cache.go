@@ -13,6 +13,11 @@ import (
 type CacheStore interface {
 	Get(tenantID uint16, key []byte) ([]byte, bool)
 	Put(tenantID uint16, key []byte, value []byte, ttl uint32) (uint64, bool)
+	Invalidate(tenantID uint16, key []byte) error
+	// Advanced operations.
+	Exists(tenantID uint16, key []byte) bool
+	Incr(tenantID uint16, key []byte, delta int64, ttl uint32) (int64, bool)
+	Touch(tenantID uint16, key []byte, ttl uint32) bool
 }
 
 // globalCacheTenantID is the tenant namespace for tenant-agnostic cache entries.
@@ -30,6 +35,9 @@ func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_get",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if pc, stop := StopIfCancelled(ctx); stop {
+				return pc
+			}
 			key := ctx.ByteSlots[keySlot]
 			if len(key) == 0 {
 				return s.PC + 1
@@ -75,6 +83,9 @@ func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction 
 	return engine.Instruction{
 		Name: "cache_get_global",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if pc, stop := StopIfCancelled(ctx); stop {
+				return pc
+			}
 			key := ctx.ByteSlots[keySlot]
 			if len(key) == 0 {
 				return s.PC + 1
@@ -115,6 +126,39 @@ func CachePutGlobal(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 	}
 }
 
+// CacheDelete removes ByteSlots[keySlot] from the cache under ctx.TenantID.
+// Skipped silently if keySlot is empty. Calls Invalidate which removes the
+// entry from the L1 index and the backend, and propagates the deletion to
+// other gateway instances via OnInvalidate.
+func CacheDelete(store CacheStore, keySlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_delete",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) > 0 {
+				store.Invalidate(ctx.TenantID, key)
+			}
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheDeleteGlobal removes ByteSlots[keySlot] from the shared (tenant-agnostic) namespace.
+// Skipped silently if keySlot is empty. Affects all tenants that read from
+// the shared cache using the same key.
+func CacheDeleteGlobal(store CacheStore, keySlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_delete_global",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) > 0 {
+				store.Invalidate(globalCacheTenantID, key)
+			}
+			return s.PC + 1
+		},
+	}
+}
+
 // CacheGetBatched queues a cache GET into the op buffer.
 // The result is written to ByteSlots[destSlot] only after a batch_flush instruction executes.
 // Use this when multiple cache lookups can be batched before their results are needed.
@@ -148,6 +192,64 @@ func CacheGetGlobalBatched(keySlot, destSlot int) engine.Instruction {
 			ctx.TenantID = globalCacheTenantID
 			rctx.EmitGet(ctx, key, rctx.TargetCache, destSlot)
 			ctx.TenantID = saved
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheExists writes true to BoolSlots[resultSlot] if the key exists and is not expired.
+// Does NOT check the backend — L1 only for speed.
+func CacheExists(store CacheStore, keySlot, resultSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_exists",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if pc, stop := StopIfCancelled(ctx); stop {
+				return pc
+			}
+			key := ctx.ByteSlots[keySlot]
+			if len(key) == 0 {
+				ctx.BoolSlots[resultSlot] = false
+				return s.PC + 1
+			}
+			ctx.BoolSlots[resultSlot] = store.Exists(ctx.TenantID, key)
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheIncr atomically increments the int64 counter at keySlot by staticDelta,
+// storing the updated value in IntSlots[resultSlot].
+// If the key is absent or expired, it is initialised to staticDelta with the given TTL.
+func CacheIncr(store CacheStore, keySlot, resultSlot int, staticDelta int64, ttl uint32) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_incr",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if pc, stop := StopIfCancelled(ctx); stop {
+				return pc
+			}
+			key := ctx.ByteSlots[keySlot]
+			if len(key) == 0 {
+				return s.PC + 1
+			}
+			newVal, ok := store.Incr(ctx.TenantID, key, staticDelta, ttl)
+			if ok {
+				ctx.IntSlots[resultSlot] = newVal
+			}
+			return s.PC + 1
+		},
+	}
+}
+
+// CacheTouch refreshes the TTL of an existing cache entry without reading or writing its value.
+// No-op if the key does not exist or is already expired.
+func CacheTouch(store CacheStore, keySlot int, ttl uint32) engine.Instruction {
+	return engine.Instruction{
+		Name: "cache_touch",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) > 0 {
+				store.Touch(ctx.TenantID, key, ttl)
+			}
 			return s.PC + 1
 		},
 	}

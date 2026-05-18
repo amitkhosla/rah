@@ -67,12 +67,70 @@ ingest:
       file_path: ./gateway.log
       file_buf_kb: 64
       flush_ms: 1000        # flush to disk every second
+
+    # ── Cross-instance sync sink ──────────────────────────────────────────────
+    # Publishes registry mutations (db_put / db_delete) and cache invalidations
+    # to a shared Redis Stream so all other RAH instances converge immediately.
+    # Uses the same redis_primary store already defined above — no extra Redis
+    # connection needed.  Each event is a tiny NDJSON line; the stream is
+    # auto-trimmed to the last 100 k entries (~hours of headroom at high write rates).
+    # Remove this sink (and the kinds below) to run in single-instance mode with
+    # zero overhead — the NumSinksForKind guard short-circuits before any allocation.
+    - name: sync_stream
+      kind: redis_stream
+      dsn: "redis://localhost:6379"   # match redis_primary connection above
+      stream_name: "rah:sync"         # all instances must use the same stream name
+      max_len: 100000                 # XADD MAXLEN ~: keeps stream bounded
+      format: ndjson
+      flush_ms: 50                    # low latency — flush within 50 ms at most
+      max_batch_items: 64             # coalesce burst writes into one XADD
+      min_workers: 1
+      max_workers: 2
+
   kinds:
     - kind: log
       ring_size: 4096
       allow_drop: true      # never block a request thread for a log write
       priority: 1
       sinks: [log_file]
+
+    # Registry mutations — tenant upsert/delete/alias, rate limit configs.
+    # Ring size is small: registry writes are infrequent management-plane ops.
+    # allow_drop: false so a burst of tenant onboarding never silently loses events.
+    - kind: db_put
+      ring_size: 4096
+      allow_drop: false
+      priority: 5
+      sinks: [sync_stream]
+
+    - kind: db_delete
+      ring_size: 4096
+      allow_drop: false
+      priority: 5
+      sinks: [sync_stream]
+
+    # Cache invalidations — emitted after every successful cache_put or cache_delete.
+    # Higher ring: cache writes can burst heavily under load.
+    # allow_drop: true — a dropped invalidation means a stale L1 hit on another instance
+    # for at most one TTL cycle, which is acceptable vs blocking a request goroutine.
+    - kind: cache_invalidate
+      ring_size: 65536
+      allow_drop: true      # prefer drop over blocking the request path
+      priority: 10
+      sinks: [sync_stream]
+
+  # ── Consumer (read side) ────────────────────────────────────────────────────
+  # Each instance also reads the same stream to apply remote changes locally.
+  # lastID starts at "$" on startup — only events produced after boot are consumed;
+  # state at startup is always restored from the persistent datastore (Postgres).
+  # The instance fingerprint guard in main.go skips events this instance emitted,
+  # so there is no write→emit→consume→write cascade loop.
+  sources:
+    - kind: redis_stream
+      dsn: "redis://localhost:6379"   # same Redis as the sink above
+      stream_name: "rah:sync"         # must match sink stream_name
+      timeout_ms: 5000                # XREAD BLOCK timeout; loops back on nil
+      events: [db_put, db_delete, cache_invalidate]  # filter: ignore unrelated kinds
 
 observability:
   # Optional: enable full JSONL prompt/response detail log via environment variable

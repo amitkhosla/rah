@@ -416,7 +416,13 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
-				reqCtx := context.Background()
+				// Detect client disconnect before each attempt — avoids hitting
+				// the upstream on behalf of an already-gone caller.
+				if pc, stop := StopIfCancelled(ctx); stop {
+					return pc
+				}
+
+				reqCtx := ctx.Request.Context()
 				cancel := func() {}
 				if timeout > 0 {
 					reqCtx, cancel = context.WithTimeout(reqCtx, time.Duration(timeout)*time.Millisecond)
@@ -501,6 +507,12 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
+					// Client disconnected during upstream call — mark and stop cleanly.
+					if errors.Is(err, context.Canceled) {
+						atomic.StoreInt32(&ctx.Cancelled, 1)
+						cancel()
+						return engine.StopCancelled
+					}
 					event.BytesSent = reqBytesSent
 					event.Err = err.Error()
 					if ctx.Obs != nil {

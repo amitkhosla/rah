@@ -8,10 +8,14 @@ import APIsSection   from './components/APIsSection'
 import AISection     from './components/AISection'
 import Deploy        from './components/Deploy'
 import Gateway       from './components/Gateway'
-import Tenants       from './components/Tenants'
-import Settings      from './components/Settings'
-import Dashboard     from './components/Dashboard'
-import Observability from './components/Observability'
+import Tenants                from './components/Tenants'
+import Settings               from './components/Settings'
+import Dashboard              from './components/Dashboard'
+import Observability          from './components/Observability'
+import RateLimitConfigsScreen from './components/RateLimitConfigsScreen'
+import TenantTiersScreen      from './components/TenantTiersScreen'
+import UpstreamServicesScreen from './components/UpstreamServicesScreen'
+import CachePanel             from './components/CachePanel'
 
 // ── Action name normalization (internal engine → display names) ──────
 
@@ -97,16 +101,19 @@ type NavItem =
   | { kind: 'section'; label: string }
 
 const NAV_ICONS: Record<string, string> = {
-  dashboard:     '⊞',
-  flows:         '⛶',
-  apis:          '⬡',
-  flowmap:       '🗺',
-  ai:            '⬡',
-  deploy:        '↑',
-  gateway:       '◉',
-  observability: '⊛',
-  tenants:       '☰',
-  settings:      '⚙',
+  dashboard:          '⊞',
+  flows:              '⛶',
+  apis:               '⬡',
+  flowmap:            '🗺',
+  ai:                 '⬡',
+  deploy:             '↑',
+  gateway:            '◉',
+  observability:      '⊛',
+  tenants:            '☰',
+  'rate-limits':      '⧖',
+  tiers:              '≡',
+  'upstream-services':'⇥',
+  settings:           '⚙',
 }
 
 const NAV: NavItem[] = [
@@ -122,7 +129,11 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'gateway',       label: 'Live' },
   { kind: 'item',    id: 'observability', label: 'Observability' },
   { kind: 'section', label: 'SECURITY' },
-  { kind: 'item',    id: 'tenants',   label: 'Tenants' },
+  { kind: 'item',    id: 'tenants',            label: 'Tenants' },
+  { kind: 'item',    id: 'rate-limits',         label: 'Rate Limits' },
+  { kind: 'item',    id: 'tiers',               label: 'Tiers' },
+  { kind: 'item',    id: 'upstream-services',   label: 'Upstreams' },
+  { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'section', label: '' },
   { kind: 'item',    id: 'settings',  label: 'Settings' },
 ]
@@ -561,8 +572,12 @@ export default function App() {
             }}
           />
         )}
-        {tab === 'observability' && <Observability />}
-        {tab === 'tenants'  && <Tenants />}
+        {tab === 'observability'      && <Observability />}
+        {tab === 'tenants'           && <Tenants />}
+        {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
+        {tab === 'tiers'             && <TenantTiersScreen />}
+        {tab === 'upstream-services' && <UpstreamServicesScreen />}
+        {tab === 'cache'             && <CachePanel />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
     </div>

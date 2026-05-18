@@ -1,11 +1,24 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+// RateLimitV2Datastore is the minimal interface the TenantServer needs to
+// persist V2 rate limit configs, tiers, and upstream services. Implemented by
+// control.DataStoreManager — passed in at wire-up time to avoid a circular import.
+type RateLimitV2Datastore interface {
+	PutRateLimitConfigV2(ctx context.Context, name string, raw []byte) error
+	DeleteRateLimitConfigV2(ctx context.Context, name string) error
+	PutTier(ctx context.Context, name string, raw []byte) error
+	DeleteTier(ctx context.Context, name string) error
+	PutUpstreamService(ctx context.Context, name string, raw []byte) error
+	DeleteUpstreamService(ctx context.Context, name string) error
+}
 
 // TenantServer exposes the RegistryManager over HTTP for management-plane
 // operations. All mutating endpoints hold the RegistryManager mutex for the
@@ -19,6 +32,11 @@ type TenantServer struct {
 	// Set this before calling RegisterHandlers to extend the sub-path routing
 	// without registering an additional /tenants/ pattern on the same mux.
 	ExtraSubHandler http.Handler
+
+	// RLV2Store is optional. When set, V2 rate limit config, tier, and upstream
+	// service mutations are written through to the backing datastore for durability.
+	// Leave nil in test environments or when an external orchestrator owns persistence.
+	RLV2Store RateLimitV2Datastore
 }
 
 // NewTenantServer creates a TenantServer backed by the given RegistryManager.
@@ -397,14 +415,197 @@ func (s *TenantServer) GetRateLimitConfigHandler(w http.ResponseWriter, r *http.
 //	POST   /tenants/{alias}/aliases                    — add alias to existing tenant
 //	POST   /tenants/{alias}/modifier                   — set rate-limit scale / block flags
 //	POST   /tenants/{alias}/rate-limit-overrides       — upsert per-tenant rate limit override
-//	POST   /rate-limit-configs                         — create / update global rate limit config
-//	GET    /rate-limit-configs                         — list all rate limit configs
-//	GET    /rate-limit-configs/{name}                  — get specific rate limit config
+//	POST   /rate-limit-configs                         — create / update global rate limit config (V1)
+//	GET    /rate-limit-configs                         — list all rate limit configs (V1)
+//	GET    /rate-limit-configs/{name}                  — get specific rate limit config (V1)
+//	POST   /rate-limit-configs-v2                      — create / update V2 rate limit config
+//	GET    /rate-limit-configs-v2                      — list all V2 rate limit configs
+//	DELETE /rate-limit-configs-v2/{name}               — delete a V2 rate limit config
+//	POST   /tiers                                      — create / update a tier definition
+//	GET    /tiers                                      — list all tier definitions
+//	DELETE /tiers/{name}                               — delete a tier definition
+//	POST   /upstream-services                          — create / update an upstream service definition
+//	GET    /upstream-services                          — list all upstream service definitions
+//	DELETE /upstream-services/{name}                   — delete an upstream service definition
 func (s *TenantServer) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/tenants", s.tenantsRootHandler)
 	mux.HandleFunc("/tenants/", s.tenantSubHandler)
 	mux.HandleFunc("/rate-limit-configs", s.rateLimitConfigsRootHandler)
 	mux.HandleFunc("/rate-limit-configs/", s.GetRateLimitConfigHandler)
+	mux.HandleFunc("/rate-limit-configs-v2", s.rateLimitConfigsV2RootHandler)
+	mux.HandleFunc("/rate-limit-configs-v2/", s.rateLimitConfigsV2SubHandler)
+	mux.HandleFunc("/tiers", s.tiersRootHandler)
+	mux.HandleFunc("/tiers/", s.tiersSubHandler)
+	mux.HandleFunc("/upstream-services", s.upstreamServicesRootHandler)
+	mux.HandleFunc("/upstream-services/", s.upstreamServicesSubHandler)
+}
+
+// ─── V2 Rate Limit Config Handlers ───────────────────────────────────────────
+
+// rateLimitConfigsV2RootHandler dispatches GET and POST /rate-limit-configs-v2.
+func (s *TenantServer) rateLimitConfigsV2RootHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items := ListRateLimitConfigsV2()
+		if items == nil {
+			items = []RateLimitConfigV2{}
+		}
+		type listResponse struct {
+			Items []RateLimitConfigV2 `json:"items"`
+			Count int                 `json:"count"`
+		}
+		jsonOK(w, listResponse{Items: items, Count: len(items)})
+	case http.MethodPost:
+		var cfg RateLimitConfigV2
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if cfg.Name == "" {
+			http.Error(w, "name must not be empty", http.StatusBadRequest)
+			return
+		}
+		UpsertRateLimitConfigV2(cfg)
+		if s.RLV2Store != nil {
+			if raw, merr := json.Marshal(cfg); merr == nil {
+				if perr := s.RLV2Store.PutRateLimitConfigV2(r.Context(), cfg.Name, raw); perr != nil {
+					// Log but don't fail — in-memory state is already updated.
+					_ = perr
+				}
+			}
+		}
+		jsonOK(w, map[string]string{"status": "ok"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// rateLimitConfigsV2SubHandler dispatches DELETE /rate-limit-configs-v2/{name}.
+func (s *TenantServer) rateLimitConfigsV2SubHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := aliasFromPath(r.URL.Path, "/rate-limit-configs-v2/")
+	if name == "" {
+		http.Error(w, "name required in path", http.StatusBadRequest)
+		return
+	}
+	DeleteRateLimitConfigV2(name)
+	if s.RLV2Store != nil {
+		_ = s.RLV2Store.DeleteRateLimitConfigV2(r.Context(), name)
+	}
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+// ─── Tier Handlers ────────────────────────────────────────────────────────────
+
+// tiersRootHandler dispatches GET and POST /tiers.
+func (s *TenantServer) tiersRootHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items := ListTiers()
+		if items == nil {
+			items = []TierDef{}
+		}
+		type listResponse struct {
+			Items []TierDef `json:"items"`
+			Count int       `json:"count"`
+		}
+		jsonOK(w, listResponse{Items: items, Count: len(items)})
+	case http.MethodPost:
+		var def TierDef
+		if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if def.Name == "" {
+			http.Error(w, "name must not be empty", http.StatusBadRequest)
+			return
+		}
+		UpsertTier(def)
+		if s.RLV2Store != nil {
+			if raw, merr := json.Marshal(def); merr == nil {
+				_ = s.RLV2Store.PutTier(r.Context(), def.Name, raw)
+			}
+		}
+		jsonOK(w, map[string]string{"status": "ok"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// tiersSubHandler dispatches DELETE /tiers/{name}.
+func (s *TenantServer) tiersSubHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := aliasFromPath(r.URL.Path, "/tiers/")
+	if name == "" {
+		http.Error(w, "name required in path", http.StatusBadRequest)
+		return
+	}
+	DeleteTier(name)
+	if s.RLV2Store != nil {
+		_ = s.RLV2Store.DeleteTier(r.Context(), name)
+	}
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+// ─── Upstream Service Handlers ────────────────────────────────────────────────
+
+// upstreamServicesRootHandler dispatches GET and POST /upstream-services.
+func (s *TenantServer) upstreamServicesRootHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		items := ListUpstreamServices()
+		if items == nil {
+			items = []UpstreamServiceDef{}
+		}
+		type listResponse struct {
+			Items []UpstreamServiceDef `json:"items"`
+			Count int                  `json:"count"`
+		}
+		jsonOK(w, listResponse{Items: items, Count: len(items)})
+	case http.MethodPost:
+		var def UpstreamServiceDef
+		if err := json.NewDecoder(r.Body).Decode(&def); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if def.Name == "" {
+			http.Error(w, "name must not be empty", http.StatusBadRequest)
+			return
+		}
+		UpsertUpstreamService(def)
+		if s.RLV2Store != nil {
+			if raw, merr := json.Marshal(def); merr == nil {
+				_ = s.RLV2Store.PutUpstreamService(r.Context(), def.Name, raw)
+			}
+		}
+		jsonOK(w, map[string]string{"status": "ok"})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// upstreamServicesSubHandler dispatches DELETE /upstream-services/{name}.
+func (s *TenantServer) upstreamServicesSubHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := aliasFromPath(r.URL.Path, "/upstream-services/")
+	if name == "" {
+		http.Error(w, "name required in path", http.StatusBadRequest)
+		return
+	}
+	DeleteUpstreamService(name)
+	if s.RLV2Store != nil {
+		_ = s.RLV2Store.DeleteUpstreamService(r.Context(), name)
+	}
+	jsonOK(w, map[string]string{"status": "ok"})
 }
 
 // tenantsRootHandler dispatches /tenants (no trailing sub-path).

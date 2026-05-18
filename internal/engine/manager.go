@@ -9,10 +9,12 @@ import (
 	"rah/internal/config"
 	"rah/internal/quota"
 	"rah/internal/rctx"
+	"rah/internal/registry"
 	"rah/internal/router"
 	"runtime"
 	"sync"
 	"sync/atomic" // needed for atomic.Int64 in OverflowMetrics
+	"unsafe"
 )
 
 type ExecutionStrategy int
@@ -29,11 +31,32 @@ type ConstantSlot struct {
 	Value   []byte // pre-allocated at bake time
 }
 
+// UpstreamUrlSource enumerates how the upstream URL is resolved for a route.
+type UpstreamUrlSource uint8
+
+const (
+	UpstreamUrlSourceStatic     UpstreamUrlSource = 0 // literal URL, written to slot directly
+	UpstreamUrlSourceRegistry   UpstreamUrlSource = 1 // registry URL key — resolved per-tenant
+	UpstreamUrlSourceCache      UpstreamUrlSource = 2 // cache key — looked up at request time
+	UpstreamUrlSourceHeader     UpstreamUrlSource = 3 // HTTP request header name
+	UpstreamUrlSourceQueryParam UpstreamUrlSource = 4 // query parameter name
+)
+
+// UpstreamUrlInfo holds the baked upstream URL config for a single route.
+// Stored in EngineState.RouteUpstreamUrls keyed by apiID<<8|endpointID.
+type UpstreamUrlInfo struct {
+	Source    UpstreamUrlSource
+	SlotIdx   int    // destination ByteSlot index (resolved at bake time)
+	Value     []byte // pre-allocated: literal URL (static) or key/header/param name (others)
+	RegistryKeyID uint16 // pre-resolved registry KeyID (only for SourceRegistry)
+}
+
 type EngineState struct {
-	Router         *router.RahRouter
-	Definitions    []*ApiDefinition
-	FlowLibrary    map[string][]Instruction
-	RouteConstants map[uint64][]ConstantSlot // key: apiID<<8|endpointID; nil = no constants
+	Router              *router.RahRouter
+	Definitions         []*ApiDefinition
+	FlowLibrary         map[string][]Instruction
+	RouteConstants      map[uint64][]ConstantSlot  // key: apiID<<8|endpointID; nil = no constants
+	RouteUpstreamUrls   map[uint64]*UpstreamUrlInfo // key: apiID<<8|endpointID; nil = no upstream URL override
 }
 
 // OverflowMetrics counts how often requests exceeded the inline arena.
@@ -101,9 +124,10 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 
 	// Initialize with an empty but valid state
 	initialState := &EngineState{
-		Router:      router.New(),
-		Definitions: make([]*ApiDefinition, maxAPIs),
-		FlowLibrary: make(map[string][]Instruction),
+		Router:            router.New(),
+		Definitions:       make([]*ApiDefinition, maxAPIs),
+		FlowLibrary:       make(map[string][]Instruction),
+		RouteUpstreamUrls: make(map[uint64]*UpstreamUrlInfo),
 	}
 	fm.State.Store(initialState)
 
@@ -151,12 +175,21 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 
 	// 2a. Inject route constants (pre-baked at deploy time, zero alloc at request time).
 	// Direct array writes (~2 ns each) — no map lookup, no string key, no allocation.
+	routeKey := uint64(ctx.ApiId)<<8 | uint64(ctx.EndpointId)
 	if state.RouteConstants != nil {
-		key := uint64(ctx.ApiId)<<8 | uint64(ctx.EndpointId)
-		if slots := state.RouteConstants[key]; len(slots) > 0 {
+		if slots := state.RouteConstants[routeKey]; len(slots) > 0 {
 			for i := range slots {
 				ctx.ByteSlots[slots[i].SlotIdx] = slots[i].Value
 			}
+		}
+	}
+
+	// 2b. Inject gateway-native upstream URL (if configured for this route).
+	// This runs before the flow so the upstream_url slot is populated regardless
+	// of whether the flow contains a url_var step.
+	if state.RouteUpstreamUrls != nil {
+		if info := state.RouteUpstreamUrls[routeKey]; info != nil {
+			fm.injectUpstreamUrl(ctx, req, info)
 		}
 	}
 
@@ -173,6 +206,90 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	if (fm.CacheExec != nil || fm.RegistryExec != nil) && ctx.OpCount > 0 {
 		fm.flushOps(ctx)
 	}
+}
+
+// injectUpstreamUrl writes the upstream URL for the current route into the
+// destination ByteSlot before the flow executes.
+//
+// Resolution order matches UpstreamUrlSource:
+//   static      — write the pre-baked literal URL directly (zero alloc, ~2 ns).
+//   registry    — look up the per-tenant URL by pre-resolved KeyID (~2–5 ns).
+//   cache       — perform a synchronous Get using info.Value as the key (~500 ns).
+//   header      — read the named HTTP header (zero-copy via unsafe.Slice).
+//   queryparam  — scan raw query string for the named parameter.
+func (fm *FlowManager) injectUpstreamUrl(ctx *rctx.Context, req *http.Request, info *UpstreamUrlInfo) {
+	dest := info.SlotIdx
+	switch info.Source {
+	case UpstreamUrlSourceStatic:
+		// Pre-allocated at bake time; no per-request allocation.
+		ctx.ByteSlots[dest] = info.Value
+
+	case UpstreamUrlSourceRegistry:
+		if val, ok := registry.GetURLByKeyID(ctx.TenantID, info.RegistryKeyID); ok {
+			ctx.ByteSlots[dest] = val
+		}
+
+	case UpstreamUrlSourceCache:
+		if fm.SlabMgr != nil && len(info.Value) > 0 {
+			if val, ok := fm.SlabMgr.Get(ctx.TenantID, info.Value); ok {
+				ctx.ByteSlots[dest] = val
+			}
+		}
+
+	case UpstreamUrlSourceHeader:
+		if len(info.Value) > 0 {
+			val := req.Header.Get(*(*string)(unsafe.Pointer(&info.Value)))
+			if len(val) > 0 {
+				ctx.ByteSlots[dest] = unsafe.Slice(unsafe.StringData(val), len(val))
+			}
+		}
+
+	case UpstreamUrlSourceQueryParam:
+		if len(info.Value) > 0 {
+			// Scan raw query for the named parameter.
+			query := ctx.RawQuery
+			key := info.Value
+			for len(query) > 0 {
+				var seg []byte
+				if i := bytesIndexByte(query, '&'); i >= 0 {
+					seg, query = query[:i], query[i+1:]
+				} else {
+					seg, query = query, nil
+				}
+				if len(seg) > len(key)+1 && seg[len(key)] == '=' && bytesEqual(seg[:len(key)], key) {
+					raw := seg[len(key)+1:]
+					s := ctx.Alloc(len(raw))
+					copy(s, raw)
+					ctx.ByteSlots[dest] = s
+					break
+				}
+			}
+		}
+	}
+}
+
+// bytesIndexByte returns the index of c in b, or -1 if not found.
+// Avoids importing bytes package just for this hot-path helper.
+func bytesIndexByte(b []byte, c byte) int {
+	for i, v := range b {
+		if v == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// bytesEqual reports whether a and b are equal.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ReturnContext records overflow metrics, releases pool-borrowed overflow

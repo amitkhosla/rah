@@ -963,6 +963,44 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		path := step.Input["path"]
 		c.GlobalTable = append(c.GlobalTable, steps.RemoveResponseCookie(cookieName, path))
 
+	case "json_set":
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("json_set: source: %w", err)
+		}
+		dstSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("json_set: as: %w", err)
+		}
+		path := step.Input["key"]
+		if path == "" {
+			path = step.Key
+		}
+		valueSlot := -1
+		if step.Input["value_var"] != "" {
+			valueSlot, err = c.getSlot(step.Input["value_var"])
+			if err != nil {
+				return fmt.Errorf("json_set: value_var: %w", err)
+			}
+		}
+		staticVal := []byte(step.Value)
+		c.GlobalTable = append(c.GlobalTable, steps.JsonSetStep(srcSlot, dstSlot, path, staticVal, valueSlot))
+
+	case "cookie_flatten":
+		dstSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("cookie_flatten: as: %w", err)
+		}
+		var bindings []steps.CookieSlotBinding
+		for cookieName, slotName := range step.Input {
+			s, err := c.getSlot(slotName)
+			if err != nil {
+				return fmt.Errorf("cookie_flatten: slot %q: %w", slotName, err)
+			}
+			bindings = append(bindings, steps.CookieSlotBinding{Name: []byte(cookieName), Slot: s})
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CookieFlattenStep(bindings, dstSlot))
+
 	case "ip_restriction":
 		// Enforces allow/deny CIDR policy for the resolved client IP.
 		// Optional key_identifier can point to a slot containing a pre-resolved IP
@@ -1134,6 +1172,150 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable[whileGateID] = engine.Instruction{
 			Name:   "WHILE_GATE",
 			Action: steps.WhileGate(condFn, iterSlot, maxIter, whileGateID+1, whileExitID),
+		}
+
+	case "foreach_header":
+		// Iterate over HTTP request headers.
+		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
+		if c.nextSlot+1 >= rctx.BaseIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_header iterator: max %d", rctx.BaseIntSlots)
+		}
+		iterSlot := c.nextSlot
+		c.nextSlot++
+		indexSlot := c.nextSlot // hidden slot; caches packed index between iterations
+		c.nextSlot++
+
+		nameSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("foreach_header: name slot: %w", err)
+		}
+
+		valueVar := step.Input["value_as"]
+		if valueVar == "" {
+			valueVar = step.Input["value_var"]
+		}
+		if valueVar == "" {
+			return fmt.Errorf("foreach_header: missing value_as or value_var")
+		}
+		valueSlot, err := c.getSlot(valueVar)
+		if err != nil {
+			return fmt.Errorf("foreach_header: value slot: %w", err)
+		}
+
+		gateID := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "FOREACH_HEADER_GATE_PLACEHOLDER"})
+
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "FOREACH_HEADER_REPEAT",
+			Action: steps.LoopRepeat(gateID, iterSlot),
+		})
+
+		exitID := int16(len(c.GlobalTable))
+		c.GlobalTable[gateID] = engine.Instruction{
+			Name:   "FOREACH_HEADER_GATE",
+			Action: steps.ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot, gateID+1, exitID),
+		}
+
+	case "foreach_param":
+		// Iterate over URL query parameters.
+		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
+		if c.nextSlot+1 >= rctx.BaseIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_param iterator: max %d", rctx.BaseIntSlots)
+		}
+		iterSlot := c.nextSlot
+		c.nextSlot++
+		indexSlot := c.nextSlot // hidden slot; caches packed index between iterations
+		c.nextSlot++
+
+		nameSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("foreach_param: name slot: %w", err)
+		}
+
+		valueVar := step.Input["value_as"]
+		if valueVar == "" {
+			valueVar = step.Input["value_var"]
+		}
+		if valueVar == "" {
+			return fmt.Errorf("foreach_param: missing value_as or value_var")
+		}
+		valueSlot, err := c.getSlot(valueVar)
+		if err != nil {
+			return fmt.Errorf("foreach_param: value slot: %w", err)
+		}
+
+		gateID := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "FOREACH_PARAM_GATE_PLACEHOLDER"})
+
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "FOREACH_PARAM_REPEAT",
+			Action: steps.LoopRepeat(gateID, iterSlot),
+		})
+
+		exitID := int16(len(c.GlobalTable))
+		c.GlobalTable[gateID] = engine.Instruction{
+			Name:   "FOREACH_PARAM_GATE",
+			Action: steps.ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot, gateID+1, exitID),
+		}
+
+	case "foreach_cookie":
+		// Iterate over HTTP request cookies.
+		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
+		if c.nextSlot+1 >= rctx.BaseIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_cookie iterator: max %d", rctx.BaseIntSlots)
+		}
+		iterSlot := c.nextSlot
+		c.nextSlot++
+		indexSlot := c.nextSlot // hidden slot; caches packed index between iterations
+		c.nextSlot++
+
+		nameSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("foreach_cookie: name slot: %w", err)
+		}
+
+		valueVar := step.Input["value_as"]
+		if valueVar == "" {
+			valueVar = step.Input["value_var"]
+		}
+		if valueVar == "" {
+			return fmt.Errorf("foreach_cookie: missing value_as or value_var")
+		}
+		valueSlot, err := c.getSlot(valueVar)
+		if err != nil {
+			return fmt.Errorf("foreach_cookie: value slot: %w", err)
+		}
+
+		gateID := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "FOREACH_COOKIE_GATE_PLACEHOLDER"})
+
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "FOREACH_COOKIE_REPEAT",
+			Action: steps.LoopRepeat(gateID, iterSlot),
+		})
+
+		exitID := int16(len(c.GlobalTable))
+		c.GlobalTable[gateID] = engine.Instruction{
+			Name:   "FOREACH_COOKIE_GATE",
+			Action: steps.ForeachCookie(nameSlot, valueSlot, indexSlot, iterSlot, gateID+1, exitID),
 		}
 
 	case "call":

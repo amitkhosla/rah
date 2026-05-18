@@ -299,20 +299,118 @@ All generations are correctness-safe for any gateway workload. archive/v3 provid
 
 ## Configuration
 
+All parameters are fully configurable — either via the gateway YAML config or directly through the Go API.
+
+### YAML config (`[cache]` section in gateway config)
+
+```yaml
+cache:
+  disabled: false            # true = skip CacheManager entirely; cache_get/put become no-ops
+  mem_budget_mb: 256         # total slab memory in MB (default: 256)
+  tenant_limit_mb: 0         # per-tenant quota in MB; 0 = unlimited
+  size_classes: [256, 1024, 4096, 16384]   # value size buckets in bytes (default)
+  ttl_tiers:    [60, 300, 3600]            # TTL buckets in seconds (default)
+  backend:
+    kind: ""                 # "" or "disk" (default), "memory", "redis", "dragonfly"
+    connection:
+      path: "./icache2"      # disk backend root directory (disk only)
+      address: "localhost:6379"   # Redis/Dragonfly address (redis/dragonfly only)
+      topology: "single"         # single | sentinel | cluster (redis/dragonfly only)
+      pool_size: 32
+```
+
+### Go API
+
 ```go
 import "rah/internal/cache"
 
 cm, err := cache.NewCacheManager(
-    totalMemory,              // e.g. 512 * 1024 * 1024 for 512 MB
-    []uint32{64, 512, 2048}, // size classes (value bytes)
-    []uint32{60, 300, 1800}, // TTL tiers (seconds)
-    expectedEntries,          // e.g. 660_000 for 660K entries
-    tenantLimit,              // per-tenant quota in bytes; 0 = unlimited
-    backend,                  // nil = default disk backend; pass cache.NoopBackend for in-memory only
+    256 * 1024 * 1024,        // totalMemory: total slab budget in bytes
+    []uint32{256, 1024, 4096, 16384}, // sizeClasses: value size buckets in bytes
+    []uint32{60, 300, 3600},          // ttlTiers: TTL buckets in seconds
+    0,                        // expectedEntries: hint for index sizing (0 = auto)
+    0,                        // tenantLimit: per-tenant quota in bytes; 0 = unlimited
+    cache.NoopBackend,        // backend: NoopBackend = pure in-memory; nil = disk default
 )
 ```
 
-**Capacity formula**: `capacity = totalMemory / (sizeClass + headerSize)` per tier cell. Use the benchmark's auto-sizer output (`Auto-sized slab: X MB, Capacity: Y entries`) to dial in the right `totalMemory`.
+### How Memory Is Divided Across Regions
+
+The total slab budget is split **equally** across every `[SizeClass × TTLTier]` cell:
+
+```
+regionMemory = totalMemory / (len(sizeClasses) × len(ttlTiers))
+```
+
+With defaults (`mem_budget_mb: 256`, 4 size classes, 3 TTL tiers → 12 regions):
+
+```
+regionMemory = 256MB / 12 = ~21.3MB per region
+
+Regions and their slot counts:
+
+SizeClass   stride = align8(16+SC)   slots = regionMem / stride   slot capacity
+─────────   ─────────────────────    ─────────────────────────    ─────────────
+      256              272B            ~82,000 slots per TTL tier
+    1,024            1,040B            ~21,400 slots per TTL tier
+    4,096            4,112B             ~5,400 slots per TTL tier
+   16,384           16,400B             ~1,360 slots per TTL tier
+```
+
+Each TTL tier (60s, 300s, 3600s) gets the **same slot count** within a size class — there is no weighting between tiers. If your workload skews heavily toward one TTL range, consider removing unused tiers to concentrate memory.
+
+### Fixed-Size Slots — Why Not Variable-Length?
+
+Every slot in a region occupies exactly `stride = align8(16 + SizeClass)` bytes, regardless of the actual value size. A 512-byte value stored in the 1024-class occupies 1040 bytes (528 bytes of data, 512 bytes of zero padding).
+
+This is a deliberate trade-off. Variable-length slots are not viable for four interconnected reasons:
+
+**1. The SmartPointer encodes a bare byte offset.**
+The 44-bit `Offset` field in SmartPointer is the literal byte offset of the slot in the slab buffer. The lock-free read path is:
+```
+physOff = SmartPointer.Offset   // direct; no table lookup
+value   = buf[physOff+16 : physOff+16+header.ValueLen]
+```
+With variable-length entries, a single integer offset is not enough to locate a slot — you would need an auxiliary offset table. That table would either be GC-visible (heap allocation) or need a lock, destroying the lock-free guarantee.
+
+**2. The circular buffer is pure arithmetic.**
+```
+physSlot = writeSlot % count        // which slot to claim
+physOff  = physSlot × stride        // byte offset — one multiply
+```
+Variable-length makes `count` meaningless (slots have different sizes) and makes "advance to next slot" a linked-list walk instead of an increment.
+
+**3. The Gen counter depends on uniform slot sizes.**
+```
+gen = uint8(writeSlot / count)      // wrap detection
+```
+`count` is the number of identically-sized slots. With mixed sizes, `writeSlot / count` produces no useful generation signal.
+
+**4. Deletion creates permanent fragmentation in variable-length buffers.**
+With fixed stride, a deleted (tombstoned) slot is reclaimed the next time the circular buffer wraps to that position — no hole, no wasted space, no compaction pass needed. With variable-length, deleting a 300-byte entry and writing a 500-byte entry at the same position leaves 200 bytes permanently dead until compaction. Over time the buffer becomes sparse without a stop-and-compact pass, which requires either a global lock or a complex concurrent algorithm.
+
+### Sizing the Slab for Your Workload
+
+The worst-case internal fragmentation is one entry just over a class boundary (e.g., 257 bytes → 1024-class wastes 767 bytes per slot). Choose size classes that match your actual value distribution:
+
+```
+Example: API gateway responses (typical distribution)
+  30% flags/tokens  →  ~64B    → use SizeClass 64 or 128
+  50% JSON bodies   →  ~512B   → use SizeClass 512 or 1024
+  20% large blobs   →  ~2KB    → use SizeClass 2048 or 4096
+
+Config: size_classes: [128, 1024, 4096]   # 3 classes × 3 TTL tiers = 9 regions
+        mem_budget_mb: 192                 # 192/9 = ~21MB per region
+```
+
+**Capacity formula per region:**
+```
+stride   = align8(16 + SizeClass)              e.g. align8(16 + 1024) = 1040 B
+slots    = floor(regionMemory / stride)        e.g. floor(21MB / 1040) ≈ 21,200 slots
+capacity = slots × (number of TTL tiers)       total entries this class can hold
+```
+
+A value that exceeds the largest configured SizeClass is **silently dropped** (Put returns false). Size your largest class to cover the 99th-percentile value in your workload.
 
 ---
 
@@ -335,4 +433,4 @@ internal/cache/                  ← MAIN (InlineIndex + real-byte H2, hashLaneB
 
 ---
 
-*Last updated: 2026-03-21*
+*Last updated: 2026-05-16*

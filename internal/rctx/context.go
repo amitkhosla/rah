@@ -89,6 +89,15 @@ type Context struct {
 	MutationLog   []HeaderMutation
 	MutationCount int
 
+	// Staged body for the next http_call. Set by set_request_body, consumed and
+	// cleared by http_call. Zero cost when unused (nil slice header).
+	StagedRequestBody []byte
+	StagedContentType []byte
+
+	// MutationFences marks the MutationLog start index per http_call slot (max 8
+	// concurrent calls). Enables each call to apply only its own mutations.
+	MutationFences [8]int8
+
 	// Access log extra fields — populated by log_field steps during flow execution.
 	// Read post-response to append named slot values to the access log.
 	ExtraLogFields [8]LogFieldEntry
@@ -158,6 +167,16 @@ type Context struct {
 	// It is distinct from intentional stops (early_return sets Failed=false).
 	// Cleared by on_error:continue wrappers or on_error:jump wrappers.
 	Failed bool
+
+	// Cancelled is set atomically to 1 when the client disconnects mid-flow.
+	// Steps check this at IO boundaries and return StopCancelled (-2).
+	// Use atomic.LoadInt32/StoreInt32 — never read directly.
+	Cancelled int32
+
+	// parallelForkActive is true during the parallel fan-out window.
+	// Debug guard: any attempt to write to shared arena while this is set
+	// indicates a missing BranchContext isolation.
+	parallelForkActive bool
 	// ErrorCode is an application-level error code set by the failing step.
 	// 0 means no error. Typical values mirror HTTP status codes (401, 503) or
 	// custom gateway codes (1001-1999).
@@ -215,7 +234,11 @@ func (ctx *Context) flushResponseHeaders() {
 	h := ctx.Writer.Header()
 	for i := 0; i < ctx.ResHeaderCount; i++ {
 		m := ctx.ResponseHeaders[i]
-		h.Set(string(m.Key), string(m.Value))
+		if m.Op == 1 {
+			h.Del(string(m.Key))
+		} else {
+			h.Set(string(m.Key), string(m.Value))
+		}
 	}
 }
 
@@ -366,6 +389,12 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Trace = nil
 	ctx.ArenaOverflowed = false
 	ctx.Failed = false
+	ctx.Cancelled = 0
+	ctx.parallelForkActive = false
+	ctx.StagedRequestBody = nil
+	ctx.StagedContentType = nil
+	// MutationFences is [8]int8 — zeroed implicitly via the explicit zero below.
+	ctx.MutationFences = [8]int8{}
 	ctx.ErrorCode = 0
 	ctx.ErrorMsg = nil
 	ctx.InternalTxID = [2]uint64{}

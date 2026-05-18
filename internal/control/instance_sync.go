@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"rah/internal/config"
@@ -40,6 +41,7 @@ type InstanceSync struct {
 	dsm            *DataStoreManager
 	ms             *ManagementServer
 	currentVersion uint64
+	instanceCount  atomic.Int32 // cached live instance count; updated every heartbeat
 }
 
 // NewInstanceSync creates an InstanceSync. instanceID should be the instance fingerprint.
@@ -104,6 +106,42 @@ func (s *InstanceSync) writeHeartbeat(ctx context.Context) {
 	if err := s.dsm.PutGlobal(ctx, config.DomainGatewayInstances, s.instanceID, data); err != nil {
 		log.Printf("[InstanceSync] heartbeat write failed: %v", err)
 	}
+	s.refreshInstanceCount(ctx)
+}
+
+func (s *InstanceSync) refreshInstanceCount(ctx context.Context) {
+	if !s.dsm.IsConfigured(config.DomainGatewayInstances) {
+		return
+	}
+	keys, err := s.dsm.ListGlobalKeys(ctx, config.DomainGatewayInstances, s.cfg.EnvironmentID+"/")
+	if err != nil {
+		return
+	}
+	now := time.Now().Unix()
+	ttl := int64(s.cfg.HeartbeatIntervalS * 3) // 3× heartbeat = TTL
+	alive := 0
+	for _, k := range keys {
+		data, ok, err := s.dsm.GetGlobal(ctx, config.DomainGatewayInstances, k)
+		if err != nil || !ok {
+			continue
+		}
+		var rec InstanceRecord
+		if json.Unmarshal(data, &rec) == nil && (now-rec.LastHeartbeat) < ttl {
+			alive++
+		}
+	}
+	if alive > 0 {
+		s.instanceCount.Store(int32(alive))
+	}
+}
+
+// InstanceCount returns the number of alive gateway instances in this environment.
+// Returns 1 as a safe default when no datastore is configured or no records exist.
+func (s *InstanceSync) InstanceCount() int {
+	if n := s.instanceCount.Load(); n > 0 {
+		return int(n)
+	}
+	return 1
 }
 
 func (s *InstanceSync) configPollLoop(ctx context.Context) {

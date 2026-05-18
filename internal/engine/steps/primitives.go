@@ -19,7 +19,11 @@ func ProxyStep(targetUrl string) engine.Instruction {
 
 			for i := 0; i < ctx.MutationCount; i++ {
 				m := ctx.MutationLog[i]
-				req.Header.Set(string(m.Key), string(m.Value))
+				if m.Op == 1 {
+					req.Header.Del(string(m.Key))
+				} else {
+					req.Header.Set(string(m.Key), string(m.Value))
+				}
 			}
 
 			resp, err := client.Do(req)

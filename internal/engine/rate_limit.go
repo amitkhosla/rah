@@ -301,3 +301,61 @@ type ExternalRateLimitProvider interface {
 	// Stop shuts down the background flusher goroutine.
 	Stop()
 }
+
+// ─── Multi-window Rate Limiting — new design (S1) ────────────────────────────
+
+// OnEmptyKey controls what happens when the rate limit key slot is empty at
+// request time (e.g. the slot variable was never bound during this request).
+type OnEmptyKey uint8
+
+const (
+	OnEmptyKeyFail   OnEmptyKey = 0 // default: treat empty key as a failure (deny request)
+	OnEmptyKeySkip   OnEmptyKey = 1 // skip this rate limit check entirely (pass through)
+	OnEmptyKeyTenant OnEmptyKey = 2 // fall back to tenant-based rate limiting
+)
+
+// RateLimitCountByKind identifies how the rate limit counter key is derived
+// for each incoming request. Baked into the instruction at compile time.
+type RateLimitCountByKind uint8
+
+const (
+	CountByTenant    RateLimitCountByKind = 0 // TenantID direct index — zero hash collisions
+	CountByIP        RateLimitCountByKind = 1 // client IP from X-Forwarded-For or RemoteAddr
+	CountBySlot      RateLimitCountByKind = 2 // value in a named ByteSlot
+	CountByStatic    RateLimitCountByKind = 3 // static string baked at compile time
+	CountByComposite RateLimitCountByKind = 4 // concatenation of multiple slot values
+	CountByGlobal    RateLimitCountByKind = 5 // single global counter (all tenants share one bucket)
+)
+
+// RateLimitCountBy is the compiled "count-by" specification baked into a rate
+// limit instruction at compile time. All fields are resolved at bake time;
+// no string lookups or allocations occur at request time.
+type RateLimitCountBy struct {
+	Kind        RateLimitCountByKind
+	SlotIndex   int        // ByteSlots index; used for CountByIP and CountBySlot
+	XFFIndex    int        // X-Forwarded-For entry index (0 = leftmost = true client IP)
+	StaticKey   []byte     // pre-computed key bytes; used for CountByStatic
+	SlotIndexes []int      // multiple slot indices concatenated; used for CountByComposite
+	OnEmpty     OnEmptyKey // behavior when the key slot is empty
+	FailFast    bool       // if true: stop on first failure; if false: count all windows even after failure
+}
+
+// ─── Per-tenant multiplier store ─────────────────────────────────────────────
+
+// tenantMultipliers maps TenantID → multiplier (fixed-point ×100; 100 = 1.0×).
+// 0 means "no multiplier set" — treated as 100 (1.0×) at read time.
+// Written only at bake time (single-goroutine); read lock-free on hot path.
+var tenantMultipliers [65536]uint32
+
+// SetTenantMultiplier records the rate-limit multiplier for a tenant.
+// Must be called only at bake/startup time — not concurrent-safe.
+// multiplierX100: 100 = 1.0×, 200 = 2.0×, 50 = 0.5×.
+func SetTenantMultiplier(tenantID uint16, multiplierX100 uint32) {
+	tenantMultipliers[tenantID] = multiplierX100
+}
+
+// GetTenantMultiplier returns the stored multiplier for a tenant.
+// Returns 0 when no multiplier has been set (callers treat 0 as 100 = 1.0×).
+func GetTenantMultiplier(tenantID uint16) uint32 {
+	return tenantMultipliers[tenantID]
+}

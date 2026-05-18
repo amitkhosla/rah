@@ -1,0 +1,29 @@
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM --platform=linux/amd64 golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+# Cache go mod download as a separate layer — only re-runs when go.mod changes
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build studio binary (includes embedded UI dist via go:embed)
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /out/rah-studio ./cmd/rah-studio/
+
+# ── Stage 2: Studio runtime ────────────────────────────────────────────────────
+FROM --platform=linux/amd64 gcr.io/distroless/static-debian12:nonroot AS runtime
+
+COPY --from=builder /usr/share/zoneinfo              /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /out/rah-studio                  /usr/local/bin/rah-studio
+
+WORKDIR /app
+EXPOSE 8092
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/rah-studio"]
+CMD ["-port", "8092", "-gateway-management-url", "http://gateway:8081"]

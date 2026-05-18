@@ -643,7 +643,17 @@ func main() {
 			processDuration := time.Since(processStarted)
 
 			// D. Finalize: flush buffered response — client receives data here.
+			// If the client disconnected during flow execution, respond with 499
+			// (nginx convention: client closed request) and skip normal finalization.
 			finalizeStarted := time.Now()
+			if atomic.LoadInt32(&ctx.Cancelled) != 0 {
+				ctx.ResponseStatus = 499
+				ctx.Finalize()
+				// Skip AfterResponse hooks — client is gone.
+				finalizeDuration := time.Since(finalizeStarted)
+				_ = finalizeDuration
+				return
+			}
 			ctx.Finalize()
 			finalizeDuration := time.Since(finalizeStarted)
 
@@ -998,6 +1008,9 @@ func main() {
 	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	ts.RegisterHandlers(mux)
+	if cacheMgr != nil {
+		control.RegisterCacheRoutes(mux, cacheMgr)
+	}
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
 	observability.RegisterObsRoutes(mux, obsWriter, obs, registry.GetNameByID)
 	if obsCfg.Export.Prometheus.Enabled {

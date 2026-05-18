@@ -111,6 +111,30 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "delete_service_url", Title: "Delete Service URL", Category: "registry", Capability: "write",
+			Description: "Remove a service URL for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
+			Defaults: map[string]string{"key": "primary"},
+			Fields: []StepField{
+				sf("key", "URL name", "Name of the service URL to delete (e.g. primary, fallback, health)", "primary"),
+			},
+		},
+		{
+			Type: "delete_identifier", Title: "Delete Identifier", Category: "registry", Capability: "write",
+			Description: "Remove an identifier / credential for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
+			Defaults: map[string]string{"key": "api_key"},
+			Fields: []StepField{
+				sf("key", "Identifier name", "Name of the identifier to delete (e.g. api_key, client_id)", "api_key"),
+			},
+		},
+		{
+			Type: "delete_meta", Title: "Delete Metadata", Category: "registry", Capability: "write",
+			Description: "Remove a metadata value for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
+			Defaults: map[string]string{"key": "tier"},
+			Fields: []StepField{
+				sf("key", "Metadata key", "Name of the metadata field to delete (e.g. tier, region, plan)", "tier"),
+			},
+		},
+		{
 			Type: "load_identifier", Title: "Load Identifier", Category: "registry", Capability: "credential",
 			Description: "Load a named identifier / secret for the current tenant (stored as id:<name>) into a slot. Requires registry_lookup to have run first.",
 			Defaults: map[string]string{"key": "api_key", "as": "tenant_api_key"},
@@ -186,7 +210,7 @@ func AllStepDescriptors() []StepDescriptor {
 		// ── Rate Limiting ─────────────────────────────────────────────────────────
 		{
 			Type: "assign_quota_group", Title: "Assign Quota Group", Category: "rate-limit", Capability: "quota",
-			Description: "Map a runtime string value (e.g. tenant tier from metadata) to a quota group ID. The group ID selects a rate limit config in the following check_rate_limit step. Must run before check_rate_limit.",
+			Description: "Map a runtime string value (e.g. tenant tier from metadata) to a quota group ID. The group ID selects a rate limit config in the following Check Rate Limit step. Must run before Check Rate Limit.",
 			Defaults: map[string]string{"key_identifier": "tier_slot"},
 			Fields: []StepField{
 				sf("key_identifier", "Source slot", "Slot holding the tier/plan string (e.g. loaded via load_meta)", "tier_slot"),
@@ -195,10 +219,39 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 		{
 			Type: "check_rate_limit", Title: "Check Rate Limit", Category: "rate-limit", Capability: "throttle",
-			Description: "Enforce the rate limit configured for this API / endpoint. Returns 403 if the tenant is blocked; 429 if the window limit is exceeded. Optionally accepts a quota group → rate-limit config map so different SLA tiers share one flow.",
-			Defaults: map[string]string{},
+			Description: "Enforce a rate limit policy. Supports per-tenant, per-IP, per-slot, composite, static, and global counting strategies. Resolves the named config at bake time. Returns 429 when any window is exceeded.",
+			Defaults: map[string]string{
+				"input.count_by":  "tenant",
+				"input.on_empty":  "fail",
+				"input.fail_fast": "false",
+			},
 			Fields: []StepField{
-				sf("input", "Quota group map (optional JSON)", `Map of group ID → rate limit config name. E.g. {"1":"free_rl","2":"pro_rl","3":"enterprise_rl"}. Leave empty if not using quota groups.`, ""),
+				sf("input.config", "Config name", "Name of the rate limit config to enforce (required)", "my_rl_config"),
+				sf("input.count_by", "Count by", `How to derive the counter key: "tenant" (default), "ip", "slot", "static", "composite", "global"`, "tenant"),
+				sf("input.slot", "Slot name (count_by=slot)", "Variable name whose value is used as the counter key when count_by=slot", ""),
+				sf("input.slots", "Slot names (count_by=composite)", "Comma-separated variable names concatenated as the counter key when count_by=composite", ""),
+				sf("input.static_key", "Static key (count_by=static)", "Literal string baked at compile time as the counter key when count_by=static", ""),
+				sf("input.xff_index", "XFF index (count_by=ip)", "Which X-Forwarded-For entry to use: 0=leftmost/true client (default), -1=rightmost/nearest proxy", "0"),
+				sf("input.on_empty", "On empty key", `Policy when the key slot is empty: "fail" (deny, default), "skip" (pass through), "fallback_tenant" (use TenantID)`, "fail"),
+				sf("input.fail_fast", "Fail fast", `"true" to stop on the first exceeded window; "false" (default) to check all windows`, "false"),
+				sf("input.denied_label", "Denied branch label", "Optional flow label to jump to when the limit is exceeded (default: stop with 429)", ""),
+			},
+		},
+		{
+			Type: "api_rate_limits", Title: "API Rate Limits", Category: "rate-limit", Capability: "throttle",
+			Description: "Enforce the rate limits configured in the API definition at this position in the flow. If absent, limits are auto-injected at the start of the flow. No configuration needed — drag to control where enforcement happens.",
+			Defaults: map[string]string{},
+			Fields:   []StepField{},
+		},
+		{
+			Type: "check_upstream_rate_limit", Title: "Check Upstream Rate Limit", Category: "rate-limit", Capability: "throttle",
+			Description: "Enforce an upstream URL-pattern rate limit. Reads the upstream URL from the named slot, matches it against the UpstreamRegistry, and returns 429 if the rate limit is exceeded or the URL is blocked by a fail_closed policy.",
+			Defaults: map[string]string{
+				"input.url_slot": "upstream_url",
+			},
+			Fields: []StepField{
+				sf("input.url_slot", "URL slot", "Variable name holding the upstream URL (e.g. loaded via load_service_url)", "upstream_url"),
+				sf("input.denied_label", "Denied branch label", "Optional flow label to jump to when denied (default: stop with 429)", ""),
 			},
 		},
 
@@ -232,10 +285,11 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 		{
 			Type: "bind_client_ip", Title: "Bind Client IP", Category: "network", Capability: "identity",
-			Description: "Extract the real client IP address and store it in a slot. Resolution order: X-Forwarded-For (first IP) → X-Real-IP → TCP RemoteAddr.",
-			Defaults: map[string]string{"key_identifier": "client_ip"},
+			Description: "Extract the real client IP address and store it in a slot. Resolution order: X-Forwarded-For (entry selected by xff_index) → X-Real-IP → TCP RemoteAddr.",
+			Defaults: map[string]string{"as": "client_ip", "input": `{"xff_index":"0"}`},
 			Fields: []StepField{
-				sf("key_identifier", "Store as", "Slot name to store the client IP string in (e.g. client_ip)", "client_ip"),
+				sf("as", "Slot name", "Slot to store the client IP string in (e.g. client_ip)", "client_ip"),
+				sf("input", "XFF Index (JSON)", `{"xff_index":"0"} — which X-Forwarded-For entry to use: 0=first/leftmost (original client), -1=last/rightmost (nearest proxy)`, `{"xff_index":"0"}`),
 			},
 		},
 		{
@@ -247,6 +301,36 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("source", "Value slot", "Slot whose value is used as the header value", "var.cookie_val"),
 			},
 		},
+
+		// ── HTTP Utilities ────────────────────────────────────────────────────────
+		{
+			Type: "set_request_body", Title: "Set Request Body", Category: "http", Capability: "mutate",
+			Description: "Stage a request body for the next http_call step. The body bytes come from a slot; the Content-Type is baked at compile time.",
+			Defaults: map[string]string{"source": "var.body", "input.content_type": "application/json"},
+			Fields: []StepField{
+				sf("source", "Body slot", "Slot containing the request body bytes to send", "var.body"),
+				sf("input.content_type", "Content-Type", "MIME type of the body (default: application/json)", "application/json"),
+			},
+		},
+		{
+			Type: "bind_request_url", Title: "Bind Request URL", Category: "http", Capability: "extract",
+			Description: "Capture the incoming request URL (path + optional query string) into a slot.",
+			Defaults: map[string]string{"as": "request_url"},
+			Fields: []StepField{
+				sf("as", "Store as", "Slot to write the URL into", "request_url"),
+				sf("include_query", "Include query string", "true (default) to append ?query, false for path only", "true"),
+			},
+		},
+		{
+			Type: "copy_header", Title: "Copy Header", Category: "http", Capability: "mutate",
+			Description: "Read an incoming request header and forward it to the upstream under a (possibly different) key. Both names are baked at compile time.",
+			Defaults: map[string]string{},
+			Fields: []StepField{
+				sf("key", "Source header", "Incoming request header name to read", "X-Request-Id"),
+				sf("as", "Destination header", "Header name to set on the upstream request", "X-Correlation-Id"),
+			},
+		},
+
 		{
 			Type: "ip_restriction", Title: "IP Restriction", Category: "network", Capability: "access-control",
 			Description: "Allow or deny requests based on CIDR ranges. Returns configured status/body when blocked.",
@@ -329,6 +413,36 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "pattern_match", Title: "Pattern Match", Category: "control", Capability: "branching", SupportsNested: true,
+			Description: "Match a slot value against a regex pattern compiled at deploy time. Branches to then-flow on match or else-flow on no-match. Regex is compiled once at bake time — runtime cost is a single Match call with zero allocations.",
+			Defaults: map[string]string{
+				"source":         "header.x-service",
+				"input.pattern":  "^(api|data).*",
+				"input.flags":    "",
+				"then":           "",
+				"else":           "",
+			},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot whose value is tested — e.g. a header, query param, or any earlier-bound variable", "header.x-service"),
+				sf("input.pattern", "Regex pattern", "Go regular-expression pattern (RE2 syntax). Compiled once at deploy time.", "^(api|data).*"),
+				sf("input.flags", "Regex flags", "Optional inline flags: i (case-insensitive), m (multiline), s (dot-all), x (verbose). Combine freely e.g. \"im\".", ""),
+				sf("then", "Match → flow", "Flow name to execute when the pattern matches", ""),
+				sf("else", "No-match → flow", "Flow name to execute when the pattern does not match (optional)", ""),
+			},
+		},
+		{
+			Type:           "validate_pattern",
+			Category:       "string",
+			Capability:     "match",
+			SupportsNested: false,
+		},
+		{
+			Type:           "extract_pattern",
+			Category:       "string",
+			Capability:     "extract",
+			SupportsNested: false,
+		},
+		{
 			Type: "switch", Title: "Switch", Category: "control", Capability: "multi-branch", SupportsNested: true,
 			Description: "Route to one of several sub-flows based on the string value of a slot.",
 			Defaults: map[string]string{"as": "", "cases": ""},
@@ -345,6 +459,36 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("source", "Source list slot", "Slot containing the array to iterate over", "var.items"),
 				sf("as", "Item slot", "Slot name bound to the current item inside the sub-flow", "item"),
 				sf("do", "Sub-flow", "Flow name called for each item in the list", "process_item"),
+			},
+		},
+		{
+			Type: "foreach_header", Title: "For Each Header", Category: "control", Capability: "iteration", SupportsNested: true,
+			Description: "Iterate over all HTTP request headers and execute a sub-flow once per header.",
+			Defaults: map[string]string{"as": "header_name", "value_as": "header_value", "do": ""},
+			Fields: []StepField{
+				sf("as", "Header name slot", "Slot name bound to the current header name inside the sub-flow", "header_name"),
+				sf("value_as", "Header value slot", "Slot name bound to the current header value inside the sub-flow", "header_value"),
+				sf("do", "Sub-flow", "Flow name called for each header", "process_header"),
+			},
+		},
+		{
+			Type: "foreach_param", Title: "For Each Query Parameter", Category: "control", Capability: "iteration", SupportsNested: true,
+			Description: "Iterate over all URL query parameters and execute a sub-flow once per parameter.",
+			Defaults: map[string]string{"as": "param_name", "value_as": "param_value", "do": ""},
+			Fields: []StepField{
+				sf("as", "Parameter name slot", "Slot name bound to the current parameter name inside the sub-flow", "param_name"),
+				sf("value_as", "Parameter value slot", "Slot name bound to the current parameter value inside the sub-flow", "param_value"),
+				sf("do", "Sub-flow", "Flow name called for each parameter", "process_param"),
+			},
+		},
+		{
+			Type: "foreach_cookie", Title: "For Each Cookie", Category: "control", Capability: "iteration", SupportsNested: true,
+			Description: "Iterate over all HTTP request cookies and execute a sub-flow once per cookie.",
+			Defaults: map[string]string{"as": "cookie_name", "value_as": "cookie_value", "do": ""},
+			Fields: []StepField{
+				sf("as", "Cookie name slot", "Slot name bound to the current cookie name inside the sub-flow", "cookie_name"),
+				sf("value_as", "Cookie value slot", "Slot name bound to the current cookie value inside the sub-flow", "cookie_value"),
+				sf("do", "Sub-flow", "Flow name called for each cookie", "process_cookie"),
 			},
 		},
 		{
@@ -444,12 +588,253 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 
 		{
+			Type: "trim", Title: "Trim Whitespace", Category: "string", Capability: "string-op",
+			Description: "Remove leading and trailing whitespace from a string slot. Zero-copy — the result is a sub-slice of the source.",
+			Defaults: map[string]string{"source": "var.input", "as": "trimmed"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to trim", "var.input"),
+				sf("as", "Store as", "Slot to save the trimmed value into", "trimmed"),
+			},
+		},
+		{
+			Type: "contains", Title: "Contains", Category: "string", Capability: "string-op",
+			Description: "Check whether a string slot contains a fixed substring. Writes true/false to a bool slot.",
+			Defaults: map[string]string{"source": "var.input", "value": "needle", "as": "found"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to search", "var.input"),
+				sf("value", "Needle (static)", "Fixed substring to search for (baked at compile time)", "needle"),
+				sf("as", "Bool result slot", "Bool slot to write true/false into", "found"),
+			},
+		},
+		{
+			Type: "starts_with", Title: "Starts With", Category: "string", Capability: "string-op",
+			Description: "Check whether a string slot starts with a fixed prefix. Writes true/false to a bool slot.",
+			Defaults: map[string]string{"source": "var.input", "value": "prefix", "as": "matched"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to check", "var.input"),
+				sf("value", "Prefix (static)", "Fixed prefix to test for (baked at compile time)", "prefix"),
+				sf("as", "Bool result slot", "Bool slot to write true/false into", "matched"),
+			},
+		},
+		{
+			Type: "ends_with", Title: "Ends With", Category: "string", Capability: "string-op",
+			Description: "Check whether a string slot ends with a fixed suffix. Writes true/false to a bool slot.",
+			Defaults: map[string]string{"source": "var.input", "value": "suffix", "as": "matched"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to check", "var.input"),
+				sf("value", "Suffix (static)", "Fixed suffix to test for (baked at compile time)", "suffix"),
+				sf("as", "Bool result slot", "Bool slot to write true/false into", "matched"),
+			},
+		},
+		{
+			Type: "replace", Title: "Replace", Category: "string", Capability: "string-op",
+			Description: "Replace all occurrences of a static substring with another static string. One allocation for the output.",
+			Defaults: map[string]string{"source": "var.input", "as": "replaced"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to modify", "var.input"),
+				sf("input.old", "Find (static)", "Substring to replace (baked at compile time)", "old_value"),
+				sf("input.new", "Replace with (static)", "Replacement string (baked at compile time)", "new_value"),
+				sf("as", "Store as", "Slot to save the result into", "replaced"),
+			},
+		},
+		{
+			Type: "split", Title: "Split", Category: "string", Capability: "string-op",
+			Description: "Split a string slot by a static separator and store the result as a JSON array into another slot. Use foreach to iterate the result.",
+			Defaults: map[string]string{"source": "var.input", "value": ",", "as": "parts"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to split", "var.input"),
+				sf("value", "Separator (static)", "Delimiter to split on (default: comma)", ","),
+				sf("as", "Store as", "Slot to save the JSON array into", "parts"),
+			},
+		},
+		{
+			Type: "index_of", Title: "Index Of", Category: "string", Capability: "string-op",
+			Description: "Find the byte offset of a static substring in a string slot. Writes -1 if not found.",
+			Defaults: map[string]string{"source": "var.input", "value": "needle", "as": "pos"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to search", "var.input"),
+				sf("value", "Needle (static)", "Fixed substring to find (baked at compile time)", "needle"),
+				sf("as", "Integer result slot", "Int slot to write the byte offset into (−1 if not found)", "pos"),
+			},
+		},
+
+		{
 			Type: "set_const", Title: "Set Literal Value", Category: "string", Capability: "data",
 			Description: "Write a static literal string into a named slot. Use this to define a fixed response body, header value, or any constant before passing it to another step.",
 			Defaults: map[string]string{"value": `{"status":"ok"}`, "as": "var.result"},
 			Fields: []StepField{
 				sf("value", "Literal value", "The static string to store (plain text, JSON, etc.)", `{"status":"ok"}`),
 				sf("as", "Slot name", "Variable name that later steps can reference", "var.result"),
+			},
+		},
+
+		// ── Encoding ─────────────────────────────────────────────────────────────
+		{
+			Type: "base64_encode", Title: "Base64 Encode", Category: "encoding", Capability: "encoding",
+			Description: "Encode a byte slot to base64. Set input.encoding to 'std' (default), 'url', 'raw_url', or 'raw_std'.",
+			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing bytes to encode", "var.input"),
+				sf("as", "Store as", "Slot for the base64 output", "encoded"),
+				sf("input.encoding", "Encoding variant", "std | url | raw_url | raw_std (default: std)", "std"),
+			},
+		},
+		{
+			Type: "base64_decode", Title: "Base64 Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a base64 string slot into raw bytes. Clears the result slot on invalid input. Default encoding: raw_url (JWT-friendly).",
+			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the base64 string", "var.encoded"),
+				sf("as", "Store as", "Slot for the decoded bytes", "decoded"),
+				sf("input.encoding", "Encoding variant", "std | url | raw_url | raw_std (default: raw_url)", "raw_url"),
+			},
+		},
+		{
+			Type: "hex_encode", Title: "Hex Encode", Category: "encoding", Capability: "encoding",
+			Description: "Encode a byte slot as a lowercase hexadecimal string.",
+			Defaults: map[string]string{"source": "var.input", "as": "hex"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing bytes to encode", "var.input"),
+				sf("as", "Store as", "Slot for the hex string", "hex"),
+			},
+		},
+		{
+			Type: "hex_decode", Title: "Hex Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a hex string slot into raw bytes. Clears the result slot on invalid input.",
+			Defaults: map[string]string{"source": "var.hex", "as": "decoded"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the hex string", "var.hex"),
+				sf("as", "Store as", "Slot for the decoded bytes", "decoded"),
+			},
+		},
+		{
+			Type: "url_encode", Title: "URL Encode", Category: "encoding", Capability: "encoding",
+			Description: "Percent-encode a string slot (RFC 3986 unreserved characters pass through). Space is encoded as %20.",
+			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the string to encode", "var.input"),
+				sf("as", "Store as", "Slot for the percent-encoded output", "encoded"),
+			},
+		},
+		{
+			Type: "url_decode", Title: "URL Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a percent-encoded string slot. '+' is decoded as space.",
+			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the percent-encoded string", "var.encoded"),
+				sf("as", "Store as", "Slot for the decoded output", "decoded"),
+			},
+		},
+
+		// ── Cookie ───────────────────────────────────────────────────────────────
+		{
+			Type: "extract_cookie", Title: "Extract Cookie", Category: "cookie", Capability: "extract",
+			Description: "Extract a named cookie from the Cookie request header. Zero-copy — aliases header memory.",
+			Defaults: map[string]string{"as": "cookie_val"},
+			Fields: []StepField{
+				sf("key", "Cookie name", "Name of the cookie to extract (baked at compile time)", "session_id"),
+				sf("as", "Store as", "Slot to write the cookie value into", "cookie_val"),
+			},
+		},
+		{
+			Type: "set_response_cookie", Title: "Set Response Cookie", Category: "cookie", Capability: "mutate",
+			Description: "Add a Set-Cookie response header. Cookie name and attributes are baked at compile time; value is read from a slot at runtime.",
+			Defaults: map[string]string{"source": "var.session_id", "input.path": "/", "input.http_only": "true"},
+			Fields: []StepField{
+				sf("key", "Cookie name", "Name of the cookie to set", "session_id"),
+				sf("source", "Value slot", "Slot containing the cookie value", "var.session_id"),
+				sf("input.path", "Path", "Cookie path attribute (default: /)", "/"),
+				sf("input.max_age", "Max-Age (seconds)", "0 = session cookie; negative = expire immediately", "0"),
+				sf("input.http_only", "HttpOnly", "true to add HttpOnly flag", "true"),
+				sf("input.secure", "Secure", "true to add Secure flag", "false"),
+				sf("input.same_site", "SameSite", "Strict | Lax | None | (empty)", "Lax"),
+			},
+		},
+		{
+			Type: "set_request_cookie", Title: "Set Request Cookie", Category: "cookie", Capability: "mutate",
+			Description: "Inject a cookie into the upstream request's Cookie header via the mutation log.",
+			Defaults: map[string]string{"source": "var.cookie_val"},
+			Fields: []StepField{
+				sf("key", "Cookie name", "Name of the cookie to send upstream", "session_id"),
+				sf("source", "Value slot", "Slot containing the cookie value", "var.cookie_val"),
+			},
+		},
+		{
+			Type: "remove_response_cookie", Title: "Remove Response Cookie", Category: "cookie", Capability: "mutate",
+			Description: "Expire a client cookie by setting Max-Age=0. Cookie name and path are baked at compile time.",
+			Defaults: map[string]string{"input.path": "/"},
+			Fields: []StepField{
+				sf("key", "Cookie name", "Name of the cookie to remove", "session_id"),
+				sf("input.path", "Path", "Must match the original cookie path (default: /)", "/"),
+			},
+		},
+		{
+			Type: "cookie_flatten", Title: "Cookie Flatten", Category: "cookie", Capability: "transform",
+			Description: "Build a Cookie header value string from multiple named slots, formatted as 'name=value; name2=value2; ...'. Empty slots are skipped.",
+			Defaults: map[string]string{"as": "cookie_header", "input.session_id": "session_slot"},
+			Fields: []StepField{
+				sf("as", "Output Slot", "Slot to write the flattened cookie header value", "cookie_header"),
+				sf("input", "Cookie→Slot Mapping", "Map of cookie names to slot names (e.g. {\"session_id\":\"session_slot\",\"csrf\":\"csrf_slot\"})", ""),
+			},
+		},
+
+		// ── Crypto / Hash ────────────────────────────────────────────────────────
+		{
+			Type: "hmac_sha256", Title: "HMAC-SHA256", Category: "crypto", Capability: "signing",
+			Description: "Compute HMAC-SHA256 of a string slot using a bake-time secret key. Output is a lowercase hex string.",
+			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the data to sign", "var.payload"),
+				sf("as", "Store as", "Slot for the HMAC hex string", "signature"),
+				sf("input.key", "Secret key", "Static HMAC key (baked at compile time — use secrets manager for production keys)", ""),
+			},
+		},
+		{
+			Type: "hmac_sha1", Title: "HMAC-SHA1", Category: "crypto", Capability: "signing",
+			Description: "Compute HMAC-SHA1 of a string slot using a bake-time key. Output is a lowercase hex string. Use only for legacy integrations.",
+			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the data to sign", "var.payload"),
+				sf("as", "Store as", "Slot for the HMAC hex string", "signature"),
+				sf("input.key", "Secret key", "Static HMAC key (baked at compile time)", ""),
+			},
+		},
+		{
+			Type: "sha256_hash", Title: "SHA-256 Hash", Category: "crypto", Capability: "hashing",
+			Description: "Compute SHA-256 hash of a string slot. Output is a lowercase hex string. No secret key — use hmac_sha256 for signed hashes.",
+			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the data to hash", "var.input"),
+				sf("as", "Store as", "Slot for the SHA-256 hex string", "digest"),
+			},
+		},
+		{
+			Type: "md5_hash", Title: "MD5 Hash", Category: "crypto", Capability: "hashing",
+			Description: "Compute MD5 hash of a string slot. Output is a lowercase hex string. MD5 is cryptographically broken — use only for checksums or legacy compatibility.",
+			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the data to hash", "var.input"),
+				sf("as", "Store as", "Slot for the MD5 hex string", "digest"),
+			},
+		},
+		{
+			Type: "aes_encrypt", Title: "AES Encrypt (GCM)", Category: "crypto", Capability: "encryption",
+			Description: "Encrypt a slot with AES-GCM using a bake-time key (hex-encoded, 16/24/32 bytes). Output is nonce||ciphertext, written to an arena slot.",
+			Defaults: map[string]string{"source": "var.plaintext", "as": "ciphertext"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing the plaintext bytes", "var.plaintext"),
+				sf("as", "Store as", "Slot for the encrypted output (nonce prefix + ciphertext)", "ciphertext"),
+				sf("input.key", "Key (hex)", "AES key as a hex string: 32 hex chars = AES-128, 64 = AES-256", ""),
+			},
+		},
+		{
+			Type: "aes_decrypt", Title: "AES Decrypt (GCM)", Category: "crypto", Capability: "encryption",
+			Description: "Decrypt AES-GCM ciphertext (nonce||ciphertext) using a bake-time key. Sets Failed=true on authentication failure.",
+			Defaults: map[string]string{"source": "var.ciphertext", "as": "plaintext"},
+			Fields: []StepField{
+				sf("source", "Source slot", "Slot containing nonce||ciphertext bytes", "var.ciphertext"),
+				sf("as", "Store as", "Slot for the decrypted plaintext", "plaintext"),
+				sf("input.key", "Key (hex)", "Same AES key used during encryption", ""),
 			},
 		},
 
@@ -532,6 +917,52 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the cache key — must match the key used on the read step", "cache_key"),
 				sf("source", "Value to cache (variable)", "Variable holding the value you want to store", "upstream_response"),
 				sf("ttl", "Expires after (seconds)", "How long to keep the entry before it is automatically removed. 300 = 5 minutes, 3600 = 1 hour.", "300"),
+			},
+		},
+
+		{
+			Type: "cache_delete", Title: "Cache Invalidate · Per-Tenant", Category: "cache", Capability: "write",
+			Description: "Remove a specific entry from this tenant's private cache immediately. Use this to force-expire a cached value before its TTL runs out — e.g. after a write that makes the cached response stale.",
+			Defaults: map[string]string{"key_identifier": "cache_key"},
+			Fields: []StepField{
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the key to delete", "cache_key"),
+			},
+		},
+		{
+			Type: "cache_delete_global", Title: "Cache Invalidate · Shared", Category: "cache", Capability: "write",
+			Description: "Remove a specific entry from the shared (global) cache immediately. Affects all tenants that read from Cache Read · Shared using the same key.",
+			Defaults: map[string]string{"key_identifier": "cache_key"},
+			Fields: []StepField{
+				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the key to delete from the shared cache", "cache_key"),
+			},
+		},
+		{
+			Type: "cache_exists", Title: "Cache Exists", Category: "cache", Capability: "read",
+			Description: "Check whether a key exists in L1 cache without fetching its value. Writes true/false to a bool slot. ~2-3× faster than cache_get.",
+			Defaults: map[string]string{"source": "var.cache_key", "as": "cache_hit"},
+			Fields: []StepField{
+				sf("source", "Key slot", "Slot containing the cache key to check", "var.cache_key"),
+				sf("as", "Bool result slot", "Bool slot to write true (hit) or false (miss) into", "cache_hit"),
+			},
+		},
+		{
+			Type: "cache_incr", Title: "Cache Increment", Category: "cache", Capability: "write",
+			Description: "Atomically increment an int64 counter stored in the cache. Initialises to delta if the key is absent. Result is written to an int slot.",
+			Defaults: map[string]string{"source": "var.counter_key", "as": "counter_val"},
+			Fields: []StepField{
+				sf("source", "Key slot", "Slot containing the cache key for the counter", "var.counter_key"),
+				sf("as", "Int result slot", "Int slot to write the updated counter value into", "counter_val"),
+				sf("delta", "Delta", "Amount to add each call (default: 1; negative to decrement)", "1"),
+				sf("ttl", "TTL (seconds)", "Expiry for a newly created counter; 0 = no expiry", "3600"),
+			},
+		},
+		{
+			Type: "cache_touch", Title: "Cache Touch", Category: "cache", Capability: "write",
+			Description: "Refresh the TTL of an existing cache entry without reading or rewriting its value. No-op if the key does not exist.",
+			Defaults: map[string]string{"source": "var.cache_key"},
+			Fields: []StepField{
+				sf("source", "Key slot", "Slot containing the cache key to touch", "var.cache_key"),
+				sf("ttl", "New TTL (seconds)", "New expiry from now", "3600"),
 			},
 		},
 

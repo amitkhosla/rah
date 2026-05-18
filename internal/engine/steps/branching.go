@@ -167,6 +167,66 @@ func SetRequestHeader(name string, valueSlot int) engine.Instruction {
 	}
 }
 
+// SetRequestBody stages a request body for the next http_call. The body is read from
+// ByteSlots[srcSlot] at runtime; the Content-Type is baked at compile time.
+// This does NOT send the request — it only stages for the next http_call step.
+func SetRequestBody(srcSlot int, contentType []byte) engine.Instruction {
+	return engine.Instruction{
+		Name: "SET_REQUEST_BODY",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.StagedRequestBody = ctx.ByteSlots[srcSlot]
+			ctx.StagedContentType = contentType
+			return state.PC + 1
+		},
+	}
+}
+
+// BindRequestURL writes the request URL path (and optionally query string) to ByteSlots[dstSlot].
+// includeQuery=true appends ?rawQuery. Zero-copy for path (aliases ctx.Path);
+// one ctx.Alloc if query is appended.
+func BindRequestURL(dstSlot int, includeQuery bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "BIND_REQUEST_URL",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			path := ctx.Path
+			if !includeQuery || len(ctx.RawQuery) == 0 {
+				ctx.ByteSlots[dstSlot] = path
+				return state.PC + 1
+			}
+			// path + "?" + rawQuery — one arena allocation
+			buf := ctx.Alloc(len(path) + 1 + len(ctx.RawQuery))
+			n := copy(buf, path)
+			buf[n] = '?'
+			copy(buf[n+1:], ctx.RawQuery)
+			ctx.ByteSlots[dstSlot] = buf
+			return state.PC + 1
+		},
+	}
+}
+
+// CopyHeader reads srcHeader from the incoming request and stages it as dstHeader
+// in the MutationLog for the next upstream call. Both names are baked at compile time.
+// Zero-copy: uses unsafe.Slice to reference the header string without allocating.
+func CopyHeader(srcHeader, dstHeader string) engine.Instruction {
+	dstKey := []byte(dstHeader)
+	return engine.Instruction{
+		Name: "COPY_HEADER",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			val := ctx.Request.Header.Get(srcHeader)
+			if val == "" || ctx.MutationCount >= len(ctx.MutationLog) {
+				return state.PC + 1
+			}
+			ctx.MutationLog[ctx.MutationCount] = rctx.HeaderMutation{
+				Key:   dstKey,
+				Value: unsafe.Slice(unsafe.StringData(val), len(val)),
+				Op:    0, // Set
+			}
+			ctx.MutationCount++
+			return state.PC + 1
+		},
+	}
+}
+
 // scanQuery finds the raw value for key in a query string like "a=1&b=2&c=3".
 // Returns a slice directly into the raw query bytes — zero allocation.
 // No URL-decoding is applied; values are raw as received from the wire.

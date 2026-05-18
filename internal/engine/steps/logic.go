@@ -283,3 +283,259 @@ func InternalJump(targetID int16) engine.InstructionFunc {
 		return targetID // Simple absolute jump back to the LoopGate
 	}
 }
+
+// ForeachHeader iterates over HTTP request headers.
+// On iteration 0: builds a packed index of (nameOff, nameLen, valOff, valLen) tuples
+// with actual name/value data appended, stored in indexSlot.
+// On iteration N: reads pair N from the packed index and extracts into nameSlot, valueSlot.
+// When exhausted, jumps to exitID.
+func ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
+	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+		idx := int(ctx.IntSlots[iterSlot])
+		if idx == 0 {
+			// Build flat list of (name, value) pairs from ctx.Request.Header (map[string][]string)
+			count := 0
+			for _, vals := range ctx.Request.Header {
+				count += len(vals)
+			}
+			if count == 0 {
+				return exitID
+			}
+
+			// Calculate total data size
+			dataSize := 0
+			for k, vals := range ctx.Request.Header {
+				for _, v := range vals {
+					dataSize += len(k) + len(v)
+				}
+			}
+
+			// Allocate: [count uint32][16*count index bytes][data]
+			buf := ctx.Alloc(4 + 16*count + dataSize)
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(count))
+			indexBuf := buf[4 : 4+16*count]
+			dataBuf := buf[4+16*count:]
+
+			entryIdx := 0
+			dataOff := 0
+			for k, vals := range ctx.Request.Header {
+				for _, v := range vals {
+					// Store (nameOff, nameLen, valOff, valLen)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16:], uint32(dataOff))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+4:], uint32(len(k)))
+					dataOff2 := dataOff + len(k)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+8:], uint32(dataOff2))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+12:], uint32(len(v)))
+					// Copy name and value data
+					copy(dataBuf[dataOff:], k)
+					copy(dataBuf[dataOff2:], v)
+					dataOff += len(k) + len(v)
+					entryIdx++
+				}
+			}
+			ctx.ByteSlots[indexSlot] = buf
+		}
+
+		// Read from the packed index
+		buf := ctx.ByteSlots[indexSlot]
+		if len(buf) < 4 {
+			return exitID
+		}
+		total := int(binary.LittleEndian.Uint32(buf[0:4]))
+		if idx >= total {
+			ctx.ByteSlots[indexSlot] = nil
+			ctx.IntSlots[iterSlot] = 0
+			return exitID
+		}
+
+		indexBuf := buf[4 : 4+16*total]
+		dataBuf := buf[4+16*total:]
+		nameOff := binary.LittleEndian.Uint32(indexBuf[idx*16:])
+		nameLen := binary.LittleEndian.Uint32(indexBuf[idx*16+4:])
+		valOff := binary.LittleEndian.Uint32(indexBuf[idx*16+8:])
+		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
+		ctx.ByteSlots[nameSlot] = dataBuf[nameOff : nameOff+nameLen]
+		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
+		ctx.IntSlots[iterSlot]++
+		return bodyStart
+	}
+}
+
+// ForeachParam iterates over URL query parameters.
+// Parses ctx.Request.URL.RawQuery without allocation, building a packed index
+// of (keyOff, keyLen, valOff, valLen) tuples with decoded key/value data.
+func ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
+	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+		idx := int(ctx.IntSlots[iterSlot])
+		if idx == 0 {
+			rawQuery := ctx.Request.URL.RawQuery
+			if rawQuery == "" {
+				return exitID
+			}
+
+			// Count parameters
+			count := 0
+			for i := 0; i < len(rawQuery); i++ {
+				if rawQuery[i] == '&' {
+					count++
+				}
+			}
+			count++ // at least one param if non-empty
+
+			// First pass: calculate decoded data size
+			dataSize := 0
+			segments := strings.Split(rawQuery, "&")
+			for _, seg := range segments {
+				if eqIdx := strings.IndexByte(seg, '='); eqIdx >= 0 {
+					key := seg[:eqIdx]
+					val := seg[eqIdx+1:]
+					// URL decode sizes (worst case: no decoding needed)
+					dataSize += len(key) + len(val)
+				}
+			}
+
+			if dataSize == 0 {
+				return exitID
+			}
+
+			// Allocate: [count uint32][16*count index bytes][data]
+			buf := ctx.Alloc(4 + 16*count + dataSize)
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(len(segments)))
+			indexBuf := buf[4 : 4+16*len(segments)]
+			dataBuf := buf[4+16*len(segments):]
+
+			entryIdx := 0
+			dataOff := 0
+			for _, seg := range segments {
+				if eqIdx := strings.IndexByte(seg, '='); eqIdx >= 0 {
+					key := seg[:eqIdx]
+					val := seg[eqIdx+1:]
+					// Store (keyOff, keyLen, valOff, valLen)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16:], uint32(dataOff))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+4:], uint32(len(key)))
+					dataOff2 := dataOff + len(key)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+8:], uint32(dataOff2))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+12:], uint32(len(val)))
+					// Copy data
+					copy(dataBuf[dataOff:], key)
+					copy(dataBuf[dataOff2:], val)
+					dataOff += len(key) + len(val)
+					entryIdx++
+				}
+			}
+			ctx.ByteSlots[indexSlot] = buf
+		}
+
+		// Read from the packed index
+		buf := ctx.ByteSlots[indexSlot]
+		if len(buf) < 4 {
+			return exitID
+		}
+		total := int(binary.LittleEndian.Uint32(buf[0:4]))
+		if idx >= total {
+			ctx.ByteSlots[indexSlot] = nil
+			ctx.IntSlots[iterSlot] = 0
+			return exitID
+		}
+
+		indexBuf := buf[4 : 4+16*total]
+		dataBuf := buf[4+16*total:]
+		keyOff := binary.LittleEndian.Uint32(indexBuf[idx*16:])
+		keyLen := binary.LittleEndian.Uint32(indexBuf[idx*16+4:])
+		valOff := binary.LittleEndian.Uint32(indexBuf[idx*16+8:])
+		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
+		ctx.ByteSlots[nameSlot] = dataBuf[keyOff : keyOff+keyLen]
+		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
+		ctx.IntSlots[iterSlot]++
+		return bodyStart
+	}
+}
+
+// ForeachCookie iterates over HTTP request cookies.
+// Parses the Cookie header value (format: "name=value; name2=value2")
+// and builds a packed index of (nameOff, nameLen, valOff, valLen) tuples.
+func ForeachCookie(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
+	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+		idx := int(ctx.IntSlots[iterSlot])
+		if idx == 0 {
+			cookieHeader := ctx.Request.Header.Get("Cookie")
+			if cookieHeader == "" {
+				return exitID
+			}
+
+			// Count semicolon-delimited segments
+			count := 0
+			for i := 0; i < len(cookieHeader); i++ {
+				if cookieHeader[i] == ';' {
+					count++
+				}
+			}
+			count++ // at least one cookie if non-empty
+
+			// Calculate data size
+			dataSize := 0
+			segments := strings.Split(cookieHeader, ";")
+			for _, seg := range segments {
+				seg = strings.TrimSpace(seg)
+				if eqIdx := strings.IndexByte(seg, '='); eqIdx >= 0 {
+					dataSize += len(seg[:eqIdx]) + len(seg[eqIdx+1:])
+				}
+			}
+
+			if dataSize == 0 {
+				return exitID
+			}
+
+			// Allocate: [count uint32][16*count index bytes][data]
+			buf := ctx.Alloc(4 + 16*count + dataSize)
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(len(segments)))
+			indexBuf := buf[4 : 4+16*len(segments)]
+			dataBuf := buf[4+16*len(segments):]
+
+			entryIdx := 0
+			dataOff := 0
+			for _, seg := range segments {
+				seg = strings.TrimSpace(seg)
+				if eqIdx := strings.IndexByte(seg, '='); eqIdx >= 0 {
+					name := seg[:eqIdx]
+					val := seg[eqIdx+1:]
+					// Store (nameOff, nameLen, valOff, valLen)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16:], uint32(dataOff))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+4:], uint32(len(name)))
+					dataOff2 := dataOff + len(name)
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+8:], uint32(dataOff2))
+					binary.LittleEndian.PutUint32(indexBuf[entryIdx*16+12:], uint32(len(val)))
+					// Copy data
+					copy(dataBuf[dataOff:], name)
+					copy(dataBuf[dataOff2:], val)
+					dataOff += len(name) + len(val)
+					entryIdx++
+				}
+			}
+			ctx.ByteSlots[indexSlot] = buf
+		}
+
+		// Read from the packed index
+		buf := ctx.ByteSlots[indexSlot]
+		if len(buf) < 4 {
+			return exitID
+		}
+		total := int(binary.LittleEndian.Uint32(buf[0:4]))
+		if idx >= total {
+			ctx.ByteSlots[indexSlot] = nil
+			ctx.IntSlots[iterSlot] = 0
+			return exitID
+		}
+
+		indexBuf := buf[4 : 4+16*total]
+		dataBuf := buf[4+16*total:]
+		nameOff := binary.LittleEndian.Uint32(indexBuf[idx*16:])
+		nameLen := binary.LittleEndian.Uint32(indexBuf[idx*16+4:])
+		valOff := binary.LittleEndian.Uint32(indexBuf[idx*16+8:])
+		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
+		ctx.ByteSlots[nameSlot] = dataBuf[nameOff : nameOff+nameLen]
+		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
+		ctx.IntSlots[iterSlot]++
+		return bodyStart
+	}
+}

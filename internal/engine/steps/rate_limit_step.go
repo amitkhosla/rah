@@ -377,6 +377,169 @@ func CheckRateLimitSlot(store *engine.CounterStore, slotKey int, syncPolicy uint
 	}
 }
 
+// CheckRateLimitGlobal enforces a rate limit with a tenant-agnostic counter key.
+// Unlike CheckRateLimit (which keys counters on TenantID), this instruction uses a
+// counter shared across ALL tenants hitting the same API/endpoint. Two different tenants
+// consuming the same endpoint will deplete the same counter bucket.
+//
+// Counter key: hash(apiRLId, endpointRLId, epoch, windowType) — no TenantID component.
+//
+// Usage: add {"action": "check_rate_limit_global"} to a flow, or set
+// rate_limit_mode: "global" on the API/endpoint config in the Studio.
+//
+// Returns 403 if the tenant is blocked; 429 if the shared window is exceeded.
+// Quota headers and sync policies behave identically to CheckRateLimit.
+func CheckRateLimitGlobal(store *engine.CounterStore, remoteRL engine.ExternalRateLimitProvider, syncPolicy uint8, emitQuotaHeaders bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "CHECK_RATE_LIMIT_GLOBAL",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			reg := registry.State.Active.Load()
+
+			// Still resolve the rate limit config (limits/burst) from registry, but
+			// block check uses TenantID for the "is this tenant blocked" decision only.
+			resolved, blocked := registry.ResolveRateLimit(
+				reg,
+				ctx.CallerID,
+				ctx.TenantID,
+				ctx.APIRateLimitId,
+				ctx.EndpointRateLimitId,
+			)
+
+			if blocked {
+				ctx.ResponseStatus = 403
+				return -1
+			}
+
+			now := uint32(time.Now().Unix())
+
+			// ── STRICT distributed enforcement ───────────────────────────────────
+			if syncPolicy >= 2 && remoteRL != nil {
+				if resolved.PerSec > 0 {
+					bf := resolved.BurstFactor
+					if bf == 0 {
+						bf = 100
+					}
+					effectiveSec := uint32(uint64(resolved.PerSec) * uint64(bf) / 100)
+					if effectiveSec == 0 {
+						effectiveSec = 1
+					}
+					// Global key: no TenantID
+					secKey := fmt.Sprintf("rlg:%d:%d:%d:s", ctx.APIRateLimitId, ctx.EndpointRateLimitId, now)
+					ok, remSec := remoteRL.Check(secKey, effectiveSec, 2)
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+						ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+						ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+					}
+					if !ok {
+						ctx.ResponseStatus = 429
+						if emitQuotaHeaders {
+							ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+						}
+						return -1
+					}
+				}
+
+				if resolved.PerMin > 0 {
+					epochMin := now / 60
+					minKey := fmt.Sprintf("rlg:%d:%d:%d:m", ctx.APIRateLimitId, ctx.EndpointRateLimitId, epochMin)
+					ok, remMin := remoteRL.Check(minKey, resolved.PerMin, 61)
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+						ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+					}
+					if !ok {
+						ctx.ResponseStatus = 429
+						if emitQuotaHeaders {
+							secsUntilReset := 60 - (now % 60)
+							ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+						}
+						return -1
+					}
+				}
+
+				return s.PC + 1
+			}
+
+			// ── Local fixed-window counters ───────────────────────────────────────
+
+			// ── Per-second window ─────────────────────────────────────────────────
+			if resolved.PerSec > 0 {
+				bf := resolved.BurstFactor
+				if bf == 0 {
+					bf = 100
+				}
+				effectiveSec := uint32(uint64(resolved.PerSec) * uint64(bf) / 100)
+				if effectiveSec == 0 {
+					effectiveSec = 1
+				}
+				// Global index: no TenantID, no QuotaGroupID
+				idxSec := rateLimitIndexGlobal(store, uint32(ctx.APIRateLimitId), uint32(ctx.EndpointRateLimitId), now, 0)
+				ok, remSec := store.FixedWindowEpoch(idxSec, now, effectiveSec)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitSecond, fmtUint32(ctx, effectiveSec))
+					ctx.SetResponseHeader(hdrRLRemainingSecond, fmtUint32(ctx, remSec))
+					ctx.SetResponseHeader(hdrRLReset, fmtUint32(ctx, now+1))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, 1))
+					}
+					return -1
+				}
+
+				// ASYNC: fire-and-forget background INCR
+				if syncPolicy == 1 && remoteRL != nil {
+					secKey := fmt.Sprintf("rlg:%d:%d:%d:s", ctx.APIRateLimitId, ctx.EndpointRateLimitId, now)
+					capSec := effectiveSec
+					go func() { remoteRL.Check(secKey, capSec, 2) }()
+				}
+			}
+
+			// ── Per-minute window ─────────────────────────────────────────────────
+			if resolved.PerMin > 0 {
+				epochMin := now / 60
+				idxMin := rateLimitIndexGlobal(store, uint32(ctx.APIRateLimitId), uint32(ctx.EndpointRateLimitId), epochMin, 1)
+				ok, remMin := store.FixedWindowEpoch(idxMin, epochMin, resolved.PerMin)
+				if emitQuotaHeaders {
+					ctx.SetResponseHeader(hdrRLLimitMinute, fmtUint32(ctx, resolved.PerMin))
+					ctx.SetResponseHeader(hdrRLRemainingMinute, fmtUint32(ctx, remMin))
+				}
+				if !ok {
+					ctx.ResponseStatus = 429
+					if emitQuotaHeaders {
+						secsUntilReset := 60 - (now % 60)
+						ctx.SetResponseHeader(hdrRetryAfterRL, fmtUint32(ctx, secsUntilReset))
+					}
+					return -1
+				}
+
+				// ASYNC: fire-and-forget background INCR
+				if syncPolicy == 1 && remoteRL != nil {
+					epochMin := now / 60
+					minKey := fmt.Sprintf("rlg:%d:%d:%d:m", ctx.APIRateLimitId, ctx.EndpointRateLimitId, epochMin)
+					capMin := resolved.PerMin
+					go func() { remoteRL.Check(minKey, capMin, 61) }()
+				}
+			}
+
+			return s.PC + 1
+		},
+	}
+}
+
+// rateLimitIndexGlobal hashes (apiRLId, endpointRLId, epoch, windowType) to a CounterStore
+// slot. TenantID is intentionally omitted — all tenants share the same counter bucket for
+// a given API/endpoint configuration. Uses Knuth multiplicative hashing.
+func rateLimitIndexGlobal(store *engine.CounterStore, apiRLId, endpointRLId, epoch uint32, windowType uint8) uint32 {
+	h := uint64(apiRLId)*2654435761 ^
+		uint64(endpointRLId)*3266489917 ^
+		uint64(epoch)*1000003 ^
+		uint64(windowType)*2166136261
+	return uint32(h) % uint32(len(store.Arena))
+}
+
 // rateLimitIndex hashes (tenantID, apiRLId, endpointRLId, epoch, windowType)
 // to a CounterStore slot. The windowType byte (0=sec, 1=min) ensures per-second
 // and per-minute counters for the same request land on different slots.

@@ -8,12 +8,15 @@ import (
 	"rah/internal/registry"
 )
 
-// RegistryMutator is the subset of RegistryManager used by the set_* steps.
+// RegistryMutator is the subset of RegistryManager used by the set_* and delete_* steps.
 // Defined here so the steps package does not import the full registry manager.
 type RegistryMutator interface {
 	AddServiceURL(alias string, name string, value []byte)
 	AddIdentifier(alias string, name string, value []byte)
 	AddMeta(alias string, name string, value []byte)
+	DeleteServiceURL(alias string, name string)
+	DeleteIdentifier(alias string, name string)
+	DeleteMeta(alias string, name string)
 }
 
 // RegistryLookup resolves the alias stored in keySlot to a TenantID.
@@ -173,6 +176,51 @@ func SetMeta(mgr RegistryMutator, name string, srcSlot int) engine.Instruction {
 				return s.PC + 1
 			}
 			mgr.AddMeta(ctx.TenantKey, name, val)
+			return s.PC + 1
+		},
+	}
+}
+
+// DeleteServiceURL removes a service URL from the registry for the current tenant.
+// name is the URL key (e.g. "primary"). The entry is deleted immediately.
+// This is a management-plane write — involves a mutex lock — use in admin flows.
+//
+// Example: {"action": "delete_service_url", "key": "fallback"}
+func DeleteServiceURL(mgr RegistryMutator, name string) engine.Instruction {
+	return engine.Instruction{
+		Name: "DELETE_SERVICE_URL",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			mgr.DeleteServiceURL(ctx.TenantKey, name)
+			return s.PC + 1
+		},
+	}
+}
+
+// DeleteIdentifier removes an identifier from the registry for the current tenant.
+// name is the identifier key (e.g. "api_key"). The entry is deleted immediately.
+// This is a management-plane write — involves a mutex lock — use in admin flows.
+//
+// Example: {"action": "delete_identifier", "key": "api_key"}
+func DeleteIdentifier(mgr RegistryMutator, name string) engine.Instruction {
+	return engine.Instruction{
+		Name: "DELETE_IDENTIFIER",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			mgr.DeleteIdentifier(ctx.TenantKey, name)
+			return s.PC + 1
+		},
+	}
+}
+
+// DeleteMeta removes a metadata value from the registry for the current tenant.
+// name is the metadata key (e.g. "tier"). The entry is deleted immediately.
+// This is a management-plane write — involves a mutex lock — use in admin flows.
+//
+// Example: {"action": "delete_meta", "key": "tier"}
+func DeleteMeta(mgr RegistryMutator, name string) engine.Instruction {
+	return engine.Instruction{
+		Name: "DELETE_META",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			mgr.DeleteMeta(ctx.TenantKey, name)
 			return s.PC + 1
 		},
 	}

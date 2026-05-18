@@ -352,6 +352,62 @@ func (m *DataStoreManager) ReadFlowsSnapshot(ctx context.Context) (map[string][]
 	return m.ReadGlobalDomainSnapshot(ctx, config.DomainFlows)
 }
 
+func (m *DataStoreManager) ReadRateLimitConfigsV2Snapshot(ctx context.Context) (map[string][]byte, error) {
+	return m.ReadGlobalDomainSnapshot(ctx, config.DomainRateLimitConfigsV2)
+}
+
+func (m *DataStoreManager) ReadTiersSnapshot(ctx context.Context) (map[string][]byte, error) {
+	return m.ReadGlobalDomainSnapshot(ctx, config.DomainTiers)
+}
+
+func (m *DataStoreManager) ReadUpstreamServicesSnapshot(ctx context.Context) (map[string][]byte, error) {
+	return m.ReadGlobalDomainSnapshot(ctx, config.DomainUpstreamServices)
+}
+
+// ─── RateLimitV2Datastore implementation (satisfies registry.RateLimitV2Datastore) ──
+
+func (m *DataStoreManager) PutRateLimitConfigV2(ctx context.Context, name string, raw []byte) error {
+	if !m.IsConfigured(config.DomainRateLimitConfigsV2) {
+		return nil
+	}
+	return m.PutGlobal(ctx, config.DomainRateLimitConfigsV2, name, raw)
+}
+
+func (m *DataStoreManager) DeleteRateLimitConfigV2(ctx context.Context, name string) error {
+	if !m.IsConfigured(config.DomainRateLimitConfigsV2) {
+		return nil
+	}
+	return m.DeleteGlobal(ctx, config.DomainRateLimitConfigsV2, name)
+}
+
+func (m *DataStoreManager) PutTier(ctx context.Context, name string, raw []byte) error {
+	if !m.IsConfigured(config.DomainTiers) {
+		return nil
+	}
+	return m.PutGlobal(ctx, config.DomainTiers, name, raw)
+}
+
+func (m *DataStoreManager) DeleteTier(ctx context.Context, name string) error {
+	if !m.IsConfigured(config.DomainTiers) {
+		return nil
+	}
+	return m.DeleteGlobal(ctx, config.DomainTiers, name)
+}
+
+func (m *DataStoreManager) PutUpstreamService(ctx context.Context, name string, raw []byte) error {
+	if !m.IsConfigured(config.DomainUpstreamServices) {
+		return nil
+	}
+	return m.PutGlobal(ctx, config.DomainUpstreamServices, name, raw)
+}
+
+func (m *DataStoreManager) DeleteUpstreamService(ctx context.Context, name string) error {
+	if !m.IsConfigured(config.DomainUpstreamServices) {
+		return nil
+	}
+	return m.DeleteGlobal(ctx, config.DomainUpstreamServices, name)
+}
+
 func (m *DataStoreManager) RegisterInstance(ctx context.Context, instanceID string, payload []byte) error {
 	if !m.IsConfigured(config.DomainInstances) {
 		return nil

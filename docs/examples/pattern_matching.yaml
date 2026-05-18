@@ -1,0 +1,401 @@
+# Pattern Matching Examples for RAH
+
+# This file contains working examples of pattern matching conditions in flows.
+# Each example is a complete, deployable flow configuration.
+
+---
+# Example 1: Service Routing by Header Prefix
+# Route requests to different backends based on service name in header
+name: service-router
+description: Routes requests to api-backend or web-backend based on x-service header
+
+flows:
+  mainFlow:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: x-service
+        pattern: "^api-"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://api-backend.example.com/proxy"
+      else_steps:
+        - action: http_call
+          upstream_url: "https://web-backend.example.com/proxy"
+
+apis:
+  - path: "/services/{service_id}"
+    method: GET
+    flow_name: mainFlow
+
+---
+# Example 2: Version Gating
+# Route API v2 requests to new backend, v1 to legacy
+name: version-gating
+description: Routes requests based on API version in header
+
+flows:
+  versionRouter:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: api-version
+        pattern: "^v2\\."
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://api-v2-backend.example.com"
+      else_steps:
+        - action: http_call
+          upstream_url: "https://api-v1-backend.example.com"
+
+apis:
+  - path: "/api/{version}/data"
+    method: GET
+    flow_name: versionRouter
+
+---
+# Example 3: Case-Insensitive Format Check
+# Check request format and route accordingly
+name: format-negotiation
+description: Routes based on content-type with case-insensitive matching
+
+flows:
+  formatRouter:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: content-type
+        pattern: "application/json"
+        flags: "i"
+      then_steps:
+        - action: http_call
+          upstream_url: "https://json-api.example.com"
+      else_steps:
+        - action: if
+          condition:
+            type: pattern_match
+            source: header
+            sourceKey: content-type
+            pattern: "application/xml"
+            flags: "i"
+          then_steps:
+            - action: http_call
+              upstream_url: "https://xml-api.example.com"
+          else_steps:
+            - action: return
+              status: 415
+              body: '{"error": "Unsupported media type. Supported: application/json, application/xml"}'
+
+apis:
+  - path: "/data"
+    method: POST
+    flow_name: formatRouter
+
+---
+# Example 4: Email Validation
+# Validate email format in query parameter before processing
+name: email-validation
+description: Validates email format and routes valid requests
+
+flows:
+  emailValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: query
+        sourceKey: email
+        pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://user-service.example.com/signup"
+      else_steps:
+        - action: return
+          status: 400
+          body: '{"error": "Invalid email format"}'
+
+apis:
+  - path: "/signup"
+    method: POST
+    flow_name: emailValidator
+
+---
+# Example 5: UUID v4 Validation
+# Validate path contains valid UUID v4
+name: uuid-validation
+description: Routes only requests with valid UUID v4 in path
+
+flows:
+  uuidValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: path
+        pattern: "^/users/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(/.*)?$"
+        flags: "i"
+      then_steps:
+        - action: http_call
+          upstream_url: "https://user-service.example.com"
+      else_steps:
+        - action: return
+          status: 400
+          body: '{"error": "Invalid UUID format"}'
+
+apis:
+  - path: "/users/{user_id}"
+    method: GET
+    flow_name: uuidValidator
+  - path: "/users/{user_id}/profile"
+    method: GET
+    flow_name: uuidValidator
+
+---
+# Example 6: API Key Format Validation
+# Validate API key format before authentication
+name: api-key-validation
+description: Validates API key format (32-64 alphanumeric + underscore)
+
+flows:
+  keyValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: x-api-key
+        pattern: "^[A-Za-z0-9_]{32,64}$"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://auth-service.example.com/verify-key"
+      else_steps:
+        - action: return
+          status: 401
+          body: '{"error": "Invalid API key format"}'
+
+apis:
+  - path: "/secure/data"
+    method: GET
+    flow_name: keyValidator
+
+---
+# Example 7: JWT Bearer Token Validation
+# Validate JWT bearer token format
+name: jwt-validation
+description: Validates JWT bearer token in authorization header
+
+flows:
+  jwtValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: authorization
+        pattern: "^Bearer [A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://token-service.example.com/validate"
+      else_steps:
+        - action: return
+          status: 401
+          body: '{"error": "Invalid token format"}'
+
+apis:
+  - path: "/secure/resource"
+    method: GET
+    flow_name: jwtValidator
+
+---
+# Example 8: Semantic Versioning (SemVer)
+# Route based on semantic version string
+name: semver-routing
+description: Routes based on semantic version format
+
+flows:
+  semverRouter:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: api-version
+        pattern: "^v\\d+\\.\\d+\\.\\d+(-[a-z0-9.]+)?$"
+        flags: "i"
+      then_steps:
+        - action: http_call
+          upstream_url: "https://api-backend.example.com"
+      else_steps:
+        - action: return
+          status: 400
+          body: '{"error": "Version must match SemVer format (e.g., v1.0.0)"}'
+
+apis:
+  - path: "/api/data"
+    method: GET
+    flow_name: semverRouter
+
+---
+# Example 9: Tenant Isolation
+# Validate tenant identifier format and isolate requests
+name: tenant-isolation
+description: Validates tenant ID format (8+ alphanumeric chars)
+
+flows:
+  tenantValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: x-tenant-id
+        pattern: "^[A-Za-z0-9-]{8,}$"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://tenant-api.example.com"
+      else_steps:
+        - action: return
+          status: 400
+          body: '{"error": "Invalid tenant ID format"}'
+
+apis:
+  - path: "/tenant/data"
+    method: GET
+    flow_name: tenantValidator
+
+---
+# Example 10: Complex Routing Chain
+# Multiple pattern conditions chained together
+name: complex-routing
+description: Routes requests through multiple validation conditions
+
+flows:
+  complexRouter:
+    # Step 1: Check service type
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: x-service-type
+        pattern: "^(internal|external)$"
+        flags: ""
+      then_steps:
+        # Step 2: Check version
+        - action: if
+          condition:
+            type: pattern_match
+            source: header
+            sourceKey: api-version
+            pattern: "^v[12]\\."
+            flags: ""
+          then_steps:
+            # Step 3: Validate format
+            - action: if
+              condition:
+                type: pattern_match
+                source: header
+                sourceKey: content-type
+                pattern: "application/json"
+                flags: "i"
+              then_steps:
+                - action: http_call
+                  upstream_url: "https://main-api.example.com"
+              else_steps:
+                - action: return
+                  status: 415
+                  body: '{"error": "Content-Type must be application/json"}'
+          else_steps:
+            - action: return
+              status: 400
+              body: '{"error": "Unsupported API version"}'
+      else_steps:
+        - action: return
+          status: 403
+          body: '{"error": "Invalid service type"}'
+
+apis:
+  - path: "/api/data"
+    method: POST
+    flow_name: complexRouter
+
+---
+# Example 11: Hostname Validation
+# Validate request hostname matches pattern
+name: hostname-validation
+description: Validates hostname format
+
+flows:
+  hostnameValidator:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: host
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+        flags: "i"
+      then_steps:
+        - action: http_call
+          upstream_url: "https://backend.example.com"
+      else_steps:
+        - action: return
+          status: 400
+          body: '{"error": "Invalid hostname"}'
+
+apis:
+  - path: "/{path}"
+    method: GET
+    flow_name: hostnameValidator
+
+---
+# Example 12: Method Routing
+# Route different HTTP methods to different backends
+name: method-routing
+description: Routes requests based on extracted method pattern
+
+flows:
+  methodRouter:
+    - action: if
+      condition:
+        type: pattern_match
+        source: header
+        sourceKey: x-method-override
+        pattern: "^(PUT|PATCH|DELETE)$"
+        flags: ""
+      then_steps:
+        - action: http_call
+          upstream_url: "https://write-api.example.com"
+      else_steps:
+        - action: http_call
+          upstream_url: "https://read-api.example.com"
+
+apis:
+  - path: "/data/{id}"
+    method: POST
+    flow_name: methodRouter
+
+---
+# Deployment Notes:
+#
+# 1. Save each example as a separate YAML file or deploy individually
+# 2. Pattern syntax follows Go's regexp package (RE2 dialect)
+# 3. All patterns are compiled at deploy time (bake time), not per-request
+# 4. Runtime matching is ~400-500ns per pattern
+# 5. Use 'i' flag for case-insensitive matching
+# 6. Common flags: i (case-insensitive), m (multiline), s (dotall), x (extended)
+#
+# Example deployment:
+#   curl -X POST http://localhost:8081/api/definition \
+#     -H "Content-Type: application/yaml" \
+#     -d @pattern_matching.yaml
+#
+# Testing:
+#   # Should route to api-backend
+#   curl -H "x-service: api-gateway" http://localhost:8080/services/example
+#
+#   # Should route to web-backend
+#   curl -H "x-service: web-frontend" http://localhost:8080/services/example
+#
+

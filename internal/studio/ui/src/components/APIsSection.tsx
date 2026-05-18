@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { fetchGatewaySnapshot, listRateLimitConfigs, syncFlows } from '../api'
-import type { ApiDef, EndpointDef, FlowStep, SavedFlow } from '../types'
+import { fetchGatewaySnapshot, listRateLimitConfigs, listRateLimitConfigsV2, syncFlows, upsertRateLimitConfig } from '../api'
+import type { ApiDef, EndpointDef, FlowStep, SavedFlow, UpstreamUrlConfig, RateLimitVar, RateLimitCountBy, RateLimitConfigSource, RateLimitCountByV2, RateLimitConfigRef, APIRateLimitEntry, RLFixedWindow, RLDynamicMapping, RateLimitWarning } from '../types'
 import FlowSearchSelect from './FlowSearchSelect'
 
 interface Props {
@@ -128,11 +128,17 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   const [rateLimitConfigs, setRateLimitConfigs] = useState<string[]>([])
   const [rateLimitError, setRateLimitError] = useState(false)
   const [syncStatus, setSyncStatus] = useState<'idle'|'syncing'|'done'|'error'>('idle')
+  const [rateLimitConfigsV2, setRateLimitConfigsV2] = useState<string[]>([])
+  // Warnings from last sync, keyed by API name
+  const [rlWarningsMap, setRlWarningsMap] = useState<Record<string, RateLimitWarning[]>>({})
 
   useEffect(() => {
     listRateLimitConfigs()
       .then(r => { setRateLimitConfigs(r.items.map(c => c.name)); setRateLimitError(false) })
       .catch(() => setRateLimitError(true))
+    listRateLimitConfigsV2()
+      .then(r => setRateLimitConfigsV2(r.items.map(c => c.name)))
+      .catch(() => { /* silently ignore */ })
   }, [])
 
   // Sync state
@@ -150,27 +156,51 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
             const eps: EndpointDef[] = ga.endpoint_configs?.length
               ? ga.endpoint_configs.map(ec => {
                   const ecAny = ec as any
+                  // Migrate legacy rate limit fields to new RateLimitConfigSource
+                  const epRlConfig: RateLimitConfigSource | undefined = ec.rate_limit
+                    ? { kind: 'named', name: ec.rate_limit }
+                    : ecAny.rate_limit_var
+                      ? { kind: 'dynamic', source: (ecAny.rate_limit_var as RateLimitVar).source, key: (ecAny.rate_limit_var as RateLimitVar).key }
+                      : undefined
+                  // Restore Dimension A from rate_limit_mode
+                  const epRlCountBy: RateLimitCountBy | undefined = ecAny.rate_limit_mode === 'global'
+                    ? { kind: 'global' }
+                    : undefined
                   return {
                     id: crypto.randomUUID(),
                     subPath: ec.path || '/',
                     method: ec.method || method,
                     ...(ec.flow_name ? { flowName: ec.flow_name } : {}),
-                    ...(ec.rate_limit ? { rateLimitName: ec.rate_limit } : {}),
+                    ...(epRlConfig ? { rateLimitConfig: epRlConfig } : {}),
+                    ...(epRlCountBy ? { rateLimitCountBy: epRlCountBy } : {}),
                     ...(ecAny.constants ? { constants: ecAny.constants as Record<string,string> } : {}),
+                    ...(ecAny.upstream_url ? { upstreamUrl: ecAny.upstream_url as UpstreamUrlConfig } : {}),
                   }
                 })
               : [{ id: crypto.randomUUID(), subPath: '/', method }]
 
             if (!grouped.has(ga.path)) {
+              // Migrate legacy rate limit fields to new RateLimitConfigSource
+              const apiRlConfig: RateLimitConfigSource | undefined = ga.rate_limit
+                ? { kind: 'named', name: ga.rate_limit }
+                : gaAny.rate_limit_var
+                  ? { kind: 'dynamic', source: (gaAny.rate_limit_var as RateLimitVar).source, key: (gaAny.rate_limit_var as RateLimitVar).key }
+                  : undefined
+              // Restore Dimension A from rate_limit_mode
+              const apiRlCountBy: RateLimitCountBy | undefined = gaAny.rate_limit_mode === 'global'
+                ? { kind: 'global' }
+                : undefined
               grouped.set(ga.path, {
                 id: crypto.randomUUID(),
                 name: ga.name,
                 basePath: ga.path,
                 defaultFlow: ga.flow_name ?? '',
                 endpoints: eps,
-                ...(ga.rate_limit ? { rateLimitName: ga.rate_limit } : {}),
+                ...(apiRlConfig ? { rateLimitConfig: apiRlConfig } : {}),
+                ...(apiRlCountBy ? { rateLimitCountBy: apiRlCountBy } : {}),
                 ...(ga.alias_paths?.length ? { aliasPaths: ga.alias_paths } : {}),
                 ...(gaAny.constants ? { constants: gaAny.constants as Record<string,string> } : {}),
+                ...(gaAny.upstream_url ? { upstreamUrl: gaAny.upstream_url as UpstreamUrlConfig } : {}),
               })
             }
           }
@@ -349,14 +379,6 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
     setApis(apis.map(a => a.id === id ? { ...a, ...patch } : a))
   }
 
-  function handleUpdateEndpointRateLimit(apiId: string, endpointId: string, name: string | undefined) {
-    setApis(apis.map(a =>
-      a.id === apiId
-        ? { ...a, endpoints: a.endpoints.map(e => e.id === endpointId ? { ...e, rateLimitName: name } : e) }
-        : a
-    ))
-  }
-
   function handleUpdateApiConstants(apiId: string, c: Record<string, string>) {
     setApis(apis.map(a => a.id === apiId ? { ...a, constants: c } : a))
   }
@@ -366,6 +388,100 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
       ...a,
       endpoints: a.endpoints.map(e => e.id === epId ? { ...e, constants: c } : e),
     }))
+  }
+
+  function handleUpdateApiUpstreamUrl(apiId: string, u: UpstreamUrlConfig | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, upstreamUrl: u } : a))
+  }
+
+  function handleUpdateEndpointUpstreamUrl(apiId: string, epId: string, u: UpstreamUrlConfig | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a,
+      endpoints: a.endpoints.map(e => e.id === epId ? { ...e, upstreamUrl: u } : e),
+    }))
+  }
+
+  function handleUpdateApiRateLimitCountBy(apiId: string, v: RateLimitCountBy | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, rateLimitCountBy: v } : a))
+  }
+
+  function handleUpdateApiRateLimitConfig(apiId: string, v: RateLimitConfigSource | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, rateLimitConfig: v } : a))
+  }
+
+  function handleUpdateEndpointRateLimitCountBy(apiId: string, epId: string, v: RateLimitCountBy | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a,
+      endpoints: a.endpoints.map(e => e.id === epId ? { ...e, rateLimitCountBy: v } : e),
+    }))
+  }
+
+  function handleUpdateEndpointRateLimitConfig(apiId: string, epId: string, v: RateLimitConfigSource | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a,
+      endpoints: a.endpoints.map(e => e.id === epId ? { ...e, rateLimitConfig: v } : e),
+    }))
+  }
+
+  function handleUpdateApiRlCountBy(apiId: string, v: RateLimitCountByV2 | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, rlCountBy: v } : a))
+  }
+  function handleUpdateApiRlConfigRef(apiId: string, v: RateLimitConfigRef | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, rlConfigRef: v } : a))
+  }
+  function handleUpdateApiUpstreamService(apiId: string, v: string | undefined) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, upstreamService: v || undefined } : a))
+  }
+  function handleUpdateEndpointRlCountBy(apiId: string, epId: string, v: RateLimitCountByV2 | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a, endpoints: a.endpoints.map(e => e.id === epId ? { ...e, rlCountBy: v } : e),
+    }))
+  }
+  function handleUpdateEndpointRlConfigRef(apiId: string, epId: string, v: RateLimitConfigRef | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a, endpoints: a.endpoints.map(e => e.id === epId ? { ...e, rlConfigRef: v } : e),
+    }))
+  }
+  function handleUpdateEndpointUpstreamService(apiId: string, epId: string, v: string | undefined) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a, endpoints: a.endpoints.map(e => e.id === epId ? { ...e, upstreamService: v || undefined } : e),
+    }))
+  }
+  function handleUpdateApiRateLimitPolicies(apiId: string, v: APIRateLimitEntry[]) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, rateLimitPolicies: v } : a))
+  }
+  function handleUpdateApiSkipRateLimit(apiId: string, v: boolean) {
+    setApis(apis.map(a => a.id === apiId ? { ...a, skipRateLimit: v } : a))
+  }
+  function handleUpdateEndpointRateLimitPolicies(apiId: string, epId: string, v: APIRateLimitEntry[]) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a, endpoints: a.endpoints.map(e => e.id === epId ? { ...e, rateLimitPolicies: v } : e),
+    }))
+  }
+  function handleUpdateEndpointSkipRateLimit(apiId: string, epId: string, v: boolean) {
+    setApis(apis.map(a => a.id !== apiId ? a : {
+      ...a, endpoints: a.endpoints.map(e => e.id === epId ? { ...e, skipRateLimit: v } : e),
+    }))
+  }
+
+  async function handleCreateRateLimit(name: string, perSec: number, perMin: number, burst: number) {
+    await upsertRateLimitConfig({ name, per_sec: perSec, per_min: perMin, burst_factor: burst })
+    const r = await listRateLimitConfigs()
+    setRateLimitConfigs(r.items.map(c => c.name))
+    setRateLimitError(false)
+  }
+
+  function buildUpstreamPrependStep(cfg: UpstreamUrlConfig): FlowStep | null {
+    if (!cfg.value || cfg.source === 'static') return null
+    const actionMap: Record<string, string> = {
+      registry:   'load_service_url',
+      cache:      'cache_get',
+      header:     'bind_header',
+      queryparam: 'bind_query_param',
+    }
+    const action = actionMap[cfg.source]
+    if (!action) return null
+    return { action, key: cfg.value, as: 'upstream_url' }
   }
 
   async function syncThisApi(api: ApiDef) {
@@ -378,26 +494,126 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
       const saved = flows.find(f => f.name === name)
       return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
     })
+
+    // Build a map of flow names to dynamic upstream URL configs
+    // Endpoint-level config takes precedence over API-level for the same flow
+    const flowUpstreamMap: Record<string, UpstreamUrlConfig> = {}
+
+    // First, set API-level upstream URL for default flow (if dynamic)
+    if (api.upstreamUrl?.source !== 'static' && api.upstreamUrl?.value) {
+      flowUpstreamMap[api.defaultFlow] = api.upstreamUrl
+    }
+
+    // Then, iterate endpoints and set/override with endpoint-level config
+    for (const ep of api.endpoints) {
+      const flowName = ep.flowName ?? api.defaultFlow
+      if (ep.upstreamUrl?.source !== 'static' && ep.upstreamUrl?.value) {
+        flowUpstreamMap[flowName] = ep.upstreamUrl
+      }
+    }
+
+    // Build a map of flow names to xff index for bind_client_ip injection
+    // Endpoint-level "Per IP" takes precedence over API-level for the same flow
+    const flowBindIpMap: Record<string, number> = {}
+
+    // First, set API-level: apply to default flow
+    if (api.rateLimitCountBy?.kind === 'ip') {
+      flowBindIpMap[api.defaultFlow] = api.rateLimitCountBy.xffIndex ?? 0
+    }
+
+    // Then, iterate endpoints — endpoint-level overrides API-level for the same flow
+    for (const ep of api.endpoints) {
+      if (ep.rateLimitCountBy?.kind === 'ip') {
+        const flowName = ep.flowName ?? api.defaultFlow
+        flowBindIpMap[flowName] = ep.rateLimitCountBy.xffIndex ?? 0
+      }
+    }
+
+    // Prepend bind_client_ip steps (before upstream URL steps, so IP is available first)
+    for (const payload of flowsPayload) {
+      const xffIdx = flowBindIpMap[payload.name]
+      if (xffIdx !== undefined) {
+        const bindIpStep: FlowStep = {
+          action: 'bind_client_ip',
+          key_identifier: 'client_ip',
+          input: { xff_index: String(xffIdx) },
+        }
+        payload.instructions = [bindIpStep, ...payload.instructions]
+      }
+    }
+
+    // Prepend steps to flows that have dynamic upstream URLs
+    for (const payload of flowsPayload) {
+      const upstreamCfg = flowUpstreamMap[payload.name]
+      if (upstreamCfg) {
+        const prependStep = buildUpstreamPrependStep(upstreamCfg)
+        if (prependStep) {
+          payload.instructions = [prependStep, ...payload.instructions]
+        }
+      }
+    }
+
+    // For API-level upstream_url: translate static source to constant
+    let apiConstants = { ...(api.constants ?? {}) }
+    if (api.upstreamUrl?.source === 'static' && api.upstreamUrl.value) {
+      apiConstants['upstream_url'] = api.upstreamUrl.value
+    }
+
+    // Translate Dimension B (RateLimitConfigSource) to SyncPayload fields
+    function buildRlFields(cfg: typeof api.rateLimitConfig) {
+      if (!cfg) return {}
+      if (cfg.kind === 'named') return { rate_limit: cfg.name }
+      return { rate_limit_var: { source: cfg.source, key: cfg.key } }
+    }
+
+    // Translate Dimension A (RateLimitCountBy) to rate_limit_mode field.
+    // Only "global" emits a mode field; tenant/ip/slot are handled via flow injection
+    // (bind_client_ip prepend) or left as default (tenant-scoped).
+    function buildRlModeField(countBy: typeof api.rateLimitCountBy): { rate_limit_mode?: string } {
+      if (countBy?.kind === 'global') return { rate_limit_mode: 'global' }
+      return {}
+    }
+
     const apisPayload = [{
       name: api.name,
       path: api.basePath,
       flow_name: api.defaultFlow,
-      ...(api.rateLimitName ? { rate_limit: api.rateLimitName } : {}),
+      ...buildRlFields(api.rateLimitConfig),
+      ...buildRlModeField(api.rateLimitCountBy),
+      ...(api.rateLimitPolicies?.length ? { rate_limit_policies: api.rateLimitPolicies } : {}),
+      ...(api.skipRateLimit ? { skip_rate_limit: true } : {}),
+      ...(api.upstreamUrl ? { upstream_url: api.upstreamUrl } : {}),
       ...(api.aliasPaths?.length ? { alias_paths: api.aliasPaths } : {}),
-      ...(api.constants && Object.keys(api.constants).length ? { constants: api.constants } : {}),
-      endpoint_configs: api.endpoints.map(ep => ({
-        path: ep.subPath,
-        method: ep.method,
-        ...(ep.flowName ? { flow_name: ep.flowName } : {}),
-        ...(ep.rateLimitName ? { rate_limit: ep.rateLimitName } : {}),
-        ...(ep.constants && Object.keys(ep.constants).length ? { constants: ep.constants } : {}),
-      })),
+      ...(Object.keys(apiConstants).length ? { constants: apiConstants } : {}),
+      endpoint_configs: api.endpoints.map(ep => {
+        // For endpoint-level upstream_url: translate static source to constant
+        let epConstants = { ...(ep.constants ?? {}) }
+        if (ep.upstreamUrl?.source === 'static' && ep.upstreamUrl.value) {
+          epConstants['upstream_url'] = ep.upstreamUrl.value
+        }
+
+        return {
+          path: ep.subPath,
+          method: ep.method,
+          ...(ep.flowName ? { flow_name: ep.flowName } : {}),
+          ...buildRlFields(ep.rateLimitConfig),
+          ...buildRlModeField(ep.rateLimitCountBy),
+          ...(ep.rateLimitPolicies?.length ? { rate_limit_policies: ep.rateLimitPolicies } : {}),
+          ...(ep.skipRateLimit ? { skip_rate_limit: true } : {}),
+          ...(ep.upstreamUrl ? { upstream_url: ep.upstreamUrl } : {}),
+          ...(Object.keys(epConstants).length ? { constants: epConstants } : {}),
+        }
+      }),
       action: 'upsert' as const,
     }]
     try {
-      await syncFlows({ sync_uuid: crypto.randomUUID(), flows: flowsPayload, apis: apisPayload })
+      const result = await syncFlows({ sync_uuid: crypto.randomUUID(), flows: flowsPayload, apis: apisPayload })
+      const warnings = result.rate_limit_warnings ?? []
+      setRlWarningsMap(prev => ({ ...prev, [api.name]: warnings }))
       setSyncStatus('done')
-    } catch { setSyncStatus('error') }
+    } catch {
+      setSyncStatus('error')
+    }
     setTimeout(() => setSyncStatus('idle'), 3000)
   }
 
@@ -605,9 +821,26 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
             onNavigateToDeploy={onNavigateToDeploy}
             rateLimitConfigs={rateLimitConfigs}
             rateLimitError={rateLimitError}
-            onUpdateRateLimit={name => handleUpdateEndpointRateLimit(selectedApi.id, selectedEndpoint.id, name || undefined)}
+            rateLimitCountBy={selectedEndpoint.rateLimitCountBy}
+            rateLimitConfig={selectedEndpoint.rateLimitConfig}
+            onUpdateRateLimitCountBy={v => handleUpdateEndpointRateLimitCountBy(selectedApi.id, selectedEndpoint.id, v)}
+            onUpdateRateLimitConfig={v => handleUpdateEndpointRateLimitConfig(selectedApi.id, selectedEndpoint.id, v)}
+            onCreateRateLimit={handleCreateRateLimit}
             constants={selectedEndpoint.constants ?? {}}
             onUpdateConstants={c => handleUpdateEndpointConstants(selectedApi.id, selectedEndpoint.id, c)}
+            upstreamUrl={selectedEndpoint.upstreamUrl}
+            onUpdateUpstreamUrl={u => handleUpdateEndpointUpstreamUrl(selectedApi.id, selectedEndpoint.id, u)}
+            rlCountBy={selectedEndpoint.rlCountBy}
+            rlConfigRef={selectedEndpoint.rlConfigRef}
+            upstreamService={selectedEndpoint.upstreamService}
+            v2Configs={rateLimitConfigsV2}
+            onUpdateRlCountBy={v => handleUpdateEndpointRlCountBy(selectedApi.id, selectedEndpoint.id, v)}
+            onUpdateRlConfigRef={v => handleUpdateEndpointRlConfigRef(selectedApi.id, selectedEndpoint.id, v)}
+            onUpdateUpstreamService={v => handleUpdateEndpointUpstreamService(selectedApi.id, selectedEndpoint.id, v)}
+            rateLimitPolicies={selectedEndpoint.rateLimitPolicies ?? []}
+            skipRateLimit={selectedEndpoint.skipRateLimit ?? false}
+            onUpdateRateLimitPolicies={v => handleUpdateEndpointRateLimitPolicies(selectedApi.id, selectedEndpoint.id, v)}
+            onUpdateSkipRateLimit={v => handleUpdateEndpointSkipRateLimit(selectedApi.id, selectedEndpoint.id, v)}
           />
         ) : selectedApi !== null ? (
           <ApiDetailPanel
@@ -621,11 +854,29 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
             onRemoveAlias={i => handleRemoveAlias(selectedApi.id, i)}
             rateLimitConfigs={rateLimitConfigs}
             rateLimitError={rateLimitError}
-            onUpdateRateLimit={name => updateApi(selectedApi.id, { rateLimitName: name || undefined })}
+            rateLimitCountBy={selectedApi.rateLimitCountBy}
+            rateLimitConfig={selectedApi.rateLimitConfig}
+            onUpdateRateLimitCountBy={v => handleUpdateApiRateLimitCountBy(selectedApi.id, v)}
+            onUpdateRateLimitConfig={v => handleUpdateApiRateLimitConfig(selectedApi.id, v)}
+            onCreateRateLimit={handleCreateRateLimit}
             onSync={() => syncThisApi(selectedApi)}
             syncStatus={syncStatus}
             constants={selectedApi.constants ?? {}}
             onUpdateConstants={c => handleUpdateApiConstants(selectedApi.id, c)}
+            upstreamUrl={selectedApi.upstreamUrl}
+            onUpdateUpstreamUrl={u => handleUpdateApiUpstreamUrl(selectedApi.id, u)}
+            rlCountBy={selectedApi.rlCountBy}
+            rlConfigRef={selectedApi.rlConfigRef}
+            upstreamService={selectedApi.upstreamService}
+            v2Configs={rateLimitConfigsV2}
+            onUpdateRlCountBy={v => handleUpdateApiRlCountBy(selectedApi.id, v)}
+            onUpdateRlConfigRef={v => handleUpdateApiRlConfigRef(selectedApi.id, v)}
+            onUpdateUpstreamService={v => handleUpdateApiUpstreamService(selectedApi.id, v)}
+            rateLimitPolicies={selectedApi.rateLimitPolicies ?? []}
+            skipRateLimit={selectedApi.skipRateLimit ?? false}
+            onUpdateRateLimitPolicies={v => handleUpdateApiRateLimitPolicies(selectedApi.id, v)}
+            onUpdateSkipRateLimit={v => handleUpdateApiSkipRateLimit(selectedApi.id, v)}
+            rlWarnings={rlWarningsMap[selectedApi.name] ?? []}
           />
         ) : (
           <EmptyRight onNewApi={openNewWizard} onNavigateToDesigner={onNavigateToDesigner} />
@@ -665,21 +916,1221 @@ function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; 
   )
 }
 
+// ── Upstream URL Editor ──────────────────────────────────────────────────────
+
+const SOURCE_LABELS: Record<string, string> = {
+  static:     'Static URL',
+  registry:   'Registry key',
+  cache:      'Cache key',
+  header:     'Request header',
+  queryparam: 'Query param',
+}
+
+const SOURCE_PLACEHOLDERS: Record<string, string> = {
+  static:     'https://api.example.com/v1',
+  registry:   'primary_service_url',
+  cache:      'backend_url_key',
+  header:     'X-Backend-Url',
+  queryparam: 'backend',
+}
+
+function UpstreamUrlEditor({
+  value,
+  onChange,
+  inheritLabel,
+}: {
+  value: UpstreamUrlConfig | undefined
+  onChange: (u: UpstreamUrlConfig | undefined) => void
+  inheritLabel?: string
+}) {
+  return (
+    <div>
+      <select
+        className="input"
+        style={{ maxWidth: 220, marginTop: 0 }}
+        value={value?.source ?? ''}
+        onChange={e => {
+          const src = e.target.value as UpstreamUrlConfig['source'] | ''
+          if (!src) { onChange(undefined); return }
+          onChange({ source: src, value: '' })
+        }}
+      >
+        <option value="">{inheritLabel ?? '— none —'}</option>
+        {Object.entries(SOURCE_LABELS).map(([k, v]) => (
+          <option key={k} value={k}>{v}</option>
+        ))}
+      </select>
+
+      {value && (
+        <input
+          className="input"
+          style={{ marginTop: 6, maxWidth: 360 }}
+          placeholder={SOURCE_PLACEHOLDERS[value.source]}
+          value={value.value}
+          onChange={e => onChange({ ...value, value: e.target.value })}
+        />
+      )}
+
+      {value?.source === 'static' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>
+          Stored as a pre-set variable named <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>upstream_url</code>. In your flow's <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>http_call</code> step, set <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>url_var: upstream_url</code> to use it.
+        </p>
+      )}
+
+      {value?.source && value.source !== 'static' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>
+          At runtime, the gateway reads this key from {SOURCE_LABELS[value.source].toLowerCase()} and uses it as the upstream URL.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// ── Rate Limit Editor ────────────────────────────────────────────────────────
+
+const RL_SOURCE_LABELS: Record<string, string> = {
+  registry:   'Registry key',
+  cache:      'Cache key',
+  header:     'Request header',
+  queryparam: 'Query param',
+}
+
+const COUNT_BY_LABELS: Record<string, string> = {
+  tenant: 'Per tenant',
+  ip:     'Per IP',
+  slot:   'Per variable',
+  global: 'Global (all tenants)',
+}
+
+type ConfigKind = 'none' | 'named' | 'dynamic'
+
+function configKindOf(cfg: RateLimitConfigSource | undefined): ConfigKind {
+  if (!cfg) return 'none'
+  return cfg.kind === 'named' ? 'named' : 'dynamic'
+}
+
+function RateLimitEditor({
+  rateLimitCountBy,
+  rateLimitConfig,
+  rateLimitConfigs,
+  rateLimitError,
+  isEndpoint,
+  onUpdateCountBy,
+  onUpdateConfig,
+  onCreateConfig,
+}: {
+  rateLimitCountBy: RateLimitCountBy | undefined
+  rateLimitConfig: RateLimitConfigSource | undefined
+  rateLimitConfigs: string[]
+  rateLimitError: boolean
+  isEndpoint: boolean
+  onUpdateCountBy: (v: RateLimitCountBy | undefined) => void
+  onUpdateConfig: (v: RateLimitConfigSource | undefined) => void
+  onCreateConfig: (name: string, perSec: number, perMin: number, burst: number) => Promise<void>
+}) {
+  const countByKind = rateLimitCountBy?.kind ?? 'tenant'
+  const configKind  = configKindOf(rateLimitConfig)
+
+  const [showCreate, setShowCreate] = useState(false)
+  const [createName,   setCreateName]   = useState('')
+  const [createPerSec, setCreatePerSec] = useState('')
+  const [createPerMin, setCreatePerMin] = useState('')
+  const [createBurst,  setCreateBurst]  = useState('100')
+  const [creating,     setCreating]     = useState(false)
+  const [createErr,    setCreateErr]    = useState('')
+
+  function handleConfigKindChange(next: ConfigKind) {
+    setShowCreate(false)
+    if (next === 'none')    { onUpdateConfig(undefined); return }
+    if (next === 'named')   { onUpdateConfig({ kind: 'named', name: rateLimitConfigs[0] ?? '' }); return }
+    if (next === 'dynamic') { onUpdateConfig({ kind: 'dynamic', source: 'registry', key: '' }); return }
+  }
+
+  async function doCreate() {
+    if (!createName.trim()) { setCreateErr('Name required'); return }
+    const ps = Number(createPerSec); const pm = Number(createPerMin); const b = Number(createBurst)
+    if (!Number.isFinite(ps) || ps < 0) { setCreateErr('Invalid per-second value'); return }
+    if (!Number.isFinite(pm) || pm < 0) { setCreateErr('Invalid per-minute value'); return }
+    if (!Number.isFinite(b)  || b  < 0) { setCreateErr('Invalid burst value'); return }
+    setCreating(true); setCreateErr('')
+    try {
+      await onCreateConfig(createName.trim(), ps, pm, b)
+      onUpdateConfig({ kind: 'named', name: createName.trim() })
+      setShowCreate(false)
+      setCreateName(''); setCreatePerSec(''); setCreatePerMin(''); setCreateBurst('100')
+    } catch (e: any) {
+      setCreateErr(e?.message ?? 'Failed to create')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const dynConfig = rateLimitConfig?.kind === 'dynamic' ? rateLimitConfig : undefined
+  const namedConfig = rateLimitConfig?.kind === 'named' ? rateLimitConfig : undefined
+
+  return (
+    <div>
+      {/* Row 1: Dimension A — Count by */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 52 }}>Count by:</span>
+        <select
+          className="input"
+          style={{ maxWidth: 180, marginTop: 0 }}
+          value={countByKind}
+          onChange={e => {
+            const kind = e.target.value as RateLimitCountBy['kind']
+            if (kind === 'tenant') onUpdateCountBy(undefined)
+            else if (kind === 'ip') onUpdateCountBy({ kind: 'ip', xffIndex: 0 })
+            else if (kind === 'global') onUpdateCountBy({ kind: 'global' })
+            else onUpdateCountBy({ kind: 'slot', variableName: '' })
+          }}
+        >
+          {Object.entries(COUNT_BY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {isEndpoint && <option value="tenant">Inherit from API</option>}
+        </select>
+        {countByKind === 'slot' && (
+          <input
+            className="input"
+            style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+            placeholder="variable name"
+            value={(rateLimitCountBy as { kind: 'slot'; variableName: string })?.variableName ?? ''}
+            onChange={e => onUpdateCountBy({ kind: 'slot', variableName: e.target.value })}
+          />
+        )}
+        {countByKind === 'ip' && (
+          <>
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>XFF index:</span>
+            <input
+              type="number"
+              className="input"
+              style={{ width: 68, marginTop: 0, textAlign: 'center' }}
+              title="X-Forwarded-For index: 0 = first/leftmost (original client), -1 = last/rightmost (nearest proxy)"
+              value={(rateLimitCountBy as { kind: 'ip'; xffIndex?: number })?.xffIndex ?? 0}
+              onChange={e => {
+                const v = parseInt(e.target.value, 10)
+                onUpdateCountBy({ kind: 'ip', xffIndex: Number.isFinite(v) ? v : 0 })
+              }}
+            />
+          </>
+        )}
+      </div>
+      {countByKind === 'ip' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+          A <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>bind_client_ip</code> step will be prepended automatically on sync.
+          Add a <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>check_rate_limit_ip</code> step to your flow to activate IP-based limiting.
+        </p>
+      )}
+      {countByKind === 'slot' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+          Add a <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>check_rate_limit_slot</code> step to your flow to activate slot-based limiting.
+        </p>
+      )}
+      {countByKind === 'tenant' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+          Add a <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>check_rate_limit</code> step to your flow to activate rate limiting.
+        </p>
+      )}
+      {countByKind === 'global' && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+          All tenants share a single counter bucket — a single high-traffic tenant can deplete the limit for others.
+          Add a <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>check_rate_limit_global</code> step to your flow, or sync to auto-wire via <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: 3 }}>rate_limit_mode: &quot;global&quot;</code>.
+        </p>
+      )}
+
+      {/* Row 2: Dimension B — Config */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 52 }}>Config:</span>
+        <select
+          className="input"
+          style={{ maxWidth: 180, marginTop: 0 }}
+          value={configKind}
+          onChange={e => handleConfigKindChange(e.target.value as ConfigKind)}
+        >
+          <option value="none">{isEndpoint ? '— inherit from API —' : '— none —'}</option>
+          <option value="named">Named config</option>
+          <option value="dynamic">Dynamic source</option>
+        </select>
+
+        {configKind === 'named' && (
+          <>
+            <select
+              className="input"
+              style={{ maxWidth: 200, marginTop: 0 }}
+              value={namedConfig?.name ?? ''}
+              onChange={e => onUpdateConfig({ kind: 'named', name: e.target.value })}
+            >
+              <option value="">— select config —</option>
+              {rateLimitConfigs.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button
+              className="btn muted"
+              style={{ width: 'auto', padding: '2px 10px', marginTop: 0, fontSize: 11 }}
+              onClick={() => setShowCreate(p => !p)}
+            >{showCreate ? 'Cancel' : '+ Create'}</button>
+          </>
+        )}
+
+        {configKind === 'dynamic' && (
+          <>
+            <select
+              className="input"
+              style={{ maxWidth: 160, marginTop: 0 }}
+              value={dynConfig?.source ?? ''}
+              onChange={e => {
+                const src = e.target.value as 'registry' | 'cache' | 'header' | 'queryparam' | ''
+                if (!src) return
+                onUpdateConfig({ kind: 'dynamic', source: src as any, key: dynConfig?.key ?? '' })
+              }}
+            >
+              <option value="">— select source —</option>
+              {Object.entries(RL_SOURCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            {dynConfig?.source && (
+              <input
+                className="input"
+                style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+                placeholder="key name"
+                value={dynConfig.key}
+                onChange={e => onUpdateConfig({ kind: 'dynamic', source: dynConfig.source, key: e.target.value })}
+              />
+            )}
+          </>
+        )}
+      </div>
+
+      {rateLimitError && configKind === 'named' && (
+        <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
+          Could not load configs — is the gateway running?
+        </p>
+      )}
+      {!rateLimitError && rateLimitConfigs.length === 0 && configKind === 'named' && !showCreate && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+          No rate limit configs yet. Use "+ Create" to add one inline.
+        </p>
+      )}
+      {configKind === 'dynamic' && dynConfig?.source && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>
+          At runtime the gateway reads this key from {RL_SOURCE_LABELS[dynConfig.source].toLowerCase()} to get the rate limit config name.
+        </p>
+      )}
+
+      {showCreate && (
+        <div style={{
+          marginTop: 10, padding: '12px 14px',
+          borderRadius: 8, border: '1px solid var(--border)',
+          background: 'var(--panel)',
+        }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>Quick-create rate limit config</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              Name
+              <input className="input" style={{ width: 120, padding: '3px 8px', fontSize: 12 }}
+                value={createName} onChange={e => setCreateName(e.target.value)} placeholder="e.g. standard" />
+            </label>
+            <label style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              Per second
+              <input className="input" style={{ width: 80, padding: '3px 8px', fontSize: 12 }}
+                type="number" min="0" value={createPerSec} onChange={e => setCreatePerSec(e.target.value)} placeholder="0" />
+            </label>
+            <label style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              Per minute
+              <input className="input" style={{ width: 80, padding: '3px 8px', fontSize: 12 }}
+                type="number" min="0" value={createPerMin} onChange={e => setCreatePerMin(e.target.value)} placeholder="0" />
+            </label>
+            <label style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              Burst %
+              <input className="input" style={{ width: 70, padding: '3px 8px', fontSize: 12 }}
+                type="number" min="0" value={createBurst} onChange={e => setCreateBurst(e.target.value)} />
+            </label>
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '4px 14px', marginTop: 0, fontSize: 12, alignSelf: 'flex-end' }}
+              onClick={doCreate}
+              disabled={creating}
+            >{creating ? 'Creating…' : 'Create & Apply'}</button>
+          </div>
+          {createErr && <p style={{ fontSize: 11, color: '#ef4444', marginTop: 6 }}>{createErr}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── V2 Rate Limit Section (legacy) ───────────────────────────────────────────
+
+type V2ConfigKind = 'none' | 'named' | 'dynamic'
+type OnEmptyKey = 'fail' | 'skip' | 'fallback_tenant'
+
+function RateLimitV2Section({
+  rlCountBy, rlConfigRef, upstreamService,
+  v2Configs, isEndpoint,
+  onUpdateCountBy, onUpdateConfigRef, onUpdateUpstreamService,
+}: {
+  rlCountBy: RateLimitCountByV2 | undefined
+  rlConfigRef: RateLimitConfigRef | undefined
+  upstreamService: string | undefined
+  v2Configs: string[]
+  isEndpoint: boolean
+  onUpdateCountBy: (v: RateLimitCountByV2 | undefined) => void
+  onUpdateConfigRef: (v: RateLimitConfigRef | undefined) => void
+  onUpdateUpstreamService: (v: string | undefined) => void
+}) {
+  const [collapsed, setCollapsed] = useState(true)
+
+  const countByKind = rlCountBy?.kind ?? 'tenant'
+  const configKind: V2ConfigKind = !rlConfigRef ? 'none' : rlConfigRef.kind === 'named' ? 'named' : 'dynamic'
+
+  function handleCountByKindChange(kind: RateLimitCountByV2['kind']) {
+    if (kind === 'tenant') { onUpdateCountBy(undefined); return }
+    if (kind === 'global') { onUpdateCountBy({ kind: 'global' }); return }
+    if (kind === 'ip')     { onUpdateCountBy({ kind: 'ip', xff_index: 0 }); return }
+    if (kind === 'slot')   { onUpdateCountBy({ kind: 'slot', slot_name: '' }); return }
+    if (kind === 'static') { onUpdateCountBy({ kind: 'static', static_value: '' }); return }
+    if (kind === 'composite') { onUpdateCountBy({ kind: 'composite', composite_slots: [] }); return }
+  }
+
+  function handleConfigKindChange(kind: V2ConfigKind) {
+    if (kind === 'none')    { onUpdateConfigRef(undefined); return }
+    if (kind === 'named')   { onUpdateConfigRef({ kind: 'named', name: v2Configs[0] ?? '' }); return }
+    if (kind === 'dynamic') { onUpdateConfigRef({ kind: 'dynamic', source: 'registry', key: '' }); return }
+  }
+
+  const showOnEmptyKey = rlCountBy && rlCountBy.kind !== 'tenant' && rlCountBy.kind !== 'global'
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+          padding: '6px 0', borderTop: '1px solid var(--border)',
+          userSelect: 'none',
+        }}
+        onClick={() => setCollapsed(c => !c)}
+      >
+        <span style={{ fontSize: 10, color: 'var(--muted)', transform: collapsed ? 'rotate(-90deg)' : 'none', display: 'inline-block', transition: 'transform 0.15s' }}>▼</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Rate Limiting</span>
+        {(rlCountBy || rlConfigRef || upstreamService) && (
+          <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 4 }}>●</span>
+        )}
+        {isEndpoint && <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>(endpoint)</span>}
+      </div>
+      {!collapsed && (
+        <div style={{ paddingTop: 10 }}>
+
+          {/* Count By */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 72 }}>Count by:</span>
+            <select
+              className="input"
+              style={{ maxWidth: 180, marginTop: 0 }}
+              value={countByKind}
+              onChange={e => handleCountByKindChange(e.target.value as RateLimitCountByV2['kind'])}
+            >
+              <option value="tenant">Per tenant — one bucket per tenant ID</option>
+              <option value="ip">Per IP — one bucket per client IP</option>
+              <option value="slot">Per slot — one bucket per value in a named flow slot</option>
+              <option value="static">Static key — single shared bucket</option>
+              <option value="composite">Composite — bucket per combination of slots</option>
+              <option value="global">Global — single bucket across all tenants</option>
+            </select>
+
+            {countByKind === 'slot' && (
+              <input
+                className="input"
+                style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+                placeholder="slot name (e.g. user_id)"
+                value={rlCountBy?.kind === 'slot' ? (rlCountBy.slot_name ?? '') : ''}
+                onChange={e => onUpdateCountBy({ kind: 'slot', slot_name: e.target.value })}
+              />
+            )}
+            {countByKind === 'static' && (
+              <input
+                className="input"
+                style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+                placeholder="static value"
+                value={rlCountBy?.kind === 'static' ? (rlCountBy.static_value ?? '') : ''}
+                onChange={e => onUpdateCountBy({ kind: 'static', static_value: e.target.value })}
+              />
+            )}
+            {countByKind === 'composite' && (
+              <input
+                className="input"
+                style={{ flex: 1, maxWidth: 260, marginTop: 0 }}
+                placeholder="slot1,slot2,slot3 (comma-separated)"
+                value={rlCountBy?.kind === 'composite' ? (rlCountBy.composite_slots ?? []).join(',') : ''}
+                onChange={e => onUpdateCountBy({ kind: 'composite', composite_slots: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
+              />
+            )}
+            {countByKind === 'ip' && (
+              <>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>XFF index:</span>
+                <input
+                  type="number"
+                  className="input"
+                  style={{ width: 68, marginTop: 0, textAlign: 'center' }}
+                  value={rlCountBy?.kind === 'ip' ? (rlCountBy.xff_index ?? 0) : 0}
+                  onChange={e => {
+                    const v = parseInt(e.target.value, 10)
+                    onUpdateCountBy({ kind: 'ip', xff_index: Number.isFinite(v) ? v : 0, on_empty_key: rlCountBy?.kind === 'ip' ? rlCountBy.on_empty_key : undefined })
+                  }}
+                />
+              </>
+            )}
+          </div>
+
+          {showOnEmptyKey && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 72 }}>On empty key:</span>
+              <select
+                className="input"
+                style={{ maxWidth: 200, marginTop: 0 }}
+                value={rlCountBy?.on_empty_key ?? 'fail'}
+                onChange={e => {
+                  if (!rlCountBy) return
+                  onUpdateCountBy({ ...rlCountBy, on_empty_key: e.target.value as OnEmptyKey })
+                }}
+              >
+                <option value="fail">fail</option>
+                <option value="skip">skip</option>
+                <option value="fallback_tenant">fallback_tenant</option>
+              </select>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 72 }}>Fail fast:</span>
+            <input
+              type="checkbox"
+              checked={rlCountBy?.fail_fast ?? false}
+              onChange={e => {
+                const base = rlCountBy ?? { kind: 'tenant' as const }
+                onUpdateCountBy({ ...base, fail_fast: e.target.checked })
+              }}
+            />
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>Stop after first window failure</span>
+          </div>
+
+          {/* Config Ref */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 72 }}>Config:</span>
+            <select
+              className="input"
+              style={{ maxWidth: 180, marginTop: 0 }}
+              value={configKind}
+              onChange={e => handleConfigKindChange(e.target.value as V2ConfigKind)}
+            >
+              <option value="none">— none —</option>
+              <option value="named">Named</option>
+              <option value="dynamic">Dynamic</option>
+            </select>
+
+            {configKind === 'named' && (
+              v2Configs.length === 0 ? (
+                <span style={{
+                  fontSize: 11, color: 'var(--muted)',
+                  background: 'var(--accent-bg)', border: '1px solid var(--border)',
+                  borderRadius: 4, padding: '4px 8px', flex: 1,
+                }}>
+                  No rate limit configs yet — go to <strong>Rate Limits</strong> in the sidebar to create one.
+                </span>
+              ) : (
+                <select
+                  className="input"
+                  style={{ maxWidth: 220, marginTop: 0 }}
+                  value={rlConfigRef?.kind === 'named' ? (rlConfigRef.name ?? '') : ''}
+                  onChange={e => onUpdateConfigRef({ kind: 'named', name: e.target.value })}
+                >
+                  {v2Configs.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              )
+            )}
+
+            {configKind === 'dynamic' && (
+              <>
+                <select
+                  className="input"
+                  style={{ maxWidth: 160, marginTop: 0 }}
+                  value={rlConfigRef?.kind === 'dynamic' ? (rlConfigRef.source ?? 'registry') : 'registry'}
+                  onChange={e => onUpdateConfigRef({
+                    kind: 'dynamic',
+                    source: e.target.value as RateLimitConfigRef['source'],
+                    key: rlConfigRef?.kind === 'dynamic' ? (rlConfigRef.key ?? '') : '',
+                  })}
+                >
+                  <option value="registry">registry (tenant property)</option>
+                  <option value="header">header</option>
+                  <option value="queryparam">queryparam</option>
+                  <option value="cache">cache</option>
+                </select>
+                <input
+                  className="input"
+                  style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+                  placeholder={
+                    rlConfigRef?.kind === 'dynamic' && rlConfigRef.source === 'header' ? 'e.g. X-Tenant-Tier' :
+                    rlConfigRef?.kind === 'dynamic' && rlConfigRef.source === 'queryparam' ? 'e.g. tier' :
+                    'e.g. rl_config_name'
+                  }
+                  value={rlConfigRef?.kind === 'dynamic' ? (rlConfigRef.key ?? '') : ''}
+                  onChange={e => onUpdateConfigRef({
+                    kind: 'dynamic',
+                    source: rlConfigRef?.kind === 'dynamic' ? (rlConfigRef.source ?? 'registry') : 'registry',
+                    key: e.target.value,
+                  })}
+                />
+              </>
+            )}
+          </div>
+
+          {/* Dynamic config help */}
+          {configKind === 'dynamic' && (
+            <div style={{ marginBottom: 10, marginLeft: 80, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+              {rlConfigRef?.source === 'registry' && 'Reads the config name from a tenant registry property (set via Tiers or Tenant detail → Meta).'}
+              {rlConfigRef?.source === 'header' && 'Reads the config name from the named request header. Header value must match an existing rate limit config name.'}
+              {rlConfigRef?.source === 'queryparam' && 'Reads the config name from the named URL query parameter.'}
+              {rlConfigRef?.source === 'cache' && 'Reads the config name from the cache using the given key.'}
+            </div>
+          )}
+
+          {/* Upstream Service */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 72 }}>Upstream svc:</span>
+            <input
+              className="input"
+              style={{ flex: 1, maxWidth: 260, marginTop: 0 }}
+              placeholder="e.g. openai-svc"
+              value={upstreamService ?? ''}
+              onChange={e => onUpdateUpstreamService(e.target.value || undefined)}
+            />
+          </div>
+
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Multi-Entry Rate Limit Policies Section ───────────────────────────────────
+
+const WINDOW_EPOCH_SECS = [1, 60, 3600, 86400] as const
+const WINDOW_LABELS: Record<number, string> = {
+  1:     'per second',
+  60:    'per minute',
+  3600:  'per hour',
+  86400: 'per day',
+}
+
+function defaultRLPolicy(): APIRateLimitEntry {
+  return { kind: 'named', count_by: 'tenant', config: '' }
+}
+
+// ── Per-row status (computed client-side from local data) ─────────────────────
+
+function computeRowStatus(policy: APIRateLimitEntry, v2Configs: string[]): { icon: string; color: string; title: string } {
+  if (policy.kind === 'named') {
+    if (!policy.config) return { icon: '○', color: 'var(--muted)', title: 'No config selected' }
+    return v2Configs.includes(policy.config)
+      ? { icon: '✓', color: '#22c55e', title: 'Config found' }
+      : { icon: '✗', color: '#ef4444', title: `Config "${policy.config}" not found` }
+  }
+  if (policy.kind === 'fixed') {
+    const wins = policy.windows ?? []
+    if (wins.length === 0) return { icon: '○', color: 'var(--muted)', title: 'No windows defined' }
+    return wins.some(w => w.limit > 0)
+      ? { icon: '✓', color: '#22c55e', title: 'Fixed limit configured' }
+      : { icon: '⚠', color: '#f59e0b', title: 'All window limits are 0' }
+  }
+  if (policy.kind === 'dynamic') {
+    const entries = Object.entries(policy.dynamic?.mappings ?? {})
+    if (entries.length === 0) return { icon: '⚠', color: '#f59e0b', title: 'No mappings defined' }
+    const allFound = entries.every(([, cfg]) => v2Configs.includes(cfg))
+    return allFound
+      ? { icon: '✓', color: '#22c55e', title: 'All mapped configs found' }
+      : { icon: '⚠', color: '#f59e0b', title: 'Some mapped configs not found' }
+  }
+  return { icon: '○', color: 'var(--muted)', title: '' }
+}
+
+// ── Dynamic rate limit editor ─────────────────────────────────────────────────
+
+function DynamicRLEditor({
+  dynamic: dynamicProp,
+  v2Configs,
+  onChange,
+}: {
+  dynamic: RLDynamicMapping | undefined
+  v2Configs: string[]
+  onChange: (d: RLDynamicMapping) => void
+}) {
+  const dynamic = dynamicProp ?? { source: 'meta.', mappings: {} }
+  const dotIdx = dynamic.source.indexOf('.')
+  const sourcePrefix = dotIdx >= 0 ? dynamic.source.slice(0, dotIdx) : 'meta'
+  const sourceKey    = dotIdx >= 0 ? dynamic.source.slice(dotIdx + 1) : ''
+  const mappings     = dynamic.mappings ?? {}
+  const mappingEntries = Object.entries(mappings)
+
+  function updateSource(prefix: string, key: string) {
+    onChange({ ...dynamic, source: `${prefix}.${key}` })
+  }
+
+  function updateMappingVal(oldKey: string, newKey: string, cfg: string) {
+    const next = { ...mappings }
+    if (oldKey !== newKey) delete next[oldKey]
+    next[newKey] = cfg
+    onChange({ ...dynamic, mappings: next })
+  }
+
+  function updateMappingCfg(key: string, cfg: string) {
+    onChange({ ...dynamic, mappings: { ...mappings, [key]: cfg } })
+  }
+
+  function removeMapping(key: string) {
+    const next = { ...mappings }
+    delete next[key]
+    onChange({ ...dynamic, mappings: next })
+  }
+
+  function addMapping() {
+    const existing = Object.keys(mappings)
+    let k = 'value'
+    let n = 1
+    while (existing.includes(k)) k = `value${n++}`
+    onChange({ ...dynamic, mappings: { ...mappings, [k]: '' } })
+  }
+
+  const sourcePlaceholder = sourcePrefix === 'meta' ? 'tier' : sourcePrefix === 'header' ? 'X-Plan' : 'plan_slot'
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {/* Source picker */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 52 }}>Source:</span>
+        <select
+          className="input"
+          style={{ width: 90, marginTop: 0 }}
+          value={sourcePrefix}
+          onChange={e => updateSource(e.target.value, sourceKey)}
+        >
+          <option value="meta">meta</option>
+          <option value="header">header</option>
+          <option value="slot">slot</option>
+        </select>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>.</span>
+        <input
+          className="input"
+          style={{ flex: 1, maxWidth: 180, marginTop: 0 }}
+          placeholder={sourcePlaceholder}
+          value={sourceKey}
+          onChange={e => updateSource(sourcePrefix, e.target.value)}
+        />
+      </div>
+
+      {/* Mapping table */}
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>Runtime value → config name:</div>
+      {mappingEntries.length === 0 && (
+        <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 6 }}>No mappings — add at least one.</div>
+      )}
+      {mappingEntries.map(([val, cfg], i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 5 }}>
+          <input
+            className="input"
+            style={{ width: 100, marginTop: 0, fontSize: 11 }}
+            placeholder="e.g. free"
+            value={val}
+            onChange={e => updateMappingVal(val, e.target.value, cfg)}
+          />
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
+          {v2Configs.length > 0 ? (
+            <select
+              className="input"
+              style={{ flex: 1, maxWidth: 180, marginTop: 0, fontSize: 11 }}
+              value={cfg}
+              onChange={e => updateMappingCfg(val, e.target.value)}
+            >
+              <option value="">— config —</option>
+              {v2Configs.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          ) : (
+            <input
+              className="input"
+              style={{ flex: 1, maxWidth: 180, marginTop: 0, fontSize: 11 }}
+              placeholder="config name"
+              value={cfg}
+              onChange={e => updateMappingCfg(val, e.target.value)}
+            />
+          )}
+          <button
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 12, padding: '0 3px', lineHeight: 1 }}
+            onClick={() => removeMapping(val)}
+            title="Remove mapping"
+          >✕</button>
+        </div>
+      ))}
+      <button
+        className="btn muted"
+        style={{ width: 'auto', padding: '2px 10px', marginTop: 2, fontSize: 11 }}
+        onClick={addMapping}
+      >＋ Add mapping</button>
+      {dynamic.source && dynamic.source !== `${sourcePrefix}.` && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+          At runtime, reads{' '}
+          <code style={{ fontFamily: 'monospace', background: 'rgba(255,255,255,0.05)', padding: '1px 3px', borderRadius: 2 }}>
+            {dynamic.source}
+          </code>{' '}
+          and dispatches to the matching config.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function PolicyRow({
+  policy, v2Configs, onUpdate, onRemove, onToggleWindow, onSetWindowLimit, warning,
+}: {
+  policy: APIRateLimitEntry
+  v2Configs: string[]
+  onUpdate: (patch: Partial<APIRateLimitEntry>) => void
+  onRemove: () => void
+  onToggleWindow: (epochSec: number, checked: boolean) => void
+  onSetWindowLimit: (epochSec: number, limit: number) => void
+  warning?: RateLimitWarning
+}) {
+  const KIND_OPTIONS = [
+    { value: 'named',   label: 'Named' },
+    { value: 'fixed',   label: 'Fixed' },
+    { value: 'dynamic', label: 'Dynamic' },
+  ] as const
+
+  const hasBackendWarning = !!warning
+  const isConfigMissing   = warning?.code === 'config_missing'
+
+  return (
+    <div style={{
+      border: `1px solid ${isConfigMissing ? '#ef4444' : 'var(--border)'}`,
+      borderRadius: 6,
+      padding: '10px 12px',
+      marginBottom: 8,
+      background: isConfigMissing ? 'rgba(239,68,68,0.04)' : 'rgba(255,255,255,0.02)',
+    }}>
+      {/* Row header: kind toggle + remove button */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        {/* Per-row status icon — backend warning takes precedence over client-side */}
+        {hasBackendWarning ? (
+          <span
+            style={{ fontSize: 12, color: '#ef4444', fontWeight: 600, minWidth: 14, textAlign: 'center', cursor: 'help' }}
+            title={warning!.message}
+          >
+            ✗
+          </span>
+        ) : (() => {
+          const s = computeRowStatus(policy, v2Configs)
+          return (
+            <span style={{ fontSize: 12, color: s.color, fontWeight: 600, minWidth: 14, textAlign: 'center' }} title={s.title}>
+              {s.icon}
+            </span>
+          )
+        })()}
+
+        {/* Kind pill toggle */}
+        <div style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 4, padding: 2, border: '1px solid var(--border)' }}>
+          {KIND_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              style={{
+                padding: '2px 10px',
+                fontSize: 11,
+                border: 'none',
+                borderRadius: 3,
+                cursor: 'pointer',
+                background: policy.kind === opt.value ? 'var(--accent)' : 'transparent',
+                color: policy.kind === opt.value ? '#fff' : 'var(--muted)',
+                fontWeight: policy.kind === opt.value ? 600 : 400,
+                transition: 'all 0.1s',
+              }}
+              onClick={() => {
+                const patch: Partial<APIRateLimitEntry> = { kind: opt.value }
+                if (opt.value === 'named')   { patch.windows = undefined; patch.dynamic = undefined }
+                if (opt.value === 'fixed')   { patch.config = undefined; patch.dynamic = undefined; if (!policy.windows?.length) patch.windows = [] }
+                if (opt.value === 'dynamic') { patch.config = undefined; patch.windows = undefined; patch.dynamic = patch.dynamic ?? { source: 'meta.', mappings: {} } }
+                onUpdate(patch)
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Remove button */}
+        <button
+          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 14, padding: '0 4px', lineHeight: 1 }}
+          onClick={onRemove}
+          title="Remove this rate limit entry"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Named: config dropdown */}
+      {policy.kind === 'named' && (
+        <div style={{ marginBottom: 8 }}>
+          {v2Configs.length === 0 ? (
+            <div style={{
+              fontSize: 11, color: 'var(--muted)',
+              background: 'var(--accent-bg)', border: '1px solid var(--border)',
+              borderRadius: 4, padding: '6px 10px',
+            }}>
+              No configs yet — go to <strong>Rate Limits</strong> in the sidebar to create one.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 48 }}>Config:</span>
+                <select
+                  className="input"
+                  style={{ maxWidth: 240, marginTop: 0, borderColor: isConfigMissing ? '#ef4444' : undefined }}
+                  value={policy.config ?? ''}
+                  onChange={e => onUpdate({ config: e.target.value })}
+                >
+                  <option value="">— select config —</option>
+                  {v2Configs.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              {isConfigMissing && (
+                <div style={{ fontSize: 11, color: '#ef4444', paddingLeft: 56 }}>
+                  Config not found — go to <strong>Rate Limits</strong> to create it.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Fixed: window checkboxes with limit inputs */}
+      {policy.kind === 'fixed' && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>Windows (check to enable):</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {WINDOW_EPOCH_SECS.map(epochSec => {
+              const win = (policy.windows ?? []).find(w => w.epoch_sec === epochSec)
+              const checked = !!win
+              return (
+                <div key={epochSec} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => onToggleWindow(epochSec, e.target.checked)}
+                  />
+                  <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 70 }}>{WINDOW_LABELS[epochSec]}</span>
+                  {checked && (
+                    <>
+                      <input
+                        type="number"
+                        className="input"
+                        style={{ width: 90, marginTop: 0, textAlign: 'right' }}
+                        placeholder="limit"
+                        min={0}
+                        value={win?.limit ?? 0}
+                        onChange={e => {
+                          const v = parseInt(e.target.value, 10)
+                          onSetWindowLimit(epochSec, Number.isFinite(v) && v >= 0 ? v : 0)
+                        }}
+                      />
+                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>req</span>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          {(policy.windows ?? []).length === 0 && (
+            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>At least one window required.</div>
+          )}
+        </div>
+      )}
+
+      {/* Dynamic: source picker + mapping table */}
+      {policy.kind === 'dynamic' && (
+        <DynamicRLEditor
+          dynamic={policy.dynamic}
+          v2Configs={v2Configs}
+          onChange={d => onUpdate({ dynamic: d })}
+        />
+      )}
+
+      {/* Count by */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 58 }}>Count by:</span>
+        <select
+          className="input"
+          style={{ maxWidth: 200, marginTop: 0 }}
+          value={policy.count_by}
+          onChange={e => onUpdate({ count_by: e.target.value as APIRateLimitEntry['count_by'], slot_source: undefined })}
+        >
+          <option value="tenant">Per tenant</option>
+          <option value="ip">Per IP</option>
+          <option value="global">Global</option>
+          <option value="slot">Per slot</option>
+          <option value="static">Static key</option>
+        </select>
+      </div>
+
+      {/* Slot source */}
+      {policy.count_by === 'slot' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 58 }}>Slot:</span>
+          <input
+            className="input"
+            style={{ flex: 1, maxWidth: 200, marginTop: 0 }}
+            placeholder="slot name (e.g. user_id)"
+            value={policy.slot_source ?? ''}
+            onChange={e => onUpdate({ slot_source: e.target.value || undefined })}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RateLimitPoliciesSection({
+  policies,
+  skipRateLimit,
+  v2Configs,
+  isEndpoint,
+  onUpdatePolicies,
+  onUpdateSkip,
+  warnings = [],
+}: {
+  policies: APIRateLimitEntry[]
+  skipRateLimit: boolean
+  v2Configs: string[]
+  isEndpoint: boolean
+  onUpdatePolicies: (v: APIRateLimitEntry[]) => void
+  onUpdateSkip: (v: boolean) => void
+  warnings?: RateLimitWarning[]
+}) {
+  const [collapsed, setCollapsed] = useState(true)
+
+  function updateRow(idx: number, patch: Partial<APIRateLimitEntry>) {
+    onUpdatePolicies(policies.map((p, i) => i === idx ? { ...p, ...patch } : p))
+  }
+
+  function removeRow(idx: number) {
+    onUpdatePolicies(policies.filter((_, i) => i !== idx))
+  }
+
+  function addRow() {
+    onUpdatePolicies([...policies, defaultRLPolicy()])
+    setCollapsed(false)
+  }
+
+  function toggleWindow(rowIdx: number, epochSec: number, checked: boolean) {
+    const p = policies[rowIdx]
+    const windows: RLFixedWindow[] = p.windows ?? []
+    if (checked) {
+      onUpdatePolicies(policies.map((pp, i) => i !== rowIdx ? pp : {
+        ...pp, windows: [...windows, { epoch_sec: epochSec, limit: 0 }],
+      }))
+    } else {
+      onUpdatePolicies(policies.map((pp, i) => i !== rowIdx ? pp : {
+        ...pp, windows: windows.filter(w => w.epoch_sec !== epochSec),
+      }))
+    }
+  }
+
+  function setWindowLimit(rowIdx: number, epochSec: number, limit: number) {
+    onUpdatePolicies(policies.map((pp, i) => i !== rowIdx ? pp : {
+      ...pp, windows: (pp.windows ?? []).map(w => w.epoch_sec === epochSec ? { ...w, limit } : w),
+    }))
+  }
+
+  const hasActive = policies.length > 0
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+          padding: '6px 0', borderTop: '1px solid var(--border)',
+          userSelect: 'none',
+        }}
+        onClick={() => setCollapsed(c => !c)}
+      >
+        <span style={{
+          fontSize: 10, color: 'var(--muted)',
+          transform: collapsed ? 'rotate(-90deg)' : 'none',
+          display: 'inline-block', transition: 'transform 0.15s',
+        }}>▼</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          Rate Limit Policies
+        </span>
+        {hasActive && (
+          <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 4 }}>
+            {policies.length} entr{policies.length === 1 ? 'y' : 'ies'}
+          </span>
+        )}
+        {skipRateLimit && (
+          <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>skipped</span>
+        )}
+        {warnings.length > 0 && !skipRateLimit && (
+          <span style={{ fontSize: 10, color: '#ef4444', marginLeft: 4 }} title={warnings.map(w => w.message).join('\n')}>
+            ⚠ {warnings.length} warning{warnings.length === 1 ? '' : 's'}
+          </span>
+        )}
+        {isEndpoint && <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>(endpoint)</span>}
+      </div>
+      {!collapsed && (
+        <div style={{ paddingTop: 10 }}>
+          {/* Policy rows */}
+          {policies.map((policy, idx) => {
+            const rowWarn = warnings.find(w => w.row === idx && w.code !== 'not_enforced' && w.code !== 'no_flow')
+            return (
+              <PolicyRow
+                key={idx}
+                policy={policy}
+                v2Configs={v2Configs}
+                onUpdate={patch => updateRow(idx, patch)}
+                onRemove={() => removeRow(idx)}
+                onToggleWindow={(epochSec, checked) => toggleWindow(idx, epochSec, checked)}
+                onSetWindowLimit={(epochSec, limit) => setWindowLimit(idx, epochSec, limit)}
+                warning={rowWarn}
+              />
+            )
+          })}
+
+          {policies.length === 0 && !skipRateLimit && (
+            <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 0', fontStyle: 'italic' }}>
+              No rate limit policies configured.
+            </div>
+          )}
+
+          {/* Add button */}
+          <button
+            className="btn muted"
+            style={{ width: 'auto', padding: '4px 12px', marginTop: 4, fontSize: 12 }}
+            onClick={addRow}
+          >
+            ＋ Add rate limit
+          </button>
+
+          {/* Skip checkbox */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <input
+              type="checkbox"
+              id={`skip-rl-${isEndpoint ? 'ep' : 'api'}`}
+              checked={skipRateLimit}
+              onChange={e => onUpdateSkip(e.target.checked)}
+            />
+            <label
+              htmlFor={`skip-rl-${isEndpoint ? 'ep' : 'api'}`}
+              style={{ fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}
+            >
+              Skip rate limiting on this {isEndpoint ? 'endpoint' : 'API'}
+            </label>
+          </div>
+
+          {/* Flow enforcement status + backend warnings */}
+          <div style={{
+            marginTop: 10, fontSize: 11, color: 'var(--muted)', lineHeight: 1.6,
+            borderTop: '1px solid var(--border)', paddingTop: 10,
+            display: 'flex', flexDirection: 'column', gap: 6,
+          }}>
+            {skipRateLimit ? (
+              <span style={{ color: '#f59e0b' }}>
+                Rate limiting is skipped for this {isEndpoint ? 'endpoint' : 'API'}.
+              </span>
+            ) : policies.length > 0 ? (() => {
+              const noFlow       = warnings.find(w => w.code === 'no_flow')
+              const notEnforced  = warnings.find(w => w.code === 'not_enforced')
+              return (
+                <>
+                  {noFlow && (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: '#ef4444' }}>
+                      <span style={{ flexShrink: 0, marginTop: 1 }}>✗</span>
+                      <span><strong>No flow:</strong> {noFlow.message}</span>
+                    </div>
+                  )}
+                  {notEnforced && !noFlow && (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: '#f59e0b' }}>
+                      <span style={{ flexShrink: 0, marginTop: 1 }}>⚠</span>
+                      <span>
+                        <strong>Not enforced in flow</strong> — auto-inject will apply on next deploy.
+                        Place an <strong>API Rate Limits</strong> block in the flow to control the position.
+                      </span>
+                    </div>
+                  )}
+                  {!noFlow && !notEnforced && (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                      <span style={{ color: '#57b5ff', flexShrink: 0, marginTop: 1 }}>ℹ</span>
+                      <span>
+                        <strong>Flow enforcement:</strong> these limits are auto-injected at the start of the flow.
+                        Place an <strong>API Rate Limits</strong> block in the flow to control the exact position.
+                      </span>
+                    </div>
+                  )}
+                </>
+              )
+            })() : (
+              <span>No rate limit policies configured. Use &ldquo;＋ Add rate limit&rdquo; to add one.</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Constants Editor ─────────────────────────────────────────────────────────
 
 function ConstantsEditor({
   constants,
   onChange,
+  isEndpoint,
 }: {
   constants: Record<string, string>
   onChange: (c: Record<string, string>) => void
+  isEndpoint?: boolean
 }) {
   const [newKey, setNewKey] = useState('')
   const [newVal, setNewVal] = useState('')
+  const [keyError, setKeyError] = useState('')
   const entries = Object.entries(constants)
+
+  const handleAddConstant = () => {
+    const trimmedKey = newKey.trim()
+
+    // Validate: empty key
+    if (!trimmedKey) {
+      setKeyError('Key cannot be empty')
+      return
+    }
+
+    // Validate: duplicate key
+    if (constants.hasOwnProperty(trimmedKey)) {
+      setKeyError(`Key "${trimmedKey}" already exists`)
+      return
+    }
+
+    // All good
+    setKeyError('')
+    onChange({ ...constants, [trimmedKey]: newVal.trim() })
+    setNewKey('')
+    setNewVal('')
+  }
+
+  const handleKeyChange = (val: string) => {
+    setNewKey(val)
+    // Clear error if user starts typing a non-empty value
+    if (keyError && val.trim()) {
+      setKeyError('')
+    }
+  }
 
   return (
     <div>
+      <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
+        These values are injected before the flow runs. Reference them in flow steps using
+        the key name (e.g., <code style={{ fontFamily: 'monospace', color: 'var(--accent)' }}>as: "service_code"</code>).
+        {isEndpoint && ' Endpoint-level values override API-level values for the same key.'}
+      </p>
       {entries.map(([k, v]) => (
         <div key={k} style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
           <code style={{ fontSize: 11, minWidth: 100, color: 'var(--accent)' }}>{k}</code>
@@ -703,7 +2154,8 @@ function ConstantsEditor({
           placeholder="name"
           style={{ width: 100, padding: '2px 8px', fontSize: 12 }}
           value={newKey}
-          onChange={e => setNewKey(e.target.value)}
+          onChange={e => handleKeyChange(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleAddConstant()}
         />
         <input
           className="input"
@@ -711,17 +2163,20 @@ function ConstantsEditor({
           style={{ flex: 1, padding: '2px 8px', fontSize: 12 }}
           value={newVal}
           onChange={e => setNewVal(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleAddConstant()}
         />
         <button
           className="btn muted"
           style={{ padding: '2px 8px', fontSize: 11, marginTop: 0 }}
-          onClick={() => {
-            if (!newKey.trim()) return
-            onChange({ ...constants, [newKey.trim()]: newVal.trim() })
-            setNewKey(''); setNewVal('')
-          }}
+          onClick={handleAddConstant}
         >+ Add</button>
       </div>
+      {keyError && (
+        <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span>⚠</span>
+          <span>{keyError}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -739,17 +2194,43 @@ interface ApiDetailProps {
   onRemoveAlias: (index: number) => void
   rateLimitConfigs: string[]
   rateLimitError: boolean
-  onUpdateRateLimit: (name: string) => void
+  rateLimitCountBy: RateLimitCountBy | undefined
+  rateLimitConfig: RateLimitConfigSource | undefined
+  onUpdateRateLimitCountBy: (v: RateLimitCountBy | undefined) => void
+  onUpdateRateLimitConfig: (v: RateLimitConfigSource | undefined) => void
+  onCreateRateLimit: (name: string, perSec: number, perMin: number, burst: number) => Promise<void>
   onSync: () => void
   syncStatus: 'idle'|'syncing'|'done'|'error'
   constants: Record<string, string>
   onUpdateConstants: (c: Record<string, string>) => void
+  upstreamUrl: UpstreamUrlConfig | undefined
+  onUpdateUpstreamUrl: (u: UpstreamUrlConfig | undefined) => void
+  // V2 rate limit fields
+  rlCountBy: RateLimitCountByV2 | undefined
+  rlConfigRef: RateLimitConfigRef | undefined
+  upstreamService: string | undefined
+  v2Configs: string[]
+  onUpdateRlCountBy: (v: RateLimitCountByV2 | undefined) => void
+  onUpdateRlConfigRef: (v: RateLimitConfigRef | undefined) => void
+  onUpdateUpstreamService: (v: string | undefined) => void
+  // Multi-entry rate limit policies
+  rateLimitPolicies: APIRateLimitEntry[]
+  skipRateLimit: boolean
+  onUpdateRateLimitPolicies: (v: APIRateLimitEntry[]) => void
+  onUpdateSkipRateLimit: (v: boolean) => void
+  /** Warnings returned from the last sync for this API */
+  rlWarnings: RateLimitWarning[]
 }
 
 function ApiDetailPanel({
   api, flows, onRemove, onUpdateDefaultFlow, onSelectEndpoint, onAddEndpoint, onNavigateToDesigner, onRemoveAlias,
-  rateLimitConfigs, rateLimitError, onUpdateRateLimit, onSync, syncStatus,
+  rateLimitConfigs, rateLimitError, rateLimitCountBy, rateLimitConfig, onUpdateRateLimitCountBy, onUpdateRateLimitConfig, onCreateRateLimit,
+  onSync, syncStatus,
   constants, onUpdateConstants,
+  upstreamUrl, onUpdateUpstreamUrl,
+  rlCountBy, rlConfigRef, upstreamService, v2Configs, onUpdateRlCountBy, onUpdateRlConfigRef, onUpdateUpstreamService,
+  rateLimitPolicies, skipRateLimit, onUpdateRateLimitPolicies, onUpdateSkipRateLimit,
+  rlWarnings,
 }: ApiDetailProps) {
   const [confirmRemove, setConfirmRemove] = useState(false)
   const flowNames = flows.map(f => f.name)
@@ -848,32 +2329,47 @@ function ApiDetailPanel({
           )}
         </Section>
 
-        {/* Rate limit */}
-        <Section label="Rate Limit" style={{ marginTop: 20 }}>
-          <select
-            className="input"
-            style={{ maxWidth: 280, marginTop: 0 }}
-            value={api.rateLimitName ?? ''}
-            onChange={e => onUpdateRateLimit(e.target.value)}
-          >
-            <option value="">— none —</option>
-            {rateLimitConfigs.map(n => <option key={n} value={n}>{n}</option>)}
-          </select>
-          {rateLimitError && (
-            <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
-              Could not load configs — is the gateway running?
-            </p>
-          )}
-          {!rateLimitError && rateLimitConfigs.length === 0 && (
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-              No rate limit configs yet — create one in the Tenants tab.
-            </p>
-          )}
+        {/* Upstream URL */}
+        <Section label="Upstream URL" style={{ marginTop: 20 }}>
+          <UpstreamUrlEditor value={upstreamUrl} onChange={onUpdateUpstreamUrl} />
         </Section>
 
-        {/* Route Constants */}
-        <Section label="Route Constants" style={{ marginTop: 20 }}>
-          <ConstantsEditor constants={constants} onChange={onUpdateConstants} />
+        {/* Rate limit */}
+        <Section label="Rate Limit" style={{ marginTop: 20 }}>
+          <RateLimitEditor
+            rateLimitCountBy={rateLimitCountBy}
+            rateLimitConfig={rateLimitConfig}
+            rateLimitConfigs={rateLimitConfigs}
+            rateLimitError={rateLimitError}
+            isEndpoint={false}
+            onUpdateCountBy={onUpdateRateLimitCountBy}
+            onUpdateConfig={onUpdateRateLimitConfig}
+            onCreateConfig={onCreateRateLimit}
+          />
+          <RateLimitV2Section
+            rlCountBy={rlCountBy}
+            rlConfigRef={rlConfigRef}
+            upstreamService={upstreamService}
+            v2Configs={v2Configs}
+            isEndpoint={false}
+            onUpdateCountBy={onUpdateRlCountBy}
+            onUpdateConfigRef={onUpdateRlConfigRef}
+            onUpdateUpstreamService={onUpdateUpstreamService}
+          />
+          <RateLimitPoliciesSection
+            policies={rateLimitPolicies}
+            skipRateLimit={skipRateLimit}
+            v2Configs={v2Configs}
+            isEndpoint={false}
+            onUpdatePolicies={onUpdateRateLimitPolicies}
+            onUpdateSkip={onUpdateSkipRateLimit}
+            warnings={rlWarnings}
+          />
+        </Section>
+
+        {/* Pre-set Variables */}
+        <Section label="Pre-set Variables" style={{ marginTop: 20 }}>
+          <ConstantsEditor constants={constants} onChange={onUpdateConstants} isEndpoint={false} />
         </Section>
 
         {/* Endpoints table */}
@@ -950,16 +2446,38 @@ interface EndpointDetailProps {
   onNavigateToDeploy: () => void
   rateLimitConfigs: string[]
   rateLimitError: boolean
-  onUpdateRateLimit: (name: string) => void
+  rateLimitCountBy: RateLimitCountBy | undefined
+  rateLimitConfig: RateLimitConfigSource | undefined
+  onUpdateRateLimitCountBy: (v: RateLimitCountBy | undefined) => void
+  onUpdateRateLimitConfig: (v: RateLimitConfigSource | undefined) => void
+  onCreateRateLimit: (name: string, perSec: number, perMin: number, burst: number) => Promise<void>
   constants: Record<string, string>
   onUpdateConstants: (c: Record<string, string>) => void
+  upstreamUrl: UpstreamUrlConfig | undefined
+  onUpdateUpstreamUrl: (u: UpstreamUrlConfig | undefined) => void
+  // V2 rate limit fields
+  rlCountBy: RateLimitCountByV2 | undefined
+  rlConfigRef: RateLimitConfigRef | undefined
+  upstreamService: string | undefined
+  v2Configs: string[]
+  onUpdateRlCountBy: (v: RateLimitCountByV2 | undefined) => void
+  onUpdateRlConfigRef: (v: RateLimitConfigRef | undefined) => void
+  onUpdateUpstreamService: (v: string | undefined) => void
+  // Multi-entry rate limit policies
+  rateLimitPolicies: APIRateLimitEntry[]
+  skipRateLimit: boolean
+  onUpdateRateLimitPolicies: (v: APIRateLimitEntry[]) => void
+  onUpdateSkipRateLimit: (v: boolean) => void
 }
 
 function EndpointDetailPanel({
   api, endpoint, flows, onRemove, onSetFlow, onClearOverride,
   onNavigateToDesigner, onNavigateToDeploy,
-  rateLimitConfigs, rateLimitError, onUpdateRateLimit,
+  rateLimitConfigs, rateLimitError, rateLimitCountBy, rateLimitConfig, onUpdateRateLimitCountBy, onUpdateRateLimitConfig, onCreateRateLimit,
   constants, onUpdateConstants,
+  upstreamUrl, onUpdateUpstreamUrl,
+  rlCountBy, rlConfigRef, upstreamService, v2Configs, onUpdateRlCountBy, onUpdateRlConfigRef, onUpdateUpstreamService,
+  rateLimitPolicies, skipRateLimit, onUpdateRateLimitPolicies, onUpdateSkipRateLimit,
 }: EndpointDetailProps) {
   const [showOverridePicker, setShowOverridePicker] = useState(false)
   const [confirmRemove,      setConfirmRemove]      = useState(false)
@@ -1065,32 +2583,54 @@ function EndpointDetailPanel({
           )}
         </Section>
 
-        {/* Rate limit */}
-        <Section label="Rate Limit" style={{ marginTop: 20 }}>
-          <select
-            className="input"
-            style={{ maxWidth: 280, marginTop: 0 }}
-            value={endpoint.rateLimitName ?? ''}
-            onChange={e => onUpdateRateLimit(e.target.value)}
-          >
-            <option value="">— inherit from API —</option>
-            {rateLimitConfigs.map(n => <option key={n} value={n}>{n}</option>)}
-          </select>
-          {rateLimitError && (
-            <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
-              Could not load configs — is the gateway running?
-            </p>
-          )}
-          {!rateLimitError && rateLimitConfigs.length === 0 && (
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
-              No rate limit configs yet — create one in the Tenants tab.
-            </p>
-          )}
+        {/* Upstream URL */}
+        <Section label="Upstream URL" style={{ marginTop: 20 }}>
+          <UpstreamUrlEditor
+            value={endpoint.upstreamUrl}
+            onChange={onUpdateUpstreamUrl}
+            inheritLabel={
+              api.upstreamUrl
+                ? `Inherit from API (${SOURCE_LABELS[api.upstreamUrl.source]}: ${api.upstreamUrl.value || '…'})`
+                : '— inherit from API (none set) —'
+            }
+          />
         </Section>
 
-        {/* Route Constants */}
-        <Section label="Route Constants" style={{ marginTop: 20 }}>
-          <ConstantsEditor constants={constants} onChange={onUpdateConstants} />
+        {/* Rate limit */}
+        <Section label="Rate Limit" style={{ marginTop: 20 }}>
+          <RateLimitEditor
+            rateLimitCountBy={rateLimitCountBy}
+            rateLimitConfig={rateLimitConfig}
+            rateLimitConfigs={rateLimitConfigs}
+            rateLimitError={rateLimitError}
+            isEndpoint={true}
+            onUpdateCountBy={onUpdateRateLimitCountBy}
+            onUpdateConfig={onUpdateRateLimitConfig}
+            onCreateConfig={onCreateRateLimit}
+          />
+          <RateLimitV2Section
+            rlCountBy={rlCountBy}
+            rlConfigRef={rlConfigRef}
+            upstreamService={upstreamService}
+            v2Configs={v2Configs}
+            isEndpoint={true}
+            onUpdateCountBy={onUpdateRlCountBy}
+            onUpdateConfigRef={onUpdateRlConfigRef}
+            onUpdateUpstreamService={onUpdateUpstreamService}
+          />
+          <RateLimitPoliciesSection
+            policies={rateLimitPolicies}
+            skipRateLimit={skipRateLimit}
+            v2Configs={v2Configs}
+            isEndpoint={true}
+            onUpdatePolicies={onUpdateRateLimitPolicies}
+            onUpdateSkip={onUpdateSkipRateLimit}
+          />
+        </Section>
+
+        {/* Pre-set Variables */}
+        <Section label="Pre-set Variables" style={{ marginTop: 20 }}>
+          <ConstantsEditor constants={constants} onChange={onUpdateConstants} isEndpoint={true} />
         </Section>
 
         {/* Flow states */}

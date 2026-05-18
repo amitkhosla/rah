@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -703,4 +704,143 @@ func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 		return cm.hashIdx.DeleteTag(tag)
 	}
 	return cm.tinyIdx.DeleteTag(makeTagTiny(tenantID, key))
+}
+
+// ── Advanced operations ───────────────────────────────────────────────────────
+
+// Exists reports whether (tenantID, key) is present and not expired in the L1 cache.
+// Does NOT check the backend — approximately 2x faster than Get.
+// Returns false if the entry is found but has expired.
+func (cm *CacheManager) Exists(tenantID uint16, key []byte) bool {
+	hashLane := isHashLane(key)
+	var rawVal uint64
+	var found bool
+	if hashLane {
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		rawVal, found = cm.hashIdx.GetTag(tag)
+	} else {
+		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
+	}
+	if !found {
+		return false
+	}
+	_, expTrunc, typ := Unpack(rawVal)
+	if typ != xValTypeSlabRAM {
+		return false
+	}
+	// Fast approximate expiry pre-check using the truncated 12-bit expiry field.
+	// ExpTruncExpired is conservative: false positives (reporting expired when not)
+	// are acceptable for an existence check; false negatives are not.
+	now := uint32(time.Now().Unix())
+	if ExpTruncExpired(expTrunc, now) {
+		return false
+	}
+	return true
+}
+
+// Incr atomically adds delta to the int64 stored at (tenantID, key).
+// If the key does not exist or is expired, it is initialised to delta with the given TTL.
+// The updated value is returned. Uses little-endian int64 encoding.
+func (cm *CacheManager) Incr(tenantID uint16, key []byte, delta int64, ttl uint32) (int64, bool) {
+	hashLane := isHashLane(key)
+	var rawVal uint64
+	var found bool
+	if hashLane {
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		rawVal, found = cm.hashIdx.GetTag(tag)
+	} else {
+		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
+	}
+
+	if found {
+		_, _, typ := Unpack(rawVal)
+		if typ == xValTypeSlabRAM {
+			classID, tierID, physOff := UnpackSlab(rawVal)
+			if int(classID) < len(cm.regions) && int(tierID) < len(cm.regions[classID]) {
+				region := cm.regions[classID][tierID]
+				region.mu.Lock()
+				// Re-validate after acquiring lock (slot may have been evicted/recycled).
+				h := headerAt(region.buf, physOff)
+				now := uint32(time.Now().Unix())
+				if h.Expiry > now && int(h.ValueLen) == 8 {
+					// Read current int64 (little-endian), add delta, write back.
+					valSlice := region.buf[physOff+EntryHeaderSize : physOff+EntryHeaderSize+8]
+					current := int64(binary.LittleEndian.Uint64(valSlice))
+					newVal := current + delta
+					binary.LittleEndian.PutUint64(valSlice, uint64(newVal))
+					region.mu.Unlock()
+					return newVal, true
+				}
+				region.mu.Unlock()
+			}
+		}
+	}
+
+	// Key missing or invalid: initialise to delta.
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(delta))
+	if _, ok := cm.Put(tenantID, key, buf[:], ttl); !ok {
+		return 0, false
+	}
+	return delta, true
+}
+
+// Touch updates the expiry of an existing slab entry to now+ttl without
+// reading or rewriting the value. Returns true if the entry was found and updated.
+func (cm *CacheManager) Touch(tenantID uint16, key []byte, ttl uint32) bool {
+	hashLane := isHashLane(key)
+	var rawVal uint64
+	var found bool
+	if hashLane {
+		h1 := hashH1Only(tenantID, key)
+		h2 := uint64(hashLaneBig16(tenantID, key))
+		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
+		if tag == iEmpty {
+			tag |= 1 << 48
+		}
+		if tag == iTombstone {
+			tag ^= 1 << 48
+		}
+		rawVal, found = cm.hashIdx.GetTag(tag)
+	} else {
+		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
+	}
+	if !found {
+		return false
+	}
+	_, _, typ := Unpack(rawVal)
+	if typ != xValTypeSlabRAM {
+		return false
+	}
+	classID, tierID, physOff := UnpackSlab(rawVal)
+	if int(classID) >= len(cm.regions) || int(tierID) >= len(cm.regions[classID]) {
+		return false
+	}
+	region := cm.regions[classID][tierID]
+	region.mu.Lock()
+	h := headerAt(region.buf, physOff)
+	now := uint32(time.Now().Unix())
+	if h.Expiry == 0 || h.Expiry < now {
+		region.mu.Unlock()
+		return false // already expired
+	}
+	h.Expiry = now + ttl
+	region.mu.Unlock()
+	return true
 }

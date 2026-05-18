@@ -1,8 +1,9 @@
 /**
  * dsl_serialize.ts  —  FlowStep[] → DSL text
- * Exports: serializeDSL
+ * Exports: serializeDSL, serializePatternCondition
  */
-import type { FlowStep } from '../types'
+import type { FlowStep, PatternCondition } from '../types'
+import { isPatternCondition } from '../types'
 
 const q = (s: string) => /[,:{}"'\s()]/.test(s) ? `"${s.replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"` : s
 
@@ -14,6 +15,31 @@ function params(step: FlowStep, skip: Set<string>): string {
 }
 
 const str = (v: unknown) => String(v ?? '')
+
+/** Serialize a PatternCondition object back to DSL object format.
+ *  Returns object with type, source, pattern, and optional fields.
+ *  Only includes optional fields if they are set (keeps DSL clean).
+ */
+export function serializePatternCondition(cond: PatternCondition): Record<string, any> {
+  const dslStep: Record<string, any> = {
+    type: cond.type,
+    source: cond.source,
+    pattern: cond.pattern,
+  }
+
+  // Add optional fields only if set
+  if (cond.sourceKey) {
+    dslStep.sourceKey = cond.sourceKey
+  }
+  if (cond.strategy && cond.strategy !== 'auto') {
+    dslStep.strategy = cond.strategy
+  }
+  if (cond.flags) {
+    dslStep.flags = cond.flags
+  }
+
+  return dslStep
+}
 
 export function serializeDSL(steps: FlowStep[], indent = ''): string {
   const lines: string[] = []
@@ -179,6 +205,14 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
         const key = str(step['key_identifier']); const ttl = str(step['ttl'])
         lines.push(`${I}shared_cache.set("${key}", ${src}, ttl: ${ttl || '3600'})`); break
       }
+      case 'cache_delete': {
+        const key = str(step['key_identifier'])
+        lines.push(`${I}cache.delete(${key})`); break
+      }
+      case 'cache_delete_global': {
+        const key = str(step['key_identifier'])
+        lines.push(`${I}shared_cache.delete("${key}")`); break
+      }
       case 'cache_get_batched': {
         const v = str(step['variable']); const d = str(step['destination'])
         lines.push(`${I}cache.get_batched(${v}, into: ${d})`); break
@@ -305,6 +339,22 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
         lines.push(`${I}${fn}(${[...parts, ...extras].join(', ')})`); break
       }
 
+      // ── template pattern matching ─────────────────────────────────────────
+      case 'validate_pattern': {
+        const src = str(step['source'])
+        const pat = str(JSON.parse(str(step['input'] || '{}')).pattern ?? '')
+        const as_ = str(step['as'])
+        const lhs = as_ ? `${as_} = ` : ''
+        lines.push(`${I}${lhs}validatePattern(${src}, '${pat}')`)
+        break
+      }
+      case 'extract_pattern': {
+        const src = str(step['source'])
+        const pat = str(JSON.parse(str(step['input'] || '{}')).pattern ?? '')
+        lines.push(`${I}extract(${src}, '${pat}')`)
+        break
+      }
+
       // ── observability ─────────────────────────────────────────────────────
       case 'log_field':
         lines.push(`${I}log("${str(step['key'])}", ${str(step['source'])})`); break
@@ -345,11 +395,20 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
         lines.push(`${I}call ${str(step['flow_name'])}`); break
 
       case 'if': {
-        const cond  = str(step['condition'])
+        const condRaw  = step['condition']
+        let condStr = str(condRaw)
+
+        // Check if condition is a PatternCondition object
+        if (condRaw && typeof condRaw === 'object' && isPatternCondition(condRaw)) {
+          const patternObj = serializePatternCondition(condRaw)
+          // Serialize to JSON representation for DSL output
+          condStr = JSON.stringify(patternObj)
+        }
+
         const thenS = (step.then_steps ?? []) as FlowStep[]
         const elseS = (step.else_steps ?? []) as FlowStep[]
         const thenR = str(step['then']); const elseR = str(step['else'])
-        lines.push(`${I}if (${cond}) {`)
+        lines.push(`${I}if (${condStr}) {`)
         if (thenS.length) lines.push(serializeDSL(thenS, I2))
         else if (thenR) lines.push(`${I2}call ${thenR}`)
         if (elseS.length || elseR) {

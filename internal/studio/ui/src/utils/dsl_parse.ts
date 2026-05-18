@@ -1,8 +1,8 @@
 /**
  * dsl_parse.ts  —  RAH Flow DSL parser
- * Exports: parseDSL, parseParams
+ * Exports: parseDSL, parseParams, parsePatternCondition, parseConditionFromStep
  */
-import type { FlowStep } from '../types'
+import type { FlowStep, PatternCondition } from '../types'
 
 // ── Template slot counter (reset per parseDSL call) ─────────────────────────
 let _tc = 0
@@ -184,6 +184,10 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       const pos = positional(2)
       return [mk({ action: 'cache_put_global', key_identifier: unquote(pos[0] ?? ''), source: pos[1] ?? '', ttl: p['ttl'] ?? '3600' })]
     }
+    case 'cache.delete':
+      return [mk({ action: 'cache_delete', key_identifier: positional(1)[0] ?? rawParams.trim() })]
+    case 'shared_cache.delete':
+      return [mk({ action: 'cache_delete_global', key_identifier: unquote(positional(1)[0] ?? rawParams) })]
     case 'cache.get_batched':
       return [mk({ action: 'cache_get_batched', variable: positional(1)[0] ?? '', destination: p['into'] ?? '' })]
     case 'batch_flush':
@@ -334,6 +338,24 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       const pos = positional(2)
       return [mk({ action: 'concat', key_identifier: pos[0] ?? '', source: pos[1] ?? '', ...withAs })]
     }
+    case 'validate_pattern': {
+      const pos = positional(2)  // arg0 = source slot, arg1 = quoted pattern string
+      return [mk({
+        action: 'validate_pattern',
+        source: unquote(pos[0] ?? ''),
+        input: JSON.stringify({ pattern: unquote(pos[1] ?? '') }),
+        ...withAs,
+      })]
+    }
+    case 'extract': {
+      const pos = positional(2)  // arg0 = source slot, arg1 = quoted pattern string
+      // No LHS assignment — capture variable names are embedded in the pattern
+      return [mk({
+        action: 'extract_pattern',
+        source: unquote(pos[0] ?? ''),
+        input: JSON.stringify({ pattern: unquote(pos[1] ?? '') }),
+      })]
+    }
     case 'to_int': return [mk({ action: 'to_int', source: positional(1)[0] ?? '', ...withAs })]
 
     // ── Math ───────────────────────────────────────────────────────────────
@@ -464,6 +486,69 @@ function parseBlock(lines: string[], start: number): BR {
     i++ // skip unknown line
   }
   return { steps, next: i }
+}
+
+// ── Pattern Matching Condition ──────────────────────────────────────────────
+/** Parse a pattern_match condition from a step object.
+ *  Handles both nested (step.condition: { type: 'pattern_match', ... })
+ *  and inline (step itself is pattern_match) formats.
+ */
+export function parsePatternCondition(step: any): PatternCondition | null {
+  if (!step) return null
+
+  // Check if condition is directly pattern_match
+  if (step.type === 'pattern_match') {
+    return {
+      type: 'pattern_match',
+      source: step.source || 'header',
+      sourceKey: step.sourceKey || step.input?.sourceKey,
+      pattern: step.pattern || step.input?.pattern || '',
+      strategy: step.strategy || step.input?.strategy || 'auto',
+      flags: step.flags || step.input?.flags,
+    }
+  }
+
+  // Check nested condition object
+  if (step.condition && typeof step.condition === 'object' && step.condition.type === 'pattern_match') {
+    return {
+      type: 'pattern_match',
+      source: step.condition.source || 'header',
+      sourceKey: step.condition.sourceKey || step.condition.input?.sourceKey,
+      pattern: step.condition.pattern || step.condition.input?.pattern || '',
+      strategy: step.condition.strategy || step.condition.input?.strategy || 'auto',
+      flags: step.condition.flags || step.condition.input?.flags,
+    }
+  }
+
+  return null
+}
+
+/** Parse condition from if/switch steps.
+ *  Returns PatternCondition if found, null otherwise.
+ */
+export function parseConditionFromStep(step: any): PatternCondition | null {
+  if (!step) return null
+
+  // Handle if step with nested condition object
+  if (step.action === 'if' && step.condition) {
+    if (typeof step.condition === 'object') {
+      return parsePatternCondition(step.condition)
+    }
+    // String conditions are not pattern conditions
+    return null
+  }
+
+  // Handle inline pattern_match (action: 'pattern_match' with then_steps/else_steps)
+  if (step.action === 'pattern_match') {
+    return parsePatternCondition(step)
+  }
+
+  // Handle switch step
+  if (step.action === 'switch' && step.condition) {
+    return parsePatternCondition(step.condition)
+  }
+
+  return null
 }
 
 // ── Public export ────────────────────────────────────────────────────────────

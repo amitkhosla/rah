@@ -10,6 +10,11 @@ import (
 // the execution loop terminates immediately.
 const StopPlan int16 = -1
 
+// StopCancelled is returned by steps when the client disconnects mid-flow.
+// The execute loop treats any negative PC as a stop signal; main.go checks
+// ctx.Cancelled to distinguish this from a flow error and returns 499.
+const StopCancelled int16 = -2
+
 // ExecutionState represents the "Control Plane".
 // It is allocated on the GOROUTINE STACK, not the heap.
 // This means the Garbage Collector (GC) never touches this object.

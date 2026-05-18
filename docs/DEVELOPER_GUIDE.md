@@ -161,7 +161,44 @@ go test -v ./internal/control/
 # Add MyStep to step compilation section
 ```
 
-### 5. Debugging Issues
+### 5. Using Pattern Matching in Flows
+
+Pattern matching allows conditional routing based on regex patterns. See `docs/packages/pattern_matching.md` for full details and examples.
+
+**Quick Start**:
+
+```yaml
+action: if
+condition:
+  type: pattern_match
+  source: header          # or: query, body, path
+  sourceKey: x-service    # header/query/body field name
+  pattern: "^api-"        # regex pattern
+  flags: "i"              # optional: i, m, s, x
+then_steps:
+  - action: http_call
+    upstream_url: "https://api-backend"
+else_steps:
+  - action: http_call
+    upstream_url: "https://web-backend"
+```
+
+**Key Points**:
+
+- Patterns are **compiled at deploy time** (bake-time), not per-request
+- Runtime matching is ~400-500ns (well within <5µs latency budget)
+- Use `flags: "i"` for case-insensitive matching
+- Supports full Go `regexp` syntax (RE2 dialect)
+- Pattern errors fail at deployment with clear messages
+
+**Common Examples**:
+
+- Service routing: `"^(api|data)-"` matches "api-gateway", "data-processor"
+- Email validation: `"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"`
+- UUID v4: `"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"`
+- SemVer: `"^v\\d+\\.\\d+\\.\\d+(-[a-z0-9.]+)?$"` with flags: "i"
+
+### 6. Debugging Issues
 
 **Performance regression**:
 ```bash
