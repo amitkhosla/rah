@@ -10,12 +10,31 @@ import (
 
 var client = GetClientFromPool()
 
+// hopByHopHeaders is the set of HTTP/1.1 hop-by-hop headers that must NOT be
+// forwarded to upstream services. Shared by ProxyStep and HttpAction.
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Transfer-Encoding":   {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Upgrade":             {},
+	"Proxy-Authorization": {},
+	"Proxy-Authenticate":  {},
+}
+
 func ProxyStep(targetUrl string) engine.Instruction {
 	return engine.Instruction{
 		Name: "Proxy",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			req, _ := http.NewRequest(ctx.MethodString(), targetUrl, ctx.GetBodyReader())
-			req.Header = ctx.Request.Header
+			req.Header = make(http.Header, len(ctx.Request.Header))
+			for key, vals := range ctx.Request.Header {
+				if _, skip := hopByHopHeaders[key]; skip {
+					continue
+				}
+				req.Header[key] = vals
+			}
 
 			for i := 0; i < ctx.MutationCount; i++ {
 				m := ctx.MutationLog[i]

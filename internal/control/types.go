@@ -28,6 +28,15 @@ type StepConfig struct {
 	KeyIdentifier  string            `json:"key_identifier,omitempty"`
 	Input          map[string]string `json:"input,omitempty"`
 
+	// http_call extended fields (S11)
+	BodyVar               string            `json:"body_var,omitempty"`
+	ContentType           string            `json:"content_type,omitempty"`
+	ResponseBodyVar       string            `json:"response_body_var,omitempty"`
+	ResponseStatusVar     string            `json:"response_status_var,omitempty"`
+	ResponseHeaderVars    map[string]string `json:"response_header_vars,omitempty"`
+	ForwardIncomingHeaders bool             `json:"forward_incoming_headers,omitempty"`
+	BlockHeaders          []string          `json:"block_headers,omitempty"`
+
 	// Logic & Branching
 	Condition string            `json:"condition,omitempty"` // String logic like "(header.Auth == 'y') && status"
 	Then      string            `json:"then,omitempty"`      // Subflow name to jump to if true

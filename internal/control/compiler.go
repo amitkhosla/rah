@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
@@ -221,21 +222,72 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.linkBreaks(exitID)
 
 	case "http_call":
-		urlSlot := -1
+		cfg := steps.HttpActionConfig{
+			StaticURL:              step.URL,
+			StaticMethod:           step.Method,
+			URLSlot:                -1,
+			MethodSlot:             -1,
+			BodySlot:               -1,
+			ContentTypeSlot:        -1,
+			ResponseBodySlot:       -1,
+			ResponseStatusSlot:     -1,
+			Timeout:                step.Timeout,
+			MaxRetries:             step.MaxRetries,
+			ForwardIncomingHeaders: step.ForwardIncomingHeaders,
+			FlowInput:              step.Input,
+		}
 		if step.UrlVar != "" {
-			var err error
-			urlSlot, err = c.getSlot(step.UrlVar)
+			s, err := c.getSlot(step.UrlVar)
 			if err != nil {
-				return err
+				return fmt.Errorf("http_call url_var: %w", err)
+			}
+			cfg.URLSlot = s
+		}
+		if step.BodyVar != "" {
+			s, err := c.getSlot(step.BodyVar)
+			if err != nil {
+				return fmt.Errorf("http_call body_var: %w", err)
+			}
+			cfg.BodySlot = s
+		}
+		if step.ResponseBodyVar != "" {
+			s, err := c.getSlot(step.ResponseBodyVar)
+			if err != nil {
+				return fmt.Errorf("http_call response_body_var: %w", err)
+			}
+			cfg.ResponseBodySlot = s
+		}
+		if step.ResponseStatusVar != "" {
+			s, err := c.getSlot(step.ResponseStatusVar)
+			if err != nil {
+				return fmt.Errorf("http_call response_status_var: %w", err)
+			}
+			cfg.ResponseStatusSlot = s
+		}
+		for hdrName, varName := range step.ResponseHeaderVars {
+			s, err := c.getSlot(varName)
+			if err != nil {
+				return fmt.Errorf("http_call response_header_vars[%s]: %w", hdrName, err)
+			}
+			cfg.ResponseHeaderSlots = append(cfg.ResponseHeaderSlots, steps.HeaderSlotBinding{HeaderName: hdrName, Slot: s})
+		}
+		if len(step.BlockHeaders) > 0 {
+			cfg.BlockHeadersMap = make(map[string]struct{}, len(step.BlockHeaders))
+			for _, h := range step.BlockHeaders {
+				cfg.BlockHeadersMap[http.CanonicalHeaderKey(h)] = struct{}{}
 			}
 		}
-		// Compile retry condition at bake time (S11 will wire it into HttpAction).
 		if step.RetryCondition != "" {
-			if _, compErr := steps.CompileCondition(step.RetryCondition, c.slotMap); compErr != nil {
+			cf, compErr := steps.CompileCondition(step.RetryCondition, c.slotMap)
+			if compErr != nil {
 				return fmt.Errorf("http_call retry_condition: %w", compErr)
 			}
+			cfg.RetryCondFunc = cf
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
+		if step.ContentType != "" {
+			cfg.StaticContentType = step.ContentType
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.HttpActionFromConfig(cfg))
 
 	case "llm_call":
 		return c.compileLLMCall(step)

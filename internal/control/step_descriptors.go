@@ -388,15 +388,26 @@ func AllStepDescriptors() []StepDescriptor {
 
 		// ── HTTP ─────────────────────────────────────────────────────────────────
 		{
-			Type: "http_call", Title: "HTTP Call", Category: "http", Capability: "upstream",
-			Description: "Make an outbound HTTP request and store the response body in a slot.",
-			Defaults: map[string]string{"url": "https://example.com/api", "timeout": "5000", "as": "http_resp"},
+			Type:        "http_call",
+			Title:       "HTTP Call",
+			Category:    "http",
+			Capability:  "upstream",
+			Description: "Make an outbound HTTP request. Captures response body, status, and headers into slots. Supports dynamic URL/body/content-type, MutationLog application, header forwarding, and condition-based retries.",
+			Defaults:    map[string]string{"url": "https://example.com/api", "timeout": "5000"},
 			Fields: []StepField{
 				sf("url", "URL", "Static upstream URL. Leave blank when using url_var.", "https://example.com/api"),
-				sf("url_var", "URL slot", "Slot name holding a dynamic URL (e.g. loaded via load_service_url). Takes precedence over url.", "upstream_url"),
-				sf("timeout", "Timeout (ms)", "Max wait in milliseconds before the request is aborted", "5000"),
-				sf("retry_condition", "Retry condition", "Boolean expression; request is retried when true (e.g. status >= 500)", "status >= 500"),
-				sf("max_retries", "Max retries", "Maximum retry attempts (0 = no retries)", "3"),
+				sf("url_var", "URL slot", "Slot holding a dynamic URL (e.g. from load_service_url). Takes precedence over url.", "upstream_url"),
+				sf("method", "HTTP method", "HTTP method: GET, POST, PUT, PATCH, DELETE. Defaults to GET.", "GET"),
+				sf("body_var", "Body slot", "Slot whose bytes are sent as the request body. Uses StagedRequestBody (set_request_body) when present.", "var.body"),
+				sf("content_type", "Content-Type", "Static Content-Type header for the request body (e.g. application/json).", "application/json"),
+				sf("response_body_var", "Response body slot", "Slot to store the response body bytes in. If omitted the body is discarded.", "var.resp_body"),
+				sf("response_status_var", "Response status slot (int)", "IntSlot name to store the HTTP response status code (int64). If omitted the status is not stored.", "var.resp_status"),
+				sf("response_header_vars", "Response header slots (JSON)", `JSON object mapping header name → slot name. e.g. {"X-Request-Id":"var.req_id"}`, `{"X-Request-Id":"var.req_id"}`),
+				sf("forward_incoming_headers", "Forward incoming headers", "When true, all non-hop-by-hop incoming request headers are forwarded upstream before applying block_headers.", "false"),
+				sf("block_headers", "Block headers (JSON array)", `JSON array of header names to suppress from the upstream request. e.g. ["Authorization","Cookie"]`, `["Authorization"]`),
+				sf("timeout", "Timeout (ms)", "Max wait in milliseconds before the request is aborted.", "5000"),
+				sf("retry_condition", "Retry condition", "Boolean expression evaluated after each attempt; retried when true (e.g. status >= 500).", "status >= 500"),
+				sf("max_retries", "Max retries", "Maximum retry attempts (0 = no retries).", "3"),
 			},
 		},
 

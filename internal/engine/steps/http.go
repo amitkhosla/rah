@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -18,6 +19,44 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// bytesReaderPool recycles bytes.Reader instances to avoid allocations in the hot path.
+var bytesReaderPool = sync.Pool{New: func() any { return new(bytes.Reader) }}
+
+// responseBodyPool recycles bytes.Buffer instances for capturing response bodies.
+var responseBodyPool = sync.Pool{New: func() any {
+	b := new(bytes.Buffer)
+	b.Grow(4096)
+	return b
+}}
+
+// HttpActionConfig holds the bake-time configuration for an http_call instruction.
+// All slot indices use -1 to indicate "not set / use static value".
+type HttpActionConfig struct {
+	StaticURL         string
+	StaticMethod      string
+	StaticContentType string
+	URLSlot           int // -1 = use StaticURL
+	MethodSlot        int // -1 = use StaticMethod (unused today; reserved for future)
+	BodySlot          int // -1 = use StagedRequestBody (or no body)
+	ContentTypeSlot   int // -1 = use StaticContentType or StagedContentType
+	Timeout           uint32
+	MaxRetries        int
+	RetryCondFunc     ConditionFunc // nil = no condition-based retry
+	ResponseBodySlot  int           // -1 = not captured
+	ResponseStatusSlot int          // -1 = not captured
+	ResponseHeaderSlots []HeaderSlotBinding
+	ForwardIncomingHeaders bool
+	BlockHeadersMap        map[string]struct{} // pre-built at bake time; nil = no blocking
+	// FlowInput carries http.* tuning keys forwarded from the step Input map.
+	FlowInput map[string]string
+}
+
+// HeaderSlotBinding maps one response header name to a ByteSlots index.
+type HeaderSlotBinding struct {
+	HeaderName string
+	Slot       int
+}
 
 // upstreamCooldownEntry records when a host is blocked until.
 type upstreamCooldownEntry struct {
@@ -609,6 +648,429 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					}
 					time.Sleep(sleepFor)
 					continue
+				}
+
+				return state.PC + 1
+			}
+
+			ctx.Failed = true
+			ctx.ErrorCode = int16(ctx.ResponseStatus)
+			ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+			copy(ctx.ErrorMsg, "upstream call failed")
+			return engine.StopPlan
+		},
+	}
+}
+
+// HttpActionFromConfig builds an http_call Instruction from a fully-resolved
+// HttpActionConfig. This replaces the positional-argument HttpAction function
+// and is the target of the S11 compiler rewrite.
+func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
+	flowInput := cfg.FlowInput
+	return engine.Instruction{
+		Name: "HTTP_CALL",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			// ── Resolve URL ───────────────────────────────────────────────────────
+			rawUpstream := cfg.StaticURL
+			if cfg.URLSlot >= 0 && cfg.URLSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.URLSlot]) > 0 {
+				rawUpstream = string(ctx.ByteSlots[cfg.URLSlot])
+			}
+			url, err := selectUpstreamURL(rawUpstream, flowInput)
+			if err != nil {
+				ctx.ResponseStatus = 500
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				ctx.ErrorMsg = ctx.Alloc(len("upstream url resolution failed"))
+				copy(ctx.ErrorMsg, "upstream url resolution failed")
+				return engine.StopPlan
+			}
+			upstreamHost := extractUpstreamHost(url)
+			bundle := getClientForTarget(upstreamHost, flowInput)
+
+			// ── Retry budget ──────────────────────────────────────────────────────
+			attempts := bundle.Cfg.RetryMaxAttempts + 1
+			if cfg.MaxRetries >= 0 {
+				attempts = cfg.MaxRetries + 1
+			}
+			if attempts < 1 {
+				attempts = 1
+			}
+
+			// ── Method ────────────────────────────────────────────────────────────
+			method := cfg.StaticMethod
+			if method == "" {
+				method = "GET"
+			}
+			if cfg.MethodSlot >= 0 && cfg.MethodSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.MethodSlot]) > 0 {
+				method = string(ctx.ByteSlots[cfg.MethodSlot])
+			}
+
+			for attempt := 1; attempt <= attempts; attempt++ {
+				// ── Cooldown guard ────────────────────────────────────────────────
+				if bundle.Cfg.UpstreamCooldown {
+					if cooling, _ := inCooldown(upstreamHost); cooling {
+						ctx.ResponseStatus = 503
+						ctx.Failed = true
+						ctx.ErrorCode = 503
+						msg := "upstream in cooldown"
+						ctx.ErrorMsg = ctx.Alloc(len(msg))
+						copy(ctx.ErrorMsg, msg)
+						return engine.StopPlan
+					}
+				}
+
+				// ── Disconnect check ──────────────────────────────────────────────
+				if pc, stop := StopIfCancelled(ctx); stop {
+					return pc
+				}
+
+				upstreamStart := time.Now()
+				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
+				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
+
+				// ── Build request context with optional timeout ───────────────────
+				reqCtx := ctx.Request.Context()
+				cancel := func() {}
+				if cfg.Timeout > 0 {
+					reqCtx, cancel = context.WithTimeout(reqCtx, time.Duration(cfg.Timeout)*time.Millisecond)
+				}
+
+				// ── Resolve body ──────────────────────────────────────────────────
+				// Priority: StagedRequestBody > BodySlot > nil (no body)
+				var bodyBytes []byte
+				if len(ctx.StagedRequestBody) > 0 {
+					bodyBytes = ctx.StagedRequestBody
+				} else if cfg.BodySlot >= 0 && cfg.BodySlot < len(ctx.ByteSlots) {
+					bodyBytes = ctx.ByteSlots[cfg.BodySlot]
+				}
+
+				// ── Resolve Content-Type ──────────────────────────────────────────
+				contentType := cfg.StaticContentType
+				if len(ctx.StagedContentType) > 0 {
+					contentType = string(ctx.StagedContentType)
+				} else if cfg.ContentTypeSlot >= 0 && cfg.ContentTypeSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.ContentTypeSlot]) > 0 {
+					contentType = string(ctx.ByteSlots[cfg.ContentTypeSlot])
+				}
+
+				// ── Build http.Request ────────────────────────────────────────────
+				var req *http.Request
+				var pooledReader *bytes.Reader // tracked so we can return it to pool
+				if len(bodyBytes) > 0 {
+					pooledReader = bytesReaderPool.Get().(*bytes.Reader)
+					pooledReader.Reset(bodyBytes)
+					req, err = http.NewRequestWithContext(reqCtx, method, url, pooledReader)
+					if err != nil {
+						bytesReaderPool.Put(pooledReader)
+						pooledReader = nil
+						cancel()
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						ctx.ErrorCode = 500
+						ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+						copy(ctx.ErrorMsg, "upstream call failed")
+						return engine.StopPlan
+					}
+					req.ContentLength = int64(len(bodyBytes))
+				} else {
+					req, err = http.NewRequestWithContext(reqCtx, method, url, nil)
+					if err != nil {
+						cancel()
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						ctx.ErrorCode = 500
+						ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+						copy(ctx.ErrorMsg, "upstream call failed")
+						return engine.StopPlan
+					}
+				}
+
+				// ── Forward incoming headers ──────────────────────────────────────
+				if cfg.ForwardIncomingHeaders && ctx.Request != nil {
+					for key, vals := range ctx.Request.Header {
+						if _, skip := hopByHopHeaders[key]; skip {
+							continue
+						}
+						if cfg.BlockHeadersMap != nil {
+							if _, blocked := cfg.BlockHeadersMap[key]; blocked {
+								continue
+							}
+						}
+						req.Header[key] = vals
+					}
+				}
+
+				// ── Apply MutationLog (BUG FIX: was never applied to http_call) ──
+				for i := 0; i < ctx.MutationCount; i++ {
+					m := ctx.MutationLog[i]
+					if m.Op == 1 {
+						req.Header.Del(string(m.Key))
+					} else {
+						req.Header.Set(string(m.Key), string(m.Value))
+					}
+				}
+
+				// ── Block headers override (explicit block list) ───────────────────
+				if cfg.BlockHeadersMap != nil {
+					for key := range cfg.BlockHeadersMap {
+						req.Header.Del(key)
+					}
+				}
+
+				// ── Content-Type ──────────────────────────────────────────────────
+				if contentType != "" && len(bodyBytes) > 0 {
+					req.Header.Set("Content-Type", contentType)
+				}
+
+				// ── Tracing ───────────────────────────────────────────────────────
+				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+					DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+					DNSDone: func(httptrace.DNSDoneInfo) {
+						if !dnsStart.IsZero() {
+							event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
+						}
+					},
+					ConnectStart: func(_, _ string) { connectStart = time.Now() },
+					ConnectDone: func(_, _ string, _ error) {
+						if !connectStart.IsZero() {
+							event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
+						}
+					},
+					TLSHandshakeStart: func() { tlsStart = time.Now() },
+					TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+						if !tlsStart.IsZero() {
+							event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
+						}
+					},
+					GotConn: func(info httptrace.GotConnInfo) {
+						event.ConnReused = info.Reused
+						event.ConnIdle = info.WasIdle
+					},
+					WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
+					GotFirstResponseByte: func() {
+						firstByteStart = time.Now()
+						if !wroteReqStart.IsZero() {
+							event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
+						}
+					},
+				}))
+
+				reqBytesSent := req.ContentLength
+				if reqBytesSent < 0 {
+					reqBytesSent = 0
+				}
+
+				// ── Capture outgoing request headers for tracing ──────────────────
+				if ctx.Trace != nil && len(req.Header) > 0 {
+					hdrs := make(map[string]string, len(req.Header))
+					for k, vals := range req.Header {
+						lower := strings.ToLower(k)
+						if lower == "authorization" || lower == "x-api-key" || lower == "cookie" {
+							hdrs[k] = "***"
+							continue
+						}
+						if len(vals) > 0 {
+							hdrs[k] = vals[0]
+						}
+					}
+					if len(hdrs) > 0 {
+						event.RequestHeaders = hdrs
+					}
+				}
+
+				resp, doErr := bundle.Client.Do(req)
+
+				// Return the bytes.Reader to pool now that Do() has consumed it.
+				if pooledReader != nil {
+					bytesReaderPool.Put(pooledReader)
+					pooledReader = nil
+				}
+				// Clear staged body after first attempt (not per-retry).
+				if attempt == 1 {
+					ctx.StagedRequestBody = nil
+					ctx.StagedContentType = nil
+				}
+
+				cancel()
+				totalUpstream := time.Since(upstreamStart)
+				event.TotalNs = totalUpstream.Nanoseconds()
+				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
+					event.TTFBNs = firstByteStart.Sub(upstreamStart).Nanoseconds()
+				}
+				atomic.AddInt64(&ctx.Timing.UpstreamTimeNs, int64(totalUpstream))
+				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, reqBytesSent)
+				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
+
+				if doErr != nil {
+					// Client disconnect
+					if errors.Is(doErr, context.Canceled) || ctx.Request.Context().Err() != nil {
+						atomic.StoreInt32(&ctx.Cancelled, 1)
+						return engine.StopCancelled
+					}
+					event.BytesSent = reqBytesSent
+					event.Err = doErr.Error()
+					if ctx.Obs != nil {
+						ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, 0)
+					}
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+					}
+					if ctx.Obs != nil {
+						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+					}
+					if attempt < attempts && shouldRetryError(doErr) {
+						time.Sleep(backoffDelay(attempt, bundle.Cfg, upstreamHost))
+						continue
+					}
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+					copy(ctx.ErrorMsg, "upstream call failed")
+					return engine.StopPlan
+				}
+
+				// ── Capture response headers for tracing ──────────────────────────
+				if ctx.Trace != nil && len(resp.Header) > 0 {
+					hdrs := make(map[string]string, len(resp.Header))
+					for k, vals := range resp.Header {
+						if len(vals) > 0 {
+							hdrs[k] = vals[0]
+						}
+					}
+					event.ResponseHeaders = hdrs
+				}
+
+				// ── Capture response header slots ─────────────────────────────────
+				for _, hsb := range cfg.ResponseHeaderSlots {
+					val := resp.Header.Get(hsb.HeaderName)
+					if val != "" && hsb.Slot >= 0 && hsb.Slot < len(ctx.ByteSlots) {
+						buf := ctx.Alloc(len(val))
+						copy(buf, val)
+						ctx.ByteSlots[hsb.Slot] = buf
+					}
+				}
+
+				// ── Read response body ────────────────────────────────────────────
+				var respBytes int64
+				captureBody := cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots)
+
+				if captureBody {
+					cl := resp.ContentLength
+					if cl > 0 {
+						// Fast path: known Content-Length — allocate exactly.
+						bodyBuf := ctx.Alloc(int(cl))
+						n, readErr := io.ReadFull(resp.Body, bodyBuf)
+						respBytes = int64(n)
+						resp.Body.Close()
+						if readErr != nil && readErr != io.ErrUnexpectedEOF {
+							event.Err = readErr.Error()
+							if ctx.Trace != nil && ctx.Obs != nil {
+								ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+							}
+							if ctx.Obs != nil {
+								ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+							}
+							ctx.ResponseStatus = 502
+							ctx.Failed = true
+							ctx.ErrorCode = 502
+							ctx.ErrorMsg = ctx.Alloc(len("upstream call failed"))
+							copy(ctx.ErrorMsg, "upstream call failed")
+							return engine.StopPlan
+						}
+						ctx.ByteSlots[cfg.ResponseBodySlot] = bodyBuf[:n]
+					} else {
+						// Unknown Content-Length — use pool buffer.
+						buf := responseBodyPool.Get().(*bytes.Buffer)
+						buf.Reset()
+						var bodyPreview []byte
+						if ctx.Trace != nil {
+							bodyPreview, _ = io.ReadAll(io.LimitReader(resp.Body, 1024))
+							buf.Write(bodyPreview)
+							_, _ = io.Copy(buf, resp.Body)
+						} else {
+							_, _ = io.Copy(buf, resp.Body)
+						}
+						resp.Body.Close()
+						respBytes = int64(buf.Len())
+						// Copy captured body into arena.
+						arena := ctx.Alloc(buf.Len())
+						copy(arena, buf.Bytes())
+						ctx.ByteSlots[cfg.ResponseBodySlot] = arena
+						if ctx.Trace != nil && len(bodyPreview) > 0 {
+							event.ResponseBody = string(bodyPreview)
+							respBytes += int64(len(bodyPreview))
+						}
+						buf.Reset()
+						responseBodyPool.Put(buf)
+					}
+				} else {
+					// No body capture — trace preview + discard.
+					if ctx.Trace != nil {
+						bodyPreview, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+						if len(bodyPreview) > 0 {
+							event.ResponseBody = string(bodyPreview)
+						}
+						n, _ := io.Copy(io.Discard, resp.Body)
+						respBytes = int64(len(bodyPreview)) + n
+					} else {
+						respBytes, _ = io.Copy(io.Discard, resp.Body)
+					}
+					resp.Body.Close()
+				}
+
+				event.BytesSent = reqBytesSent
+				event.BytesReceived = respBytes
+				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, respBytes)
+
+				if ctx.Obs != nil {
+					ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, respBytes)
+				}
+
+				// ── Set response status ───────────────────────────────────────────
+				ctx.ResponseStatus = resp.StatusCode
+				event.Status = resp.StatusCode
+
+				// ── Capture response status into slot ─────────────────────────────
+				if cfg.ResponseStatusSlot >= 0 && cfg.ResponseStatusSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[cfg.ResponseStatusSlot] = int64(resp.StatusCode)
+				}
+
+				if ctx.Trace != nil && ctx.Obs != nil {
+					ctx.Obs.AppendUpstreamEvent(ctx.Trace, event)
+				}
+				if ctx.Obs != nil {
+					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+				}
+
+				// ── Retry condition ───────────────────────────────────────────────
+				if attempt < attempts {
+					// Config-level retry-on-status
+					doStatusRetry := isRetryableStatus(resp.StatusCode, bundle.Cfg)
+					// User-supplied condition retry (overrides config-level)
+					doCondRetry := cfg.RetryCondFunc != nil && cfg.RetryCondFunc(ctx)
+
+					if doStatusRetry || doCondRetry {
+						sleepFor := backoffDelay(attempt, bundle.Cfg, upstreamHost)
+						if bundle.Cfg.HonorRetryAfter {
+							if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+								if ra > bundle.Cfg.RetryAfterMaxWait {
+									if bundle.Cfg.UpstreamCooldown {
+										markCooldown(upstreamHost, time.Now().Add(ra))
+									}
+									ctx.ResponseStatus = resp.StatusCode
+									ctx.Failed = true
+									ctx.ErrorCode = int16(resp.StatusCode)
+									msg := "upstream requested retry-after exceeds max wait"
+									ctx.ErrorMsg = ctx.Alloc(len(msg))
+									copy(ctx.ErrorMsg, msg)
+									return engine.StopPlan
+								}
+								sleepFor = ra
+							}
+						}
+						time.Sleep(sleepFor)
+						continue
+					}
 				}
 
 				return state.PC + 1
