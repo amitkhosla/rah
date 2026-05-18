@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -336,6 +335,25 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "format_response":
 		return c.compileFormatResponse(step)
+
+	case "parallel":
+		// Compile each branch's inline flow into its own independent instruction table.
+		// Each sub-table is self-contained: it has its own PC space starting at 0 and
+		// does not reference indices in the parent GlobalTable.
+		var subTables [][]engine.Instruction
+		for _, branch := range step.Branches {
+			subTable, err := c.CompileExecutable(branch.Flow, fragments)
+			if err != nil {
+				return fmt.Errorf("parallel branch %q: %w", branch.Name, err)
+			}
+			// CompileExecutable returns a slice backed by the compiler's GlobalTable.
+			// We must copy it before the next CompileExecutable call resets c.GlobalTable.
+			tableCopy := make([]engine.Instruction, len(subTable))
+			copy(tableCopy, subTable)
+			subTables = append(subTables, tableCopy)
+		}
+		failFast := step.ErrorPolicy == "fail_fast"
+		c.GlobalTable = append(c.GlobalTable, steps.ParallelStep(subTables, step.TimeoutMs, failFast))
 
 	case "registry_lookup":
 		// Resolves the alias in keySlot → ctx.TenantID.
@@ -2143,7 +2161,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, engine.CircuitBreakerGateStep(c.fm.CircuitBreakerArena, cbIdx))
 
 	case "record_circuit_outcome":
-		cbIdx := int(atomic.LoadInt32(&c.fm.CircuitBreakerArena.count)) - 1
+		cbIdx := c.fm.CircuitBreakerArena.Count() - 1
 		if cbIdx < 0 {
 			return fmt.Errorf("record_circuit_outcome: no circuit_breaker step has been compiled yet")
 		}

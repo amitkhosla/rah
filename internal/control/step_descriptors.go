@@ -255,6 +255,35 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		// ── Resilience ────────────────────────────────────────────────────────────
+		{
+			Type: "spike_arrest", Title: "Spike Arrest", Category: "resilience", Capability: "gate",
+			Description: "Smooth inbound traffic by allowing at most one request per interval_ms per (flow, tenant [, key]) bucket. Excess requests receive 429 immediately.",
+			Defaults: map[string]string{"input.interval_ms": "100"},
+			Fields: []StepField{
+				sf("input.interval_ms", "Interval (ms)", "Minimum milliseconds between allowed requests per bucket. Default: 100 (10 req/s).", "100"),
+				sf("source", "Key slot (optional)", "Slot name whose value is added to the bucket key for per-user/per-key throttling. Omit for per-tenant-only bucketing.", ""),
+			},
+		},
+		{
+			Type: "circuit_breaker", Title: "Circuit Breaker", Category: "resilience", Capability: "gate",
+			Description: "Open the circuit after failure_threshold consecutive failures; return 503 while open. Probe recovery after open_duration_ms via half-open state.",
+			Defaults: map[string]string{"input.failure_threshold": "5", "input.success_threshold": "2", "input.open_duration_ms": "30000"},
+			Fields: []StepField{
+				sf("input.failure_threshold", "Failure threshold", "Consecutive failures required to open the circuit. Default: 5.", "5"),
+				sf("input.success_threshold", "Success threshold", "Consecutive successes in half-open state required to close the circuit. Default: 2.", "2"),
+				sf("input.open_duration_ms", "Open duration (ms)", "How long the circuit stays open before attempting a probe request. Default: 30000 (30 s).", "30000"),
+			},
+		},
+		{
+			Type: "record_circuit_outcome", Title: "Record Circuit Outcome", Category: "resilience", Capability: "action",
+			Description: "Record the success or failure of the guarded work for the most-recently compiled circuit_breaker. Must be placed after the protected step(s).",
+			Defaults: map[string]string{},
+			Fields: []StepField{
+				sf("condition", "Success condition (optional)", "Boolean expression evaluated at runtime. True = success, false = failure. Omit to always record success.", "status < 500"),
+			},
+		},
+
 		// ── Network ───────────────────────────────────────────────────────────────
 		{
 			Type: "bind_header", Title: "Read Header", Category: "request", Capability: "request",
@@ -489,6 +518,16 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("as", "Cookie name slot", "Slot name bound to the current cookie name inside the sub-flow", "cookie_name"),
 				sf("value_as", "Cookie value slot", "Slot name bound to the current cookie value inside the sub-flow", "cookie_value"),
 				sf("do", "Sub-flow", "Flow name called for each cookie", "process_cookie"),
+			},
+		},
+		{
+			Type: "parallel", Title: "Parallel", Category: "control", Capability: "flow",
+			Description: "Execute multiple branches concurrently. All branches run in parallel; the step waits for all to finish (or timeout). Use error_policy: fail_fast to stop early on the first failure.",
+			Defaults: map[string]string{"timeout_ms": "3000", "error_policy": "continue"},
+			Fields: []StepField{
+				sf("timeout_ms", "Timeout (ms)", "Maximum time in milliseconds to wait for all branches (default: 3000)", "3000"),
+				sf("error_policy", "Error policy", `"continue" (default): proceed even if a branch fails. "fail_fast": cancel remaining branches on first failure.`, "continue"),
+				sf("branches", "Branches", "List of named branches, each with an inline flow definition", ""),
 			},
 		},
 		{

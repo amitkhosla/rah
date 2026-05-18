@@ -42,6 +42,12 @@ type CircuitBreakerArena struct {
 // NewCircuitBreakerArena allocates a ready-to-use arena.
 func NewCircuitBreakerArena() *CircuitBreakerArena { return &CircuitBreakerArena{} }
 
+// Count returns the number of circuit breaker slots allocated so far.
+// Safe to call concurrently; uses an atomic load.
+func (a *CircuitBreakerArena) Count() int {
+	return int(atomic.LoadInt32(&a.count))
+}
+
 // Alloc reserves the next CircuitState slot, initialises its config, and
 // returns the index.  Returns an error when all 256 slots are exhausted.
 // Must only be called at bake time (single-threaded compilation path).
