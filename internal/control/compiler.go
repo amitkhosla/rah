@@ -2,8 +2,11 @@ package control
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"rah/internal/config"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
@@ -48,6 +51,16 @@ type Compiler struct {
 	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
 	// flow. Resolved in a second pass after all flows are compiled.
 	pendingJumps []pendingJump
+
+	// currentAPIPolicies holds the resolved APIRateLimitEntry slice for the API
+	// currently being compiled. Set by the management server before each
+	// CompileExecutable call. Used by:
+	//   - "api_rate_limits" step marker → inject policies at that position.
+	//   - Auto-inject → prepend policies when the flow tree has no RL step.
+	currentAPIPolicies []APIRateLimitEntry
+	// currentAPISkipRL suppresses auto-injection and "api_rate_limits" marker
+	// expansion when true. Set alongside currentAPIPolicies.
+	currentAPISkipRL bool
 }
 
 // resolveAPIKey resolves a credential reference (e.g. "env:OPENAI_KEY", "file:///run/secrets/key")
@@ -177,6 +190,15 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return err
 		}
 
+	case "pattern_match":
+		return c.compilePatternMatch(step, fragments)
+
+	case "validate_pattern":
+		return c.compileValidatePattern(step)
+
+	case "extract_pattern":
+		return c.compileExtractPattern(step)
+
 	case "switch":
 		slot, err := c.getSlot(step.As)
 		if err != nil {
@@ -204,6 +226,12 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			urlSlot, err = c.getSlot(step.UrlVar)
 			if err != nil {
 				return err
+			}
+		}
+		// Compile retry condition at bake time (S11 will wire it into HttpAction).
+		if step.RetryCondition != "" {
+			if _, compErr := steps.CompileCondition(step.RetryCondition, c.slotMap); compErr != nil {
+				return fmt.Errorf("http_call retry_condition: %w", compErr)
 			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpAction(urlSlot, step.URL, step.Timeout, step.RetryCondition, step.MaxRetries, step.Input))
@@ -398,6 +426,31 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetMeta(c.RegMgr, step.Key, srcSlot))
 
+	case "delete_service_url":
+		// Deletes a service URL for the current tenant from the URLs store.
+		// key: URL name e.g. "primary", "fallback".
+		// Management-plane write — use in admin/onboarding flows, not hot request loops.
+		if c.RegMgr == nil {
+			return fmt.Errorf("delete_service_url requires a RegistryManager (not available in standalone mode)")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.DeleteServiceURL(c.RegMgr, step.Key))
+
+	case "delete_identifier":
+		// Deletes an identifier for the current tenant from the IDs store.
+		// key: identifier name e.g. "api_key", "client_id".
+		if c.RegMgr == nil {
+			return fmt.Errorf("delete_identifier requires a RegistryManager (not available in standalone mode)")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.DeleteIdentifier(c.RegMgr, step.Key))
+
+	case "delete_meta":
+		// Deletes a metadata value for the current tenant from the Meta store.
+		// key: metadata key name e.g. "tier", "region".
+		if c.RegMgr == nil {
+			return fmt.Errorf("delete_meta requires a RegistryManager (not available in standalone mode)")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.DeleteMeta(c.RegMgr, step.Key))
+
 	case "check_rate_limit":
 		// Opt-in rate limit enforcement. Must be placed explicitly in the flow.
 		// Resolves the limit via ResolveRateLimit and enforces a fixed-window counter.
@@ -409,33 +462,252 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		//   "ip_slot": slot name holding the client IP (from bind_client_ip).
 		// Set "scope": "slot" to key the counter on any arbitrary value.
 		//   "key_slot": slot name holding the rate limit key (e.g., user ID).
-		emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
-		syncPolicy := uint8(0)
+		//
+		// V2 upgrade path: if "config" is set and refers to a V2 config, or if the
+		// named V1 config can be translated to V2 windows, emit CheckRateLimitV2 instead.
+		// Falls back to the original V1 instruction emission if translation is not possible.
+		{
+			configName := strings.TrimSpace(step.Input["config"])
+			scope := step.Input["scope"]
+
+			// Attempt V2 emission if a RegMgr is available.
+			emittedV2 := false
+			if c.RegMgr != nil {
+				var v2cfg *registrypkg.RateLimitConfigV2
+				var v2Windows []steps.WindowSpec
+
+				// Try explicit V2 config reference first.
+				if configName != "" {
+					v2cfg = c.RegMgr.GetRateLimitConfigV2(configName)
+				}
+
+				// If no explicit V2 config found, try to synthesise one from the V1 config.
+				if v2cfg == nil && configName != "" {
+					if rec, ok := c.RegMgr.GetRateLimitConfig(configName); ok {
+						// Translate V1 per_sec / per_min into V2 WindowSpec.
+						synthWindows := make([]steps.WindowSpec, 0, 2)
+						if rec.Config.PerSec > 0 {
+							synthWindows = append(synthWindows, steps.WindowSpec{EpochDiv: 1, Limit: rec.Config.PerSec, Idx: 0})
+						}
+						if rec.Config.PerMin > 0 {
+							synthWindows = append(synthWindows, steps.WindowSpec{EpochDiv: 60, Limit: rec.Config.PerMin, Idx: 1})
+						}
+						if len(synthWindows) > 0 {
+							v2Windows = synthWindows
+						}
+					}
+				}
+
+				// Build V2 windows from explicit V2 config if we have one.
+				if v2cfg != nil && len(v2Windows) == 0 {
+					for i, w := range v2cfg.Windows {
+						epochDiv := w.PeriodSecs
+						if epochDiv == 0 {
+							epochDiv = 1
+						}
+						v2Windows = append(v2Windows, steps.WindowSpec{EpochDiv: epochDiv, Limit: w.Limit, Idx: i})
+					}
+				}
+
+				if len(v2Windows) > 0 {
+					// Resolve V1 config ID (used as arena key).
+					var configID uint16
+					if id, ok := c.RegMgr.GetRateLimitConfigId(configName); ok {
+						configID = id
+					}
+
+					// Build CountBy from scope field.
+					var countBy engine.RateLimitCountBy
+					switch scope {
+					case "ip":
+						ipSlotName := strings.TrimSpace(step.Input["ip_slot"])
+						ipSlot := -1
+						if ipSlotName != "" {
+							ipSlot, _ = c.getSlot(ipSlotName)
+						}
+						countBy = engine.RateLimitCountBy{Kind: engine.CountByIP, SlotIndex: ipSlot}
+					case "slot":
+						keySlotName := strings.TrimSpace(step.Input["key_slot"])
+						keySlot := -1
+						if keySlotName != "" {
+							keySlot, _ = c.getSlot(keySlotName)
+						}
+						countBy = engine.RateLimitCountBy{Kind: engine.CountBySlot, SlotIndex: keySlot}
+					default:
+						countBy = engine.RateLimitCountBy{Kind: engine.CountByTenant}
+					}
+
+					// Wire RemoteRL when V2 config requires strict enforcement.
+					var rlv2RemoteRL engine.ExternalRateLimitProvider
+					if v2cfg != nil && v2cfg.Enforcement == "strict" && c.fm.RemoteRL != nil {
+						rlv2RemoteRL = c.fm.RemoteRL
+					}
+
+					capturedConfigID := configID
+					capturedCountBy := countBy
+					capturedWindows := v2Windows
+					capturedConfigName := configName
+					capturedRemoteRL := rlv2RemoteRL
+					rlv2NextPC := len(c.GlobalTable) + 1
+					rlv2DeniedPC := len(c.GlobalTable) + 2
+					c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+						Name: "CHECK_RATE_LIMIT_V2",
+						Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+							step := &steps.CheckRateLimitV2{
+								ConfigID:   capturedConfigID,
+								CountBy:    capturedCountBy,
+								Windows:    capturedWindows,
+								DeniedPC:   rlv2DeniedPC,
+								NextPC:     rlv2NextPC,
+								RemoteRL:   capturedRemoteRL,
+								ConfigName: capturedConfigName,
+							}
+							return step.Execute(ctx, s)
+						},
+					})
+					emittedV2 = true
+				}
+			}
+
+			// V1 fallback: emit original V1 steps when V2 translation was not possible.
+			if !emittedV2 {
+				emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
+				syncPolicy := uint8(0)
+				if c.fm.RemoteRL != nil {
+					syncPolicy = c.fm.DistRLPolicy
+				}
+				if scope == "ip" {
+					ipSlotName := strings.TrimSpace(step.Input["ip_slot"])
+					ipSlot := -1
+					if ipSlotName != "" {
+						ipSlot, _ = c.getSlot(ipSlotName)
+					}
+					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitIP(c.fm.RateLimitStore, ipSlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
+				} else if scope == "slot" {
+					keySlotName := strings.TrimSpace(step.Input["key_slot"])
+					keySlot := -1
+					if keySlotName != "" {
+						keySlot, _ = c.getSlot(keySlotName)
+					}
+					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitSlot(c.fm.RateLimitStore, keySlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
+				} else {
+					var quotaGroupRLIds []uint16
+					if len(step.Input) > 0 && c.RegMgr != nil {
+						quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
+					}
+					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
+				}
+			}
+		}
+
+	case "check_rate_limit_global":
+		// Global (tenant-agnostic) rate limit enforcement. Counter key omits TenantID so
+		// all tenants hitting the same API/endpoint share a single counter bucket.
+		// Optional: "emit_quota_headers": "true" to emit X-RateLimit-* response headers.
+		emitQuotaHeadersGlobal := step.Input["emit_quota_headers"] == "true"
+		syncPolicyGlobal := uint8(0)
 		if c.fm.RemoteRL != nil {
-			syncPolicy = c.fm.DistRLPolicy
+			syncPolicyGlobal = c.fm.DistRLPolicy
 		}
-		scope := step.Input["scope"]
-		if scope == "ip" {
-			ipSlotName := strings.TrimSpace(step.Input["ip_slot"])
-			ipSlot := -1
-			if ipSlotName != "" {
-				ipSlot, _ = c.getSlot(ipSlotName)
+		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitGlobal(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicyGlobal, emitQuotaHeadersGlobal))
+
+	case "check_rate_limit_v2":
+		// V2 multi-window rate limit enforcement. Resolves config name → configID at bake
+		// time, then emits a CheckRateLimitV2 instruction with the full CountBy spec.
+		//
+		// input fields:
+		//   config        - named RateLimitConfigV2 (required)
+		//   count_by      - "tenant"|"ip"|"slot"|"static"|"composite"|"global" (default: "tenant")
+		//   slot          - slot variable name (for count_by=slot)
+		//   slots         - comma-separated slot names (for count_by=composite)
+		//   static_key    - static key string (for count_by=static)
+		//   xff_index     - integer string, XFF position (for count_by=ip, default 0)
+		//   on_empty      - "fail"|"skip"|"fallback_tenant" (default: "fail")
+		//   fail_fast     - "true"/"false" (default false)
+		//   denied_label  - label for the denied branch (optional)
+		countBy := buildRLCountBy(step.Input, func(name string) int {
+			idx, _ := c.getSlot(name)
+			return idx
+		})
+		var configID uint16
+		var windows []steps.WindowSpec
+		var rlv2Enforcement string
+		configName := step.Input["config"]
+		if c.RegMgr != nil {
+			// Resolve V1 config ID (used as arena key) from the named config.
+			if id, ok := c.RegMgr.GetRateLimitConfigId(configName); ok {
+				configID = id
 			}
-			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitIP(c.fm.RateLimitStore, ipSlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
-		} else if scope == "slot" {
-			keySlotName := strings.TrimSpace(step.Input["key_slot"])
-			keySlot := -1
-			if keySlotName != "" {
-				keySlot, _ = c.getSlot(keySlotName)
+			// Resolve V2 window specs and enforcement mode from the named config.
+			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil {
+				rlv2Enforcement = cfg.Enforcement
+				for i, w := range cfg.Windows {
+					epochDiv := w.PeriodSecs
+					if epochDiv == 0 {
+						epochDiv = 1 // default: per-second window
+					}
+					windows = append(windows, steps.WindowSpec{
+						EpochDiv: epochDiv,
+						Limit:    w.Limit,
+						Idx:      i,
+					})
+				}
 			}
-			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitSlot(c.fm.RateLimitStore, keySlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
-		} else {
-			var quotaGroupRLIds []uint16
-			if len(step.Input) > 0 && c.RegMgr != nil {
-				quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
-			}
-			c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
 		}
+		// Wire distributed rate limiting when enforcement == "strict" and a
+		// RemoteRL provider is configured. Local (approximate) mode is the default.
+		var rlv2RemoteRL engine.ExternalRateLimitProvider
+		if rlv2Enforcement == "strict" && c.fm.RemoteRL != nil {
+			rlv2RemoteRL = c.fm.RemoteRL
+		}
+		rlv2NextPC := len(c.GlobalTable) + 1
+		rlv2DeniedPC := len(c.GlobalTable) + 2
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "CHECK_RATE_LIMIT_V2",
+			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+				step := &steps.CheckRateLimitV2{
+					ConfigID:   configID,
+					CountBy:    countBy,
+					Windows:    windows,
+					DeniedPC:   rlv2DeniedPC,
+					NextPC:     rlv2NextPC,
+					RemoteRL:   rlv2RemoteRL,
+					ConfigName: configName,
+				}
+				return step.Execute(ctx, s)
+			},
+		})
+
+	case "check_upstream_rate_limit":
+		// Upstream rate limit enforcement using URL-pattern matching.
+		// Reads the upstream URL from the named slot and checks it against
+		// the UpstreamRegistry. Returns DeniedPC if denied, NextPC otherwise.
+		//
+		// input fields:
+		//   url_slot      - slot variable name holding the upstream URL (required)
+		//   denied_label  - label for the denied branch (optional)
+		urlSlotName := strings.TrimSpace(step.Input["url_slot"])
+		urlSlotIdx := -1
+		if urlSlotName != "" {
+			var err error
+			urlSlotIdx, err = c.getSlot(urlSlotName)
+			if err != nil {
+				return fmt.Errorf("check_upstream_rate_limit: url_slot %q: %w", urlSlotName, err)
+			}
+		}
+		urlNextPC := len(c.GlobalTable) + 1
+		urlDeniedPC := len(c.GlobalTable) + 2
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "CHECK_UPSTREAM_RATE_LIMIT",
+			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+				step := &steps.CheckUpstreamRateLimit{
+					URLSlotIndex: urlSlotIdx,
+					DeniedPC:     urlDeniedPC,
+					NextPC:       urlNextPC,
+				}
+				return step.Execute(ctx, s)
+			},
+		})
 
 	case "assign_quota_group":
 		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.
@@ -597,14 +869,33 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindQuery(qKey, destSlot))
 
+	case "bind_path":
+		// Explicit path-param binding by positional index.
+		// input.index: 0-based index into the route's captured path parameters.
+		// as:          slot name to store the captured value.
+		idx, _ := strconv.Atoi(step.Input["index"])
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_path: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindPath(idx, destSlot))
+
 	case "bind_client_ip":
 		// Extracts the real client IP (X-Forwarded-For → X-Real-IP → RemoteAddr)
 		// and stores it in the named slot.
-		destSlot, err := c.getSlot(step.KeyIdentifier)
+		// as: slot name to store the client IP.
+		// Optional input["xff_index"]: which XFF entry to use (0=first, -1=last). Default 0.
+		destSlot, err := c.getSlot(step.As)
 		if err != nil {
-			return err
+			return fmt.Errorf("bind_client_ip: %w", err)
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.BindClientIP(destSlot))
+		xffIndex := 0
+		if raw := strings.TrimSpace(step.Input["xff_index"]); raw != "" {
+			if parsed, parseErr := strconv.Atoi(raw); parseErr == nil {
+				xffIndex = parsed
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindClientIP(destSlot, xffIndex))
 
 	case "set_request_header":
 		// Injects a header into the upstream request before proxying.
@@ -619,6 +910,58 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("set_request_header: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetRequestHeader(headerName, valueSlot))
+
+	case "extract_cookie":
+		cookieName := step.Key
+		if cookieName == "" {
+			cookieName = step.KeyIdentifier
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("extract_cookie: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ExtractCookie(cookieName, destSlot))
+
+	case "set_response_cookie":
+		cookieName := step.Key
+		if cookieName == "" {
+			cookieName = step.KeyIdentifier
+		}
+		valueSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("set_response_cookie: %w", err)
+		}
+		path := step.Input["path"]
+		if path == "" {
+			path = "/"
+		}
+		maxAge := 0
+		if v, ok := step.Input["max_age"]; ok {
+			maxAge, _ = strconv.Atoi(v)
+		}
+		httpOnly := step.Input["http_only"] == "true"
+		secure := step.Input["secure"] == "true"
+		sameSite := step.Input["same_site"]
+		c.GlobalTable = append(c.GlobalTable, steps.SetResponseCookie(cookieName, valueSlot, path, maxAge, httpOnly, secure, sameSite))
+
+	case "set_request_cookie":
+		cookieName := step.Key
+		if cookieName == "" {
+			cookieName = step.KeyIdentifier
+		}
+		valueSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("set_request_cookie: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetRequestCookie(cookieName, valueSlot))
+
+	case "remove_response_cookie":
+		cookieName := step.Key
+		if cookieName == "" {
+			cookieName = step.KeyIdentifier
+		}
+		path := step.Input["path"]
+		c.GlobalTable = append(c.GlobalTable, steps.RemoveResponseCookie(cookieName, path))
 
 	case "ip_restriction":
 		// Enforces allow/deny CIDR policy for the resolved client IP.
@@ -693,10 +1036,14 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tvSlots, cfg))
 
 	case "foreach":
-		if c.nextSlot >= rctx.BaseByteSlots {
+		// Allocate hidden iterSlot (IntSlot index) for the loop counter and
+		// indexSlot (ByteSlot) for the packed (start,end) array index — O(1) per step.
+		if c.nextSlot+1 >= rctx.BaseByteSlots {
 			return fmt.Errorf("slot limit exceeded at foreach iterator: max %d", rctx.BaseByteSlots)
 		}
 		iterSlot := c.nextSlot
+		c.nextSlot++
+		indexSlot := c.nextSlot // hidden slot; caches packed gjson index between iterations
 		c.nextSlot++
 		valSlot, err := c.getSlot(step.As)
 		if err != nil {
@@ -723,7 +1070,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if srcSlot, slotErr := c.getSlotReadOnly(step.Source); slotErr == nil {
 			c.GlobalTable[gateID] = engine.Instruction{
 				Name:   "LOOP_GATE_SLOT",
-				Action: steps.LoopGateSlot(srcSlot, valSlot, iterSlot, gateID+1, exitID),
+				Action: steps.LoopGateSlot(srcSlot, valSlot, indexSlot, iterSlot, gateID+1, exitID),
 			}
 		} else {
 			c.GlobalTable[gateID] = engine.Instruction{
@@ -743,9 +1090,23 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		iterSlot := c.nextSlot
 		c.nextSlot++
 
-		condSlot, condErr := c.getBoolSlot(step.Source)
-		if condErr != nil {
-			return fmt.Errorf("while: condition slot %q: %w", step.Source, condErr)
+		// Build ConditionFunc from step.Condition (if set) or fall back to bool slot.
+		var condFn steps.ConditionFunc
+		if step.Condition != "" {
+			var compErr error
+			condFn, compErr = steps.CompileCondition(step.Condition, c.slotMap)
+			if compErr != nil {
+				return fmt.Errorf("while: condition: %w", compErr)
+			}
+		} else {
+			cs, condErr := c.getBoolSlot(step.Source)
+			if condErr != nil {
+				return fmt.Errorf("while: condition slot %q: %w", step.Source, condErr)
+			}
+			condSlot := cs // capture for closure
+			condFn = func(ctx *rctx.Context) bool {
+				return condSlot >= 0 && condSlot < len(ctx.BoolSlots) && ctx.BoolSlots[condSlot]
+			}
 		}
 
 		maxIter := 100
@@ -772,7 +1133,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		whileExitID := int16(len(c.GlobalTable))
 		c.GlobalTable[whileGateID] = engine.Instruction{
 			Name:   "WHILE_GATE",
-			Action: steps.WhileGate(condSlot, iterSlot, maxIter, whileGateID+1, whileExitID),
+			Action: steps.WhileGate(condFn, iterSlot, maxIter, whileGateID+1, whileExitID),
 		}
 
 	case "call":
@@ -849,6 +1210,89 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SubstringStep(src, result, start, length))
 
+	case "trim":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("trim: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("trim: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.TrimStep(src, result))
+
+	case "contains":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("contains: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("contains: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ContainsStep(src, result, []byte(step.Value)))
+
+	case "starts_with":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("starts_with: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("starts_with: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.StartsWithStep(src, result, []byte(step.Value)))
+
+	case "ends_with":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("ends_with: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("ends_with: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.EndsWithStep(src, result, []byte(step.Value)))
+
+	case "replace":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("replace: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("replace: %w", err)
+		}
+		oldVal := step.Input["old"]
+		newVal := step.Input["new"]
+		c.GlobalTable = append(c.GlobalTable, steps.ReplaceStep(src, result, []byte(oldVal), []byte(newVal)))
+
+	case "split":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("split: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("split: %w", err)
+		}
+		sep := step.Value
+		if sep == "" {
+			sep = ","
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SplitStep(src, result, []byte(sep)))
+
+	case "index_of":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("index_of: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("index_of: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.IndexOfStep(src, result, []byte(step.Value)))
+
 	case "to_int":
 		src, err := c.getSlot(step.Source)
 		if err != nil {
@@ -870,6 +1314,192 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return err
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.ByteLengthStep(src, dest))
+
+	// ── Encoding ─────────────────────────────────────────────────────────────
+
+	case "base64_encode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("base64_encode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("base64_encode: %w", err)
+		}
+		enc := base64.StdEncoding
+		switch step.Input["encoding"] {
+		case "url":
+			enc = base64.URLEncoding
+		case "raw_url":
+			enc = base64.RawURLEncoding
+		case "raw_std":
+			enc = base64.RawStdEncoding
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.Base64EncodeStep(src, result, enc))
+
+	case "base64_decode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("base64_decode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("base64_decode: %w", err)
+		}
+		enc := base64.RawURLEncoding // default: JWT-friendly
+		switch step.Input["encoding"] {
+		case "std":
+			enc = base64.StdEncoding
+		case "url":
+			enc = base64.URLEncoding
+		case "raw_std":
+			enc = base64.RawStdEncoding
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.Base64DecodeStep(src, result, enc))
+
+	case "hex_encode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("hex_encode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("hex_encode: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.HexEncodeStep(src, result))
+
+	case "hex_decode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("hex_decode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("hex_decode: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.HexDecodeStep(src, result))
+
+	case "url_encode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("url_encode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("url_encode: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.URLEncodeStep(src, result))
+
+	case "url_decode":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("url_decode: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("url_decode: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.URLDecodeStep(src, result))
+
+	// ── Crypto ───────────────────────────────────────────────────────────────
+
+	case "hmac_sha256":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("hmac_sha256: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("hmac_sha256: %w", err)
+		}
+		key := step.Input["key"]
+		if key == "" {
+			return fmt.Errorf("hmac_sha256: missing input.key")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.HMACSha256Step(src, result, []byte(key)))
+
+	case "hmac_sha1":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("hmac_sha1: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("hmac_sha1: %w", err)
+		}
+		key := step.Input["key"]
+		if key == "" {
+			return fmt.Errorf("hmac_sha1: missing input.key")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.HMACSha1Step(src, result, []byte(key)))
+
+	case "sha256_hash":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("sha256_hash: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("sha256_hash: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SHA256HashStep(src, result))
+
+	case "md5_hash":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("md5_hash: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("md5_hash: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.MD5HashStep(src, result))
+
+	case "aes_encrypt":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("aes_encrypt: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("aes_encrypt: %w", err)
+		}
+		keyHex := step.Input["key"]
+		if keyHex == "" {
+			return fmt.Errorf("aes_encrypt: missing input.key (hex-encoded AES key)")
+		}
+		keyBytes, decErr := hex.DecodeString(keyHex)
+		if decErr != nil {
+			return fmt.Errorf("aes_encrypt: invalid hex key: %w", decErr)
+		}
+		instr, stepErr := steps.AESEncryptStep(src, result, keyBytes)
+		if stepErr != nil {
+			return stepErr
+		}
+		c.GlobalTable = append(c.GlobalTable, instr)
+
+	case "aes_decrypt":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("aes_decrypt: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("aes_decrypt: %w", err)
+		}
+		keyHex := step.Input["key"]
+		if keyHex == "" {
+			return fmt.Errorf("aes_decrypt: missing input.key (hex-encoded AES key)")
+		}
+		keyBytes, decErr := hex.DecodeString(keyHex)
+		if decErr != nil {
+			return fmt.Errorf("aes_decrypt: invalid hex key: %w", decErr)
+		}
+		instr, stepErr := steps.AESDecryptStep(src, result, keyBytes)
+		if stepErr != nil {
+			return stepErr
+		}
+		c.GlobalTable = append(c.GlobalTable, instr)
 
 	case "add":
 		slotA, err := c.getSlot(step.KeyIdentifier)
@@ -1091,6 +1721,68 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CachePutGlobal(keySlot, valueSlot, step.TTL))
 
+	case "cache_delete":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_delete step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheDelete(c.CacheMgr, keySlot))
+
+	case "cache_delete_global":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_delete_global step requires a cache manager — enable the cache in config")
+		}
+		keySlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheDeleteGlobal(c.CacheMgr, keySlot))
+
+	case "cache_exists":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_exists: no cache store configured")
+		}
+		keySlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("cache_exists: %w", err)
+		}
+		resultSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("cache_exists: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheExists(c.CacheMgr, keySlot, resultSlot))
+
+	case "cache_incr":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_incr: no cache store configured")
+		}
+		keySlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("cache_incr: %w", err)
+		}
+		resultSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("cache_incr: %w", err)
+		}
+		delta := step.Delta
+		if delta == 0 {
+			delta = 1
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheIncr(c.CacheMgr, keySlot, resultSlot, delta, step.TTL))
+
+	case "cache_touch":
+		if c.CacheMgr == nil {
+			return fmt.Errorf("cache_touch: no cache store configured")
+		}
+		keySlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("cache_touch: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CacheTouch(c.CacheMgr, keySlot, step.TTL))
+
 	case "batch_flush":
 		c.GlobalTable = append(c.GlobalTable, steps.BatchFlush())
 
@@ -1193,6 +1885,50 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CaptureError(codeSlot, msgSlot))
 
+	case "api_rate_limits":
+		// Position marker: emit the API's rate limit policies at this exact position
+		// in the flow. If absent, policies are auto-injected at the start of the flow
+		// by CompileExecutable. No-op when skip_rate_limit is set or no policies exist.
+		if !c.currentAPISkipRL {
+			c.emitRLPoliciesIntoTable(c.currentAPIPolicies)
+		}
+
+	case "set_request_body":
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("set_request_body: %w", err)
+		}
+		ct := step.Input["content_type"]
+		if ct == "" {
+			ct = "application/json"
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetRequestBody(srcSlot, []byte(ct)))
+
+	case "bind_request_url":
+		dstSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_request_url: %w", err)
+		}
+		includeQuery := true // default: include query string
+		if step.IncludeQuery != nil {
+			includeQuery = *step.IncludeQuery
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindRequestURL(dstSlot, includeQuery))
+
+	case "copy_header":
+		srcName := step.Key
+		if srcName == "" {
+			srcName = step.KeyIdentifier
+		}
+		dstName := step.As
+		if srcName == "" {
+			return fmt.Errorf("copy_header: missing key (source header name)")
+		}
+		if dstName == "" {
+			return fmt.Errorf("copy_header: missing as (destination header name)")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CopyHeader(srcName, dstName))
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -1270,6 +2006,9 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 	for _, step := range flow {
 		switch step.Action {
 		case "if":
+			count += 2 + len(c.simulateBake(frags[step.Then], frags)) + len(c.simulateBake(frags[step.Else], frags))
+		case "pattern_match":
+			// Same layout as "if": 1 gate + len(then) + 1 GOTO + len(else)
 			count += 2 + len(c.simulateBake(frags[step.Then], frags)) + len(c.simulateBake(frags[step.Else], frags))
 		case "switch":
 			count += 1
@@ -1349,6 +2088,7 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
 
+	// Auto-bind preamble: discover and bind header/query dependencies.
 	deps := c.discoverDependenciesWithFragments(flow, fragments)
 	for _, dep := range deps {
 		slot, err := c.getSlot(dep.Identifier)
@@ -1361,6 +2101,14 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 		case "query":
 			c.GlobalTable = append(c.GlobalTable, steps.BindQuery(dep.Key, slot))
 		}
+	}
+
+	// Auto-inject: when the flow tree contains no rate limit step (no explicit
+	// placement or "api_rate_limits" marker), and the API has RL policies defined
+	// and skip_rate_limit is not set, prepend RL instructions after the auto-bind
+	// preamble so enforcement is guaranteed even without flow-level RL steps.
+	if !c.currentAPISkipRL && len(c.currentAPIPolicies) > 0 && !flowHasRateLimitStep(flow, fragments) {
+		c.emitRLPoliciesIntoTable(c.currentAPIPolicies)
 	}
 
 	if err := c.bakeFlow(flow, fragments); err != nil {
@@ -1437,6 +2185,20 @@ func (c *Compiler) RestoreSlots(snap map[string]int, nextSlot int) {
 	c.freeSlots = c.freeSlots[:0]
 }
 
+// UpstreamUrlSlotName is the canonical slot name used for the upstream URL.
+// Flows that reference the upstream URL via `url_var: upstream_url` will map
+// to this same slot — keeping gateway-native injection and flow-level references
+// in sync without requiring any special coordination.
+const UpstreamUrlSlotName = "upstream_url"
+
+// AllocUpstreamUrlSlot resolves (or allocates) the slot index for the
+// canonical "upstream_url" slot.  Must be called immediately after
+// CompileExecutable so the slot map reflects the compiled flow.
+// Returns -1 and an error only when the slot cap is exceeded.
+func (c *Compiler) AllocUpstreamUrlSlot() (int, error) {
+	return c.getSlot(UpstreamUrlSlotName)
+}
+
 // AllocConstantSlots resolves slot indices for each constant key using the
 // compiler's current slotMap (populated by the most recent CompileExecutable call).
 // Keys already referenced in the flow map to existing slots; new keys get fresh ones.
@@ -1457,14 +2219,366 @@ func (c *Compiler) AllocConstantSlots(constants map[string]string) ([]engine.Con
 	return slots, nil
 }
 
+// compilePatternMatch compiles a "pattern_match" step.
+//
+// DSL fields:
+//
+//	source:  slot name whose bytes are matched (e.g. "header.x-service")
+//	pattern: regex pattern string (e.g. "^(api|data).*")
+//	flags:   optional regex flags string: i (case-insensitive), m (multiline),
+//	         s (dot-all), x (verbose). Combined as (?flags) prefix.
+//	then:    flow name to execute when the pattern matches
+//	else:    flow name to execute when the pattern does not match (optional)
+//
+// The regex is compiled once at bake time; runtime cost is a single
+// *regexp.Regexp.Match call on the raw []byte in the slot — zero allocations.
+func (c *Compiler) compilePatternMatch(step StepConfig, fragments map[string][]StepConfig) error {
+	// --- Field validation -------------------------------------------------------
+	if step.Source == "" {
+		return fmt.Errorf("pattern_match: 'source' is required (slot whose value is matched)")
+	}
+	pattern := step.Input["pattern"]
+	if pattern == "" {
+		return fmt.Errorf("pattern_match: 'pattern' is required (regex string)")
+	}
+
+	// --- Slot resolution --------------------------------------------------------
+	// The source slot must resolve; it may or may not already exist in slotMap.
+	srcSlot, err := c.getSlot(step.Source)
+	if err != nil {
+		return fmt.Errorf("pattern_match: source slot %q: %w", step.Source, err)
+	}
+
+	// --- Regex compilation with flags -------------------------------------------
+	flags := strings.TrimSpace(step.Input["flags"])
+	finalPattern := pattern
+	if flags != "" {
+		// Validate flag characters: only i, m, s, x are supported.
+		for _, ch := range flags {
+			switch ch {
+			case 'i', 'm', 's', 'x':
+				// valid
+			default:
+				return fmt.Errorf("pattern_match: unsupported regex flag %q (supported: i, m, s, x)", string(ch))
+			}
+		}
+		// Prepend (?flags) — Go's regexp supports inline flags at the start.
+		finalPattern = "(?" + flags + ")" + pattern
+	}
+
+	compiledRE, err := regexp.Compile(finalPattern)
+	if err != nil {
+		return fmt.Errorf("pattern_match: invalid regex %q (flags %q): %w", pattern, flags, err)
+	}
+
+	// --- Jump target calculation (mirrors the "if" pattern) --------------------
+	thenBlock := c.simulateBake(fragments[step.Then], fragments)
+	elseBlock := c.simulateBake(fragments[step.Else], fragments)
+
+	// Layout:
+	//   [N]   PATTERN_MATCH_REGEX   (gate — jumps to thenStart or elseStart)
+	//   [N+1 .. N+len(then)]        then-branch instructions
+	//   [N+1+len(then)]             GOTO postElse
+	//   [N+2+len(then) .. ...]      else-branch instructions
+	//   [postElseID]                next step
+	thenStartID := int16(len(c.GlobalTable)) + 1
+	skipElseID := thenStartID + int16(len(thenBlock))
+	elseStartID := skipElseID + 1
+	postElseID := elseStartID + int16(len(elseBlock))
+
+	// Emit the gate instruction.
+	c.GlobalTable = append(c.GlobalTable, steps.PatternMatchRegex(srcSlot, compiledRE, thenStartID, elseStartID))
+
+	// Bake then-branch.
+	if err := c.bakeFlowRaw(fragments[step.Then], fragments); err != nil {
+		return fmt.Errorf("pattern_match: then-branch %q: %w", step.Then, err)
+	}
+
+	// Skip-else jump (unconditional goto after then-branch).
+	c.GlobalTable = append(c.GlobalTable, c.newInternalJump(postElseID))
+
+	// Bake else-branch (may be empty when step.Else == "").
+	if err := c.bakeFlowRaw(fragments[step.Else], fragments); err != nil {
+		return fmt.Errorf("pattern_match: else-branch %q: %w", step.Else, err)
+	}
+
+	return nil
+}
+
+// compileValidatePattern compiles a validate_pattern step.
+//
+// Fields:
+//
+//	source:          slot name whose value is tested
+//	input.pattern:   template pattern string (literals, (capture), {ref}, *)
+//	as:              result slot name — set to []byte{1} on match, nil on no-match
+func (c *Compiler) compileValidatePattern(step StepConfig) error {
+	if step.Source == "" {
+		return fmt.Errorf("validate_pattern: 'source' is required")
+	}
+	pattern := step.Input["pattern"]
+	if pattern == "" {
+		return fmt.Errorf("validate_pattern: 'pattern' is required in input")
+	}
+	if step.As == "" {
+		return fmt.Errorf("validate_pattern: 'as' is required (result variable name)")
+	}
+	srcSlot, err := c.getSlot(step.Source)
+	if err != nil {
+		return fmt.Errorf("validate_pattern: source slot %q: %w", step.Source, err)
+	}
+	resultSlot, err := c.getSlot(step.As)
+	if err != nil {
+		return fmt.Errorf("validate_pattern: result slot %q: %w", step.As, err)
+	}
+	// Build slotMap snapshot AFTER allocating src/result slots so they are also
+	// findable as {ref} targets inside the pattern if needed.
+	slotSnap := make(map[string]int, len(c.slotMap))
+	for k, v := range c.slotMap {
+		slotSnap[k] = v
+	}
+	compiled, err := steps.ParseTemplatePattern(pattern, slotSnap, c.getSlot)
+	if err != nil {
+		return fmt.Errorf("validate_pattern: %w", err)
+	}
+	c.GlobalTable = append(c.GlobalTable, steps.ValidateTemplatePattern(srcSlot, compiled, resultSlot))
+	return nil
+}
+
+// compileExtractPattern compiles an extract_pattern step.
+//
+// Fields:
+//
+//	source:          slot name whose value is parsed
+//	input.pattern:   template pattern string — capture groups (name) write to named slots
+//
+// Note: 'as' is NOT used for extract_pattern; capture slot names are declared
+// inside the pattern via the (name) syntax.
+func (c *Compiler) compileExtractPattern(step StepConfig) error {
+	if step.Source == "" {
+		return fmt.Errorf("extract_pattern: 'source' is required")
+	}
+	pattern := step.Input["pattern"]
+	if pattern == "" {
+		return fmt.Errorf("extract_pattern: 'pattern' is required in input")
+	}
+	srcSlot, err := c.getSlot(step.Source)
+	if err != nil {
+		return fmt.Errorf("extract_pattern: source slot %q: %w", step.Source, err)
+	}
+	// Build slotMap snapshot AFTER allocating srcSlot so it is findable as a
+	// {ref} target inside the pattern if needed.
+	slotSnap := make(map[string]int, len(c.slotMap))
+	for k, v := range c.slotMap {
+		slotSnap[k] = v
+	}
+	compiled, err := steps.ParseTemplatePattern(pattern, slotSnap, c.getSlot)
+	if err != nil {
+		return fmt.Errorf("extract_pattern: %w", err)
+	}
+	c.GlobalTable = append(c.GlobalTable, steps.ExtractTemplatePattern(srcSlot, compiled))
+	return nil
+}
+
 // isControlFlowAction returns true for step actions that must not be wrapped
 // with on_error handlers because they control their own execution flow.
 func isControlFlowAction(action string) bool {
 	switch action {
-	case "if", "switch", "call", "return", "fail", "capture_error":
+	case "if", "switch", "call", "return", "fail", "capture_error", "pattern_match":
 		return true
 	}
 	return false
+}
+
+// ─── Rate Limit Policy Helpers (S7: auto-inject + position-aware injection) ──
+
+// rateLimitStepActions is the set of step action names that count as rate limit
+// steps when walking the flow tree for the auto-inject / marker decision.
+var rateLimitStepActions = map[string]bool{
+	"check_rate_limit":        true,
+	"check_rate_limit_v2":     true,
+	"check_rate_limit_global": true,
+	"api_rate_limits":         true,
+}
+
+// flowHasRateLimitStep returns true if any step in the flow (or any sub-flow
+// reachable via call/if/switch/foreach/while/pattern_match) is a rate limit step.
+// Uses visited to prevent infinite recursion on cyclic sub-flow references.
+func flowHasRateLimitStep(flow []StepConfig, fragments map[string][]StepConfig) bool {
+	visited := make(map[string]bool)
+	return walkForRLStep(flow, fragments, visited)
+}
+
+func walkForRLStep(flow []StepConfig, fragments map[string][]StepConfig, visited map[string]bool) bool {
+	for _, step := range flow {
+		if rateLimitStepActions[step.Action] {
+			return true
+		}
+		// Recurse into inline nested step lists (foreach.Do, while.Do).
+		if len(step.Do) > 0 && walkForRLStep(step.Do, fragments, visited) {
+			return true
+		}
+		// Recurse into named sub-flow references: call.FlowName, if.Then/Else.
+		for _, ref := range []string{step.FlowName, step.Then, step.Else} {
+			if ref == "" || visited[ref] {
+				continue
+			}
+			if nested, ok := fragments[ref]; ok {
+				visited[ref] = true
+				if walkForRLStep(nested, fragments, visited) {
+					return true
+				}
+			}
+		}
+		// Recurse into switch case sub-flows.
+		for _, ref := range step.Cases {
+			if ref == "" || visited[ref] {
+				continue
+			}
+			if nested, ok := fragments[ref]; ok {
+				visited[ref] = true
+				if walkForRLStep(nested, fragments, visited) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// buildRLEntryCountBy constructs a RateLimitCountBy from an APIRateLimitEntry's
+// CountBy / SlotSource / StaticKey fields.
+func (c *Compiler) buildRLEntryCountBy(entry APIRateLimitEntry) engine.RateLimitCountBy {
+	var cb engine.RateLimitCountBy
+	switch entry.CountBy {
+	case "ip":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByIP}
+	case "slot":
+		slot := -1
+		if entry.SlotSource != "" {
+			slot, _ = c.getSlot(entry.SlotSource)
+		}
+		cb = engine.RateLimitCountBy{Kind: engine.CountBySlot, SlotIndex: slot}
+	case "static":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByStatic, StaticKey: []byte(entry.StaticKey)}
+	case "global":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByGlobal}
+	default: // "tenant"
+		cb = engine.RateLimitCountBy{Kind: engine.CountByTenant}
+	}
+	return cb
+}
+
+// emitRLPoliciesIntoTable emits CheckRateLimitV2 (and AssignQuotaGroup for dynamic)
+// instructions into c.GlobalTable for each resolved APIRateLimitEntry.
+//
+//   - named / fixed: entry.Config is the resolved config name (set by resolveAndRegisterRLPolicies).
+//   - dynamic:       emits AssignQuotaGroup first, then CheckRateLimitV2 using the first
+//     mapped config as a representative config for the windows.
+//
+// When denied, the instruction returns StopPlan (-1) so the flow halts immediately
+// and the 429 ResponseStatus set by CheckRateLimitV2 is preserved.
+func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
+	for _, entry := range policies {
+		configName := entry.Config
+
+		switch entry.Kind {
+		case RLEntryDynamic:
+			// Emit AssignQuotaGroup to map the runtime value to a quota group ID.
+			// The quota group enables V1 CheckRateLimit dispatch; full V2 dynamic
+			// dispatch (per-group CheckRateLimitV2) is a future enhancement.
+			if entry.Dynamic == nil || len(entry.Dynamic.Mappings) == 0 {
+				log.Printf("[Compiler] api_rate_limits dynamic entry: empty mapping — skipped")
+				continue
+			}
+			groupMap := make(map[string]uint8, len(entry.Dynamic.Mappings))
+			gid := uint8(1)
+			for runtimeVal := range entry.Dynamic.Mappings {
+				groupMap[runtimeVal] = gid
+				gid++
+			}
+			srcSlot := -1
+			if entry.Dynamic.Source != "" {
+				srcSlot, _ = c.getSlot(entry.Dynamic.Source)
+			}
+			c.GlobalTable = append(c.GlobalTable, steps.AssignQuotaGroup(srcSlot, groupMap))
+			// Use the first mapped config name as the representative V2 config.
+			for _, mappedName := range entry.Dynamic.Mappings {
+				configName = mappedName
+				break
+			}
+
+		case RLEntryNamed, RLEntryFixed:
+			// configName is already set from entry.Config (resolved by management server).
+
+		default:
+			continue
+		}
+
+		if configName == "" {
+			log.Printf("[Compiler] api_rate_limits entry (kind=%s): no config name — skipped", entry.Kind)
+			continue
+		}
+
+		// Resolve windows from the V2 config registry.
+		var configID uint16
+		var windows []steps.WindowSpec
+		var enforcement string
+		if c.RegMgr != nil {
+			if id, ok := c.RegMgr.GetRateLimitConfigId(configName); ok {
+				configID = id
+			}
+			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil {
+				enforcement = cfg.Enforcement
+				for i, w := range cfg.Windows {
+					epochDiv := w.PeriodSecs
+					if epochDiv == 0 {
+						epochDiv = 1
+					}
+					windows = append(windows, steps.WindowSpec{EpochDiv: epochDiv, Limit: w.Limit, Idx: i})
+				}
+			}
+		}
+		if len(windows) == 0 {
+			log.Printf("[Compiler] api_rate_limits: config %q not found or has no windows — skipped", configName)
+			continue
+		}
+
+		countBy := c.buildRLEntryCountBy(entry)
+
+		var remoteRL engine.ExternalRateLimitProvider
+		if enforcement == "strict" && c.fm.RemoteRL != nil {
+			remoteRL = c.fm.RemoteRL
+		}
+
+		// Capture loop variables for the closure.
+		capturedConfigID := configID
+		capturedCountBy := countBy
+		capturedWindows := windows
+		capturedConfigName := configName
+		capturedRemoteRL := remoteRL
+		// NextPC: the instruction immediately following this check (continue flow).
+		// DeniedPC: -1 (StopPlan) — halt execution immediately when denied.
+		// This is safe because we set ctx.ResponseStatus = 429 before returning.
+		nextPC := len(c.GlobalTable) + 1
+		const deniedPC = -1 // StopPlan: halt flow on denial
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:    "CHECK_RATE_LIMIT_V2",
+			StepIdx: -1, // system instruction — not a user-defined flow step
+			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+				rl := &steps.CheckRateLimitV2{
+					ConfigID:   capturedConfigID,
+					CountBy:    capturedCountBy,
+					Windows:    capturedWindows,
+					DeniedPC:   deniedPC,
+					NextPC:     nextPC,
+					RemoteRL:   capturedRemoteRL,
+					ConfigName: capturedConfigName,
+				}
+				return rl.Execute(ctx, s)
+			},
+		})
+	}
 }
 
 // resolvePendingJumps patches any on_error:jump wrappers that referenced
@@ -1510,6 +2624,50 @@ func (c *Compiler) compileQuotaGroupMap(input map[string]string) []uint16 {
 		}
 	}
 	return out
+}
+
+// buildRLCountBy builds an engine.RateLimitCountBy from a step input map.
+// slotLookup maps a variable name to its ByteSlot index; called only for slot/composite kinds.
+func buildRLCountBy(input map[string]string, slotLookup func(name string) int) engine.RateLimitCountBy {
+	var cb engine.RateLimitCountBy
+	switch input["count_by"] {
+	case "ip":
+		xffIdx := 0
+		if s := strings.TrimSpace(input["xff_index"]); s != "" {
+			if n, err := strconv.Atoi(s); err == nil {
+				xffIdx = n
+			}
+		}
+		cb = engine.RateLimitCountBy{Kind: engine.CountByIP, XFFIndex: xffIdx}
+	case "slot":
+		cb = engine.RateLimitCountBy{Kind: engine.CountBySlot, SlotIndex: slotLookup(strings.TrimSpace(input["slot"]))}
+	case "static":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByStatic, StaticKey: []byte(input["static_key"])}
+	case "composite":
+		var idxs []int
+		for _, name := range strings.Split(input["slots"], ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				idxs = append(idxs, slotLookup(name))
+			}
+		}
+		cb = engine.RateLimitCountBy{Kind: engine.CountByComposite, SlotIndexes: idxs}
+	case "global":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByGlobal}
+	default: // "tenant"
+		cb = engine.RateLimitCountBy{Kind: engine.CountByTenant}
+	}
+	// OnEmpty policy
+	switch strings.TrimSpace(input["on_empty"]) {
+	case "skip":
+		cb.OnEmpty = engine.OnEmptyKeySkip
+	case "fallback_tenant":
+		cb.OnEmpty = engine.OnEmptyKeyTenant
+	default: // "fail"
+		cb.OnEmpty = engine.OnEmptyKeyFail
+	}
+	cb.FailFast = strings.TrimSpace(input["fail_fast"]) == "true"
+	return cb
 }
 
 // buildExtractOps parses step.Params into a []steps.ExtractOp slice.
@@ -1587,8 +2745,8 @@ func (c *Compiler) computeLastUse(flow []StepConfig, frags map[string][]StepConf
 		for _, name := range c.varRefsInStep(step) {
 			lastUse[name] = i
 		}
-		// Join-point rule: variables used inside branches must survive until after the if step.
-		if step.Action == "if" {
+		// Join-point rule: variables used inside branches must survive until after the if/pattern_match step.
+		if step.Action == "if" || step.Action == "pattern_match" {
 			for _, name := range c.varRefsInFlow(frags[step.Then], frags) {
 				if cur, ok := lastUse[name]; !ok || cur < i {
 					lastUse[name] = i
@@ -1627,6 +2785,25 @@ func (c *Compiler) varRefsInStep(step StepConfig) []string {
 	for _, n := range names {
 		if n != "" {
 			refs = append(refs, n)
+		}
+	}
+	// Extract slot names from the Condition field so liveness analysis keeps them
+	// alive until after the if/while step that consumes them. Without this, slots
+	// written by an immediately preceding step and consumed only via Condition are
+	// freed before the gate instruction is compiled, causing the runtime to always
+	// take the else branch.
+	if step.Condition != "" {
+		for _, tok := range strings.Fields(step.Condition) {
+			tok = strings.Trim(tok, "()")
+			if tok == "&&" || tok == "||" || tok == "" {
+				continue
+			}
+			// Skip comparison operators and their operands (literals / numeric values).
+			// We only want bare slot names or header.X / query.Y style refs.
+			if strings.ContainsAny(tok, "=<>!\"'") {
+				continue
+			}
+			refs = append(refs, tok)
 		}
 	}
 	// Scan step.Input values for slot names (e.g. model_slot: 'var.model',

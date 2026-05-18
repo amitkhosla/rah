@@ -43,23 +43,13 @@ func SwitchGate(slot int, jumpTable map[string]int16, exitID int16) engine.Instr
 	}
 }
 
-// FIX: Added the missing shouldRetry helper
-func shouldRetry(ctx *rctx.Context, condition string) bool {
-	// In a production engine, the compiler would parse 'condition' into a bytecode.
-	// Here, we perform a fast check on the ResponseStatus in the Context.
-	if condition == "status >= 500" {
-		return ctx.ResponseStatus >= 500
-	}
-	return false
-}
-
-// RetryGate handles the loop logic for http_calls
-func RetryGate(condition string, loopStart, exitID int16) engine.Instruction {
+// RetryGate handles the loop logic for http_calls using a pre-compiled ConditionFunc.
+// condFn is built by CompileCondition at bake time; evaluated on every retry check.
+func RetryGate(condFn ConditionFunc, loopStart, exitID int16) engine.Instruction {
 	return engine.Instruction{
 		Name: "RETRY_GATE",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			// Logic to evaluate condition (e.g. status >= 500)
-			if shouldRetry(ctx, condition) {
+			if condFn(ctx) {
 				return loopStart
 			}
 			return exitID

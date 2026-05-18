@@ -1,22 +1,30 @@
 package steps
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"rah/internal/engine"
 	"rah/internal/rctx"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
-// ComplexLogicGate evaluates a pre-parsed RPN condition against slots.
+// NewComplexLogicGate compiles condition into a ConditionFunc closure at bake
+// time and wraps it in an IF_GATE instruction. Falls back to the legacy RPN
+// evaluator when CompileCondition returns an error (e.g. unknown slot names
+// used in old-style conditions).
 func NewComplexLogicGate(condition string, thenID, elseID int16, slotMap map[string]int) engine.Instruction {
-	// Pre-parse the condition into an RPN stack of Slot IDs and Operators
-	// Example: "A && B" becomes [SlotA, SlotB, OP_AND]
-	rpnStack := parseToRPN(condition, slotMap)
+	condFn, err := CompileCondition(condition, slotMap)
+	if err != nil {
+		// Fallback: legacy RPN path for old-style bare-slot conditions.
+		rpnStack := parseToRPN(condition, slotMap)
+		condFn = func(ctx *rctx.Context) bool { return evaluateRPN(ctx, rpnStack) }
+	}
 
 	return engine.Instruction{
 		Name: "IF_GATE",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if evaluateRPN(ctx, rpnStack) {
+			if condFn(ctx) {
 				return thenID
 			}
 			return elseID
@@ -174,40 +182,68 @@ func LoopRepeat(gateID int16, iterSlot int) engine.InstructionFunc {
 
 // LoopGateSlot iterates over a JSON array stored in ctx.ByteSlots[sourceSlot].
 // Each iteration writes the raw JSON element to ctx.ByteSlots[valueSlot].
-// Uses iterSlot (IntSlot) as the loop counter. Resets to 0 on exit.
-func LoopGateSlot(sourceSlot int, valueSlot int, iterSlot int, bodyStart int16, exitID int16) engine.InstructionFunc {
+// Uses iterSlot (IntSlot) as the loop counter and indexSlot (ByteSlot) as a
+// packed (start,end uint32) index built once at iteration 0 — O(1) per step.
+func LoopGateSlot(sourceSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 		raw := ctx.ByteSlots[sourceSlot]
 		if len(raw) == 0 {
 			return exitID
 		}
-		var items []json.RawMessage
-		if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
-			return exitID
-		}
 		idx := ctx.GetInt(iterSlot)
-		if idx >= int64(len(items)) {
+
+		// Build the packed index on the first iteration (idx == 0).
+		if idx == 0 {
+			arr := gjson.ParseBytes(raw)
+			if !arr.IsArray() {
+				return exitID
+			}
+			count := 0
+			arr.ForEach(func(_, _ gjson.Result) bool { count++; return true })
+			if count == 0 {
+				return exitID
+			}
+			// Pack (uint32 start, uint32 end) per element — 8 bytes each.
+			buf := ctx.Alloc(count * 8)
+			i := 0
+			arr.ForEach(func(_, v gjson.Result) bool {
+				start := uint32(v.Index)
+				end := uint32(v.Index + len(v.Raw))
+				binary.LittleEndian.PutUint32(buf[i*8:], start)
+				binary.LittleEndian.PutUint32(buf[i*8+4:], end)
+				i++
+				return true
+			})
+			ctx.ByteSlots[indexSlot] = buf
+		}
+
+		index := ctx.ByteSlots[indexSlot]
+		count := int64(len(index) / 8)
+		if idx >= count {
 			ctx.SetInt(iterSlot, 0)
+			ctx.ByteSlots[indexSlot] = nil // release cached index
 			return exitID
 		}
-		ctx.SetSlot(valueSlot, []byte(items[idx]))
+
+		start := binary.LittleEndian.Uint32(index[idx*8:])
+		end := binary.LittleEndian.Uint32(index[idx*8+4:])
+		ctx.ByteSlots[valueSlot] = raw[start:end] // zero-copy slice
 		ctx.SetInt(iterSlot, idx+1)
 		return bodyStart
 	}
 }
 
-// WhileGate loops while ctx.BoolSlots[condSlot] is true, up to maxIter times.
+// WhileGate loops while condFn(ctx) is true, up to maxIter times.
 // iterSlot (IntSlot) tracks the iteration count; reset to 0 on exit.
 // maxIter <= 0 defaults to 100 to prevent infinite loops.
-func WhileGate(condSlot int, iterSlot int, maxIter int, bodyStart int16, exitID int16) engine.InstructionFunc {
+func WhileGate(condFn ConditionFunc, iterSlot int, maxIter int, bodyStart int16, exitID int16) engine.InstructionFunc {
 	limit := int64(maxIter)
 	if limit <= 0 {
 		limit = 100
 	}
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 		iter := ctx.GetInt(iterSlot)
-		cond := condSlot >= 0 && condSlot < len(ctx.BoolSlots) && ctx.BoolSlots[condSlot]
-		if !cond || iter >= limit {
+		if !condFn(ctx) || iter >= limit {
 			ctx.SetInt(iterSlot, 0)
 			return exitID
 		}
