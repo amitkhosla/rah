@@ -2,6 +2,12 @@ package control
 
 import registrypkg "rah/internal/registry"
 
+// BranchConfig defines one named branch in a parallel step.
+type BranchConfig struct {
+	Name string       `json:"name"`
+	Flow []StepConfig `json:"flow"`
+}
+
 // StepConfig defines a single atomic instruction in a flow.
 type StepConfig struct {
 	Action string `json:"action"` // if, http_call, registry_lookup, foreach, call, etc.
@@ -39,6 +45,11 @@ type StepConfig struct {
 
 	// Delta is the increment value for cache_incr. Default 1 if zero.
 	Delta int64 `json:"delta,omitempty"`
+
+	// Parallel execution
+	Branches    []BranchConfig `json:"branches,omitempty"`    // For parallel: list of named branches with inline flows
+	TimeoutMs   uint32         `json:"timeout_ms,omitempty"`  // For parallel: max wait in ms (default 3000)
+	ErrorPolicy string         `json:"error_policy,omitempty"` // For parallel: "continue" (default) or "fail_fast"
 
 	// TX ID / Correlation
 	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
