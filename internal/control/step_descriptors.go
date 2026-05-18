@@ -1001,6 +1001,18 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("params", "Extract ops (JSON array)", `Array of op descriptors applied to each element. Each: {"path":"id","key_prefix":"item:","op_type":"put","target":"cache","value_slot":"","async":"true"}`, ""),
 			},
 		},
+		{
+			Type: "json_set", Title: "JSON Set", Category: "json", Capability: "transform",
+			Description: "Set a value at a JSON path in a slot. Uses gjson to locate the field and hand-rolled splicing to replace it.",
+			Defaults: map[string]string{"source": "var.body", "as": "var.body", "key": "user.id"},
+			Fields: []StepField{
+				sf("source", "Source Slot", "Slot with JSON input to mutate", "var.body"),
+				sf("as", "Output Slot", "Slot for JSON output (can be same as source)", "var.body"),
+				sf("key", "JSON Path", "gjson path to the field to set (e.g. user.id, items.0.url)", "user.id"),
+				sf("input.value_var", "Value Slot", "Slot containing the value to set (optional; if absent, use value field)", ""),
+				sf("value", "Static Value", "Static value to set (ignored if value_var is provided)", ""),
+			},
+		},
 
 		// ── Response ─────────────────────────────────────────────────────────────
 		{

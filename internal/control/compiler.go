@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // pendingJump tracks an on_error:jump: wrapper that referenced a not-yet-compiled
@@ -2111,6 +2113,50 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CopyHeader(srcName, dstName))
 
+	// ── Resilience ───────────────────────────────────────────────────────────
+
+	case "spike_arrest":
+		intervalMs := uint32(100) // default: 1 req / 100 ms
+		if v, ok := step.Input["interval_ms"]; ok {
+			if n, parseErr := strconv.Atoi(v); parseErr == nil && n > 0 {
+				intervalMs = uint32(n)
+			}
+		}
+		keySlot := -1
+		if step.Source != "" {
+			if ks, ksErr := c.getSlotReadOnly(step.Source); ksErr == nil {
+				keySlot = ks
+			}
+		}
+		flowID := uint32(len(c.GlobalTable))
+		intervalNs := int64(intervalMs) * int64(time.Millisecond)
+		c.GlobalTable = append(c.GlobalTable, engine.SpikeArrestStep(c.fm.SpikeArrestStore, flowID, intervalNs, keySlot))
+
+	case "circuit_breaker":
+		failureThresh := int64(parseIntInput(step.Input, "failure_threshold", 5))
+		successThresh := int64(parseIntInput(step.Input, "success_threshold", 2))
+		openDurMs := uint32(parseIntInput(step.Input, "open_duration_ms", 30000))
+		cbIdx, cbErr := c.fm.CircuitBreakerArena.Alloc(failureThresh, successThresh, openDurMs)
+		if cbErr != nil {
+			return fmt.Errorf("circuit_breaker: %w", cbErr)
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.CircuitBreakerGateStep(c.fm.CircuitBreakerArena, cbIdx))
+
+	case "record_circuit_outcome":
+		cbIdx := int(atomic.LoadInt32(&c.fm.CircuitBreakerArena.count)) - 1
+		if cbIdx < 0 {
+			return fmt.Errorf("record_circuit_outcome: no circuit_breaker step has been compiled yet")
+		}
+		var successFn engine.OutcomeFunc
+		if step.Condition != "" {
+			cf, cfErr := steps.CompileCondition(step.Condition, c.slotMap)
+			if cfErr != nil {
+				return fmt.Errorf("record_circuit_outcome condition: %w", cfErr)
+			}
+			successFn = engine.OutcomeFunc(cf)
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.RecordCircuitOutcomeStep(c.fm.CircuitBreakerArena, cbIdx, successFn))
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -2341,6 +2387,16 @@ func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
 	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
+}
+
+// parseIntInput returns the integer value for key in input, or def if absent or unparseable.
+func parseIntInput(input map[string]string, key string, def int) int {
+	if v, ok := input[key]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // SnapshotSlots returns a copy of the current slot map and nextSlot counter.

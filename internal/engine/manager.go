@@ -105,6 +105,12 @@ type FlowManager struct {
 	// DistRLPolicy controls cross-pod rate limit enforcement:
 	// 0 = LOCAL (in-memory only), 1 = ASYNC (local decision + background sync), 2 = STRICT (Redis before allow).
 	DistRLPolicy uint8
+	// SpikeArrestStore holds per-bucket last-allowed timestamps for all spike_arrest steps.
+	// Pre-allocated at startup; zero heap allocation per request.
+	SpikeArrestStore *SpikeArrestStore
+	// CircuitBreakerArena holds all named circuit breaker states (max 256).
+	// Slots are allocated at bake time; state is updated atomically at request time.
+	CircuitBreakerArena *CircuitBreakerArena
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
@@ -113,12 +119,14 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		strategy = StrategyParallel
 	}
 	fm := &FlowManager{
-		Config:           cfg,
-		Strategy:         strategy,
-		TxIDGen:          rctx.NewTxIDGenerator(),
-		RateLimitStore:   NewCounterStore(1 << 20), // 1M slots = 8 MB
-		CostQuotaManager: quota.NewCostQuotaManager(),
-		APIKeyResolver:   NewAPIKeyResolver(),
+		Config:              cfg,
+		Strategy:            strategy,
+		TxIDGen:             rctx.NewTxIDGenerator(),
+		RateLimitStore:      NewCounterStore(1 << 20), // 1M slots = 8 MB
+		CostQuotaManager:    quota.NewCostQuotaManager(),
+		APIKeyResolver:      NewAPIKeyResolver(),
+		SpikeArrestStore:    NewSpikeArrestStore(),
+		CircuitBreakerArena: NewCircuitBreakerArena(),
 	}
 	log.Printf("instance fingerprint: %s", fm.TxIDGen.Fingerprint())
 

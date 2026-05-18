@@ -1,0 +1,165 @@
+package engine
+
+import (
+	"fmt"
+	"rah/internal/rctx"
+	"sync/atomic"
+	"time"
+)
+
+// Circuit breaker states (stored atomically in CircuitState.state).
+const (
+	CBStateClosed   int32 = 0 // normal — all requests pass through
+	CBStateOpen     int32 = 1 // tripped — requests are rejected
+	CBStateHalfOpen int32 = 2 // probe — limited requests allowed to test recovery
+)
+
+// CircuitState is one named circuit breaker instance.
+// All mutable fields are accessed via sync/atomic — no mutex on the hot path.
+// Config fields (failureThreshold, successThreshold, openDurationNs) are
+// written once at bake time and read-only thereafter.
+type CircuitState struct {
+	// Mutable state (atomic).
+	state        int32 // CBStateClosed / CBStateOpen / CBStateHalfOpen
+	failureCount int64 // consecutive failures while Closed
+	successCount int64 // consecutive successes while HalfOpen
+	lastTripNs   int64 // UnixNano when circuit last opened
+
+	// Config — immutable after Alloc().
+	failureThreshold int64
+	successThreshold int64
+	openDurationNs   int64 // how long to stay Open before probing
+}
+
+// CircuitBreakerArena is a fixed-size pre-allocated array of CircuitState
+// slots indexed by a bake-time integer (0..255).  Using a plain array avoids
+// any per-request heap allocation and keeps states cache-line-adjacent.
+type CircuitBreakerArena struct {
+	states [256]CircuitState
+	count  int32 // atomic: number of allocated slots
+}
+
+// NewCircuitBreakerArena allocates a ready-to-use arena.
+func NewCircuitBreakerArena() *CircuitBreakerArena { return &CircuitBreakerArena{} }
+
+// Alloc reserves the next CircuitState slot, initialises its config, and
+// returns the index.  Returns an error when all 256 slots are exhausted.
+// Must only be called at bake time (single-threaded compilation path).
+func (a *CircuitBreakerArena) Alloc(failureThresh, successThresh int64, openDurationMs uint32) (int, error) {
+	idx := int(atomic.AddInt32(&a.count, 1)) - 1
+	if idx >= 256 {
+		return 0, fmt.Errorf("circuit breaker arena full (max 256)")
+	}
+	cs := &a.states[idx]
+	cs.failureThreshold = failureThresh
+	cs.successThreshold = successThresh
+	cs.openDurationNs = int64(openDurationMs) * int64(time.Millisecond)
+	return idx, nil
+}
+
+// OutcomeFunc is the type for a runtime success/failure predicate.
+// It is identical in shape to steps.ConditionFunc — the compiler casts between
+// them without any wrapper to avoid an import cycle (engine ↛ steps).
+type OutcomeFunc = func(ctx *rctx.Context) bool
+
+// CircuitBreakerGateStep returns an Instruction that checks whether requests
+// may proceed according to the circuit breaker state machine.
+//
+//   - Closed  → pass through.
+//   - Open    → if the open window has elapsed, transition to HalfOpen and allow
+//     one probe request; otherwise set ctx.ResponseStatus = 503 and stop.
+//   - HalfOpen → pass through (one probe at a time; CAS ensures only one thread
+//     transitions the state).
+//
+// Use RecordCircuitOutcomeStep after the guarded work to update the state machine.
+func CircuitBreakerGateStep(arena *CircuitBreakerArena, idx int) Instruction {
+	return Instruction{
+		Name: "CIRCUIT_BREAKER_GATE",
+		Action: func(ctx *rctx.Context, state *ExecutionState) int16 {
+			cs := &arena.states[idx]
+			s := atomic.LoadInt32(&cs.state)
+			switch s {
+			case CBStateClosed:
+				return state.PC + 1
+
+			case CBStateOpen:
+				now := time.Now().UnixNano()
+				lastTrip := atomic.LoadInt64(&cs.lastTripNs)
+				if now-lastTrip >= cs.openDurationNs {
+					// Attempt to transition to HalfOpen so one probe request gets through.
+					if atomic.CompareAndSwapInt32(&cs.state, CBStateOpen, CBStateHalfOpen) {
+						atomic.StoreInt64(&cs.successCount, 0)
+					}
+					return state.PC + 1 // allow the probe (or the winner of the CAS race)
+				}
+				ctx.ResponseStatus = 503
+				return StopPlan
+
+			case CBStateHalfOpen:
+				return state.PC + 1 // allow probe traffic
+
+			default:
+				return state.PC + 1
+			}
+		},
+	}
+}
+
+// RecordCircuitOutcomeStep returns an Instruction that records the outcome of the
+// guarded work for the circuit breaker state machine.
+//
+//   - successFn nil  → always record as success.
+//   - successFn non-nil → call it; true = success, false = failure.
+//
+// State transitions:
+//
+//	Closed + failure count ≥ threshold  → Open (reset failure counter, store trip time).
+//	Closed + success                    → reset failure counter.
+//	HalfOpen + success count ≥ threshold → Closed (reset both counters).
+//	HalfOpen + failure                  → re-Open (store new trip time).
+func RecordCircuitOutcomeStep(arena *CircuitBreakerArena, idx int, successFn OutcomeFunc) Instruction {
+	return Instruction{
+		Name: "RECORD_CIRCUIT_OUTCOME",
+		Action: func(ctx *rctx.Context, state *ExecutionState) int16 {
+			cs := &arena.states[idx]
+			s := atomic.LoadInt32(&cs.state)
+			isSuccess := successFn == nil || successFn(ctx)
+
+			switch s {
+			case CBStateClosed:
+				if !isSuccess {
+					fc := atomic.AddInt64(&cs.failureCount, 1)
+					if fc >= cs.failureThreshold {
+						if atomic.CompareAndSwapInt32(&cs.state, CBStateClosed, CBStateOpen) {
+							atomic.StoreInt64(&cs.lastTripNs, time.Now().UnixNano())
+							atomic.StoreInt64(&cs.failureCount, 0)
+						}
+					}
+				} else {
+					// Reset consecutive failure count on any success.
+					atomic.StoreInt64(&cs.failureCount, 0)
+				}
+
+			case CBStateHalfOpen:
+				if isSuccess {
+					sc := atomic.AddInt64(&cs.successCount, 1)
+					if sc >= cs.successThreshold {
+						// CRITICAL: set state CLOSED first, then reset counters so
+						// concurrent readers never see a partial reset.
+						if atomic.CompareAndSwapInt32(&cs.state, CBStateHalfOpen, CBStateClosed) {
+							atomic.StoreInt64(&cs.failureCount, 0)
+							atomic.StoreInt64(&cs.successCount, 0)
+						}
+					}
+				} else {
+					// Probe failed — re-open the circuit.
+					if atomic.CompareAndSwapInt32(&cs.state, CBStateHalfOpen, CBStateOpen) {
+						atomic.StoreInt64(&cs.lastTripNs, time.Now().UnixNano())
+						atomic.StoreInt64(&cs.failureCount, 0)
+					}
+				}
+			}
+			return state.PC + 1
+		},
+	}
+}
