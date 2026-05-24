@@ -438,6 +438,37 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 
+		// ── gRPC ─────────────────────────────────────────────────────────────────
+		{
+			Type:        "grpc_call",
+			Title:       "gRPC Call",
+			Category:    "grpc",
+			Capability:  "upstream",
+			Description: "Make an outbound gRPC unary call. Transcodes JSON ↔ proto using a pre-uploaded FileDescriptorSet. Supports TLS (grpcs://), metadata forwarding, deadline propagation, and automatic client-disconnect cancellation.",
+			Defaults: map[string]string{
+				"timeout_ms":    "5000",
+				"wait_for_ready": "false",
+			},
+			Fields: []StepField{
+				sf("descriptor_set", "Descriptor Set", "Name of the uploaded FileDescriptorSet (from the gRPC Descriptors library).", "user-service"),
+				sf("service", "Service name", "Fully-qualified proto service name (e.g. com.example.UserService).", "com.example.UserService"),
+				sf("method", "Method name", "RPC method name (e.g. GetUser).", "GetUser"),
+				sf("static_url", "Static URL", "grpc://host:port (insecure) or grpcs://host:port (TLS). Leave blank when using url_slot.", "grpc://user-service:9090"),
+				sf("url_slot", "URL slot", "Slot holding a dynamic grpc:// or grpcs:// URL (from load_service_url or earlier step).", "0"),
+				sf("body_slot", "Request body slot", "Slot holding JSON request payload. Empty slot sends an empty proto message.", "1"),
+				sf("response_slot", "Response body slot", "Slot to store the JSON response body. On error, stores {code, message, details}.", "2"),
+				sf("status_slot", "Status slot", "Slot to store the HTTP status code as a string (e.g. '200', '404').", "3"),
+				sf("timeout_ms", "Timeout (ms)", "Per-call deadline in milliseconds. 0 = no deadline (not recommended).", "5000"),
+				sf("compress", "Compress request", "Send request with gzip compression (true/false).", "false"),
+				sf("wait_for_ready", "Wait for ready", "Block until connection is ready instead of failing immediately (true/false).", "false"),
+				sf("max_retries", "Max retries", "Retry attempts on codes listed in retry_on. 0 = no retry.", "0"),
+				sf("retry_on", "Retry on codes", "Comma-separated gRPC status code names to retry on (e.g. UNAVAILABLE,UNKNOWN).", "UNAVAILABLE"),
+				sf("forward_headers", "Forward headers", "Forward incoming HTTP headers as gRPC metadata (true/false).", "false"),
+				sf("block_headers", "Block headers", "Comma-separated header names to exclude from metadata forwarding.", "authorization"),
+				sf("egress_profile", "Egress Profile", "Egress profile name for TLS config and keepalive. Uses URL scheme by default.", ""),
+			},
+		},
+
 		// ── Observability / Tracing ───────────────────────────────────────────────
 		{
 			Type: "store_internal_tx_id", Title: "Store Transaction ID", Category: "observability", Capability: "tracing",

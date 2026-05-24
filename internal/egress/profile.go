@@ -25,6 +25,9 @@ const (
 	// EgressTypeH2C uses cleartext HTTP/2. The upstream must support h2c.
 	// The caller must rewrite h2c:// → http:// before constructing requests.
 	EgressTypeH2C EgressType = 3
+	// EgressTypeGRPC selects the native gRPC transport (google.golang.org/grpc).
+	// Used by grpc_call steps; grpc:// = insecure, grpcs:// = TLS via EgressProfile.TLSConfig.
+	EgressTypeGRPC EgressType = 4
 )
 
 // EgressProfile holds the resolved transport configuration for one named profile.

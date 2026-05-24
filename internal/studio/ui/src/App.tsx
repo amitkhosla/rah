@@ -19,6 +19,7 @@ import CachePanel             from './components/CachePanel'
 import Apps                  from './components/Apps'
 import Egress                from './components/Egress'
 import SchemaLibrary         from './components/SchemaLibrary'
+import GrpcDescriptors       from './components/GrpcDescriptors'
 
 // ── Action name normalization (internal engine → display names) ──────
 
@@ -119,6 +120,7 @@ const NAV_ICONS: Record<string, string> = {
   'upstream-services':'⇥',
   egress:             '⇄',
   schemas:            '⊞',
+  grpc:               '⬡',
   settings:           '⚙',
 }
 
@@ -142,6 +144,7 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'upstream-services',   label: 'Upstreams' },
   { kind: 'item',    id: 'egress',              label: 'Egress' },
   { kind: 'item',    id: 'schemas',             label: 'Schemas' },
+  { kind: 'item',    id: 'grpc',                label: 'gRPC' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'section', label: '' },
   { kind: 'item',    id: 'settings',  label: 'Settings' },
@@ -589,6 +592,7 @@ export default function App() {
         {tab === 'upstream-services' && <UpstreamServicesScreen />}
         {tab === 'egress'            && <Egress />}
         {tab === 'schemas'           && <SchemaLibrary />}
+        {tab === 'grpc'              && <GrpcDescriptors />}
         {tab === 'cache'             && <CachePanel />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>

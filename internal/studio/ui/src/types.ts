@@ -1,4 +1,4 @@
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'cache' | 'apps' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'cache' | 'apps' | 'grpc' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
@@ -704,4 +704,16 @@ export interface RuleConfig {
   label?: string
   when: CondConfig
   on_match: OnMatchConfig
+}
+
+// ── gRPC Descriptors ────────────────────────────────────────────────
+export interface GrpcServiceInfo {
+  full_name: string
+  methods: string[]
+}
+
+export interface GrpcDescriptorSummary {
+  name: string
+  services: GrpcServiceInfo[]
+  uploaded_at: string
 }

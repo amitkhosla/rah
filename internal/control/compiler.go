@@ -12,6 +12,7 @@ import (
 	"rah/internal/egress"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
+	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/rctx"
@@ -56,6 +57,7 @@ type Compiler struct {
 	IngestPipeline *ingest.Pipeline                    // optional; enables emit_event steps
 	PricingManager steps.PricingLookup                 // optional; enables calculate_cost steps
 	EgressMgr      *egress.EgressManager               // optional; enables bake-time egress profile resolution
+	GrpcRegistry   *grpcutil.DescriptorRegistry        // optional; enables bake-time gRPC method resolution
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -2125,6 +2127,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("json_foreach_emit: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.JSONForeachEmit(bodySlot, arrayPath, ops))
+
+	case "grpc_call":
+		return c.compileGrpcCall(step)
 
 	case "validate_route":
 		return c.compileValidateRoute(step)

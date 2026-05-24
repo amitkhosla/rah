@@ -222,6 +222,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
 	mux.HandleFunc("/api/apps", s.appsMgmtProxy)
 	mux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	mux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
+	mux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
 	mux.HandleFunc("/api/schemas", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, "/schemas")
 	})
@@ -1062,6 +1064,11 @@ func (s *Server) aiMgmtProxy(w http.ResponseWriter, r *http.Request) {
 
 // appsMgmtProxy forwards /api/apps[/...] → /apps[/...] on the management server.
 func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// grpcDescriptorsMgmtProxy forwards /api/grpc/descriptors[/...] → /grpc/descriptors[/...].
+func (s *Server) grpcDescriptorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 

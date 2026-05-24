@@ -16,6 +16,8 @@ import (
 	"rah/internal/datastore"
 	"rah/internal/egress"
 	"rah/internal/engine"
+	enginesteps "rah/internal/engine/steps"
+	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
 	"rah/internal/observability"
@@ -383,6 +385,26 @@ func main() {
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
+
+	// gRPC — create registry and conn pool before Bootstrap so that grpc_call
+	// steps can resolve method descriptors at bake time (compiler.GrpcRegistry)
+	// and make live calls at runtime (GlobalGrpcConnPool).
+	grpcRegistry := grpcutil.NewDescriptorRegistry()
+	enginesteps.GlobalGrpcRegistry = grpcRegistry
+	compiler.GrpcRegistry = grpcRegistry
+
+	grpcPool := grpcutil.NewConnPool()
+	if grpcCfg := cfgMgr.Gateway().Grpc; grpcCfg != nil {
+		if grpcCfg.KeepaliveTimeSec > 0 {
+			grpcPool.KeepaliveTime = time.Duration(grpcCfg.KeepaliveTimeSec) * time.Second
+		}
+		if grpcCfg.KeepaliveTimeoutSec > 0 {
+			grpcPool.KeepaliveTimeout = time.Duration(grpcCfg.KeepaliveTimeoutSec) * time.Second
+		}
+	}
+	enginesteps.GlobalGrpcConnPool = grpcPool
+	defer grpcPool.Close()
+	log.Printf("[grpc] registry and connection pool initialized")
 
 	// Pricing manager — bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
@@ -955,6 +977,13 @@ func main() {
 		log.Printf("[AI] failed to pre-load persisted ai_config before bootstrap: %v", err)
 	}
 
+	// Load stored gRPC FileDescriptorSets into the registry BEFORE Bootstrap so
+	// that grpc_call steps in existing flows can resolve method descriptors at
+	// bake time. A missing or corrupt .pb file is logged but does not abort startup.
+	if err := control.BootstrapGrpcDescriptors(dataStoreMgr, grpcRegistry); err != nil {
+		log.Printf("[grpc] descriptor bootstrap: %v", err)
+	}
+
 	// Bootstrap BEFORE SetDataStore so the bootstrap reads do not trigger
 	// redundant writes back to the store. Registry must be restored first (above)
 	// so named rate limit configs are available when Bootstrap bakes flows.
@@ -1077,6 +1106,9 @@ func main() {
 
 	// Validation schema CRUD endpoints.
 	control.RegisterSchemaRoutes(mux, dataStoreMgr)
+
+	// gRPC FileDescriptorSet CRUD endpoints.
+	control.RegisterGrpcRoutes(mux, grpcRegistry, dataStoreMgr)
 
 	// ─── Cost Tracking API Routes ───────────────────────────────────────
 	// Requires admin token in X-Admin-Token header or Authorization: Bearer

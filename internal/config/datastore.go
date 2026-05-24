@@ -91,6 +91,9 @@ const (
 	// Validation schemas and API specs — optional; skip gracefully if not bound
 	DomainAPISpecs          DataDomain = "api_specs"          // per-API OpenAPI/schema specs
 	DomainValidationSchemas DataDomain = "validation_schemas" // named FieldSchema sets for validation
+
+	// gRPC descriptor sets — compiled FileDescriptorSet blobs for grpc_call transcoding
+	DomainGRPCDescriptors DataDomain = "grpc_descriptors"
 )
 
 var requiredDomains = []DataDomain{

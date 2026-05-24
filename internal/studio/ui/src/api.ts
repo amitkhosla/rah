@@ -743,3 +743,32 @@ export function deleteSchemaField(setName: string, fieldName: string): Promise<v
 export function deleteSchemaSet(setName: string): Promise<void> {
   return request<void>(`/api/schemas/${encodeURIComponent(setName)}`, { method: 'DELETE' })
 }
+
+// ── gRPC Descriptors ─────────────────────────────────────────────────────
+export async function listGrpcDescriptors(): Promise<import('./types').GrpcDescriptorSummary[]> {
+  const r = await fetch('/api/grpc/descriptors')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function getGrpcDescriptor(name: string): Promise<import('./types').GrpcDescriptorSummary> {
+  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function uploadGrpcDescriptor(name: string, file: File): Promise<import('./types').GrpcDescriptorSummary> {
+  const data = await file.arrayBuffer()
+  const r = await fetch('/api/grpc/descriptors', {
+    method: 'POST',
+    headers: { 'X-Descriptor-Name': name, 'Content-Type': 'application/octet-stream' },
+    body: data,
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function deleteGrpcDescriptor(name: string): Promise<void> {
+  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!r.ok && r.status !== 204) throw new Error(await r.text())
+}
