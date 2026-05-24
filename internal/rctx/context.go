@@ -126,6 +126,10 @@ type Context struct {
 	// Reserved to avoid a structural rewrite when AppKey auth is introduced.
 	CallerID uint32
 
+	// CallerKey is the API key alias set by validate_api_key on success.
+	// Human-readable, used in access logs. Complements CallerID (AppID).
+	CallerKey string
+
 	// TestMode is true when this context is being executed by the test runner
 	// (POST /test/execute). Steps must NOT write to live cache/registry/datastore;
 	// writes are either suppressed or go to a test-namespaced key.
@@ -378,6 +382,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.TenantKey = ""
 	ctx.TenantID = 0
 	ctx.CallerID = 0
+	ctx.CallerKey = ""
 	ctx.TestMode = false
 	ctx.TestRunID = ""
 	ctx.APIRateLimitId = 0

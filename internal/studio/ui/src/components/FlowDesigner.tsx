@@ -6,6 +6,7 @@ import { expandSteps, findSourceRefs, smartCondition } from '../utils/expression
 import { parseDSL, serializeDSL } from '../utils/dsl'
 import PatternConditionBuilder from './PatternConditionBuilder'
 import TemplatePatternBuilder from './TemplatePatternBuilder'
+import ValidateRouteBuilder from './ValidateRouteBuilder'
 import { isPatternCondition } from '../types'
 
 interface Props {
@@ -124,6 +125,24 @@ const VISUAL_GROUPS: VisualGroup[] = [
       { title: 'Lookup Tenant',   wraps: 'registry_lookup',  description: 'Resolve tenant from request header' },
       { title: 'Load Service URL',wraps: 'load_service_url', description: 'Load upstream URL for the current tenant' },
       { title: 'Load Identifier', wraps: 'load_identifier',  description: 'Load a stored credential or identifier' },
+    ],
+  },
+  {
+    label: 'TRANSFORM',
+    icon: '🔄',
+    recipes: [
+      { title: 'Base64 Encode',  wraps: 'base64_encode', description: 'Encode bytes to base64 (std, url, raw_url, raw_std variants)' },
+      { title: 'Base64 Decode',  wraps: 'base64_decode', description: 'Decode a base64 string to raw bytes (default: raw_url for JWT)' },
+      { title: 'Hex Encode',     wraps: 'hex_encode',    description: 'Encode bytes as a lowercase hex string' },
+      { title: 'Hex Decode',     wraps: 'hex_decode',    description: 'Decode a hex string back to raw bytes' },
+      { title: 'URL Encode',     wraps: 'url_encode',    description: 'Percent-encode a string (RFC 3986, space → %20)' },
+      { title: 'URL Decode',     wraps: 'url_decode',    description: 'Decode a percent-encoded string (+ → space)' },
+      { title: 'SHA-256 Hash',   wraps: 'sha256_hash',   description: 'Compute SHA-256 and output lowercase hex (no key)' },
+      { title: 'HMAC-SHA256',    wraps: 'hmac_sha256',   description: 'Sign data with a secret key using HMAC-SHA256 (webhooks, request signing)' },
+      { title: 'HMAC-SHA1',      wraps: 'hmac_sha1',     description: 'HMAC-SHA1 signature — legacy integrations only' },
+      { title: 'MD5 Hash',       wraps: 'md5_hash',      description: 'MD5 checksum — insecure, use for legacy/checksums only' },
+      { title: 'AES Encrypt',    wraps: 'aes_encrypt',   description: 'Encrypt with AES-GCM (nonce||ciphertext output)' },
+      { title: 'AES Decrypt',    wraps: 'aes_decrypt',   description: 'Decrypt AES-GCM ciphertext, sets Failed on auth error' },
     ],
   },
   {
@@ -2892,6 +2911,17 @@ export default function FlowDesigner({
                      ))() :
                      step.action === 'validate_pattern' ? renderTemplatePatternBody(step as TemplatePatternStep, i, 'validate_pattern') :
                      step.action === 'extract_pattern' ? renderTemplatePatternBody(step as TemplatePatternStep, i, 'extract_pattern') :
+                     step.action === 'validate_route'  ? (() => (
+                       <ValidateRouteBuilder
+                         rules={(step['rules'] as unknown[] ?? []) as any}
+                         defaultNext={(step['default_next'] as string) ?? ''}
+                         stepNames={savedFlows.map(f => f.name)}
+                         onChange={(rules, defaultNext) => {
+                           updateStep(i, 'rules', JSON.stringify(rules) as unknown as string)
+                           updateStep(i, 'default_next', defaultNext)
+                         }}
+                       />
+                     ))() :
                      ['cache_get','cache_put','cache_get_global','cache_put_global','cache_delete','cache_delete_global'].includes(step.action)
                                                          ? renderCacheBody(step, i)               :
                                                            renderGenericBody(step, i, defs)}

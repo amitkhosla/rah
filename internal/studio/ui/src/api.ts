@@ -27,6 +27,13 @@ import type {
   APIToolDef,
   VirtualMCPServer,
   RateLimitWarning,
+  App,
+  APIKeyView,
+  APIKeyCreateResponse,
+  EgressProfileConfig,
+  EgressCodeRuleConfig,
+  EgressPatternRuleConfig,
+  FieldSchema,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -621,4 +628,118 @@ export function deleteCacheEntry(tenant: string, key: string): Promise<void> {
     `/api/cache/${encodeURIComponent(tenant)}/${encodeURIComponent(key)}`,
     { method: 'DELETE' }
   )
+}
+
+// ─── Apps ────────────────────────────────────────────────────────────────────
+
+export function listApps(): Promise<App[]> {
+  return request<App[]>('/api/apps')
+}
+
+export function createApp(body: { name: string; description: string; labels?: Record<string, string> }): Promise<App> {
+  return request<App>('/api/apps', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function updateApp(id: number, body: Partial<{ name: string; description: string; labels?: Record<string, string> }>): Promise<App> {
+  return request<App>(`/api/apps/${id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteApp(id: number): Promise<void> {
+  return request<void>(`/api/apps/${id}`, { method: 'DELETE' })
+}
+
+// ─── API Keys ────────────────────────────────────────────────────────────────
+
+export function listKeys(appId: number): Promise<APIKeyView[]> {
+  return request<APIKeyView[]>(`/api/apps/${appId}/keys`)
+}
+
+export function generateKey(appId: number, body: { alias: string; allowed_tenants?: number[] }): Promise<APIKeyCreateResponse> {
+  return request<APIKeyCreateResponse>(`/api/apps/${appId}/keys`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function updateKey(appId: number, keyId: number, body: Partial<{ alias: string; enabled: boolean; allowed_tenants?: number[] }>): Promise<APIKeyView> {
+  return request<APIKeyView>(`/api/apps/${appId}/keys/${keyId}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function revokeKey(appId: number, keyId: number): Promise<void> {
+  return request<void>(`/api/apps/${appId}/keys/${keyId}`, { method: 'DELETE' })
+}
+
+export function rotateKey(appId: number, keyId: number): Promise<APIKeyCreateResponse> {
+  return request<APIKeyCreateResponse>(`/api/apps/${appId}/keys/${keyId}/rotate`, { method: 'POST' })
+}
+
+// ── Egress ───────────────────────────────────────────────────────────────
+
+export function listEgressProfiles(): Promise<EgressProfileConfig[]> {
+  return request<EgressProfileConfig[]>('/api/egress/profiles')
+}
+export function upsertEgressProfile(p: EgressProfileConfig): Promise<void> {
+  return request<void>('/api/egress/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) })
+}
+export function deleteEgressProfile(name: string): Promise<void> {
+  return request<void>(`/api/egress/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export function listCodeRules(): Promise<EgressCodeRuleConfig[]> {
+  return request<EgressCodeRuleConfig[]>('/api/egress/rules/codes')
+}
+export function upsertCodeRule(r: EgressCodeRuleConfig): Promise<void> {
+  return request<void>('/api/egress/rules/codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(r) })
+}
+export function deleteCodeRule(code: string): Promise<void> {
+  return request<void>(`/api/egress/rules/codes/${encodeURIComponent(code)}`, { method: 'DELETE' })
+}
+
+export function listPatternRules(): Promise<EgressPatternRuleConfig[]> {
+  return request<EgressPatternRuleConfig[]>('/api/egress/rules/patterns')
+}
+export function upsertPatternRule(r: EgressPatternRuleConfig): Promise<void> {
+  return request<void>('/api/egress/rules/patterns', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(r) })
+}
+export function deletePatternRule(idx: string): Promise<void> {
+  return request<void>(`/api/egress/rules/patterns/${encodeURIComponent(idx)}`, { method: 'DELETE' })
+}
+
+// ── Schema Library ────────────────────────────────────────────────────────────
+
+export function listSchemaSets(): Promise<string[]> {
+  return request<string[]>('/api/schemas')
+}
+
+export function listSchemaFields(setName: string): Promise<FieldSchema[]> {
+  return request<FieldSchema[]>(`/api/schemas/${encodeURIComponent(setName)}`)
+}
+
+export function upsertSchemaField(setName: string, field: FieldSchema): Promise<void> {
+  return request<void>(`/api/schemas/${encodeURIComponent(setName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(field),
+  })
+}
+
+export function deleteSchemaField(setName: string, fieldName: string): Promise<void> {
+  return request<void>(`/api/schemas/${encodeURIComponent(setName)}/${encodeURIComponent(fieldName)}`, { method: 'DELETE' })
+}
+
+export function deleteSchemaSet(setName: string): Promise<void> {
+  return request<void>(`/api/schemas/${encodeURIComponent(setName)}`, { method: 'DELETE' })
 }

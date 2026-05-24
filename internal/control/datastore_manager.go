@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"rah/internal/apikey"
 	"rah/internal/config"
 	"rah/internal/datastore"
 	"rah/internal/secrets"
+	"strconv"
 	"sync"
 )
 
@@ -258,7 +260,7 @@ func (m *DataStoreManager) Delete(ctx context.Context, domain config.DataDomain,
 	return store.Delete(ctx, tenant, key)
 }
 
-func (m *DataStoreManager) ListKeys(ctx context.Context, domain config.DataDomain, tenant datastore.Tenant, prefix string) ([]string, error) {
+func (m *DataStoreManager) ListKeysByDomain(ctx context.Context, domain config.DataDomain, tenant datastore.Tenant, prefix string) ([]string, error) {
 	store, err := m.resolveDomainStore(domain)
 	if err != nil {
 		return nil, err
@@ -298,7 +300,7 @@ func (m *DataStoreManager) DeleteGlobal(ctx context.Context, domain config.DataD
 }
 
 func (m *DataStoreManager) ListGlobalKeys(ctx context.Context, domain config.DataDomain, prefix string) ([]string, error) {
-	return m.ListKeys(ctx, domain, GlobalTenant, prefix)
+	return m.ListKeysByDomain(ctx, domain, GlobalTenant, prefix)
 }
 
 func (m *DataStoreManager) ReadGlobalDomainSnapshot(ctx context.Context, domain config.DataDomain) (map[string][]byte, error) {
@@ -327,7 +329,7 @@ func (m *DataStoreManager) ReadRegistryStoreSnapshot(ctx context.Context, tenant
 	if !m.IsConfigured(config.DomainTenantRegistry) {
 		return map[string][]byte{}, nil
 	}
-	keys, err := m.ListKeys(ctx, config.DomainTenantRegistry, tenant, "")
+	keys, err := m.ListKeysByDomain(ctx, config.DomainTenantRegistry, tenant, "")
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +421,7 @@ func (m *DataStoreManager) ListInstances(ctx context.Context) ([]string, error) 
 	if !m.IsConfigured(config.DomainInstances) {
 		return []string{}, nil
 	}
-	return m.ListKeys(ctx, config.DomainInstances, SystemTenant, "")
+	return m.ListKeysByDomain(ctx, config.DomainInstances, SystemTenant, "")
 }
 
 // StoreFor returns the KeyValueStore for the given domain name, or nil if not configured.
@@ -476,3 +478,78 @@ func (m *DataStoreManager) DataStoreConfigHandler(w http.ResponseWriter, r *http
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
+
+// ─── apikey.Store implementation ──────────────────────────────────────────────
+
+func (m *DataStoreManager) PutApp(ctx context.Context, appID uint32, raw []byte) error {
+	if !m.IsConfigured(config.DomainApps) {
+		return nil
+	}
+	return m.PutGlobal(ctx, config.DomainApps, strconv.FormatUint(uint64(appID), 10), raw)
+}
+
+func (m *DataStoreManager) DeleteApp(ctx context.Context, appID uint32) error {
+	if !m.IsConfigured(config.DomainApps) {
+		return nil
+	}
+	return m.DeleteGlobal(ctx, config.DomainApps, strconv.FormatUint(uint64(appID), 10))
+}
+
+func (m *DataStoreManager) ListApps(ctx context.Context) ([][]byte, error) {
+	if !m.IsConfigured(config.DomainApps) {
+		return [][]byte{}, nil
+	}
+	keys, err := m.ListGlobalKeys(ctx, config.DomainApps, "")
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]byte, 0, len(keys))
+	for _, k := range keys {
+		v, ok, err := m.GetGlobal(ctx, config.DomainApps, k)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			result = append(result, v)
+		}
+	}
+	return result, nil
+}
+
+func (m *DataStoreManager) PutKey(ctx context.Context, keyID uint32, raw []byte) error {
+	if !m.IsConfigured(config.DomainAPIKeys) {
+		return nil
+	}
+	return m.PutGlobal(ctx, config.DomainAPIKeys, strconv.FormatUint(uint64(keyID), 10), raw)
+}
+
+func (m *DataStoreManager) DeleteKey(ctx context.Context, keyID uint32) error {
+	if !m.IsConfigured(config.DomainAPIKeys) {
+		return nil
+	}
+	return m.DeleteGlobal(ctx, config.DomainAPIKeys, strconv.FormatUint(uint64(keyID), 10))
+}
+
+func (m *DataStoreManager) ListKeys(ctx context.Context) ([][]byte, error) {
+	if !m.IsConfigured(config.DomainAPIKeys) {
+		return [][]byte{}, nil
+	}
+	keys, err := m.ListGlobalKeys(ctx, config.DomainAPIKeys, "")
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]byte, 0, len(keys))
+	for _, k := range keys {
+		v, ok, err := m.GetGlobal(ctx, config.DomainAPIKeys, k)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			result = append(result, v)
+		}
+	}
+	return result, nil
+}
+
+// compile-time interface check
+var _ apikey.Store = (*DataStoreManager)(nil)

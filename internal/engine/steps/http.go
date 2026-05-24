@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"rah/internal/egress"
 	"rah/internal/engine"
 	"rah/internal/observability"
 	"rah/internal/rctx"
@@ -50,6 +51,9 @@ type HttpActionConfig struct {
 	BlockHeadersMap        map[string]struct{} // pre-built at bake time; nil = no blocking
 	// FlowInput carries http.* tuning keys forwarded from the step Input map.
 	FlowInput map[string]string
+	// EgressProfile selects the transport protocol for this call.
+	// nil = Auto (ForceAttemptHTTP2:true, same as legacy behavior).
+	EgressProfile *egress.EgressProfile
 }
 
 // HeaderSlotBinding maps one response header name to a ByteSlots index.
@@ -150,8 +154,9 @@ type cachedClient struct {
 }
 
 type clientCacheKey struct {
-	Upstream  string
-	ConfigKey string
+	Upstream   string
+	ConfigKey  string
+	EgressType egress.EgressType // 0=Auto, 1=HTTP1, 2=HTTPS, 3=H2C
 }
 
 var (
@@ -199,6 +204,7 @@ func buildHTTPClient(cfg httpClientConfig) *http.Client {
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           dialer.DialContext,
+			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          cfg.MaxIdleConns,
 			MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
 			MaxConnsPerHost:       cfg.MaxConnsPerHost,
@@ -209,6 +215,63 @@ func buildHTTPClient(cfg httpClientConfig) *http.Client {
 		},
 		Timeout: cfg.RequestTimeout,
 	}
+}
+
+// buildClientForProfile constructs an *http.Client using the appropriate
+// transport for the given EgressProfile. nil profile → Auto (same as buildHTTPClient).
+func buildClientForProfile(profile *egress.EgressProfile, cfg httpClientConfig) *http.Client {
+	if profile == nil || profile.Type == egress.EgressTypeAuto {
+		return buildHTTPClient(cfg)
+	}
+	switch profile.Type {
+	case egress.EgressTypeHTTP1:
+		t := egress.BuildHTTP1Transport(
+			cfg.DialTimeout, cfg.KeepAlive, cfg.IdleConnTimeout,
+			cfg.TLSHandshakeTimeout, cfg.ResponseHeaderTimeout, cfg.ExpectContinueTimeout,
+			cfg.MaxIdleConns, cfg.MaxIdleConnsPerHost, cfg.MaxConnsPerHost,
+		)
+		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+	case egress.EgressTypeHTTPS:
+		t := egress.BuildHTTPSTransport(
+			profile,
+			cfg.DialTimeout, cfg.KeepAlive, cfg.IdleConnTimeout,
+			cfg.TLSHandshakeTimeout, cfg.ResponseHeaderTimeout, cfg.ExpectContinueTimeout,
+			cfg.MaxIdleConns, cfg.MaxIdleConnsPerHost, cfg.MaxConnsPerHost,
+		)
+		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+	case egress.EgressTypeH2C:
+		t := egress.BuildH2CTransport(profile, cfg.DialTimeout, cfg.KeepAlive)
+		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+	default:
+		return buildHTTPClient(cfg)
+	}
+}
+
+// getClientForProfile is the profile-aware replacement for getClientForTarget.
+// When profile is nil, behavior is identical to getClientForTarget (Auto).
+func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flowInput map[string]string) cachedClient {
+	getDefaultHTTPConfig()
+	cfg := resolveHTTPConfigForTarget(upstreamHost, flowInput)
+	var et egress.EgressType
+	if profile != nil {
+		et = profile.Type
+	}
+	key := clientCacheKey{Upstream: upstreamHost, ConfigKey: configFingerprint(cfg), EgressType: et}
+	if existing, ok := perTargetClientCache.Load(key); ok {
+		return existing.(cachedClient)
+	}
+
+	created := cachedClient{Client: buildClientForProfile(profile, cfg), Cfg: cfg}
+	if flowInt(flowInput, "http.max_client_cache_entries", 2048) <= int(perTargetClientCacheSize.Load()) {
+		return cachedClient{Client: defaultHTTPClient, Cfg: getDefaultHTTPConfig()}
+	}
+
+	actual, loaded := perTargetClientCache.LoadOrStore(key, created)
+	if loaded {
+		return actual.(cachedClient)
+	}
+	perTargetClientCacheSize.Add(1)
+	return created
 }
 
 func parseStatusSet(raw string, fallback map[int]struct{}) map[int]struct{} {
@@ -684,8 +747,20 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				copy(ctx.ErrorMsg, "upstream url resolution failed")
 				return engine.StopPlan
 			}
+
+			// ── Egress profile + h2c scheme rewriting ─────────────────────────
+			profile := cfg.EgressProfile
+			if strings.HasPrefix(url, "h2c://") {
+				// Rewrite h2c:// → http:// so net/http can parse it.
+				url = "http://" + url[len("h2c://"):]
+				// Auto-upgrade to H2C transport if not already set.
+				if profile == nil || profile.Type != egress.EgressTypeH2C {
+					profile = &egress.EgressProfile{Type: egress.EgressTypeH2C}
+				}
+			}
+
 			upstreamHost := extractUpstreamHost(url)
-			bundle := getClientForTarget(upstreamHost, flowInput)
+			bundle := getClientForProfile(profile, upstreamHost, flowInput)
 
 			// ── Retry budget ──────────────────────────────────────────────────────
 			attempts := bundle.Cfg.RetryMaxAttempts + 1

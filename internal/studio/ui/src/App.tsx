@@ -16,6 +16,9 @@ import RateLimitConfigsScreen from './components/RateLimitConfigsScreen'
 import TenantTiersScreen      from './components/TenantTiersScreen'
 import UpstreamServicesScreen from './components/UpstreamServicesScreen'
 import CachePanel             from './components/CachePanel'
+import Apps                  from './components/Apps'
+import Egress                from './components/Egress'
+import SchemaLibrary         from './components/SchemaLibrary'
 
 // ── Action name normalization (internal engine → display names) ──────
 
@@ -110,9 +113,12 @@ const NAV_ICONS: Record<string, string> = {
   gateway:            '◉',
   observability:      '⊛',
   tenants:            '☰',
+  apps:               '⬡',
   'rate-limits':      '⧖',
   tiers:              '≡',
   'upstream-services':'⇥',
+  egress:             '⇄',
+  schemas:            '⊞',
   settings:           '⚙',
 }
 
@@ -130,9 +136,12 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'observability', label: 'Observability' },
   { kind: 'section', label: 'SECURITY' },
   { kind: 'item',    id: 'tenants',            label: 'Tenants' },
+  { kind: 'item',    id: 'apps',               label: 'Apps' },
   { kind: 'item',    id: 'rate-limits',         label: 'Rate Limits' },
   { kind: 'item',    id: 'tiers',               label: 'Tiers' },
   { kind: 'item',    id: 'upstream-services',   label: 'Upstreams' },
+  { kind: 'item',    id: 'egress',              label: 'Egress' },
+  { kind: 'item',    id: 'schemas',             label: 'Schemas' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'section', label: '' },
   { kind: 'item',    id: 'settings',  label: 'Settings' },
@@ -574,9 +583,12 @@ export default function App() {
         )}
         {tab === 'observability'      && <Observability />}
         {tab === 'tenants'           && <Tenants />}
+        {tab === 'apps'              && <Apps />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
         {tab === 'tiers'             && <TenantTiersScreen />}
         {tab === 'upstream-services' && <UpstreamServicesScreen />}
+        {tab === 'egress'            && <Egress />}
+        {tab === 'schemas'           && <SchemaLibrary />}
         {tab === 'cache'             && <CachePanel />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>

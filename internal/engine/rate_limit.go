@@ -325,6 +325,7 @@ const (
 	CountByStatic    RateLimitCountByKind = 3 // static string baked at compile time
 	CountByComposite RateLimitCountByKind = 4 // concatenation of multiple slot values
 	CountByGlobal    RateLimitCountByKind = 5 // single global counter (all tenants share one bucket)
+	CountByApp       RateLimitCountByKind = 6 // ctx.CallerID (AppID) — stable across key rotation
 )
 
 // RateLimitCountBy is the compiled "count-by" specification baked into a rate

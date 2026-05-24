@@ -9,10 +9,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"rah/internal/apikey"
 	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/control"
 	"rah/internal/datastore"
+	"rah/internal/egress"
 	"rah/internal/engine"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
@@ -23,6 +25,7 @@ import (
 	tenantregistry "rah/internal/registry"
 	"rah/internal/secrets"
 	"rah/internal/vectorstore"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -393,6 +396,11 @@ func main() {
 	compiler.PricingManager = pricingMgr
 	log.Printf("Pricing manager ready: %d models in catalog", len(pricingMgr.GetPricing()))
 
+	// EgressManager — optional; enables egress profile resolution at bake time.
+	egressMgr := egress.NewEgressManager()
+	compiler.EgressMgr = egressMgr
+	log.Printf("[egress] manager initialized")
+
 	// CredentialRegistry — optional; requires DomainCredentials in datastore config.
 	var credReg *secrets.CredentialRegistry
 	if credStore := control.NewCredentialStore(dataStoreMgr); credStore != nil {
@@ -610,6 +618,7 @@ func main() {
 				// No API name or tenant for 404 — pass empty/zero values.
 				accessLog.Snapshot(
 					"", 0, "", 0,
+					"", 0,
 					req.Method, req.URL.Path,
 					http.StatusNotFound,
 					time.Since(reqStart).Nanoseconds(), 0, 0, 0,
@@ -709,12 +718,20 @@ func main() {
 					}
 				}
 			}
+			if ctx.CallerKey != "" {
+				runtimeLogFields = append(runtimeLogFields,
+					observability.KV{K: "caller_key", V: ctx.CallerKey},
+					observability.KV{K: "caller_id", V: strconv.FormatUint(uint64(ctx.CallerID), 10)},
+				)
+			}
 			accessLogSnapshotStarted := time.Now()
 			accessLog.Snapshot(
 				apiName,
 				ctx.ApiId,
 				ctx.TenantKey,
 				ctx.TenantID,
+				ctx.CallerKey,
+				ctx.CallerID,
 				req.Method, req.URL.Path,
 				ctx.ResponseStatus,
 				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
@@ -862,6 +879,7 @@ func main() {
 	}()
 
 	ts := tenantregistry.NewTenantServer(regMgr)
+	aks := apikey.NewServer(dataStoreMgr)
 
 	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping
 	// flows/APIs so that named rate limit references resolve correctly when
@@ -920,6 +938,10 @@ func main() {
 		}
 	}
 
+	if err := apikey.RestoreFromStore(dataStoreMgr); err != nil {
+		log.Printf("[apikey] warn: restore failed: %v", err)
+	}
+
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
 	// Wire the LLM catalog provider so the compiler always sees models registered
 	// via the UI (stored in Postgres) rather than only the gateway.yaml snapshot.
@@ -939,6 +961,21 @@ func main() {
 	if err := ms.Bootstrap(bootstrapCtx, dataStoreMgr); err != nil {
 		log.Printf("failed control-plane bootstrap from datastore: %v", err)
 	}
+
+	// Bootstrap egress profiles and rules from datastore (if configured).
+	if err := control.BootstrapEgress(bootstrapCtx, dataStoreMgr, egressMgr); err != nil {
+		log.Printf("[egress] bootstrap failed: %v", err)
+	}
+
+	// Fallback: load from gateway.yaml if egress is defined there.
+	if gatewayCfg := cfgMgr.Gateway(); gatewayCfg.Egress != nil {
+		if err := egressMgr.Update(gatewayCfg.Egress); err != nil {
+			log.Printf("[egress] config load failed: %v", err)
+		} else {
+			log.Printf("[egress] loaded from gateway config")
+		}
+	}
+
 	ms.SetDataStore(dataStoreMgr)
 
 	// Cross-instance flow/API sync: when another gateway instance writes to
@@ -1008,6 +1045,7 @@ func main() {
 	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	ts.RegisterHandlers(mux)
+	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {
 		control.RegisterCacheRoutes(mux, cacheMgr)
 	}
@@ -1033,6 +1071,12 @@ func main() {
 	if credReg != nil {
 		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
 	}
+
+	// Egress profile and rule management endpoints.
+	control.RegisterEgressRoutes(mux, dataStoreMgr, egressMgr)
+
+	// Validation schema CRUD endpoints.
+	control.RegisterSchemaRoutes(mux, dataStoreMgr)
 
 	// ─── Cost Tracking API Routes ───────────────────────────────────────
 	// Requires admin token in X-Admin-Token header or Authorization: Bearer

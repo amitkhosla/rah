@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"rah/internal/apikey"
 )
 
 type KV struct {
@@ -824,7 +826,7 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	traces := append([]RequestTrace(nil), t.traces...)
 	t.mu.Unlock()
 	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.infoLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}
-	return map[string]any{"metrics": m, "recent_traces": traces, "config": cfg, "export": map[string]any{"otel": "use sink implementation", "bigquery": "use sink implementation"}}
+	return map[string]any{"metrics": m, "recent_traces": traces, "config": cfg, "export": map[string]any{"otel": "use sink implementation", "bigquery": "use sink implementation"}, "api_key_stats": apikey.Global.Snapshot()}
 }
 
 func (t *Telemetry) UpdateConfig(traceMode *bool, sampleRate *float64, instructionTiming *bool, upstreamPhaseTiming *bool, alwaysExportSummary *bool, infoLogEnabled *bool, infoLogFields []string) {

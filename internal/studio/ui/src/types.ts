@@ -1,4 +1,4 @@
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'cache' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'cache' | 'apps' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
@@ -615,4 +615,93 @@ export interface TemplatePatternStep extends FlowStep {
   source: string          // slot name e.g. 'header.X-My-Header'
   input: { pattern: string }
   as?: string             // only for validate_pattern; undefined for extract_pattern
+}
+
+// ─── Apps & API Key Management ────────────────────────────────────────────────
+
+export interface App {
+  app_id: number;
+  name: string;
+  description: string;
+  labels?: Record<string, string>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface APIKeyView {
+  key_id: number;
+  app_id: number;
+  alias: string;
+  prefix: string;
+  allowed_tenants?: number[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface APIKeyCreateResponse extends APIKeyView {
+  key: string; // raw key — shown once, never stored
+}
+
+// ── Egress ────────────────────────────────────────────────────────────────
+
+export interface EgressProfileConfig {
+  name: string
+  type: string          // "auto" | "http1" | "https" | "h2c"
+  tls_skip_verify?: boolean
+  tls_ca_certs?: string[]
+  dial_timeout_ms?: number
+  req_timeout_ms?: number
+}
+
+export interface EgressCodeRuleConfig {
+  service_code: string
+  profile: string
+}
+
+export interface EgressPatternRuleConfig {
+  pattern: string
+  profile: string
+}
+
+// ── Schema Library ────────────────────────────────────────────────
+export interface FieldSchema {
+  name: string
+  path: string
+  required?: boolean
+  type?: string
+  pattern?: string
+  enumValues?: string[]
+  minLen?: number
+  maxLen?: number
+  protoFieldNum?: number
+  protoWireType?: number
+  protoOptional?: boolean
+  avroType?: string
+  avroSchemaRef?: string
+}
+
+// ── Validate Route ─────────────────────────────────────────────────
+export interface CondConfig {
+  op?: 'and' | 'or' | 'direct'
+  source?: 'req_body' | 'resp_body' | 'req_header' | 'resp_header' | 'slot'
+  path?: string
+  check?: 'exists' | 'missing' | 'eq' | 'neq' | 'lt' | 'gt' | 'regex' | 'in'
+  value?: string
+  value_num?: number
+  in_values?: string[]
+  children?: CondConfig[]
+}
+
+export interface OnMatchConfig {
+  dest: 'jump' | 'fail' | 'continue' | 'retry' | 'default'
+  target_step?: string
+  status?: number
+  message?: string
+}
+
+export interface RuleConfig {
+  label?: string
+  when: CondConfig
+  on_match: OnMatchConfig
 }

@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"strconv"
 	"time"
@@ -161,6 +162,16 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 	case engine.CountByComposite:
 		key := buildCompositeKey(ctx, cb.SlotIndexes)
 		return s.handleEmpty(ctx, key)
+
+	case engine.CountByApp:
+		if ctx.CallerID == 0 {
+			return s.handleEmpty(ctx, nil)
+		}
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], ctx.CallerID)
+		key := make([]byte, 4)
+		copy(key, b[:])
+		return key, false
 
 	default:
 		return nil, true // unknown kind — fall back to tenant

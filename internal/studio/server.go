@@ -220,6 +220,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	mux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	mux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
+	mux.HandleFunc("/api/apps", s.appsMgmtProxy)
+	mux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	mux.HandleFunc("/api/schemas", func(w http.ResponseWriter, r *http.Request) {
+		s.proxyPassThrough(w, r, "/schemas")
+	})
+	mux.HandleFunc("/api/schemas/", func(w http.ResponseWriter, r *http.Request) {
+		s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	})
 	mux.HandleFunc("/mcp", s.MCPHandler)
 
 	// Observability routes: serve from own store if configured, else proxy to gateway.
@@ -541,6 +549,124 @@ func defaultBlocks() []PaletteBlock {
 			Description: "Mirror the incoming request back as the response — useful for debugging flows",
 			Defaults:    map[string]string{},
 			Fields:      []FieldDef{},
+		},
+
+		// ── Encoding ─────────────────────────────────────────────────────────────────
+		{
+			Type: "base64_encode", Title: "Base64 Encode", Category: "encoding", Capability: "encoding",
+			Description: "Encode a byte slot to base64. Variant: std (default), url, raw_url, raw_std.",
+			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing bytes to encode", "var.input"),
+				fld("as", "Store as", "Slot for the base64 output", "encoded"),
+				fld("input.encoding", "Encoding variant", "std | url | raw_url | raw_std (default: std)", "std"),
+			},
+		},
+		{
+			Type: "base64_decode", Title: "Base64 Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a base64 string slot into raw bytes. Default variant: raw_url (JWT-friendly). Clears result on invalid input.",
+			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the base64 string", "var.encoded"),
+				fld("as", "Store as", "Slot for the decoded bytes", "decoded"),
+				fld("input.encoding", "Encoding variant", "std | url | raw_url | raw_std (default: raw_url)", "raw_url"),
+			},
+		},
+		{
+			Type: "hex_encode", Title: "Hex Encode", Category: "encoding", Capability: "encoding",
+			Description: "Encode a byte slot as a lowercase hexadecimal string.",
+			Defaults: map[string]string{"source": "var.input", "as": "hex"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing bytes to encode", "var.input"),
+				fld("as", "Store as", "Slot for the hex string", "hex"),
+			},
+		},
+		{
+			Type: "hex_decode", Title: "Hex Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a hex string slot into raw bytes. Clears result on invalid input.",
+			Defaults: map[string]string{"source": "var.hex", "as": "decoded"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the hex string", "var.hex"),
+				fld("as", "Store as", "Slot for the decoded bytes", "decoded"),
+			},
+		},
+		{
+			Type: "url_encode", Title: "URL Encode", Category: "encoding", Capability: "encoding",
+			Description: "Percent-encode a string slot (RFC 3986). Space → %20. Unreserved chars pass through.",
+			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the string to encode", "var.input"),
+				fld("as", "Store as", "Slot for the percent-encoded output", "encoded"),
+			},
+		},
+		{
+			Type: "url_decode", Title: "URL Decode", Category: "encoding", Capability: "encoding",
+			Description: "Decode a percent-encoded string slot. '+' is decoded as space.",
+			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the percent-encoded string", "var.encoded"),
+				fld("as", "Store as", "Slot for the decoded output", "decoded"),
+			},
+		},
+
+		// ── Crypto / Hash ─────────────────────────────────────────────────────────────
+		{
+			Type: "sha256_hash", Title: "SHA-256 Hash", Category: "crypto", Capability: "hashing",
+			Description: "Compute SHA-256 of a slot. Output is a lowercase hex string. No key — use hmac_sha256 for signed hashes.",
+			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the data to hash", "var.input"),
+				fld("as", "Store as", "Slot for the SHA-256 hex string", "digest"),
+			},
+		},
+		{
+			Type: "hmac_sha256", Title: "HMAC-SHA256", Category: "crypto", Capability: "signing",
+			Description: "Compute HMAC-SHA256 using a bake-time secret key. Output is a lowercase hex string. Used for webhook signatures, request signing.",
+			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the data to sign", "var.payload"),
+				fld("as", "Store as", "Slot for the HMAC hex string", "signature"),
+				fld("input.key", "Secret key", "Static HMAC key (baked at compile time — store in secrets manager for production)", ""),
+			},
+		},
+		{
+			Type: "hmac_sha1", Title: "HMAC-SHA1", Category: "crypto", Capability: "signing",
+			Description: "Compute HMAC-SHA1 using a bake-time key. Output is a lowercase hex string. Legacy integrations only.",
+			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the data to sign", "var.payload"),
+				fld("as", "Store as", "Slot for the HMAC hex string", "signature"),
+				fld("input.key", "Secret key", "Static HMAC key (baked at compile time)", ""),
+			},
+		},
+		{
+			Type: "md5_hash", Title: "MD5 Hash", Category: "crypto", Capability: "hashing",
+			Description: "Compute MD5 of a slot. Output is a lowercase hex string. Cryptographically broken — use for checksums or legacy compatibility only.",
+			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the data to hash", "var.input"),
+				fld("as", "Store as", "Slot for the MD5 hex string", "digest"),
+			},
+		},
+		{
+			Type: "aes_encrypt", Title: "AES Encrypt (GCM)", Category: "crypto", Capability: "encryption",
+			Description: "Encrypt a slot with AES-GCM. Key is hex-encoded (32 chars = AES-128, 64 = AES-256). Output is nonce||ciphertext.",
+			Defaults: map[string]string{"source": "var.plaintext", "as": "ciphertext"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing the plaintext", "var.plaintext"),
+				fld("as", "Store as", "Slot for nonce||ciphertext output", "ciphertext"),
+				fld("input.key", "Key (hex)", "AES key as hex: 32 chars = AES-128, 48 = AES-192, 64 = AES-256", ""),
+			},
+		},
+		{
+			Type: "aes_decrypt", Title: "AES Decrypt (GCM)", Category: "crypto", Capability: "encryption",
+			Description: "Decrypt AES-GCM ciphertext (nonce||ciphertext). Sets Failed=true on auth failure.",
+			Defaults: map[string]string{"source": "var.ciphertext", "as": "plaintext"},
+			Fields: []FieldDef{
+				fld("source", "Source slot", "Slot containing nonce||ciphertext", "var.ciphertext"),
+				fld("as", "Store as", "Slot for the decrypted plaintext", "plaintext"),
+				fld("input.key", "Key (hex)", "Same AES key used during encryption", ""),
+			},
 		},
 	}
 }
@@ -931,6 +1057,11 @@ func (s *Server) upstreamServicesMgmtProxy(w http.ResponseWriter, r *http.Reques
 
 // aiMgmtProxy forwards /api/ai[/...] → /ai[/...] on the management server.
 func (s *Server) aiMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// appsMgmtProxy forwards /api/apps[/...] → /apps[/...] on the management server.
+func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 

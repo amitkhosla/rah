@@ -39,6 +39,8 @@ type AccessLogEntry struct {
 	ApiID     uint32
 	TenantKey string
 	TenantID  uint16
+	CallerKey string // API key alias; empty when no key auth was used
+	CallerID  uint32 // App ID (ctx.CallerID); 0 when no key auth was used
 
 	// Request
 	Method   string
@@ -68,6 +70,8 @@ func (e *AccessLogEntry) reset() {
 	e.ApiID = 0
 	e.TenantKey = ""
 	e.TenantID = 0
+	e.CallerKey = ""
+	e.CallerID = 0
 	e.Method = ""
 	e.Path = ""
 	e.ReqBytes = 0
@@ -145,6 +149,8 @@ func (l *AccessLogger) Snapshot(
 	apiID uint32,
 	tenantKey string,
 	tenantID uint16,
+	callerKey string,
+	callerID uint32,
 	method, path string,
 	status int,
 	totalNs, gatewayNs, upstreamNs, ttfbNs, reqBytes, resBytes int64,
@@ -161,6 +167,8 @@ func (l *AccessLogger) Snapshot(
 	entry.ApiID = apiID
 	entry.TenantKey = tenantKey
 	entry.TenantID = tenantID
+	entry.CallerKey = callerKey
+	entry.CallerID = callerID
 	entry.Method = method
 	entry.Path = path
 	entry.Status = status
@@ -244,6 +252,14 @@ func (l *AccessLogger) drain() {
 			writeKV(&sb, "tenant", entry.TenantKey)
 		} else if entry.TenantID != 0 {
 			writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
+		}
+
+		// Caller identity — omit when no API key auth was used
+		if entry.CallerKey != "" {
+			writeKV(&sb, "caller_key", entry.CallerKey)
+		}
+		if entry.CallerID != 0 {
+			writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
 		}
 
 		writeKV(&sb, "method", entry.Method)

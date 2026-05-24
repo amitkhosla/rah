@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"rah/internal/config"
+	"rah/internal/egress"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/ingest"
@@ -30,6 +31,14 @@ type pendingJump struct {
 	inner    engine.Instruction // original unwrapped instruction
 }
 
+// validateRouteJump tracks a DestJump rule or DefaultPC in a ValidateRouteInstruction
+// that referenced a flow not yet compiled. Resolved in a second pass.
+type validateRouteJump struct {
+	instrIdx int    // index in GlobalTable (points to the validate_route instruction)
+	ruleIdx  int    // index in ValidateRouteInstruction.Rules; -1 means patch DefaultPC
+	flowName string // target flow name to resolve
+}
+
 type Compiler struct {
 	slotMap   map[string]int
 	freeSlots []int // slots freed by liveness analysis, available for reuse
@@ -46,6 +55,7 @@ type Compiler struct {
 	GatewayBase    string                              // base URL for api_tool loopback calls (e.g. "http://localhost:8080")
 	IngestPipeline *ingest.Pipeline                    // optional; enables emit_event steps
 	PricingManager steps.PricingLookup                 // optional; enables calculate_cost steps
+	EgressMgr      *egress.EgressManager               // optional; enables bake-time egress profile resolution
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -53,6 +63,13 @@ type Compiler struct {
 	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
 	// flow. Resolved in a second pass after all flows are compiled.
 	pendingJumps []pendingJump
+
+	// validateRouteInstrs maps GlobalTable index → *ValidateRouteInstruction so
+	// the second pass can patch rule MatchPC and DefaultPC values.
+	validateRouteInstrs map[int]*steps.ValidateRouteInstruction
+	// pendingValidateJumps tracks DestJump rules and default_next targets in
+	// validate_route steps that reference flows not yet compiled at bake time.
+	pendingValidateJumps []validateRouteJump
 
 	// currentAPIPolicies holds the resolved APIRateLimitEntry slice for the API
 	// currently being compiled. Set by the management server before each
@@ -84,13 +101,15 @@ func (c *Compiler) resolveAPIKey(ref string) (string, error) {
 
 func NewCompiler(fm *engine.FlowManager) *Compiler {
 	return &Compiler{
-		slotMap:      make(map[string]int),
-		nextSlot:     0,
-		fm:           fm,
-		GlobalTable:  make([]engine.Instruction, 0, 4096),
-		FragmentMap:  make(map[string]int16),
-		FlowProfiles: make(map[string]FlowProfile),
-		pendingJumps: make([]pendingJump, 0, 8),
+		slotMap:              make(map[string]int),
+		nextSlot:             0,
+		fm:                   fm,
+		GlobalTable:          make([]engine.Instruction, 0, 4096),
+		FragmentMap:          make(map[string]int16),
+		FlowProfiles:         make(map[string]FlowProfile),
+		pendingJumps:         make([]pendingJump, 0, 8),
+		validateRouteInstrs:  make(map[int]*steps.ValidateRouteInstruction),
+		pendingValidateJumps: make([]validateRouteJump, 0, 8),
 	}
 }
 
@@ -286,6 +305,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		if step.ContentType != "" {
 			cfg.StaticContentType = step.ContentType
+		}
+		// ── Egress profile resolution (bake-time) ─────────────────────────────
+		if c.EgressMgr != nil {
+			lookup := step.Input["profile"]
+			if lookup == "" {
+				lookup = step.Input["service_code"]
+			}
+			if lookup != "" {
+				p := c.EgressMgr.Resolve(lookup, "")
+				if p != nil && p.ID != 0 {
+					cfg.EgressProfile = p
+				}
+			}
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpActionFromConfig(cfg))
 
@@ -1090,6 +1122,23 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			sourceSlot = slot
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.IPRestriction(cfg, sourceSlot))
+
+	case "validate_api_key":
+		cfg := steps.ParseAPIKeyValidationConfig(step.Input)
+		sourceSlot := -1
+		if cfg.Source == steps.APIKeyFromSlot {
+			if sv := strings.TrimSpace(step.Input["apikey.slot"]); sv != "" {
+				sourceSlot, _ = c.getSlot(sv)
+			}
+		}
+		resultSlot := -1
+		if rv := strings.TrimSpace(step.Input["apikey.result_var"]); rv != "" {
+			resultSlot, _ = c.getSlot(rv)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ValidateAPIKey(
+			steps.APIKeyValidationSlots{SourceSlot: sourceSlot, ResultSlot: resultSlot},
+			cfg,
+		))
 
 	case "token_validation":
 		alloc := func(key string) int {
@@ -2077,6 +2126,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.JSONForeachEmit(bodySlot, arrayPath, ops))
 
+	case "validate_route":
+		return c.compileValidateRoute(step)
+
 	case "return":
 		// Terminate flow immediately with a given HTTP status and body.
 		// status: HTTP response code (default 200).
@@ -2900,6 +2952,24 @@ func (c *Compiler) resolvePendingJumps() error {
 		c.GlobalTable[pj.instrIdx] = steps.WrapOnErrorJump(pj.inner, errPC)
 	}
 	c.pendingJumps = c.pendingJumps[:0]
+
+	// Resolve validate_route jump targets.
+	for _, pvj := range c.pendingValidateJumps {
+		targetPC, ok := c.FragmentMap[pvj.flowName]
+		if !ok {
+			return fmt.Errorf("validate_route: unknown target step %q", pvj.flowName)
+		}
+		vr, ok := c.validateRouteInstrs[pvj.instrIdx]
+		if !ok {
+			return fmt.Errorf("validate_route: instruction at index %d not found", pvj.instrIdx)
+		}
+		if pvj.ruleIdx == -1 {
+			vr.DefaultPC = targetPC
+		} else {
+			vr.Rules[pvj.ruleIdx].MatchPC = int(targetPC)
+		}
+	}
+	c.pendingValidateJumps = c.pendingValidateJumps[:0]
 	return nil
 }
 
@@ -2962,6 +3032,8 @@ func buildRLCountBy(input map[string]string, slotLookup func(name string) int) e
 		cb = engine.RateLimitCountBy{Kind: engine.CountByComposite, SlotIndexes: idxs}
 	case "global":
 		cb = engine.RateLimitCountBy{Kind: engine.CountByGlobal}
+	case "app", "app_id", "caller":
+		cb = engine.RateLimitCountBy{Kind: engine.CountByApp}
 	default: // "tenant"
 		cb = engine.RateLimitCountBy{Kind: engine.CountByTenant}
 	}

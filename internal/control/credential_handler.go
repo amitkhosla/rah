@@ -30,7 +30,7 @@ func (a *credentialStoreAdapter) Delete(ctx context.Context, tenant, name string
 }
 
 func (a *credentialStoreAdapter) List(ctx context.Context, tenant string) ([]string, error) {
-	return a.dsm.ListKeys(ctx, config.DomainCredentials, datastore.Tenant(tenant), "")
+	return a.dsm.ListKeysByDomain(ctx, config.DomainCredentials, datastore.Tenant(tenant), "")
 }
 
 // NewCredentialStore wraps dsm for use as a secrets.CredentialStore.

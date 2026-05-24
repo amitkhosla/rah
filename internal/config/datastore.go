@@ -42,6 +42,9 @@ const (
 	DomainFlows          DataDomain = "flows"           // instruction sets (compiled flows)
 
 	// Mutable / management-plane data — typically fast KV or relational
+	DomainApps    DataDomain = "apps"     // App records (stable consumer identities)
+	DomainAPIKeys DataDomain = "api_keys" // API key records (hashed credentials)
+
 	DomainTenantRegistry    DataDomain = "tenant_data"        // aliases, service URLs, identifiers, metadata
 	DomainRateLimit         DataDomain = "rate_limit"         // named rate limit configs + counters
 	DomainRateLimitConfigsV2 DataDomain = "rl_configs_v2"    // V2 multi-window rate limit configs
@@ -81,6 +84,13 @@ const (
 	// Admin users and roles — optional; skip gracefully if not bound
 	DomainAdminUsers DataDomain = "admin_users" // admin user records (bcrypt hashes + roles)
 	DomainAdminRoles DataDomain = "admin_roles" // admin role definitions (name + permissions)
+
+	// Egress profiles and rules — connection profile management
+	DomainEgressProfiles DataDomain = "egress_profiles"
+
+	// Validation schemas and API specs — optional; skip gracefully if not bound
+	DomainAPISpecs          DataDomain = "api_specs"          // per-API OpenAPI/schema specs
+	DomainValidationSchemas DataDomain = "validation_schemas" // named FieldSchema sets for validation
 )
 
 var requiredDomains = []DataDomain{

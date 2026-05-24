@@ -146,6 +146,31 @@ func AllStepDescriptors() []StepDescriptor {
 
 		// ── Auth ─────────────────────────────────────────────────────────────────
 		{
+			Type: "validate_api_key", Title: "Validate API Key",
+			Description: "Validates an inbound API key by SHA-256 hash lookup. Sets ctx.CallerID (AppID, stable across rotation) and ctx.CallerKey (alias) on success. Use before check_rate_limit_v2 with count_by: app.",
+			Category: "auth", Capability: "api_key_auth",
+			Defaults: map[string]string{
+				"apikey.source":         "header",
+				"apikey.header":         "X-API-Key",
+				"apikey.on_failure":     "stop",
+				"apikey.failure_status": "401",
+				"apikey.failure_body":   "unauthorized",
+				"apikey.require_tenant": "false",
+			},
+			Fields: []StepField{
+				sf("apikey.source",         "Key Source",       "header | query | cookie | slot",                      "header"),
+				sf("apikey.header",         "Header Name",      "Header containing the API key (source=header)",       "X-API-Key"),
+				sf("apikey.query_param",    "Query Param",      "Query parameter name (source=query)",                 "api_key"),
+				sf("apikey.cookie",         "Cookie Name",      "Cookie name (source=cookie)",                         "api_key"),
+				sf("apikey.slot",           "Slot Variable",    "Slot variable name (source=slot)",                    ""),
+				sf("apikey.on_failure",     "On Failure",       "stop = halt request; continue = write result and proceed", "stop"),
+				sf("apikey.failure_status", "Failure Status",   "HTTP status on auth failure",                         "401"),
+				sf("apikey.failure_body",   "Failure Body",     "Response body on auth failure",                       "unauthorized"),
+				sf("apikey.require_tenant", "Require Tenant",   "true = key AllowedTenants must include ctx.TenantID", "false"),
+				sf("apikey.result_var",     "Result Variable",  "Slot to write 'true'/'false' into (continue mode)",   ""),
+			},
+		},
+		{
 			Type: "token_validation", Title: "Token Validation", Category: "auth", Capability: "jwt",
 			Description: "Validate a JWT. Verifies signature (JWKS), standard claims, required scopes, and arbitrary custom claims. Every parameter supports a static value or a runtime variable loaded by any earlier step.",
 			Defaults: map[string]string{"key_identifier": "header.Authorization"},
@@ -408,6 +433,8 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("timeout", "Timeout (ms)", "Max wait in milliseconds before the request is aborted.", "5000"),
 				sf("retry_condition", "Retry condition", "Boolean expression evaluated after each attempt; retried when true (e.g. status >= 500).", "status >= 500"),
 				sf("max_retries", "Max retries", "Maximum retry attempts (0 = no retries).", "3"),
+				sf("service_code", "Service Code", "Egress profile resolved by service code (e.g. 'payment-service'). Matches code rules in the Egress configuration.", ""),
+				sf("profile", "Egress Profile", "Explicit egress profile name. Overrides service_code matching. Profile must exist in the Egress configuration.", ""),
 			},
 		},
 
@@ -1095,6 +1122,16 @@ func AllStepDescriptors() []StepDescriptor {
 			Description: "Mirror the incoming request back as the response. Useful for testing flows.",
 			Defaults: map[string]string{},
 			Fields:   []StepField{},
+		},
+
+		// ── Validation ────────────────────────────────────────────────────────────
+		{
+			Type: "validate_route", Title: "Validate Route", Category: "validation", Capability: "condition",
+			Description: "Evaluates one or more condition rules against request/response data and routes to different next steps based on match outcomes. Supports AND/OR/DIRECT operators with nested conditions.",
+			Defaults:    map[string]string{"default_next": ""},
+			Fields: []StepField{
+				sf("default_next", "Default Next Step", "Step to proceed to when no rule matches. Leave empty to fall through to the next instruction.", ""),
+			},
 		},
 	}
 

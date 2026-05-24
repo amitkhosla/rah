@@ -412,6 +412,7 @@ type GatewayConfig struct {
 	Observability   ObservabilityConfig `json:"observability,omitempty"  yaml:"observability,omitempty"`
 	Instance        InstanceConfig      `json:"instance,omitempty"       yaml:"instance,omitempty"`
 	Admin           AdminConfig         `json:"admin,omitempty"          yaml:"admin,omitempty"`
+	Egress          *EgressConfig       `json:"egress,omitempty"         yaml:"egress,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

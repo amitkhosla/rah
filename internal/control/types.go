@@ -78,6 +78,9 @@ type StepConfig struct {
 	// output variable into the instruction trace output so it appears in trace detail.
 	// TraceVars, if non-empty, emits a trace_capture instruction for each named variable
 	// (looked up in slotMap). Complements TraceCapture; duplicates are skipped.
+	// Validation rules — used by validate_route steps.
+	Rules []RuleConfig `json:"rules,omitempty"`
+
 	LogAs        string   `json:"log_as,omitempty"`
 	TraceCapture bool     `json:"trace_capture,omitempty"`
 	TraceVars    []string `json:"trace_vars,omitempty"`
@@ -287,4 +290,33 @@ type Step struct {
 	Source        string            `json:"source"`  // Where to get data (e.g., "header.X-User")
 	IsHugePayload bool              `json:"is_huge"` // Hint for Streaming vs Buffering
 	Parameters    map[string]string `json:"params"`  // Custom logic params
+}
+
+// ─── Validation Rule Types ────────────────────────────────────────────────────
+
+// CondConfig describes one node in a validation condition tree (leaf or composite).
+type CondConfig struct {
+	Op       string      `json:"op,omitempty"`        // "and", "or", "direct" — omit for leaf nodes
+	Source   string      `json:"source,omitempty"`    // "req_body", "resp_body", "req_header", "resp_header", "slot"
+	Path     string      `json:"path,omitempty"`      // gjson path, header name, or slot index (as string)
+	Check    string      `json:"check,omitempty"`     // "exists", "missing", "eq", "neq", "lt", "gt", "regex", "in"
+	Value    string      `json:"value,omitempty"`     // string value for eq/neq/regex checks
+	ValueNum float64     `json:"value_num,omitempty"` // numeric value for lt/gt checks
+	InValues []string    `json:"in_values,omitempty"` // values for "in" check
+	Children []CondConfig `json:"children,omitempty"` // nested conditions for and/or
+}
+
+// OnMatchConfig describes the action taken when a validation rule matches.
+type OnMatchConfig struct {
+	Dest       string `json:"dest"`                  // "jump", "fail", "continue", "retry", "default"
+	TargetStep string `json:"target_step,omitempty"` // step name to jump to (for dest=jump)
+	Status     int    `json:"status,omitempty"`      // HTTP status code (for dest=fail)
+	Message    string `json:"message,omitempty"`     // message template (for dest=fail)
+}
+
+// RuleConfig is one validation rule: a condition + what to do on match.
+type RuleConfig struct {
+	Label   string        `json:"label,omitempty"` // optional human-readable label
+	When    CondConfig    `json:"when"`
+	OnMatch OnMatchConfig `json:"on_match"`
 }
