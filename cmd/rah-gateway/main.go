@@ -891,12 +891,40 @@ func main() {
 		// setup latency tracking. Zero overhead on the hot path — runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
 		srv := &http.Server{
-			Addr:    addr,
-			Handler: gwHandler,
+			Addr:           addr,
+			Handler:        gwHandler,
+			MaxHeaderBytes: cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, connAcceptKey{}, time.Now())
 			},
 		}
+		// Optional TLS listener — started only when gateway.yaml has a tls: section
+		// with cert_file + key_file. Plain HTTP listener above is never disabled;
+		// customer opts in by configuring tls: and routing traffic accordingly.
+		if tlsCfg := cfgMgr.Gateway().TLS; tlsCfg != nil && tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
+			go func() {
+				tlsPort := tlsCfg.Port
+				if tlsPort == 0 {
+					tlsPort = 8443
+				}
+				tlsAddr := fmt.Sprintf(":%d", tlsPort)
+				log.Printf("Rah Gateway (TLS) listening on %s\n", tlsAddr)
+				var tlsHandler http.Handler = handler
+				if cfgMgr.Gateway().Admin.RequireGatewayAuth {
+					tlsHandler = adminUserStore.Middleware(handler)
+				}
+				tlsSrv := &http.Server{
+					Addr:           tlsAddr,
+					Handler:        tlsHandler,
+					MaxHeaderBytes: cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
+					ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
+						return context.WithValue(ctx, connAcceptKey{}, time.Now())
+					},
+				}
+				log.Fatal(tlsSrv.ListenAndServeTLS(tlsCfg.CertFile, tlsCfg.KeyFile))
+			}()
+		}
+
 		log.Fatal(srv.ListenAndServe())
 	}()
 

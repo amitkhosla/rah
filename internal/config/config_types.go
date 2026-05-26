@@ -398,6 +398,16 @@ type AdminConfig struct {
 	Users []AdminUserConfig `json:"users,omitempty" yaml:"users,omitempty"`
 }
 
+// TLSConfig configures an optional TLS listener for the gateway.
+// When present, the gateway starts a second HTTPS listener alongside the plain HTTP one.
+// CertFile and KeyFile must both be non-empty for TLS to be enabled.
+// Plain HTTP is never disabled — the customer removes it by not routing to that port.
+type TLSConfig struct {
+	CertFile string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"` // path to PEM cert
+	KeyFile  string `json:"key_file,omitempty"  yaml:"key_file,omitempty"`  // path to PEM key
+	Port     int    `json:"port,omitempty"      yaml:"port,omitempty"`      // default 8443
+}
+
 type GatewayConfig struct {
 	Layout          GlobalLayout        `json:"layout"                   yaml:"layout"`
 	DataStore       DataStoreConfig     `json:"datastore"                yaml:"datastore"`
@@ -414,6 +424,7 @@ type GatewayConfig struct {
 	Admin           AdminConfig         `json:"admin,omitempty"          yaml:"admin,omitempty"`
 	Egress          *EgressConfig       `json:"egress,omitempty"         yaml:"egress,omitempty"`
 	Grpc            *GrpcConfig         `json:"grpc,omitempty"           yaml:"grpc,omitempty"`
+	TLS             *TLSConfig          `json:"tls,omitempty"            yaml:"tls,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────
