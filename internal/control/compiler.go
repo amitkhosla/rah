@@ -1916,6 +1916,32 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseStatusStep(code))
 
+	case "set_security_headers":
+		// All fields are independently opt-in — only configured headers are written.
+		// Values are pre-baked as []byte at compile time: zero allocations at request time.
+		var hstsVal []byte
+		if maxAge := strings.TrimSpace(step.Input["security_headers.hsts_max_age"]); maxAge != "" {
+			hsts := "max-age=" + maxAge
+			if strings.ToLower(strings.TrimSpace(step.Input["security_headers.hsts_include_subdomains"])) == "true" {
+				hsts += "; includeSubDomains"
+			}
+			hstsVal = []byte(hsts)
+		}
+		var frameOpts []byte
+		if v := strings.TrimSpace(step.Input["security_headers.frame_options"]); v != "" {
+			frameOpts = []byte(v)
+		}
+		contentTypeOpts := strings.ToLower(strings.TrimSpace(step.Input["security_headers.content_type_options"])) == "true"
+		var referrerPolicy []byte
+		if v := strings.TrimSpace(step.Input["security_headers.referrer_policy"]); v != "" {
+			referrerPolicy = []byte(v)
+		}
+		var csp []byte
+		if v := strings.TrimSpace(step.Input["security_headers.csp"]); v != "" {
+			csp = []byte(v)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SecurityHeadersStep(hstsVal, frameOpts, contentTypeOpts, referrerPolicy, csp))
+
 	case "store_internal_tx_id":
 		slot, err := c.getSlot(step.As)
 		if err != nil {

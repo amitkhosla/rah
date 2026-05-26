@@ -1193,7 +1193,26 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, ServeMCPStepDescriptors()...)
 	base = append(base, IngestStepDescriptors()...)
 	base = append(base, CostStepDescriptors()...)
+	base = append(base, SecurityHeaderStepDescriptors()...)
 	return base
+}
+
+// SecurityHeaderStepDescriptors returns descriptors for the set_security_headers step.
+func SecurityHeaderStepDescriptors() []StepDescriptor {
+	return []StepDescriptor{
+		{
+			Type: "set_security_headers", Title: "Security Headers", Category: "network", Capability: "security_headers",
+			Description: "Set HTTP security response headers. Every field is independently opt-in — only headers you configure are written. No forced defaults.",
+			Fields: []StepField{
+				sf("security_headers.hsts_max_age", "HSTS max-age (seconds)", `Enables Strict-Transport-Security. E.g. "31536000" for 1 year. Leave empty to omit header.`, ""),
+				sf("security_headers.hsts_include_subdomains", "HSTS includeSubDomains", `Set to "true" to append "; includeSubDomains" to the HSTS header.`, "false"),
+				sf("security_headers.frame_options", "X-Frame-Options", `Prevents clickjacking. E.g. "DENY" or "SAMEORIGIN". Leave empty to omit header.`, ""),
+				sf("security_headers.content_type_options", "X-Content-Type-Options", `Set to "true" to send "nosniff". Leave empty to omit header.`, ""),
+				sf("security_headers.referrer_policy", "Referrer-Policy", `E.g. "strict-origin-when-cross-origin". Leave empty to omit header.`, ""),
+				sf("security_headers.csp", "Content-Security-Policy", `Full CSP value. E.g. "default-src 'self'". Leave empty to omit header.`, ""),
+			},
+		},
+	}
 }
 
 // BuildStepCatalog builds a StepCatalog from AllStepDescriptors, deduplicating
