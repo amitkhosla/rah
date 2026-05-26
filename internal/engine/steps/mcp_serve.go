@@ -281,7 +281,11 @@ func ServeMCP(cfg ServeMCPConfig) engine.Instruction {
 			}
 			if len(rawBody) == 0 && ctx.Request != nil {
 				// Fall back to raw request body if slot is empty.
-				if b, err := io.ReadAll(io.LimitReader(ctx.Request.Body, 4*1024*1024)); err == nil {
+				limit := ctx.MaxBodySize
+				if limit <= 0 {
+					limit = 4 * 1024 * 1024
+				}
+				if b, err := io.ReadAll(io.LimitReader(ctx.Request.Body, limit)); err == nil {
 					rawBody = b
 				}
 			}

@@ -103,7 +103,11 @@ func BindBody(jsonPath string, slot int) engine.Instruction {
 			// drained into ctx.RequestBuffer after the first BindBody call in a flow).
 			body := ctx.RequestBuffer
 			if len(body) == 0 && ctx.Request != nil && ctx.Request.Body != nil {
-				data, err := io.ReadAll(io.LimitReader(ctx.Request.Body, 4<<20))
+				limit := ctx.MaxBodySize
+				if limit <= 0 {
+					limit = 4 << 20
+				}
+				data, err := io.ReadAll(io.LimitReader(ctx.Request.Body, limit))
 				if err != nil || len(data) == 0 {
 					ctx.ByteSlots[slot] = nil
 					return state.PC + 1
