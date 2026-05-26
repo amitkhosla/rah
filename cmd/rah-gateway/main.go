@@ -1125,6 +1125,28 @@ func main() {
 	})
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
 	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
+	mux.HandleFunc("/admin/jwks/flush", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		issuer := r.URL.Query().Get("issuer")
+		// trim leading/trailing whitespace inline — no strings import needed
+		for len(issuer) > 0 && (issuer[0] == ' ' || issuer[0] == '\t') {
+			issuer = issuer[1:]
+		}
+		for len(issuer) > 0 && (issuer[len(issuer)-1] == ' ' || issuer[len(issuer)-1] == '\t') {
+			issuer = issuer[:len(issuer)-1]
+		}
+		if issuer != "" {
+			enginesteps.FlushJWKSCache(issuer)
+			fmt.Fprintf(w, `{"flushed":%q}`, issuer)
+		} else {
+			enginesteps.FlushAllJWKSCaches()
+			fmt.Fprint(w, `{"flushed":"all"}`)
+		}
+	})
 	if credReg != nil {
 		control.NewCredentialHandler(credReg).RegisterHandlers(mux)
 	}

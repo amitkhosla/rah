@@ -165,6 +165,20 @@ func SetJWTCacheProvider(provider JWTCacheProvider) {
 	jwtCacheProvider = provider
 }
 
+// FlushJWKSCache removes the cached JWKS document for a specific issuer URI,
+// forcing the next token validation to re-fetch it. Use after key rotation.
+func FlushJWKSCache(issuerURI string) {
+	jwksCache.Delete(issuerURI)
+}
+
+// FlushAllJWKSCaches removes all cached JWKS documents across all issuers.
+func FlushAllJWKSCaches() {
+	jwksCache.Range(func(key, _ any) bool {
+		jwksCache.Delete(key)
+		return true
+	})
+}
+
 func SetJWKSURIResolver(resolver JWKSURIResolver) {
 	jwksResolverLock.Lock()
 	defer jwksResolverLock.Unlock()
