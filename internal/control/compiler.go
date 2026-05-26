@@ -321,6 +321,22 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				}
 			}
 		}
+		// ── mTLS client certificate (opt-in, bake-time) ────────────────────────
+		if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
+			if c.SecretsMgr == nil {
+				return fmt.Errorf("http_call: tls_client_cert_ref requires a secrets manager to be configured")
+			}
+			certPEM, err := c.SecretsMgr.Resolve(context.Background(), step.TLSClientCertRef)
+			if err != nil {
+				return fmt.Errorf("http_call: tls_client_cert_ref: %w", err)
+			}
+			keyPEM, err := c.SecretsMgr.Resolve(context.Background(), step.TLSClientKeyRef)
+			if err != nil {
+				return fmt.Errorf("http_call: tls_client_key_ref: %w", err)
+			}
+			cfg.TLSClientCert = certPEM
+			cfg.TLSClientKey = keyPEM
+		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpActionFromConfig(cfg))
 
 	case "llm_call":

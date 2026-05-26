@@ -54,6 +54,10 @@ type HttpActionConfig struct {
 	// EgressProfile selects the transport protocol for this call.
 	// nil = Auto (ForceAttemptHTTP2:true, same as legacy behavior).
 	EgressProfile *egress.EgressProfile
+	// TLSClientCert and TLSClientKey are PEM-encoded bytes loaded at bake time.
+	// Both must be non-nil to enable mTLS. nil = no client certificate (default behaviour unchanged).
+	TLSClientCert []byte
+	TLSClientKey  []byte
 }
 
 // HeaderSlotBinding maps one response header name to a ByteSlots index.
@@ -728,8 +732,74 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 // HttpActionFromConfig builds an http_call Instruction from a fully-resolved
 // HttpActionConfig. This replaces the positional-argument HttpAction function
 // and is the target of the S11 compiler rewrite.
+//
+// If cfg.TLSClientCert and cfg.TLSClientKey are both non-nil the cert is parsed
+// once here (bake time) and stored in the closure.  Per-request cost: zero.
 func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 	flowInput := cfg.FlowInput
+
+	// ── Parse mTLS client certificate at bake time ─────────────────────────────
+	// tls.X509KeyPair is called once here, not per request. If parsing fails we
+	// return an instruction that always fails with a clear 500 error so the
+	// operator sees it immediately rather than at runtime.
+	var mtlsCert *tls.Certificate
+	if len(cfg.TLSClientCert) > 0 && len(cfg.TLSClientKey) > 0 {
+		cert, err := tls.X509KeyPair(cfg.TLSClientCert, cfg.TLSClientKey)
+		if err != nil {
+			return engine.Instruction{
+				Name: "HTTP_CALL",
+				Action: func(ctx *rctx.Context, _ *engine.ExecutionState) int16 {
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					ctx.ErrorCode = 500
+					msg := "http_call: invalid tls_client_cert/key: " + err.Error()
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				},
+			}
+		}
+		mtlsCert = &cert
+	}
+
+	// mtlsClient is a dedicated *http.Client that presents the client certificate.
+	// Built lazily on first use (sync.Once) so we only pay the construction cost
+	// when this instruction actually executes, not during bake.
+	var (
+		mtlsClientOnce sync.Once
+		mtlsClient     *http.Client
+	)
+	getMTLSClient := func(upstreamHost string) *http.Client {
+		if mtlsCert == nil {
+			return nil
+		}
+		mtlsClientOnce.Do(func() {
+			cfg2 := resolveHTTPConfigForTarget(upstreamHost, flowInput)
+			dialer := &net.Dialer{Timeout: cfg2.DialTimeout, KeepAlive: cfg2.KeepAlive}
+			tlsCfg := &tls.Config{
+				Certificates: []tls.Certificate{*mtlsCert},
+				MinVersion:   tls.VersionTLS12,
+			}
+			mtlsClient = &http.Client{
+				Transport: &http.Transport{
+					Proxy:                 http.ProxyFromEnvironment,
+					DialContext:           dialer.DialContext,
+					ForceAttemptHTTP2:     true,
+					TLSClientConfig:       tlsCfg,
+					MaxIdleConns:          cfg2.MaxIdleConns,
+					MaxIdleConnsPerHost:   cfg2.MaxIdleConnsPerHost,
+					MaxConnsPerHost:       cfg2.MaxConnsPerHost,
+					IdleConnTimeout:       cfg2.IdleConnTimeout,
+					TLSHandshakeTimeout:   cfg2.TLSHandshakeTimeout,
+					ResponseHeaderTimeout: cfg2.ResponseHeaderTimeout,
+					ExpectContinueTimeout: cfg2.ExpectContinueTimeout,
+				},
+				Timeout: cfg2.RequestTimeout,
+			}
+		})
+		return mtlsClient
+	}
+
 	return engine.Instruction{
 		Name: "HTTP_CALL",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
@@ -760,7 +830,18 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			}
 
 			upstreamHost := extractUpstreamHost(url)
-			bundle := getClientForProfile(profile, upstreamHost, flowInput)
+
+			// ── Select HTTP client: mTLS-capable or shared pool ───────────────
+			// When a client certificate is configured, use the dedicated mTLS
+			// client instead of the shared per-target pool so TLS configs do not
+			// bleed across steps.
+			var bundle cachedClient
+			if mtlsCert != nil {
+				mc := getMTLSClient(upstreamHost)
+				bundle = cachedClient{Client: mc, Cfg: resolveHTTPConfigForTarget(upstreamHost, flowInput)}
+			} else {
+				bundle = getClientForProfile(profile, upstreamHost, flowInput)
+			}
 
 			// ── Retry budget ──────────────────────────────────────────────────────
 			attempts := bundle.Cfg.RetryMaxAttempts + 1

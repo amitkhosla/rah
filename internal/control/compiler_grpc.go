@@ -1,12 +1,11 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
-	"rah/internal/engine"
 	"rah/internal/engine/steps"
-	"rah/internal/rctx"
 )
 
 // compileGrpcCall compiles a "grpc_call" step into a GrpcCallInstruction.
@@ -115,12 +114,24 @@ func (c *Compiler) compileGrpcCall(step StepConfig) error {
 	// Wired fully in S10 (main.go). For now, profile stays nil if not resolved.
 	// URL-scheme-based TLS selection in pool.go handles the common case.
 
-	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
-		Name: "grpc_call",
-		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			return cfg.Execute(ctx, state)
-		},
-	})
+	// ── mTLS client certificate (opt-in, bake-time) ────────────────────────────
+	if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
+		if c.SecretsMgr == nil {
+			return fmt.Errorf("grpc_call: tls_client_cert_ref requires a secrets manager to be configured")
+		}
+		certPEM, err := c.SecretsMgr.Resolve(context.Background(), step.TLSClientCertRef)
+		if err != nil {
+			return fmt.Errorf("grpc_call: tls_client_cert_ref: %w", err)
+		}
+		keyPEM, err := c.SecretsMgr.Resolve(context.Background(), step.TLSClientKeyRef)
+		if err != nil {
+			return fmt.Errorf("grpc_call: tls_client_key_ref: %w", err)
+		}
+		cfg.TLSClientCert = certPEM
+		cfg.TLSClientKey = keyPEM
+	}
+
+	c.GlobalTable = append(c.GlobalTable, steps.NewGrpcCallInstruction(cfg))
 	return nil
 }
 

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"crypto/tls"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -82,10 +83,63 @@ type GrpcCallConfig struct {
 	// EgressProfile governs TLS and keepalive for the connection.
 	// nil = infer from URL scheme (grpc:// = insecure, grpcs:// = system CA TLS).
 	EgressProfile *egress.EgressProfile
+
+	// TLSClientCert and TLSClientKey are PEM-encoded bytes resolved at bake time.
+	// Both must be set together to enable mTLS. nil = no client certificate.
+	// These are consumed by NewGrpcCallInstruction to build a runtime-ready
+	// tlsClientCert that is stored in the closure — zero per-request cost.
+	TLSClientCert []byte
+	TLSClientKey  []byte
 }
 
 // NewGrpcCallInstruction wraps a GrpcCallConfig as an engine.Instruction.
+//
+// If cfg.TLSClientCert and cfg.TLSClientKey are both non-nil the key pair is
+// parsed once here (bake time).  A synthetic EgressProfile carrying the cert
+// is stored in the closure and passed to the connection pool on each call — the
+// pool deduplicates connections by (addr, profileID, useTLS) so the mTLS
+// connection is kept alive and reused across requests at zero extra cost.
 func NewGrpcCallInstruction(cfg GrpcCallConfig) engine.Instruction {
+	// ── Parse mTLS client certificate at bake time ────────────────────────────
+	if len(cfg.TLSClientCert) > 0 && len(cfg.TLSClientKey) > 0 {
+		cert, err := tls.X509KeyPair(cfg.TLSClientCert, cfg.TLSClientKey)
+		if err != nil {
+			// Return a fail-fast instruction so operators see the error immediately.
+			return engine.Instruction{
+				Name: "grpc_call",
+				Action: func(ctx *rctx.Context, _ *engine.ExecutionState) int16 {
+					return cfg.failWith(ctx, codes.Internal, "grpc_call: invalid tls_client_cert/key: "+err.Error())
+				},
+			}
+		}
+		// Build a synthetic EgressProfile that carries the client cert.
+		// ID=0 is reserved for "no profile"; use 255 as a sentinel for mTLS-only
+		// calls.  If a real EgressProfile is already set, clone its TLSConfig and
+		// add the cert rather than replacing it.
+		var baseTLS *tls.Config
+		if cfg.EgressProfile != nil && cfg.EgressProfile.TLSConfig != nil {
+			baseTLS = cfg.EgressProfile.TLSConfig.Clone()
+		} else {
+			baseTLS = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		baseTLS.Certificates = append(baseTLS.Certificates, cert)
+
+		var baseProfile egress.EgressProfile
+		if cfg.EgressProfile != nil {
+			baseProfile = *cfg.EgressProfile
+		}
+		baseProfile.TLSConfig = baseTLS
+		// Use a stable non-zero ID so the pool creates a distinct connection.
+		// 255 is safe: real profiles use IDs assigned by the EgressManager (1-254).
+		if baseProfile.ID == 0 {
+			baseProfile.ID = 255
+		}
+		cfg.EgressProfile = &baseProfile
+		// Clear raw PEM bytes — no longer needed.
+		cfg.TLSClientCert = nil
+		cfg.TLSClientKey = nil
+	}
+
 	return engine.Instruction{
 		Name: "grpc_call",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

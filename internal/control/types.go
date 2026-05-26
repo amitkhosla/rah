@@ -63,6 +63,14 @@ type StepConfig struct {
 	// TX ID / Correlation
 	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
 
+	// mTLS — opt-in client certificate for downstream HTTP and gRPC calls.
+	// Both refs must be set together. Secret refs follow the same scheme as
+	// load_secret steps (e.g. "env://CLIENT_CERT_PEM", "file:///run/secrets/cert.pem").
+	// The PEM bytes are resolved at bake time and stored in the compiled instruction
+	// closure — zero per-request cost; zero behaviour change when fields are empty.
+	TLSClientCertRef string `json:"tls_client_cert_ref,omitempty" yaml:"tls_client_cert_ref,omitempty"` // secret ref for PEM cert
+	TLSClientKeyRef  string `json:"tls_client_key_ref,omitempty"  yaml:"tls_client_key_ref,omitempty"`  // secret ref for PEM key
+
 	// HTTP Utilities
 	IncludeQuery *bool `json:"include_query,omitempty"` // For bind_request_url: nil=true (include query), false=path only
 
