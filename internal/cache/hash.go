@@ -73,8 +73,16 @@ func Hash128(tenantID uint16, key []byte) [16]byte {
 //
 // Layout:
 //
-//	≤5B: bit63=0 | keyLen(3b)[62:60] | tenantID(16b)[59:44] | key_exact(40b)[43:4] | spare[3:0]
-//	 6B: bit63=1 | tenantID(16b)[62:47] | key_7bit(42b)[46:5] | spare[4:0]
+//	≤5B: bit63=0 | keyLen(3b)[62:60] | tenantID(16b)[59:44] | key_exact(40b)[43:4] | tenantID[3:0]
+//	 6B: bit63=1 | tenantID(16b)[62:47] | key_7bit(42b)[46:5] | tenantID[4:0]
+//
+// The tenantID low bits are embedded into the spare bits at positions [3:0] /
+// [4:0]. Without this, two tenants with the same small key produce tags that
+// differ only in the middle bits, meaning their shard selection (tag & 0xFF)
+// is identical — they land in the same trie path and one tenant's write can
+// silently overwrite the other's entry. Embedding tenantID into the low bits
+// makes the shard = tag & 0xFF include tenant contribution, routing different
+// tenants to distinct shards even when their keys are identical.
 //
 // For 6B keys all bytes must be < 128; callers routing to tinyIdx guarantee this.
 func makeTagTiny(tenantID uint16, key []byte) uint64 {
@@ -86,14 +94,19 @@ func makeTagTiny(tenantID uint16, key []byte) uint64 {
 		for i, b := range key {
 			k42 |= uint64(b&0x7F) << (uint(i) * 7)
 		}
-		tag = (uint64(1) << 63) | (uint64(tenantID) << 47) | (k42 << 5)
+		// Embed tenantID's lower 5 bits into spare [4:0] so shard selection
+		// (tag & shardMask) includes the tenant → no cross-tenant collisions.
+		tag = (uint64(1) << 63) | (uint64(tenantID) << 47) | (k42 << 5) | uint64(tenantID&0x1F)
 	} else {
 		// Exact encoding: each byte stored verbatim, LSB-first.
 		var k40 uint64
 		for i, b := range key {
 			k40 |= uint64(b) << (uint(i) * 8)
 		}
-		tag = (uint64(n&0x7) << 60) | (uint64(tenantID) << 44) | (k40 << 4)
+		// Embed tenantID's lower 4 bits into spare [3:0].
+		// shard = tag & 0xFF = (key[0]&0xF)<<4 | (tenantID&0xF), giving all 256
+		// shards reachable even with few distinct key values across many tenants.
+		tag = (uint64(n&0x7) << 60) | (uint64(tenantID) << 44) | (k40 << 4) | uint64(tenantID&0xF)
 	}
 	// Sanitise against trie sentinel values.
 	if tag == iEmpty {

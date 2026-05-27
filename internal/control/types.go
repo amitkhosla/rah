@@ -34,8 +34,9 @@ type StepConfig struct {
 	ResponseBodyVar       string            `json:"response_body_var,omitempty"`
 	ResponseStatusVar     string            `json:"response_status_var,omitempty"`
 	ResponseHeaderVars    map[string]string `json:"response_header_vars,omitempty"`
-	ForwardIncomingHeaders bool             `json:"forward_incoming_headers,omitempty"`
-	BlockHeaders          []string          `json:"block_headers,omitempty"`
+	ForwardIncomingHeaders  bool     `json:"forward_incoming_headers,omitempty"`
+	ForwardResponseHeaders  bool     `json:"forward_response_headers,omitempty"`
+	BlockHeaders            []string `json:"block_headers,omitempty"`
 
 	// Logic & Branching
 	Condition string            `json:"condition,omitempty"` // String logic like "(header.Auth == 'y') && status"
@@ -110,6 +111,17 @@ type StepConfig struct {
 	// Body is used by the "return" action as a static response body string.
 	// If empty and a BodySlot is named via As, that slot's value is used.
 	Body string `json:"body,omitempty"`
+
+	// Mappings is a map of string keys to string values, used by steps like map_status
+	// to define lookup tables (e.g. status code mappings: "502" -> "503").
+	Mappings map[string]string `json:"mappings,omitempty"`
+
+	// Default is a fallback value used when a mapping lookup fails (e.g. "pass" for map_status
+	// to leave unchanged, or a status code like "503").
+	Default string `json:"default,omitempty"`
+
+	// SourceVar is the variable name holding a source value for mapping or transformation steps.
+	SourceVar string `json:"source_var,omitempty"`
 }
 
 // ─── Rate Limit Warning Types ─────────────────────────────────────────────────
@@ -242,9 +254,10 @@ type ApiConfig struct {
 }
 
 type FlowUpdate struct {
-	Name         string       `json:"name"`
-	Instructions []StepConfig `json:"instructions"`
-	Action       string       `json:"action"` // "upsert" or "delete"
+	Name         string       `json:"name"                    yaml:"name"`
+	Code         string       `json:"code,omitempty"          yaml:"code,omitempty"`
+	Instructions []StepConfig `json:"instructions"            yaml:"instructions"`
+	Action       string       `json:"action"                  yaml:"action"` // "upsert" or "delete"
 }
 
 type ApiUpdate struct {

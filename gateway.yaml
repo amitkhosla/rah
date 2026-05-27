@@ -56,6 +56,9 @@ datastore:
     obs_access_log:  "postgres_primary"   # persisted access logs (Postgres/Timescale)
     obs_metrics:     "postgres_primary"   # persisted metric snapshots
     obs_traces:      "postgres_primary"   # persisted request traces
+    egress_profiles:    "postgres_primary"   # egress profile + rule storage
+    validation_schemas: "postgres_primary"   # named field-schema sets for validation
+    grpc_descriptors:   "postgres_primary"   # gRPC FileDescriptorSet registry
     cache:           "redis_primary"      # request-level response cache (hot path)
 
 ingest:

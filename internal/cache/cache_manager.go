@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"rah/internal/rctx"
 )
@@ -93,6 +94,14 @@ type CacheManager struct {
 	// Cleaner lifecycle (shared stop signal for all background goroutines).
 	cleanerStop chan struct{}
 
+	// Coarse unix-second clock shared by all regions and the cleaner.
+	// Replaces per-call time.Now() (~100 ns on Windows) with one atomic load (~1 ns).
+	clock *cachedClock
+
+	// shrinkThreshold is the percentage of active entries below which TryShrink
+	// will attempt to halve a region's memory. Default: defaultShrinkThreshold.
+	shrinkThreshold uint32
+
 	// OnInvalidate is called synchronously when Invalidate is called on this
 	// instance. Set by main.go to emit KindCacheInvalidate to other instances.
 	// Must not block; nil = no-op.
@@ -133,17 +142,20 @@ func NewCacheManager(
 		}
 	}
 
+	stop := make(chan struct{})
 	cm := &CacheManager{
-		totalMemory: totalMemory,
-		sizeClasses: sizeClasses,
-		ttlTiers:    ttlTiers,
-		tinyIdx:     NewInlineIndex(0),
-		hashIdx:     NewInlineIndex(0),
-		tenantLimit: tenantLimit,
-		backend:     backend,
-		asyncQueue:  make(chan writeJob, asyncQueueSize),
-		eventCh:     make(chan WriteEvent, eventChanSize),
-		cleanerStop: make(chan struct{}),
+		totalMemory:     totalMemory,
+		sizeClasses:     sizeClasses,
+		ttlTiers:        ttlTiers,
+		tinyIdx:         NewInlineIndex(0),
+		hashIdx:         NewInlineIndex(0),
+		tenantLimit:     tenantLimit,
+		backend:         backend,
+		asyncQueue:      make(chan writeJob, asyncQueueSize),
+		eventCh:         make(chan WriteEvent, eventChanSize),
+		cleanerStop:     stop,
+		clock:           newCachedClock(0, stop),
+		shrinkThreshold: defaultShrinkThreshold,
 	}
 	cm.allocateRegions()
 	go cm.cleanerLoop()
@@ -173,7 +185,8 @@ func (cm *CacheManager) allocateRegions() {
 		cm.cleanSlots[i] = make([]uint64, tierCount)
 		stride := regionStride(cm.sizeClasses[i])
 		for j := 0; j < tierCount; j++ {
-			cm.regions[i][j] = NewRegion(regionMemory, cm.ttlTiers[j], stride)
+			maxSlots := regionMemory / uint64(stride)
+			cm.regions[i][j] = NewRegion(cm.ttlTiers[j], stride, maxSlots, cm.clock)
 		}
 	}
 }
@@ -210,7 +223,7 @@ func (cm *CacheManager) cleanerLoop() {
 		default:
 		}
 
-		now := uint32(time.Now().Unix())
+		now := cm.clock.now()
 		anyWork := false
 		for ci := range cm.regions {
 			for ti := range cm.regions[ci] {
@@ -221,6 +234,12 @@ func (cm *CacheManager) cleanerLoop() {
 		}
 
 		if !anyWork {
+			// Cache is idle: attempt to reclaim memory from sparse regions.
+			for ci := range cm.regions {
+				for ti := range cm.regions[ci] {
+					cm.regions[ci][ti].TryShrink(cm.shrinkThreshold, now)
+				}
+			}
 			select {
 			case <-cm.cleanerStop:
 				return
@@ -236,18 +255,24 @@ func (cm *CacheManager) cleanerLoop() {
 // Returns the number of entries tombstoned.
 func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 	r := cm.regions[ci][ti]
-	if r.count == 0 {
+	cnt := r.count.Load()
+	if cnt == 0 {
 		return 0
 	}
+	p := r.buf.Load()
+	if p == nil {
+		return 0
+	}
+	buf := unsafe.Slice(p, cnt*uint64(r.stride))
 
 	start := cm.cleanSlots[ci][ti]
 	cleaned := 0
 
 	for i := uint64(0); i < cleanerBatchSize; i++ {
-		slot := (start + i) % r.count
+		slot := (start + i) % cnt
 		physOff := slot * uint64(r.stride)
 
-		h := headerAt(r.buf, physOff)
+		h := headerAt(buf, physOff)
 
 		// Skip unwritten slots (Expiry==0) and live entries.
 		if h.Expiry == 0 || h.Expiry >= now {
@@ -261,7 +286,6 @@ func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 		}
 
 		gen2b := h.Gen & 0x3
-		// Reconstruct the tag from the xSlotPtr routing bits.
 		tag := sp.tagBits()
 		var idx *InlineIndex
 		if sp.laneBit() == 0 {
@@ -275,7 +299,7 @@ func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 		}
 	}
 
-	cm.cleanSlots[ci][ti] = (start + cleanerBatchSize) % r.count
+	cm.cleanSlots[ci][ti] = (start + cleanerBatchSize) % cnt
 	return cleaned
 }
 
@@ -475,7 +499,7 @@ func (cm *CacheManager) put(
 	}
 
 	// Enqueue async backend write before touching any in-memory lock.
-	now := uint32(time.Now().Unix())
+	now := cm.clock.now()
 	expiry := now + ttl
 	if ttl == 0 {
 		expiry = now
@@ -596,7 +620,7 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 	}
 
 	// Warm the in-memory slab. TTL derived from remaining lifetime.
-	now := uint32(time.Now().Unix())
+	now := cm.clock.now()
 	var ttl uint32
 	if expiry > now {
 		ttl = expiry - now
@@ -627,7 +651,7 @@ func (cm *CacheManager) Submit(batch rctx.Batch) {
 			// Collect for batched backend write (bypasses async queue for efficiency).
 			expiry := uint32(0)
 			if op.TTL > 0 {
-				expiry = uint32(time.Now().Unix()) + op.TTL
+				expiry = cm.clock.now() + op.TTL
 			}
 			puts = append(puts, BackendEntry{
 				TenantID: op.TenantID,
@@ -739,8 +763,7 @@ func (cm *CacheManager) Exists(tenantID uint16, key []byte) bool {
 	// Fast approximate expiry pre-check using the truncated 12-bit expiry field.
 	// ExpTruncExpired is conservative: false positives (reporting expired when not)
 	// are acceptable for an existence check; false negatives are not.
-	now := uint32(time.Now().Unix())
-	if ExpTruncExpired(expTrunc, now) {
+	if ExpTruncExpired(expTrunc, cm.clock.now()) {
 		return false
 	}
 	return true
@@ -776,11 +799,15 @@ func (cm *CacheManager) Incr(tenantID uint16, key []byte, delta int64, ttl uint3
 				region := cm.regions[classID][tierID]
 				region.mu.Lock()
 				// Re-validate after acquiring lock (slot may have been evicted/recycled).
-				h := headerAt(region.buf, physOff)
-				now := uint32(time.Now().Unix())
+				// buf/count are safe to read under the region lock (grow/shrink also hold it).
+				cnt := region.count.Load()
+				rp := region.buf.Load()
+				rbuf := unsafe.Slice(rp, cnt*uint64(region.stride))
+				h := headerAt(rbuf, physOff)
+				now := cm.clock.now()
 				if h.Expiry > now && int(h.ValueLen) == 8 {
 					// Read current int64 (little-endian), add delta, write back.
-					valSlice := region.buf[physOff+EntryHeaderSize : physOff+EntryHeaderSize+8]
+					valSlice := rbuf[physOff+EntryHeaderSize : physOff+EntryHeaderSize+8]
 					current := int64(binary.LittleEndian.Uint64(valSlice))
 					newVal := current + delta
 					binary.LittleEndian.PutUint64(valSlice, uint64(newVal))
@@ -834,8 +861,11 @@ func (cm *CacheManager) Touch(tenantID uint16, key []byte, ttl uint32) bool {
 	}
 	region := cm.regions[classID][tierID]
 	region.mu.Lock()
-	h := headerAt(region.buf, physOff)
-	now := uint32(time.Now().Unix())
+	cnt := region.count.Load()
+	rp := region.buf.Load()
+	rbuf := unsafe.Slice(rp, cnt*uint64(region.stride))
+	h := headerAt(rbuf, physOff)
+	now := cm.clock.now()
 	if h.Expiry == 0 || h.Expiry < now {
 		region.mu.Unlock()
 		return false // already expired

@@ -9,9 +9,11 @@ import (
 	"log"
 	"net/http"
 	"rah/internal/config"
+	"rah/internal/datastore"
 	"rah/internal/egress"
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
+	"rah/internal/geo"
 	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
@@ -58,6 +60,7 @@ type Compiler struct {
 	PricingManager steps.PricingLookup                 // optional; enables calculate_cost steps
 	EgressMgr      *egress.EgressManager               // optional; enables bake-time egress profile resolution
 	GrpcRegistry   *grpcutil.DescriptorRegistry        // optional; enables bake-time gRPC method resolution
+	GeoMgr         *geo.Manager                        // optional; enables geo_block steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -255,6 +258,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			Timeout:                step.Timeout,
 			MaxRetries:             step.MaxRetries,
 			ForwardIncomingHeaders: step.ForwardIncomingHeaders,
+			ForwardResponseHeaders: step.ForwardResponseHeaders,
 			FlowInput:              step.Input,
 		}
 		if step.UrlVar != "" {
@@ -547,6 +551,23 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return err
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetMeta(c.RegMgr, step.Key, srcSlot))
+
+	case "load_meta":
+		// Loads a metadata value for the current tenant into a slot.
+		// key: metadata key name e.g. "tier", "region", "field_enc_key_ref".
+		// as:  slot name to write the value into.
+		if step.Key == "" {
+			return fmt.Errorf("load_meta: 'key' (metadata key name) is required")
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		var metaKeyID uint16
+		if c.RegMgr != nil {
+			metaKeyID = c.RegMgr.EnsureMetaKeyID(step.Key)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadMeta(metaKeyID, destSlot))
 
 	case "delete_service_url":
 		// Deletes a service URL for the current tenant from the URLs store.
@@ -926,6 +947,30 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetConstStep(step.Value, destSlot))
 
+	case "render_template":
+		// Builds a string by interpolating slot values into a template.
+		// value: template string with ${varname} placeholders baked at compile time
+		// as:    destination slot name
+		//
+		// Example:
+		//   value: '{"userId":"${user_id}","plan":"${plan}"}'
+		//   as:    response_body
+		//
+		// All ${varname} references must name slots already allocated by earlier steps.
+		tmpl := step.Value
+		if tmpl == "" {
+			tmpl = step.Input["template"]
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("render_template: %w", err)
+		}
+		segs, err := parseRenderTemplate(tmpl, c.slotMap)
+		if err != nil {
+			return fmt.Errorf("render_template: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RenderTemplate(segs, destSlot))
+
 	case "respond":
 		// Writes ByteSlots[key_identifier] as the HTTP response body and stops the flow.
 		// key_identifier: slot name holding the response content
@@ -1032,6 +1077,29 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("set_request_header: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetRequestHeader(headerName, valueSlot))
+
+	case "remove_request_header":
+		// Removes a header from the upstream request before proxying.
+		// key / key_identifier: header name (static, baked at compile time)
+		headerName := step.Key
+		if headerName == "" {
+			headerName = step.KeyIdentifier
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RemoveRequestHeader(headerName))
+
+	case "rename_request_header":
+		// Renames a request header: copies srcHeader to dstHeader and removes srcHeader.
+		// key: source header name (static, baked at compile time)
+		// as: destination header name (static, baked at compile time)
+		srcHeader := step.Key
+		if srcHeader == "" {
+			srcHeader = step.KeyIdentifier
+		}
+		dstHeader := step.As
+		if dstHeader == "" {
+			return fmt.Errorf("rename_request_header: missing 'as' field for destination header name")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.RenameRequestHeader(srcHeader, dstHeader))
 
 	case "extract_cookie":
 		cookieName := step.Key
@@ -1141,6 +1209,51 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.IPRestriction(cfg, sourceSlot))
 
+	case "cors":
+		// Cross-origin resource sharing. All config is pre-baked at compile time:
+		// zero allocations on the request hot path.
+		//
+		// input.origins         comma-separated allowed origins; empty/"*" = wildcard
+		// input.methods         allowed HTTP methods (default: GET, POST, PUT, DELETE, PATCH, OPTIONS)
+		// input.headers         allowed request headers (default: Content-Type, Authorization)
+		// input.expose_headers  headers to expose to JS (optional)
+		// input.max_age         preflight cache seconds (default: 86400)
+		// input.credentials     "true" to set Allow-Credentials (default: false)
+		var allowedOrigins [][]byte
+		if raw := strings.TrimSpace(step.Input["origins"]); raw != "" && raw != "*" {
+			for _, o := range strings.Split(raw, ",") {
+				if o = strings.TrimSpace(o); o != "" {
+					allowedOrigins = append(allowedOrigins, []byte(o))
+				}
+			}
+		}
+		methods := strings.TrimSpace(step.Input["methods"])
+		if methods == "" {
+			methods = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+		}
+		headers := strings.TrimSpace(step.Input["headers"])
+		if headers == "" {
+			headers = "Content-Type, Authorization"
+		}
+		exposeHeaders := strings.TrimSpace(step.Input["expose_headers"])
+		maxAge := strings.TrimSpace(step.Input["max_age"])
+		if maxAge == "" {
+			maxAge = "86400"
+		}
+		credentials := strings.ToLower(strings.TrimSpace(step.Input["credentials"])) == "true"
+		var exposeBytes []byte
+		if exposeHeaders != "" {
+			exposeBytes = []byte(exposeHeaders)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CORSStep(
+			allowedOrigins,
+			[]byte(methods),
+			[]byte(headers),
+			exposeBytes,
+			[]byte(maxAge),
+			credentials,
+		))
+
 	case "validate_api_key":
 		cfg := steps.ParseAPIKeyValidationConfig(step.Input)
 		sourceSlot := -1
@@ -1211,6 +1324,108 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 		cfg := steps.ParseTokenValidationConfig(step.KeyIdentifier, step.Input)
 		c.GlobalTable = append(c.GlobalTable, steps.TokenValidation(tvSlots, cfg))
+
+	case "validate_dpop":
+		alloc := func(key string) int {
+			name := strings.TrimSpace(step.Input[key])
+			if name == "" {
+				return -1
+			}
+			s, _ := c.getSlot(name)
+			return s
+		}
+		dpopSlots := steps.DPoPSlots{
+			AccessToken: alloc("dpop.access_token_var"),
+			Result:      alloc("dpop.result_var"),
+			CNFJkt:      alloc("dpop.cnf_jkt_var"),
+		}
+		dpopCfg := steps.ParseDPoPConfig(step.Input)
+		var dpopStore datastore.KeyValueStore
+		if c.DSM != nil {
+			dpopStore = c.DSM.StoreFor(string(config.DomainDPoPJTI))
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ValidateDPoP(dpopSlots, dpopCfg, dpopStore))
+
+	case "validate_token_introspection":
+		alloc := func(key string) int {
+			name := strings.TrimSpace(step.Input[key])
+			if name == "" {
+				return -1
+			}
+			s, _ := c.getSlot(name)
+			return s
+		}
+		tiCfg, err := steps.ParseTokenIntrospectionConfig(step.Input)
+		if err != nil {
+			return fmt.Errorf("validate_token_introspection: %w", err)
+		}
+		tiSlots := steps.TokenIntrospectionSlots{
+			Token:       alloc("introspect.token_var"),
+			TokenHeader: strings.TrimSpace(step.Input["introspect.token_header"]),
+			Result:      alloc("introspect.result_var"),
+			Claims:      alloc("introspect.claims_var"),
+			Subject:     alloc("introspect.subject_var"),
+			ClientID:    alloc("introspect.client_id_var"),
+			ScopesOut:   alloc("introspect.scopes_out_var"),
+			BearerToken: alloc("introspect.bearer_token_var"),
+		}
+		var tiStore datastore.KeyValueStore
+		if c.DSM != nil {
+			tiStore = c.DSM.StoreFor(string(config.DomainIntrospectionCache))
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ValidateTokenIntrospection(tiSlots, tiCfg, tiStore))
+
+	case "check_token_revoked":
+		jtiSlot := -1
+		if step.KeyIdentifier != "" {
+			jtiSlot, _ = c.getSlot(step.KeyIdentifier)
+		}
+		resultSlot := -1
+		if rv := strings.TrimSpace(step.Input["revoke.result_var"]); rv != "" {
+			resultSlot, _ = c.getSlot(rv)
+		}
+		revCfg := steps.ParseTokenRevokeConfig(step.Input)
+		revSlots := steps.TokenRevokeSlots{JTI: jtiSlot, Result: resultSlot}
+		var kvStore datastore.KeyValueStore
+		if c.DSM != nil {
+			kvStore = c.DSM.StoreFor(revCfg.DatastoreName)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CheckTokenRevoked(kvStore, revSlots, revCfg))
+
+	case "detect_bot":
+		tagSlot := -1
+		if tv := strings.TrimSpace(step.Input["bot.tag_var"]); tv != "" {
+			tagSlot, _ = c.getSlot(tv)
+		}
+		botCfg := steps.ParseBotDetectionConfig(step.Input, tagSlot)
+		c.GlobalTable = append(c.GlobalTable, steps.DetectBot(botCfg))
+
+	case "owasp_check":
+		owaspTagSlot := -1
+		if tv := strings.TrimSpace(step.Input["owasp.tag_var"]); tv != "" {
+			owaspTagSlot, _ = c.getSlot(tv)
+		}
+		owaspCfg := steps.ParseOWASPConfig(step.Input, owaspTagSlot)
+		c.GlobalTable = append(c.GlobalTable, steps.CheckOWASP(owaspCfg))
+
+	case "limit_body":
+		bodyCfg := steps.ParseBodyLimitConfig(step.Input)
+		c.GlobalTable = append(c.GlobalTable, steps.LimitBody(bodyCfg))
+
+	case "geo_block":
+		resultSlot := -1
+		if name := strings.TrimSpace(step.Input["geo.result_var"]); name != "" {
+			var slotErr error
+			resultSlot, slotErr = c.getSlot(name)
+			if slotErr != nil {
+				return fmt.Errorf("geo_block: %w", slotErr)
+			}
+		}
+		geoCfg := steps.ParseGeoBlockConfig(step.Input, resultSlot)
+		if c.GeoMgr == nil {
+			return fmt.Errorf("geo_block: geo manager not configured (set geo: in config)")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.GeoBlock(c.GeoMgr, geoCfg))
 
 	case "foreach":
 		// Allocate hidden iterSlot (IntSlot index) for the loop counter and
@@ -1822,6 +2037,70 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, instr)
 
+	case "aes_encrypt_slot_key":
+		// Encrypts using a key read from a slot at runtime (per-tenant keys).
+		// source:   slot holding the plaintext value to encrypt.
+		// key_slot: slot holding the 32-byte AES-256 key (loaded via load_secret_var).
+		// as:       slot to write the encrypted output into.
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("aes_encrypt_slot_key: %w", err)
+		}
+		keySlotName := step.Input["key_slot"]
+		if keySlotName == "" {
+			return fmt.Errorf("aes_encrypt_slot_key: missing input.key_slot (slot name holding the AES key)")
+		}
+		keySlot, err := c.getSlot(keySlotName)
+		if err != nil {
+			return fmt.Errorf("aes_encrypt_slot_key: key_slot: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("aes_encrypt_slot_key: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.AESEncryptSlotKeyStep(src, keySlot, result))
+
+	case "aes_decrypt_slot_key":
+		// Decrypts using a key read from a slot at runtime.
+		// source:   slot holding the ciphertext (nonce||ciphertext) to decrypt.
+		// key_slot: slot holding the 32-byte AES-256 key (loaded via load_secret_var).
+		// as:       slot to write the decrypted plaintext into.
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("aes_decrypt_slot_key: %w", err)
+		}
+		keySlotName := step.Input["key_slot"]
+		if keySlotName == "" {
+			return fmt.Errorf("aes_decrypt_slot_key: missing input.key_slot (slot name holding the AES key)")
+		}
+		keySlot, err := c.getSlot(keySlotName)
+		if err != nil {
+			return fmt.Errorf("aes_decrypt_slot_key: key_slot: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("aes_decrypt_slot_key: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.AESDecryptSlotKeyStep(src, keySlot, result))
+
+	case "load_secret_var":
+		// Resolves a secret reference stored in a slot at runtime (per-tenant refs).
+		// source: slot holding the secret reference string at runtime
+		//         (e.g. "gsm://...", "env:MY_VAR", "vault://...").
+		// as:     slot to write the resolved secret bytes into.
+		if c.SecretsMgr == nil {
+			return fmt.Errorf("load_secret_var requires a secrets manager — set SecretsMgr on the Compiler")
+		}
+		srcSlot, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("load_secret_var: %w", err)
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("load_secret_var: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.LoadSecretVar(c.SecretsMgr, srcSlot, destSlot))
+
 	case "add":
 		slotA, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -1901,6 +2180,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseHeaderFromSlot(step.Key, src))
 
+	case "remove_response_header":
+		c.GlobalTable = append(c.GlobalTable, steps.RemoveResponseHeaderStep(step.Key))
+
 	case "echo_request":
 		c.GlobalTable = append(c.GlobalTable, steps.EchoRequestStep())
 
@@ -1957,6 +2239,46 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			csp = []byte(v)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.SecurityHeadersStep(hstsVal, frameOpts, contentTypeOpts, referrerPolicy, csp))
+
+	case "set_response_status_from_slot":
+		slot, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.SetResponseStatusFromSlotStep(slot))
+
+	case "map_status":
+		// SourceVar holds the variable name with the upstream status code
+		sourceSlot, err := c.getSlot(step.SourceVar)
+		if err != nil {
+			return fmt.Errorf("map_status: resolving source_var %q: %w", step.SourceVar, err)
+		}
+
+		// Convert Mappings from map[string]string to map[int]int
+		mappings := make(map[int]int)
+		for srcStr, dstStr := range step.Mappings {
+			srcInt, err := strconv.Atoi(srcStr)
+			if err != nil {
+				return fmt.Errorf("map_status: invalid source status code %q: %w", srcStr, err)
+			}
+			dstInt, err := strconv.Atoi(dstStr)
+			if err != nil {
+				return fmt.Errorf("map_status: invalid destination status code %q: %w", dstStr, err)
+			}
+			mappings[srcInt] = dstInt
+		}
+
+		// Parse default: "pass" or empty means -1 (unchanged), otherwise parse as int
+		defaultStatus := -1
+		if step.Default != "" && step.Default != "pass" {
+			if n, err := strconv.Atoi(step.Default); err == nil {
+				defaultStatus = n
+			} else {
+				return fmt.Errorf("map_status: invalid default status %q (use 'pass' or a number)", step.Default)
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, steps.MapStatusStep(sourceSlot, mappings, defaultStatus))
 
 	case "store_internal_tx_id":
 		slot, err := c.getSlot(step.As)
@@ -2785,6 +3107,46 @@ func (c *Compiler) compileExtractPattern(step StepConfig) error {
 	}
 	c.GlobalTable = append(c.GlobalTable, steps.ExtractTemplatePattern(srcSlot, compiled))
 	return nil
+}
+
+// parseRenderTemplate parses a template string with ${varname} syntax into a
+// slice of RenderSeg values ready for the RenderTemplate instruction.
+//
+// Syntax:
+//   - ${varname} — replaced at runtime with the value of the named slot
+//   - everything else — emitted verbatim as a literal byte sequence
+//
+// All ${varname} references must name slots already present in slotMap;
+// an error is returned for unknown variable names (catches typos at bake time).
+func parseRenderTemplate(tmpl string, slotMap map[string]int) ([]steps.RenderSeg, error) {
+	var segs []steps.RenderSeg
+	remaining := tmpl
+	for len(remaining) > 0 {
+		idx := strings.Index(remaining, "${")
+		if idx < 0 {
+			// Rest is all literal
+			segs = append(segs, steps.RenderSeg{Lit: []byte(remaining)})
+			break
+		}
+		// Emit literal before the marker
+		if idx > 0 {
+			segs = append(segs, steps.RenderSeg{Lit: []byte(remaining[:idx])})
+		}
+		// Find closing brace
+		rest := remaining[idx+2:]
+		end := strings.Index(rest, "}")
+		if end < 0 {
+			return nil, fmt.Errorf("unclosed ${ in template at position %d", idx)
+		}
+		varName := rest[:end]
+		slotIdx, ok := slotMap[varName]
+		if !ok {
+			return nil, fmt.Errorf("unknown variable %q — bind it with a prior step before using it in render_template", varName)
+		}
+		segs = append(segs, steps.RenderSeg{Lit: nil, SlotIdx: slotIdx})
+		remaining = rest[end+1:]
+	}
+	return segs, nil
 }
 
 // isControlFlowAction returns true for step actions that must not be wrapped

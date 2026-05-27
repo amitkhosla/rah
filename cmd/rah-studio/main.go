@@ -31,9 +31,10 @@ func main() {
 	storePath := flag.String("store-path", defaultStorePath, "Release store path when kind=file")
 	obsStoreType := flag.String("obs-store-type", os.Getenv("RAH_OBS_STORE_TYPE"), "Observability store: memory|postgres|redis (empty = proxy to gateway)")
 	obsStoreDSN := flag.String("obs-store-dsn", os.Getenv("RAH_OBS_STORE_DSN"), "Observability store DSN (postgres full DSN or redis host:port)")
+	authEnabled := flag.Bool("auth-enabled", os.Getenv("RAH_STUDIO_AUTH_ENABLED") == "true", "Require login; credentials validated against management API")
 	flag.Parse()
 
-	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath, ObsStoreType: *obsStoreType, ObsStoreDSN: *obsStoreDSN}
+	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath, ObsStoreType: *obsStoreType, ObsStoreDSN: *obsStoreDSN, AuthEnabled: *authEnabled}
 	if *targetsFile != "" {
 		bytes, err := os.ReadFile(*targetsFile)
 		if err != nil {

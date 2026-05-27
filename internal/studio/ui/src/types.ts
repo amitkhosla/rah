@@ -1,4 +1,4 @@
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'cache' | 'apps' | 'grpc' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'gateway' | 'observability' | 'tenants' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'cache' | 'apps' | 'grpc' | 'releases' | 'settings'
 
 export type ConnStatus = 'connecting' | 'ok' | 'error'
 
@@ -58,11 +58,67 @@ export interface DeployRecord {
   results: DeployResult[]
 }
 
+export interface LintSummary {
+  errors: number
+  warnings: number
+  infos: number
+}
+
+export interface LintIssue {
+  severity: 'error' | 'warning' | 'info'
+  rule: string
+  file: string
+  line: number
+  message: string
+  suggestion?: string
+}
+
+export interface ReleaseDeployResult {
+  target: string
+  success: boolean
+  message?: string
+}
+
+export interface EnvDeployment {
+  deployed_at: string   // ISO timestamp string
+  status: string
+  by_user: string
+  results?: ReleaseDeployResult[]
+}
+
 export interface ReleaseRecord {
   release_id: string
   created_at: TimeJSON
   instruction_set_version?: string
   api_versions?: Record<string, string>
+  bundle_hash?: string
+  git_commit?: string
+  git_branch?: string
+  git_repo?: string
+  source_path?: string
+  author?: string
+  tag?: string
+  lint_summary?: LintSummary
+  environments?: Record<string, EnvDeployment>
+}
+
+export interface ReleaseListResponse {
+  releases: ReleaseRecord[]
+  next_cursor?: string
+}
+
+export interface CreateReleaseResponse {
+  release_id?: string
+  lint_summary: LintSummary
+  warnings?: string[]
+  issues?: LintIssue[]
+}
+
+export interface ReleaseDiff {
+  flows_added: string[]
+  flows_removed: string[]
+  apis_added: string[]
+  apis_removed: string[]
 }
 
 export interface TargetsResponse {
@@ -288,10 +344,34 @@ export interface DeployResponse {
   results: DeployResult[]
 }
 
+export interface OpenAPICondConfig {
+  op?: string
+  source?: string
+  path?: string
+  check?: string
+  value?: string
+  valueNum?: number
+  inValues?: string[]
+  children?: OpenAPICondConfig[]
+}
+
+export interface OpenAPIOnMatchConfig {
+  dest: string
+  status?: number
+  message?: string
+}
+
+export interface OpenAPIRuleConfig {
+  label?: string
+  when: OpenAPICondConfig
+  onMatch: OpenAPIOnMatchConfig
+}
+
 export interface ImportedAPI {
   name: string
   path: string
   method: string
+  validateRouteRules?: OpenAPIRuleConfig[]
 }
 
 export interface OpenAPIImportResponse {

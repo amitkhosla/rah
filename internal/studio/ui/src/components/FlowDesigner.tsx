@@ -96,6 +96,7 @@ const VISUAL_GROUPS: VisualGroup[] = [
     label: 'SECURITY',
     icon: '🔒',
     recipes: [
+      { title: 'CORS',              wraps: 'cors',               description: 'Handle cross-origin requests and preflight (OPTIONS) with zero allocations. Auto-replies 204 to preflight; sets Access-Control headers on real requests.' },
       { title: 'Validate Token',   wraps: 'token_validation',   description: 'Validate JWT or API key' },
       { title: 'API Rate Limits',  wraps: 'api_rate_limits',    description: 'Enforce rate limits configured in the API definition. Drag to control where in the flow enforcement happens. If absent, limits are auto-injected at the start of the flow.' },
       { title: 'Check Rate Limit', wraps: 'check_rate_limit',  description: 'Enforce request rate limits' },

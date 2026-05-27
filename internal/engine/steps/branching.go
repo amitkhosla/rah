@@ -231,6 +231,58 @@ func CopyHeader(srcHeader, dstHeader string) engine.Instruction {
 	}
 }
 
+// RemoveRequestHeader appends a deletion mutation to the MutationLog.
+// This marks the header for removal before proxying upstream.
+// Zero-allocation: uses pre-allocated MutationLog.
+func RemoveRequestHeader(name string) engine.Instruction {
+	keyBytes := []byte(name)
+	return engine.Instruction{
+		Name: "REMOVE_REQUEST_HEADER",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if ctx.MutationCount < len(ctx.MutationLog) {
+				ctx.MutationLog[ctx.MutationCount] = rctx.HeaderMutation{
+					Key: keyBytes,
+					Op:  1, // Delete
+				}
+				ctx.MutationCount++
+			}
+			return state.PC + 1
+		},
+	}
+}
+
+// RenameRequestHeader copies an incoming request header srcHeader to upstream as dstHeader,
+// and also appends a deletion mutation for srcHeader to remove the original.
+// This is equivalent to: copy srcHeader → dstHeader, then remove srcHeader.
+// Zero-copy for the header value; two mutations appended to MutationLog.
+func RenameRequestHeader(srcHeader, dstHeader string) engine.Instruction {
+	dstKey := []byte(dstHeader)
+	srcHeaderName := srcHeader
+	return engine.Instruction{
+		Name: "RENAME_REQUEST_HEADER",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			val := ctx.Request.Header.Get(srcHeaderName)
+			if val == "" || ctx.MutationCount+1 >= len(ctx.MutationLog) {
+				return state.PC + 1
+			}
+			// First mutation: set dstHeader with srcHeader's value (zero-copy)
+			ctx.MutationLog[ctx.MutationCount] = rctx.HeaderMutation{
+				Key:   dstKey,
+				Value: unsafe.Slice(unsafe.StringData(val), len(val)),
+				Op:    0, // Set
+			}
+			ctx.MutationCount++
+			// Second mutation: delete srcHeader
+			ctx.MutationLog[ctx.MutationCount] = rctx.HeaderMutation{
+				Key: []byte(srcHeaderName),
+				Op:  1, // Delete
+			}
+			ctx.MutationCount++
+			return state.PC + 1
+		},
+	}
+}
+
 // scanQuery finds the raw value for key in a query string like "a=1&b=2&c=3".
 // Returns a slice directly into the raw query bytes — zero allocation.
 // No URL-decoding is applied; values are raw as received from the wire.

@@ -214,6 +214,16 @@ func main() {
 	obs.UpdateConfig(&traceMode, &traceSampleRate, &instructionTiming, nil, nil, nil, nil)
 	alwaysTrace5xx := obsCfg.Traces.AlwaysTrace5xx
 	accessLog := observability.NewAccessLogger(8192)
+	if obsCfg.AccessLog.SigningKeyRef != "" {
+		if sigKey, sigErr := secretsMgr.Resolve(gatewayCtx, obsCfg.AccessLog.SigningKeyRef); sigErr != nil {
+			log.Printf("[warn] access log signing key resolve failed: %v", sigErr)
+		} else if len(sigKey) >= 16 {
+			accessLog.SetSigningKey(sigKey)
+			clear(sigKey)
+		} else {
+			log.Printf("[warn] access log signing key is too short (%d bytes, need ≥16); signing disabled", len(sigKey))
+		}
+	}
 	registry := control.NewNameRegistry()
 
 	// ── S8: OpenTelemetry SDK init ──────────────────────────────────────────────

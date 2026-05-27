@@ -1,0 +1,72 @@
+# ─── Authentication Samples ───────────────────────────────────────────────────
+#
+# Demonstrates two authentication patterns before calling an upstream:
+#
+#  1. JWT validation      – Verifies an RS256 JWT from the Authorization header.
+#                           On failure → returns 401 immediately.
+#
+#  2. Token introspection – Calls an RFC 7662 introspection endpoint.
+#                           Introspection responses cached for 30 s.
+#                           On failure → returns 401.
+#
+# Replace the placeholder URLs with your actual identity provider configuration.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ── Shared: call the protected upstream ─────────────────────────────────
+  - name: call_protected_upstream
+    action: upsert
+    code: |
+      upstream_body = http.get("https://httpbin.org/anything",
+        forward_incoming_headers: true,
+        timeout: 5000)
+      return(200, upstream_body)
+
+  # ── 1. JWT Validation ────────────────────────────────────────────────────
+  - name: jwt_protected_flow
+    action: upsert
+    code: |
+      validate_token(header.Authorization,
+        jwks_url: "https://YOUR_IDP_DOMAIN/.well-known/jwks.json",
+        alg: "RS256",
+        issuer: "https://YOUR_IDP_DOMAIN/",
+        audience: "your-api-id",
+        checks: "signature,expiry,issuer,audience",
+        leeway: "30",
+        on_failure: stop,
+        failure_status: "401",
+        subject_var: jwt_subject)
+      log("caller_subject", jwt_subject)
+      call call_protected_upstream
+
+  # ── 2. Token Introspection ───────────────────────────────────────────────
+  - name: introspect_protected_flow
+    action: upsert
+    code: |
+      validate_introspection(
+        url: "https://YOUR_IDP_DOMAIN/oauth2/introspect",
+        token_header: "Authorization",
+        cache_ttl: "30",
+        subject_var: token_subject)
+      log("caller_subject", token_subject)
+      call call_protected_upstream
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  # GET /samples/protected/jwt
+  # Requires: Authorization: Bearer <RS256 JWT>
+  - name: sample-jwt-protected
+    path: /samples/protected/jwt
+    method: GET
+    flow_name: jwt_protected_flow
+    action: upsert
+
+  # GET /samples/protected/introspect
+  # Requires: Authorization: Bearer <opaque-token>
+  - name: sample-introspect-protected
+    path: /samples/protected/introspect
+    method: GET
+    flow_name: introspect_protected_flow
+    action: upsert

@@ -1,6 +1,9 @@
 package observability
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -88,10 +91,11 @@ func (e *AccessLogEntry) reset() {
 // AccessLogger writes structured access logs asynchronously.
 // Snapshot() is called post-Finalize and never blocks the request goroutine.
 type AccessLogger struct {
-	ch      chan *AccessLogEntry
-	pool    sync.Pool
-	cfg     atomic.Pointer[accessLogConfig]
-	dropped atomic.Uint64
+	ch         chan *AccessLogEntry
+	pool       sync.Pool
+	cfg        atomic.Pointer[accessLogConfig]
+	dropped    atomic.Uint64
+	signingKey atomic.Pointer[[]byte] // nil = no signing; set via SetSigningKey
 }
 
 // NewAccessLogger creates an AccessLogger with a buffered drain channel.
@@ -234,6 +238,19 @@ func (l *AccessLogger) DroppedCount() uint64 {
 	return l.dropped.Load()
 }
 
+// SetSigningKey installs a key for HMAC-SHA256 tamper-evidence on log lines.
+// Each line gains a trailing sig=<hex64> field computed over the rest of the line.
+// Pass nil or empty to disable signing. The key is copied internally.
+func (l *AccessLogger) SetSigningKey(key []byte) {
+	if len(key) == 0 {
+		l.signingKey.Store(nil)
+		return
+	}
+	cp := make([]byte, len(key))
+	copy(cp, key)
+	l.signingKey.Store(&cp)
+}
+
 func (l *AccessLogger) drain() {
 	var sb strings.Builder
 	for entry := range l.ch {
@@ -284,6 +301,14 @@ func (l *AccessLogger) drain() {
 		// Insights (derived flags)
 		for _, kv := range entry.Insights {
 			writeKV(&sb, kv.K, kv.V)
+		}
+
+		// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
+		// Signing happens in the async drain goroutine — allocation here is acceptable.
+		if kp := l.signingKey.Load(); kp != nil {
+			mac := hmac.New(sha256.New, *kp)
+			mac.Write([]byte(sb.String()))
+			writeKV(&sb, "sig", hex.EncodeToString(mac.Sum(nil)))
 		}
 
 		log.Print(sb.String())

@@ -34,10 +34,14 @@ import type {
   EgressCodeRuleConfig,
   EgressPatternRuleConfig,
   FieldSchema,
+  ReleaseRecord,
+  ReleaseListResponse,
+  CreateReleaseResponse,
+  ReleaseDiff,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, options)
+  const res = await fetch(url, { credentials: 'include', ...options })
   if (!res.ok) {
     const text = await res.text().catch(() => `HTTP ${res.status}`)
     throw new Error(text || `HTTP ${res.status}`)
@@ -425,7 +429,7 @@ export interface GatewaySnapshot {
 }
 
 export async function fetchGatewaySnapshot(): Promise<GatewaySnapshot> {
-  const res = await fetch('/api/getAllApis')
+  const res = await fetch('/api/getAllApis', { credentials: 'include' })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -462,6 +466,7 @@ export async function syncFlows(payload: SyncPayload): Promise<SyncResponse> {
   }
   const res = await fetch('/api/sync', {
     method: 'POST',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(normalized),
   })
@@ -523,7 +528,7 @@ export function deleteQuota(tenantId: string): Promise<void> {
 
 export async function fetchObsMetrics(apiName?: string): Promise<any> {
   const params = apiName ? `?api=${encodeURIComponent(apiName)}` : ''
-  const r = await fetch(`/api/observability/metrics${params}`)
+  const r = await fetch(`/api/observability/metrics${params}`, { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -534,13 +539,13 @@ export async function fetchObsAccessLog(params?: { api?: string; tenant?: string
   if (params?.tenant) q.set('tenant', params.tenant)
   if (params?.status) q.set('status', String(params.status))
   if (params?.limit) q.set('limit', String(params.limit))
-  const r = await fetch(`/api/observability/access-log?${q}`)
+  const r = await fetch(`/api/observability/access-log?${q}`, { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
 export async function fetchObsApis(): Promise<any> {
-  const r = await fetch('/api/observability/apis')
+  const r = await fetch('/api/observability/apis', { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -549,7 +554,7 @@ export async function fetchObsTraces(params?: { api?: string; limit?: number }):
   const q = new URLSearchParams()
   if (params?.api) q.set('api', params.api)
   if (params?.limit) q.set('limit', String(params.limit))
-  const r = await fetch(`/api/observability/traces?${q}`)
+  const r = await fetch(`/api/observability/traces?${q}`, { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -560,7 +565,7 @@ export interface ObsDetailLogConfig {
 }
 
 export async function fetchObsDetailLogConfig(): Promise<ObsDetailLogConfig> {
-  const r = await fetch('/api/observability/detail-log')
+  const r = await fetch('/api/observability/detail-log', { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -568,6 +573,7 @@ export async function fetchObsDetailLogConfig(): Promise<ObsDetailLogConfig> {
 export async function updateObsDetailLogConfig(cfg: ObsDetailLogConfig): Promise<ObsDetailLogConfig> {
   const r = await fetch('/api/observability/detail-log', {
     method: 'PUT',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(cfg),
   })
@@ -586,7 +592,7 @@ export interface ObsRuntimeConfig {
 }
 
 export async function fetchObsConfig(): Promise<ObsRuntimeConfig> {
-  const r = await fetch('/api/observability/config')
+  const r = await fetch('/api/observability/config', { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   const body = await r.json()
   // The config snapshot is nested under body.config
@@ -609,6 +615,7 @@ export async function updateObsConfig(patch: Partial<ObsRuntimeConfig>): Promise
   if (patch.info_log_fields           !== undefined) body.info_log_fields            = patch.info_log_fields
   const r = await fetch('/api/observability/config', {
     method: 'POST',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -746,13 +753,13 @@ export function deleteSchemaSet(setName: string): Promise<void> {
 
 // ── gRPC Descriptors ─────────────────────────────────────────────────────
 export async function listGrpcDescriptors(): Promise<import('./types').GrpcDescriptorSummary[]> {
-  const r = await fetch('/api/grpc/descriptors')
+  const r = await fetch('/api/grpc/descriptors', { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
 export async function getGrpcDescriptor(name: string): Promise<import('./types').GrpcDescriptorSummary> {
-  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`)
+  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`, { credentials: 'include' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -761,6 +768,7 @@ export async function uploadGrpcDescriptor(name: string, file: File): Promise<im
   const data = await file.arrayBuffer()
   const r = await fetch('/api/grpc/descriptors', {
     method: 'POST',
+    credentials: 'include',
     headers: { 'X-Descriptor-Name': name, 'Content-Type': 'application/octet-stream' },
     body: data,
   })
@@ -769,6 +777,55 @@ export async function uploadGrpcDescriptor(name: string, file: File): Promise<im
 }
 
 export async function deleteGrpcDescriptor(name: string): Promise<void> {
-  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  const r = await fetch(`/api/grpc/descriptors/${encodeURIComponent(name)}`, { method: 'DELETE', credentials: 'include' })
   if (!r.ok && r.status !== 204) throw new Error(await r.text())
+}
+
+// ── Release Management ────────────────────────────────────────────────────────
+
+export function listReleases(cursor?: string): Promise<ReleaseListResponse> {
+  const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+  return request<ReleaseListResponse>(`/api/releases${q}`)
+}
+
+export function getReleaseById(id: string): Promise<ReleaseRecord> {
+  return request<ReleaseRecord>(`/api/releases/${encodeURIComponent(id)}`)
+}
+
+/** Post a bundle to /api/releases. Uses multipart/form-data so raw YAML/JSON can
+ *  be sent without parsing in the browser. Set dryRun=true for validation only. */
+export async function createRelease(
+  content: string,
+  meta?: { tag?: string; author?: string; git_commit?: string; git_branch?: string },
+  dryRun = false,
+): Promise<CreateReleaseResponse> {
+  const form = new FormData()
+  form.append('bundle', new Blob([content], { type: 'text/plain' }), 'bundle.yaml')
+  if (meta?.tag)        form.append('tag', meta.tag)
+  if (meta?.author)     form.append('author', meta.author)
+  if (meta?.git_commit) form.append('git_commit', meta.git_commit)
+  if (meta?.git_branch) form.append('git_branch', meta.git_branch)
+  const url = dryRun ? '/api/releases?dry_run=true' : '/api/releases'
+  const res = await fetch(url, { method: 'POST', credentials: 'include', body: form })
+  if (!res.ok) {
+    const text = await res.text().catch(() => `HTTP ${res.status}`)
+    throw new Error(text || `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<CreateReleaseResponse>
+}
+
+export async function promoteRelease(
+  id: string,
+  env: string,
+  byUser?: string,
+): Promise<{ release_id: string; env: string; results: import('./types').ReleaseDeployResult[] }> {
+  return request(`/api/releases/${encodeURIComponent(id)}/deploy`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ env, by_user: byUser ?? '' }),
+  })
+}
+
+export function diffReleases(id: string, otherId: string): Promise<ReleaseDiff> {
+  return request<ReleaseDiff>(`/api/releases/${encodeURIComponent(id)}/diff/${encodeURIComponent(otherId)}`)
 }

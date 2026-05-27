@@ -1,0 +1,148 @@
+# ─── Static Response Samples — Code Style ────────────────────────────────────
+#
+# Each entry-point flow reads like pseudocode — a short sequence of named calls.
+# Building blocks are small, focused flows that can be reused across entry points.
+#
+#   api_hello:
+#     call build_hello_payload     → sets response_body
+#     call send_ok                 → return(200, response_body)
+#
+#   api_echo_header:
+#     call read_user_id_header     → user_id = header("X-User-ID")
+#     call wrap_user_id_as_json    → response_body = '{"user_id":"{user_id}"}'
+#     call send_ok
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # UTILITIES
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: send_ok
+    action: upsert
+    code: |
+      return(200, response_body)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PAYLOAD BUILDERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: build_hello_payload
+    action: upsert
+    code: |
+      response_body = '{"message":"hello, world!"}'
+
+  - name: build_status_payload
+    action: upsert
+    code: |
+      response_body = '{"status":"ok","version":"1.0","gateway":"rah"}'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INPUT READERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: read_user_id_header
+    action: upsert
+    code: |
+      user_id = header("X-User-ID")
+
+  - name: read_name_param
+    action: upsert
+    code: |
+      name_param = query("name")
+
+  - name: read_path_id
+    action: upsert
+    code: |
+      path_id = path("0")
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JSON WRAPPERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: wrap_user_id_as_json
+    action: upsert
+    code: |
+      response_body = '{"user_id":"{user_id}"}'
+
+  - name: wrap_name_as_json
+    action: upsert
+    code: |
+      response_body = '{"name":"{name_param}"}'
+
+  - name: wrap_path_id_as_json
+    action: upsert
+    code: |
+      response_body = '{"id":"{path_id}"}'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS  — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_hello
+    action: upsert
+    code: |
+      call build_hello_payload
+      call send_ok
+
+  - name: api_status
+    action: upsert
+    code: |
+      call build_status_payload
+      call send_ok
+
+  - name: api_echo_header
+    action: upsert
+    code: |
+      call read_user_id_header
+      call wrap_user_id_as_json
+      call send_ok
+
+  - name: api_echo_query
+    action: upsert
+    code: |
+      call read_name_param
+      call wrap_name_as_json
+      call send_ok
+
+  - name: api_echo_path
+    action: upsert
+    code: |
+      call read_path_id
+      call wrap_path_id_as_json
+      call send_ok
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  - name: sample-cs-hello
+    path: /samples/cs/static/hello
+    method: GET
+    flow_name: api_hello
+    action: upsert
+
+  - name: sample-cs-status
+    path: /samples/cs/static/status
+    method: GET
+    flow_name: api_status
+    action: upsert
+
+  - name: sample-cs-echo-header
+    path: /samples/cs/static/echo-header
+    method: GET
+    flow_name: api_echo_header
+    action: upsert
+
+  - name: sample-cs-echo-query
+    path: /samples/cs/static/echo-query
+    method: GET
+    flow_name: api_echo_query
+    action: upsert
+
+  - name: sample-cs-echo-path
+    path: /samples/cs/static/echo/{id}
+    method: GET
+    flow_name: api_echo_path
+    action: upsert

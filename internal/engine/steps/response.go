@@ -58,6 +58,36 @@ func SetResponseStatusStep(code int) engine.Instruction {
 	}
 }
 
+// SetResponseStatusFromSlotStep sets the HTTP response status from IntSlots[slot].
+func SetResponseStatusFromSlotStep(slot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "SET_RESPONSE_STATUS_FROM_SLOT",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.ResponseStatus = int(ctx.IntSlots[slot])
+			return state.PC + 1
+		},
+	}
+}
+
+// MapStatusStep reads an HTTP status code from IntSlots[slot], looks it up in the
+// mappings table, and writes the remapped status to the response. If the incoming
+// status has no mapping, defaultStatus applies (use -1 to mean "pass"/unchanged).
+func MapStatusStep(slot int, mappings map[int]int, defaultStatus int) engine.Instruction {
+	return engine.Instruction{
+		Name: "MAP_STATUS",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			sourceStatus := int(ctx.IntSlots[slot])
+			if mapped, ok := mappings[sourceStatus]; ok {
+				ctx.ResponseStatus = mapped
+			} else if defaultStatus != -1 {
+				ctx.ResponseStatus = defaultStatus
+			}
+			// If defaultStatus == -1 and no mapping found, leave ctx.ResponseStatus unchanged
+			return state.PC + 1
+		},
+	}
+}
+
 // SetConstStep writes a static string value (captured at bake time) into a ByteSlot.
 // Use for injecting fixed system prompts, labels, or flags into the slot space.
 func SetConstStep(value string, slot int) engine.Instruction {
@@ -103,6 +133,25 @@ func RespondStep(src int) engine.Instruction {
 			ctx.ResponseBuffer = ctx.ByteSlots[src]
 			ctx.IsBuffered = true
 			return engine.StopPlan
+		},
+	}
+}
+
+// RemoveResponseHeaderStep removes a response header by name.
+// Appends a HeaderMutation with Op=1 to ctx.ResponseHeaders.
+func RemoveResponseHeaderStep(name string) engine.Instruction {
+	nameBytes := []byte(name)
+	return engine.Instruction{
+		Name: "REMOVE_RESPONSE_HEADER",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if ctx.ResHeaderCount < len(ctx.ResponseHeaders) {
+				ctx.ResponseHeaders[ctx.ResHeaderCount] = rctx.HeaderMutation{
+					Key: nameBytes,
+					Op:  1, // Remove
+				}
+				ctx.ResHeaderCount++
+			}
+			return state.PC + 1
 		},
 	}
 }

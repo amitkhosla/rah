@@ -1,0 +1,105 @@
+# ─── Upstream Proxy Samples — Code Style ─────────────────────────────────────
+#
+# Two upstream proxy patterns, decomposed into named building blocks.
+# The entry-point flows read like pseudocode:
+#
+#   api_simple_proxy:
+#     call fetch_from_httpbin        # http.get → upstream_body
+#     call send_upstream_response    # return(200, upstream_body)
+#
+#   api_cached_proxy:
+#     call build_cache_key           # header("X-Cache-Key") → cache_key
+#     call try_cache_read            # cache.get(cache_key) → cached_response
+#     call serve_from_cache_or_fetch # hit → serve_cached; miss → fetch_and_store
+#
+# Reuse pattern: send_upstream_response is called by api_simple_proxy; each
+# building block is small enough to read in one glance and reuse across flows.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SIMPLE PROXY BUILDING BLOCKS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: fetch_from_httpbin
+    action: upsert
+    code: |
+      upstream_body = http.get("https://httpbin.org/get",
+        forward_incoming_headers: true,
+        timeout: 5000)
+
+  - name: send_upstream_response
+    action: upsert
+    code: |
+      return(200, upstream_body)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CACHE-FIRST PROXY BUILDING BLOCKS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: build_cache_key
+    action: upsert
+    code: |
+      cache_key = header("X-Cache-Key")
+
+  - name: try_cache_read
+    action: upsert
+    code: |
+      cached_response = cache.get(cache_key)
+
+  # Hit branch: serve from cache immediately
+  - name: serve_cached_response
+    action: upsert
+    code: |
+      return(200, cached_response)
+
+  # Miss branch: fetch from upstream, store response, then return
+  - name: fetch_store_and_serve
+    action: upsert
+    code: |
+      upstream_response = http.get("https://httpbin.org/get", timeout: 5000)
+      cache.set(cache_key, upstream_response, ttl: 300)
+      return(200, upstream_response)
+
+  # Router: branch to hit or miss flow based on whether the cache returned a value
+  - name: serve_from_cache_or_fetch
+    action: upsert
+    code: |
+      if (cached_response != "") {
+        call serve_cached_response
+      } else {
+        call fetch_store_and_serve
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS  — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_simple_proxy
+    action: upsert
+    code: |
+      call fetch_from_httpbin
+      call send_upstream_response
+
+  - name: api_cached_proxy
+    action: upsert
+    code: |
+      call build_cache_key
+      call try_cache_read
+      call serve_from_cache_or_fetch
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  - name: sample-cs-simple-proxy
+    path: /samples/cs/proxy
+    method: GET
+    flow_name: api_simple_proxy
+    action: upsert
+
+  - name: sample-cs-cached-proxy
+    path: /samples/cs/cached
+    method: GET
+    flow_name: api_cached_proxy
+    action: upsert

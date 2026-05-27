@@ -2,8 +2,12 @@ package steps
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -88,7 +92,10 @@ type TokenValidationConfig struct {
 	Algorithm     string
 	Leeway        time.Duration
 	Validate      ValidationSet
-	PrefetchJWKS  bool
+	PrefetchJWKS         bool
+	JWKSTimeout          time.Duration // timeout for JWKS endpoint fetch (default 10s)
+	JWKSRetryMaxAttempts int           // total attempts for JWKS fetch (default 2)
+	JWKSRetryBackoff     time.Duration // base backoff between JWKS retries (default 200ms)
 
 	RequiredScopes []string
 	ScopeClaimKeys []string // default: scope, scp
@@ -129,14 +136,26 @@ type jwksDocument struct {
 }
 
 type jwkKey struct {
-	Kty string `json:"kty"`
+	Kty string `json:"kty"` // "RSA", "EC", "OKP"
 	Kid string `json:"kid"`
-	N   string `json:"n"`
-	E   string `json:"e"`
+	// RSA fields
+	N string `json:"n"`
+	E string `json:"e"`
+	// EC fields
+	Crv string `json:"crv"` // "P-256", "P-384", "P-521"
+	X   string `json:"x"`
+	Y   string `json:"y"`
+	// OKP fields (EdDSA / Ed25519)
+	// Crv is shared; X holds the public key bytes for OKP
+}
+
+// cnfClaim holds the Confirmation claim from an access token (RFC 7800 / RFC 9449).
+type cnfClaim struct {
+	JKT string `json:"jkt"` // JWK SHA-256 Thumbprint of the DPoP key
 }
 
 type cachedJWKS struct {
-	keysByKid map[string]*rsa.PublicKey
+	keysByKid map[string]crypto.PublicKey // RSA, ECDSA, or ed25519 public keys
 	expiresAt time.Time
 }
 
@@ -198,9 +217,27 @@ func ParseTokenValidationConfig(keyIdentifier string, input map[string]string) T
 		Algorithm:      strings.TrimSpace(input["jwt.alg"]),
 		Leeway:         defaultJWTLeeway,
 		Validate:       parseValidationSet(input["jwt.validate"]),
-		PrefetchJWKS:   strings.EqualFold(strings.TrimSpace(input["jwt.prefetch_jwks"]), "true"),
+		PrefetchJWKS:         strings.EqualFold(strings.TrimSpace(input["jwt.prefetch_jwks"]), "true"),
+		JWKSTimeout:          10 * time.Second,
+		JWKSRetryMaxAttempts: 2,
+		JWKSRetryBackoff:     200 * time.Millisecond,
 		RequiredScopes: splitAndTrim(input["jwt.required_scopes"], ","),
 		ScopeClaimKeys: splitAndTrim(input["jwt.scope_claims"], ","),
+	}
+	if v := strings.TrimSpace(input["jwt.jwks_timeout_ms"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.JWKSTimeout = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := strings.TrimSpace(input["jwt.jwks_retry_max_attempts"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.JWKSRetryMaxAttempts = n
+		}
+	}
+	if v := strings.TrimSpace(input["jwt.jwks_retry_backoff_ms"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.JWKSRetryBackoff = time.Duration(n) * time.Millisecond
+		}
 	}
 
 	if k := strings.TrimSpace(input["token.key"]); k != "" {
@@ -324,7 +361,7 @@ func parseValidationSet(raw string) ValidationSet {
 // TokenValidation builds the runtime JWT validation instruction.
 func TokenValidation(slots TokenValidationSlots, cfg TokenValidationConfig) engine.Instruction {
 	if cfg.PrefetchJWKS && cfg.JWKSURI != "" {
-		_, _ = publicKeyFromJWKS(cfg.JWKSURI, "")
+		_, _ = publicKeyFromJWKS(cfg.JWKSURI, "", cfg.JWKSTimeout, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
 	}
 
 	return engine.Instruction{
@@ -623,8 +660,11 @@ func validateJWTWithClaims(token string, cfg TokenValidationConfig) (*jwtClaims,
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
 		return nil, err
 	}
-	if header.Alg != cfg.Algorithm || header.Alg != "RS256" {
-		return nil, errors.New("unsupported jwt algorithm")
+	if header.Alg != cfg.Algorithm {
+		return nil, fmt.Errorf("jwt alg mismatch: token has %q, config expects %q", header.Alg, cfg.Algorithm)
+	}
+	if !isSupportedAlg(header.Alg) {
+		return nil, fmt.Errorf("unsupported jwt algorithm: %q", header.Alg)
 	}
 
 	var claims jwtClaims
@@ -667,9 +707,9 @@ func validateJWTWithClaims(token string, cfg TokenValidationConfig) (*jwtClaims,
 			return nil, errors.New("jwt.jwks_uri is required")
 		}
 		if header.Kid == "" {
-			return nil, errors.New("missing kid")
+			return nil, errors.New("missing kid in jwt header")
 		}
-		pub, err := publicKeyFromJWKS(cfg.JWKSURI, header.Kid)
+		pub, err := publicKeyFromJWKS(cfg.JWKSURI, header.Kid, cfg.JWKSTimeout, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
 		if err != nil {
 			return nil, err
 		}
@@ -677,8 +717,7 @@ func validateJWTWithClaims(token string, cfg TokenValidationConfig) (*jwtClaims,
 		if err != nil {
 			return nil, err
 		}
-		h := sha256.Sum256([]byte(token[:dot2]))
-		if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, h[:], signature); err != nil {
+		if err := verifyJWTSignature(header.Alg, []byte(token[:dot2]), signature, pub); err != nil {
 			return nil, err
 		}
 	}
@@ -734,7 +773,7 @@ func audienceMatches(tokenAud any, expected string) bool {
 	return false
 }
 
-func publicKeyFromJWKS(jwksURI, kid string) (*rsa.PublicKey, error) {
+func publicKeyFromJWKS(jwksURI, kid string, timeout time.Duration, retryMaxAttempts int, retryBackoff time.Duration) (crypto.PublicKey, error) {
 	if cachedAny, ok := jwksCache.Load(jwksURI); ok {
 		cached := cachedAny.(cachedJWKS)
 		if time.Now().Before(cached.expiresAt) {
@@ -747,7 +786,7 @@ func publicKeyFromJWKS(jwksURI, kid string) (*rsa.PublicKey, error) {
 		}
 	}
 
-	payload, err := loadJWKSBytes(jwksURI)
+	payload, err := loadJWKSBytes(jwksURI, timeout, retryMaxAttempts, retryBackoff)
 	if err != nil {
 		return nil, err
 	}
@@ -757,16 +796,37 @@ func publicKeyFromJWKS(jwksURI, kid string) (*rsa.PublicKey, error) {
 		return nil, err
 	}
 
-	keys := make(map[string]*rsa.PublicKey, len(jwks.Keys))
+	keys := make(map[string]crypto.PublicKey, len(jwks.Keys))
 	for _, k := range jwks.Keys {
-		if strings.ToUpper(k.Kty) != "RSA" || k.Kid == "" || k.N == "" || k.E == "" {
+		if k.Kid == "" {
 			continue
 		}
-		pub, err := buildRSAPublicKey(k.N, k.E)
-		if err != nil {
-			continue
+		switch strings.ToUpper(k.Kty) {
+		case "RSA":
+			if k.N == "" || k.E == "" {
+				continue
+			}
+			pub, err := buildRSAPublicKey(k.N, k.E)
+			if err != nil {
+				continue
+			}
+			keys[k.Kid] = pub
+		case "EC":
+			pub, err := buildECPublicKey(k.Crv, k.X, k.Y)
+			if err != nil {
+				continue
+			}
+			keys[k.Kid] = pub
+		case "OKP":
+			if strings.ToUpper(k.Crv) != "ED25519" || k.X == "" {
+				continue
+			}
+			pub, err := buildEdDSAPublicKey(k.X)
+			if err != nil {
+				continue
+			}
+			keys[k.Kid] = pub
 		}
-		keys[k.Kid] = pub
 	}
 
 	jwksCache.Store(jwksURI, cachedJWKS{keysByKid: keys, expiresAt: time.Now().Add(defaultJWKSCacheTTL)})
@@ -779,7 +839,7 @@ func publicKeyFromJWKS(jwksURI, kid string) (*rsa.PublicKey, error) {
 	return nil, errors.New("kid not found in jwks")
 }
 
-func loadJWKSBytes(jwksURI string) ([]byte, error) {
+func loadJWKSBytes(jwksURI string, timeout time.Duration, retryMaxAttempts int, retryBackoff time.Duration) ([]byte, error) {
 	jwtCacheProviderLock.RLock()
 	provider := jwtCacheProvider
 	jwtCacheProviderLock.RUnlock()
@@ -791,17 +851,36 @@ func loadJWKSBytes(jwksURI string) ([]byte, error) {
 		}
 	}
 
-	resp, err := http.Get(jwksURI)
-	if err != nil {
-		return nil, err
+	if retryMaxAttempts < 1 {
+		retryMaxAttempts = 1
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("jwks fetch failed")
+	jwksClient := &http.Client{Timeout: timeout}
+	backoff := retryBackoff
+	var payload []byte
+	var lastErr error
+	for attempt := 1; attempt <= retryMaxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+		var resp *http.Response
+		resp, lastErr = jwksClient.Get(jwksURI)
+		if lastErr != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = errors.New("jwks fetch failed: " + resp.Status)
+			continue
+		}
+		payload, lastErr = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if lastErr == nil {
+			break
+		}
 	}
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	if provider != nil {
 		provider.Set(cacheKey, payload, defaultJWKSCacheTTL)
@@ -826,4 +905,204 @@ func buildRSAPublicKey(nB64, eB64 string) (*rsa.PublicKey, error) {
 		return nil, errors.New("invalid rsa exponent")
 	}
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+}
+
+func buildECPublicKey(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
+	if xB64 == "" || yB64 == "" {
+		return nil, errors.New("ec key missing x or y")
+	}
+	var curve elliptic.Curve
+	switch strings.ToUpper(crv) {
+	case "P-256":
+		curve = elliptic.P256()
+	case "P-384":
+		curve = elliptic.P384()
+	case "P-521":
+		curve = elliptic.P521()
+	default:
+		return nil, fmt.Errorf("unsupported ec curve: %q", crv)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+	if err != nil {
+		return nil, err
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(yB64)
+	if err != nil {
+		return nil, err
+	}
+	x := new(big.Int).SetBytes(xBytes)
+	y := new(big.Int).SetBytes(yBytes)
+	pub := &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
+	if !curve.IsOnCurve(x, y) {
+		return nil, errors.New("ec point not on curve")
+	}
+	return pub, nil
+}
+
+func buildEdDSAPublicKey(xB64 string) (ed25519.PublicKey, error) {
+	keyBytes, err := base64.RawURLEncoding.DecodeString(xB64)
+	if err != nil {
+		return nil, err
+	}
+	if len(keyBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("ed25519: expected %d bytes, got %d", ed25519.PublicKeySize, len(keyBytes))
+	}
+	return ed25519.PublicKey(keyBytes), nil
+}
+
+// isSupportedAlg returns true for JWT algorithms RAH can verify.
+func isSupportedAlg(alg string) bool {
+	switch alg {
+	case "RS256", "RS384", "RS512",
+		"ES256", "ES384", "ES512",
+		"EdDSA":
+		return true
+	}
+	return false
+}
+
+// verifyJWTSignature dispatches to the correct signature verification algorithm.
+// signingInput is header_b64.claims_b64 (the bytes that were signed).
+func verifyJWTSignature(alg string, signingInput, sig []byte, pub crypto.PublicKey) error {
+	switch alg {
+	case "RS256":
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("RS256: key is not RSA")
+		}
+		h := sha256.Sum256(signingInput)
+		return rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, h[:], sig)
+	case "RS384":
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("RS384: key is not RSA")
+		}
+		h := sha512.Sum384(signingInput)
+		return rsa.VerifyPKCS1v15(rsaPub, crypto.SHA384, h[:], sig)
+	case "RS512":
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("RS512: key is not RSA")
+		}
+		h := sha512.Sum512(signingInput)
+		return rsa.VerifyPKCS1v15(rsaPub, crypto.SHA512, h[:], sig)
+	case "ES256":
+		ecPub, ok := pub.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("ES256: key is not EC")
+		}
+		h := sha256.Sum256(signingInput)
+		if !verifyECDSARaw(ecPub, h[:], sig) {
+			return errors.New("ES256: signature verification failed")
+		}
+		return nil
+	case "ES384":
+		ecPub, ok := pub.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("ES384: key is not EC")
+		}
+		h := sha512.Sum384(signingInput)
+		if !verifyECDSARaw(ecPub, h[:], sig) {
+			return errors.New("ES384: signature verification failed")
+		}
+		return nil
+	case "ES512":
+		ecPub, ok := pub.(*ecdsa.PublicKey)
+		if !ok {
+			return errors.New("ES512: key is not EC")
+		}
+		h := sha512.Sum512(signingInput)
+		if !verifyECDSARaw(ecPub, h[:], sig) {
+			return errors.New("ES512: signature verification failed")
+		}
+		return nil
+	case "EdDSA":
+		edPub, ok := pub.(ed25519.PublicKey)
+		if !ok {
+			return errors.New("EdDSA: key is not Ed25519")
+		}
+		if !ed25519.Verify(edPub, signingInput, sig) {
+			return errors.New("EdDSA: signature verification failed")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported algorithm: %q", alg)
+	}
+}
+
+// verifyECDSARaw verifies a raw (r||s) encoded ECDSA signature (JWT format, not DER).
+func verifyECDSARaw(pub *ecdsa.PublicKey, hash, sig []byte) bool {
+	keyLen := (pub.Curve.Params().BitSize + 7) / 8
+	if len(sig) != 2*keyLen {
+		return false
+	}
+	r := new(big.Int).SetBytes(sig[:keyLen])
+	s := new(big.Int).SetBytes(sig[keyLen:])
+	return ecdsa.Verify(pub, hash, r, s)
+}
+
+// JWKThumbprintSHA256 computes the RFC 7638 JWK thumbprint for a public key.
+// This is used by DPoP to match the cnf.jkt claim in access tokens.
+func JWKThumbprintSHA256(pub crypto.PublicKey) (string, error) {
+	var members string
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		// Lexicographic order: e, kty, n
+		nB64 := base64.RawURLEncoding.EncodeToString(k.N.Bytes())
+		eBytes := big.NewInt(int64(k.E)).Bytes()
+		eB64 := base64.RawURLEncoding.EncodeToString(eBytes)
+		members = fmt.Sprintf(`{"e":%q,"kty":"RSA","n":%q}`, eB64, nB64)
+	case *ecdsa.PublicKey:
+		var crv string
+		switch k.Curve {
+		case elliptic.P256():
+			crv = "P-256"
+		case elliptic.P384():
+			crv = "P-384"
+		case elliptic.P521():
+			crv = "P-521"
+		default:
+			return "", errors.New("unsupported ec curve for thumbprint")
+		}
+		byteLen := (k.Curve.Params().BitSize + 7) / 8
+		xBytes := make([]byte, byteLen)
+		yBytes := make([]byte, byteLen)
+		k.X.FillBytes(xBytes)
+		k.Y.FillBytes(yBytes)
+		xB64 := base64.RawURLEncoding.EncodeToString(xBytes)
+		yB64 := base64.RawURLEncoding.EncodeToString(yBytes)
+		// Lexicographic order: crv, kty, x, y
+		members = fmt.Sprintf(`{"crv":%q,"kty":"EC","x":%q,"y":%q}`, crv, xB64, yB64)
+	case ed25519.PublicKey:
+		xB64 := base64.RawURLEncoding.EncodeToString([]byte(k))
+		// Lexicographic order: crv, kty, x
+		members = fmt.Sprintf(`{"crv":"Ed25519","kty":"OKP","x":%q}`, xB64)
+	default:
+		return "", errors.New("unsupported key type for thumbprint")
+	}
+	h := sha256.Sum256([]byte(members))
+	return base64.RawURLEncoding.EncodeToString(h[:]), nil
+}
+
+// ParseJWTUnsafe parses a JWT without verifying the signature.
+// Used internally by DPoP to extract the embedded JWK from the proof header.
+func ParseJWTUnsafe(token string) (headerBytes, claimsBytes []byte, signingInput string, err error) {
+	dot1 := strings.IndexByte(token, '.')
+	if dot1 <= 0 {
+		return nil, nil, "", errors.New("invalid jwt format")
+	}
+	dot2Rel := strings.IndexByte(token[dot1+1:], '.')
+	if dot2Rel <= 0 {
+		return nil, nil, "", errors.New("invalid jwt format")
+	}
+	dot2 := dot1 + 1 + dot2Rel
+	hBytes, err := base64.RawURLEncoding.DecodeString(token[:dot1])
+	if err != nil {
+		return nil, nil, "", err
+	}
+	cBytes, err := base64.RawURLEncoding.DecodeString(token[dot1+1 : dot2])
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return hBytes, cBytes, token[:dot2], nil
 }

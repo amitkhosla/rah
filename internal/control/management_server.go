@@ -279,6 +279,27 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 		newRouteUpstreamUrls[k] = v
 	}
 
+	// Pre-pass: expand DSL code → Instructions
+	{
+		var dslExtras []FlowUpdate
+		for i := range req.Flows {
+			f := &req.Flows[i]
+			if f.Code != "" && f.Action != "delete" {
+				result, err := ParseDSL(f.Code)
+				if err != nil {
+					return fmt.Errorf("flow %q DSL: %w", f.Name, err)
+				}
+				f.Instructions = result.Steps
+				for anonName, anonSteps := range result.ExtraFlows {
+					dslExtras = append(dslExtras, FlowUpdate{Name: anonName, Instructions: anonSteps, Action: "upsert"})
+				}
+			}
+		}
+		if len(dslExtras) > 0 {
+			req.Flows = append(dslExtras, req.Flows...)
+		}
+	}
+
 	// 2. Update Shared Flows (The Instruction Library)
 	var deletedFlows []string
 	for _, f := range req.Flows {
@@ -559,6 +580,27 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	for _, svc := range req.UpstreamServices {
 		if data, merr := json.Marshal(svc); merr == nil {
 			pendingPersist = append(pendingPersist, persistOp{kind: "upstreamsvc_upsert", name: svc.Name, payload: data})
+		}
+	}
+
+	// Pre-pass: expand DSL code → Instructions
+	{
+		var dslExtras []FlowUpdate
+		for i := range req.Flows {
+			f := &req.Flows[i]
+			if f.Code != "" && f.Action != "delete" {
+				result, err := ParseDSL(f.Code)
+				if err != nil {
+					return fmt.Errorf("flow %q DSL: %w", f.Name, err)
+				}
+				f.Instructions = result.Steps
+				for anonName, anonSteps := range result.ExtraFlows {
+					dslExtras = append(dslExtras, FlowUpdate{Name: anonName, Instructions: anonSteps, Action: "upsert"})
+				}
+			}
+		}
+		if len(dslExtras) > 0 {
+			req.Flows = append(dslExtras, req.Flows...)
 		}
 	}
 

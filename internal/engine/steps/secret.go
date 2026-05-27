@@ -53,3 +53,51 @@ func LoadSecret(loader SecretLoader, ref string, slot int) engine.Instruction {
 		},
 	}
 }
+
+// LoadSecretVar resolves a credential reference that is stored in a slot at
+// runtime. Unlike LoadSecret (bake-time ref), this reads the reference string
+// from srcSlot on every request, then delegates to the same secrets loader
+// (which caches resolved values internally).
+//
+// Use when the secret reference is per-tenant and stored in the registry meta,
+// e.g. load_meta writes "gsm://projects/tenant/secrets/key" into a slot, then
+// load_secret_var resolves it into the actual key bytes.
+//
+// On empty slot or resolution failure the request is aborted with HTTP 500.
+//
+// Example flow YAML:
+//
+//	steps:
+//	  - action: load_meta
+//	    key: field_enc_key_ref   # e.g. "env:TENANT_ABC_KEY" or "vault://..."
+//	    as: key_ref_slot
+//	  - action: load_secret_var
+//	    source: key_ref_slot
+//	    as: enc_key_slot
+func LoadSecretVar(loader SecretLoader, srcSlot, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "load_secret_var",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			ref := ctx.ByteSlots[srcSlot]
+			if len(ref) == 0 {
+				ctx.ResponseStatus = 500
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				ctx.ErrorMsg = ctx.Alloc(len("load_secret_var: empty key ref slot"))
+				copy(ctx.ErrorMsg, "load_secret_var: empty key ref slot")
+				return engine.StopPlan
+			}
+			val, err := loader.Resolve(context.Background(), string(ref))
+			if err != nil {
+				ctx.ResponseStatus = 500
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				ctx.ErrorMsg = ctx.Alloc(len("secret resolution failed"))
+				copy(ctx.ErrorMsg, "secret resolution failed")
+				return engine.StopPlan
+			}
+			ctx.ByteSlots[destSlot] = val
+			return s.PC + 1
+		},
+	}
+}

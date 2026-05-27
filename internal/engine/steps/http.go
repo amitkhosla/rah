@@ -47,8 +47,9 @@ type HttpActionConfig struct {
 	ResponseBodySlot  int           // -1 = not captured
 	ResponseStatusSlot int          // -1 = not captured
 	ResponseHeaderSlots []HeaderSlotBinding
-	ForwardIncomingHeaders bool
-	BlockHeadersMap        map[string]struct{} // pre-built at bake time; nil = no blocking
+	ForwardIncomingHeaders  bool
+	ForwardResponseHeaders  bool
+	BlockHeadersMap         map[string]struct{} // pre-built at bake time; nil = no blocking
 	// FlowInput carries http.* tuning keys forwarded from the step Input map.
 	FlowInput map[string]string
 	// EgressProfile selects the transport protocol for this call.
@@ -1103,6 +1104,27 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						buf := ctx.Alloc(len(val))
 						copy(buf, val)
 						ctx.ByteSlots[hsb.Slot] = buf
+					}
+				}
+
+				// ── Forward upstream response headers to client ───────────────────
+				if cfg.ForwardResponseHeaders {
+					for name, vals := range resp.Header {
+						if _, skip := hopByHopHeaders[name]; skip {
+							continue
+						}
+						if cfg.BlockHeadersMap != nil {
+							if _, blocked := cfg.BlockHeadersMap[name]; blocked {
+								continue
+							}
+						}
+						for _, v := range vals {
+							keyBuf := ctx.Alloc(len(name))
+							copy(keyBuf, name)
+							valBuf := ctx.Alloc(len(v))
+							copy(valBuf, v)
+							ctx.SetResponseHeader(keyBuf, valBuf)
+						}
 					}
 				}
 

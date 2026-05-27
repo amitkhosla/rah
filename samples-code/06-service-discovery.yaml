@@ -1,0 +1,236 @@
+# ─── Service Discovery Sample — Code Style ────────────────────────────────────
+#
+# Service discovery flow, decomposed so each step is one named block.
+# The entry-point flows read like high-level pseudocode:
+#
+#   api_tenant_service:
+#     call identify_tenant                # X-Tenant-ID → TenantID (401 if unknown)
+#     call load_cached_upstream_url       # registry → upstream_url (empty if new)
+#     call discover_if_no_url             # if upstream_url == "" → run discovery
+#     call abort_if_still_no_url          # if still empty → 503
+#     call inject_tenant_api_key          # load api_key from registry → request header
+#     call proxy_to_discovered_service    # http.get → return
+#
+#   api_force_rediscover:
+#     call identify_tenant                # reused
+#     call evict_cached_upstream_url      # delete "primary" from registry
+#     call run_service_discovery          # call discovery service + persist
+#     call send_rediscover_confirmation   # return {"status":"rediscovered",...}
+#
+# Discovery sub-flow is decomposed further:
+#
+#   run_service_discovery:
+#     call call_discovery_service         # http.get with retry on 429
+#     call extract_url_from_response      # body(gjson path) → discovered_url
+#     call extract_api_key_from_response  # body(gjson path) → discovered_api_key
+#     call extract_plan_from_response     # body(gjson path) → discovered_plan
+#     call persist_url_to_registry        # registry.set_url "primary"
+#     call persist_api_key_to_registry    # registry.set_id "api_key"
+#     call persist_plan_to_registry       # registry.set_meta "plan"
+#     call copy_discovered_url_to_slot    # upstream_url = discovered_url
+#
+# Discovery service response shape expected:
+#   {
+#     "result": {
+#       "tenant": {
+#         "endpoints": [{"type":"primary","url":"https://api.acme.example.com"}],
+#         "credentials": {"api_key": "sk-abc123"},
+#         "plan": "enterprise"
+#       }
+#     }
+#   }
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # IDENTITY BLOCK (shared)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: identify_tenant
+    action: upsert
+    code: |
+      registry.lookup(header("X-Tenant-ID"))
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REGISTRY READ / WRITE BLOCKS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Try to load the already-known URL from the registry (2–5 ns on hit)
+  - name: load_cached_upstream_url
+    action: upsert
+    code: |
+      upstream_url = registry.url("primary")
+
+  # Delete the cached URL (used by force-rediscover endpoint)
+  - name: evict_cached_upstream_url
+    action: upsert
+    code: |
+      registry.delete_url("primary")
+
+  # Load tenant's API key from registry → inject as upstream request header
+  - name: inject_tenant_api_key
+    action: upsert
+    code: |
+      tenant_api_key = registry.id("api_key")
+      set_upstream_header("X-API-Key", tenant_api_key)
+
+  # Persist the discovered URL, API key, and plan to the registry
+  - name: persist_url_to_registry
+    action: upsert
+    code: |
+      registry.set_url("primary", discovered_url)
+
+  - name: persist_api_key_to_registry
+    action: upsert
+    code: |
+      registry.set_id("api_key", discovered_api_key)
+
+  - name: persist_plan_to_registry
+    action: upsert
+    code: |
+      registry.set_meta("plan", discovered_plan)
+
+  # Copy discovered_url into upstream_url for the current request
+  - name: copy_discovered_url_to_slot
+    action: upsert
+    code: |
+      upstream_url = discovered_url
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # DISCOVERY SERVICE CALL BLOCKS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # HTTP call to the discovery service.
+  # Retries up to 3 times if the discovery service returns 429.
+  - name: call_discovery_service
+    action: upsert
+    code: |
+      discovery_response = http.get("https://DISCOVERY_SERVICE_URL/v1/tenant-endpoints",
+        timeout: 10000,
+        retry_condition: "status == 429",
+        max_retries: 3)
+
+  # JSON extraction from the nested discovery response using gjson paths
+  - name: extract_url_from_response
+    action: upsert
+    code: |
+      discovered_url = body("result.tenant.endpoints.0.url")
+
+  - name: extract_api_key_from_response
+    action: upsert
+    code: |
+      discovered_api_key = body("result.tenant.credentials.api_key")
+
+  - name: extract_plan_from_response
+    action: upsert
+    code: |
+      discovered_plan = body("result.tenant.plan")
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # GUARD BLOCKS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Conditional: run discovery only when upstream_url is still empty
+  - name: discover_if_no_url
+    action: upsert
+    code: |
+      if (upstream_url == "") {
+        call run_service_discovery
+      }
+
+  # Guard: if upstream_url is still empty after discovery → return 503
+  - name: abort_if_still_no_url
+    action: upsert
+    code: |
+      if (upstream_url == "") {
+        return(503, '{"error":"could not resolve upstream service"}')
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PROXY BLOCK (shared)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: proxy_to_discovered_service
+    action: upsert
+    code: |
+      service_response = http.get(url_var: upstream_url, timeout: 5000)
+      return(200, service_response)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COMPOSED DISCOVERY FLOW
+  # Reads like a sequence of function calls — each step has a clear name
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: run_service_discovery
+    action: upsert
+    code: |
+      call call_discovery_service
+      call extract_url_from_response
+      call extract_api_key_from_response
+      call extract_plan_from_response
+      call persist_url_to_registry
+      call persist_api_key_to_registry
+      call persist_plan_to_registry
+      call copy_discovered_url_to_slot
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REDISCOVER RESPONSE BLOCK
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: send_rediscover_confirmation
+    action: upsert
+    code: |
+      return(200, '{"status":"rediscovered","url":"{upstream_url}"}')
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS  — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_tenant_service
+    action: upsert
+    code: |
+      call identify_tenant
+      call load_cached_upstream_url
+      call discover_if_no_url
+      call abort_if_still_no_url
+      call inject_tenant_api_key
+      call proxy_to_discovered_service
+
+  - name: api_force_rediscover
+    action: upsert
+    code: |
+      call identify_tenant
+      call evict_cached_upstream_url
+      call run_service_discovery
+      call send_rediscover_confirmation
+
+# ─────────────────────────────────────────────────────────────────────────────
+rate_limit_configs_v2:
+
+  - name: rl-per-tenant
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 100
+      - period: 1h
+        limit: 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  - name: sample-cs-tenant-service
+    path: /samples/cs/tenant/service
+    method: GET
+    flow_name: api_tenant_service
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-per-tenant
+        count_by: tenant
+
+  - name: sample-cs-tenant-rediscover
+    path: /samples/cs/tenant/rediscover
+    method: POST
+    flow_name: api_force_rediscover
+    action: upsert

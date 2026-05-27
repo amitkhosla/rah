@@ -1,0 +1,78 @@
+# GitLab CI example for rah-sync bundle linting and publishing
+# Add this to your .gitlab-ci.yml or create a separate include
+
+stages:
+  - lint
+  - publish
+
+variables:
+  GO_VERSION: "1.25"
+  DEFINITIONS_PATH: "definitions/"
+
+# Cache Go dependencies
+.go_template: &go_template
+  image: golang:${GO_VERSION}-alpine
+  cache:
+    paths:
+      - .cache/go-build
+      - /go/pkg/mod
+  before_script:
+    - go mod download
+
+lint_bundle:
+  <<: *go_template
+  stage: lint
+  script:
+    - go build -o bin/rah-sync ./cmd/rah-sync/
+    - ./bin/rah-sync lint ${DEFINITIONS_PATH} --strict --output json | tee /tmp/lint-result.json
+  artifacts:
+    reports:
+      junit: /tmp/lint-result.json
+    paths:
+      - /tmp/lint-result.json
+    expire_in: 1 day
+  only:
+    - merge_requests
+    - main
+    changes:
+      - ${DEFINITIONS_PATH}/**/*
+      - .gitlab-ci.yml
+
+publish_bundle:
+  <<: *go_template
+  stage: publish
+  script:
+    - go build -o bin/rah-sync ./cmd/rah-sync/
+    - ./bin/rah-sync lint ${DEFINITIONS_PATH} --strict
+    - |
+      ./bin/rah-sync publish ${DEFINITIONS_PATH} \
+        --studio ${STUDIO_URL} \
+        --tag ${CI_COMMIT_TAG} \
+        --git-commit ${CI_COMMIT_SHA} \
+        --git-branch ${CI_COMMIT_BRANCH} \
+        --auto-deploy ${AUTO_DEPLOY_ENV}
+  only:
+    - main
+  when: manual
+  environment:
+    name: production
+  variables:
+    STUDIO_URL: ${STUDIO_URL}
+    AUTO_DEPLOY_ENV: "uat"
+
+# For protected branches only
+publish_bundle_protected:
+  <<: *go_template
+  stage: publish
+  script:
+    - go build -o bin/rah-sync ./cmd/rah-sync/
+    - ./bin/rah-sync publish ${DEFINITIONS_PATH}
+      --studio ${STUDIO_URL}
+      --tag ${CI_COMMIT_TAG}
+      --git-commit ${CI_COMMIT_SHA}
+      --git-branch ${CI_COMMIT_BRANCH}
+  only:
+    - tags
+    - main
+  variables:
+    STUDIO_URL: ${STUDIO_URL}

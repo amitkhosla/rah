@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema } from './api'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
-import FlowDesigner  from './components/FlowDesigner'
+import Login          from './components/Login'
+import ChangePassword from './components/ChangePassword'
+import FlowDesigner   from './components/FlowDesigner'
 import FlowMap       from './components/FlowMap'
 import FlowGraph     from './components/FlowGraph'
 import APIsSection   from './components/APIsSection'
@@ -18,6 +20,7 @@ import UpstreamServicesScreen from './components/UpstreamServicesScreen'
 import CachePanel             from './components/CachePanel'
 import Apps                  from './components/Apps'
 import Egress                from './components/Egress'
+import Releases              from './components/Releases'
 import SchemaLibrary         from './components/SchemaLibrary'
 import GrpcDescriptors       from './components/GrpcDescriptors'
 
@@ -111,6 +114,7 @@ const NAV_ICONS: Record<string, string> = {
   flowmap:            '🗺',
   ai:                 '⬡',
   deploy:             '↑',
+  releases:           '⊕',
   gateway:            '◉',
   observability:      '⊛',
   tenants:            '☰',
@@ -134,6 +138,7 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'ai',        label: 'Models / MCP' },
   { kind: 'section', label: 'GATEWAY' },
   { kind: 'item',    id: 'deploy',        label: 'Deploy' },
+  { kind: 'item',    id: 'releases',      label: 'Releases' },
   { kind: 'item',    id: 'gateway',       label: 'Live' },
   { kind: 'item',    id: 'observability', label: 'Observability' },
   { kind: 'section', label: 'SECURITY' },
@@ -150,7 +155,71 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'settings',  label: 'Settings' },
 ]
 
+// AuthUser holds the current session user. authEnabled=false means Studio runs without auth.
+interface AuthUser { username: string; role: string; authEnabled: boolean; mustChangePassword: boolean }
+
+// App is the auth gate. It renders Login until a valid session is confirmed,
+// then renders AppContent. Keeping auth separate from AppContent avoids
+// violating Rules of Hooks (no hooks-after-conditional-returns).
 export default function App() {
+  // undefined = loading, null = not authenticated, AuthUser = authenticated
+  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(undefined)
+
+  useEffect(() => {
+    fetch('/api/auth/me', { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { username?: string; role?: string; auth_enabled?: boolean; must_change_password?: boolean } | null) => {
+        if (d?.username) {
+          setAuthUser({ username: d.username, role: d.role ?? 'admin', authEnabled: d.auth_enabled ?? true, mustChangePassword: d.must_change_password ?? false })
+        } else {
+          setAuthUser(null)
+        }
+      })
+      .catch(() => setAuthUser(null))
+  }, [])
+
+  if (authUser === undefined) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--bg)', color: 'var(--muted)', fontSize: 14 }}>
+        Loading…
+      </div>
+    )
+  }
+
+  if (authUser === null) {
+    return (
+      <Login onLogin={u => setAuthUser({
+        username: u.username,
+        role: (u as any).role ?? 'admin',
+        authEnabled: true,
+        mustChangePassword: (u as any).mustChangePassword ?? false,
+      })} />
+    )
+  }
+
+  // One-time forced password change: shown until the user sets a new password.
+  if (authUser.mustChangePassword) {
+    return (
+      <ChangePassword
+        username={authUser.username}
+        onChanged={() => setAuthUser(prev => prev ? { ...prev, mustChangePassword: false } : prev)}
+      />
+    )
+  }
+
+  return (
+    <AppContent
+      authUser={authUser}
+      onLogout={async () => {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {})
+        setAuthUser(null)
+      }}
+    />
+  )
+}
+
+// AppContent holds all the app state and renders the full Studio UI.
+function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => void }) {
   const [tab, setTab] = useState<TabId>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [flowMapView, setFlowMapView] = useState<'tree' | 'graph'>('tree')
@@ -404,7 +473,7 @@ export default function App() {
           })}
         </nav>
 
-        {/* ── Sidebar bottom: accent picker + connection status + collapse toggle ── */}
+        {/* ── Sidebar bottom: accent picker + user + connection status + collapse toggle ── */}
         <div className="sidebar-bottom" style={{ padding: sidebarCollapsed ? '8px 4px' : undefined }}>
           {sidebarCollapsed ? (
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 6 }} title={connLabel[conn]}>
@@ -426,6 +495,31 @@ export default function App() {
               <span className={`conn-badge${connClass}`} style={{ fontSize: 11, marginTop: 6, display: 'block' }}>
                 {connLabel[conn]}
               </span>
+              {/* User / logout */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 4 }}>
+                <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={authUser.username}>
+                  {authUser.username}
+                </span>
+                {authUser.authEnabled && (
+                  <button
+                    onClick={onLogout}
+                    title="Sign out"
+                    style={{
+                      flexShrink: 0,
+                      fontSize: 10,
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      border: '1px solid var(--border)',
+                      background: 'transparent',
+                      color: 'var(--muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Sign out
+                  </button>
+                )}
+              </div>
             </>
           )}
           <button
@@ -584,6 +678,7 @@ export default function App() {
             }}
           />
         )}
+        {tab === 'releases'           && <Releases />}
         {tab === 'observability'      && <Observability />}
         {tab === 'tenants'           && <Tenants />}
         {tab === 'apps'              && <Apps />}

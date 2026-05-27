@@ -26,9 +26,16 @@ type APIKeyRecord struct {
 	Prefix         string   `json:"prefix"`                    // first PrefixLen chars of raw key
 	Hash           string   `json:"hash"`                      // hex(SHA256(rawKey)) — persisted, never in responses
 	AllowedTenants []uint16 `json:"allowed_tenants,omitempty"` // nil = unrestricted
+	Scopes         []string `json:"scopes,omitempty"`          // nil = unrestricted; non-nil = allowed scope set
+	ExpiresAt      int64    `json:"expires_at,omitempty"`      // unix seconds; 0 = no expiry
 	Enabled        bool     `json:"enabled"`
 	CreatedAt      int64    `json:"created_at"`
 	UpdatedAt      int64    `json:"updated_at"`
+}
+
+// IsExpired returns true if the key has a non-zero expiry that has passed.
+func (r *APIKeyRecord) IsExpired() bool {
+	return r.ExpiresAt > 0 && time.Now().Unix() > r.ExpiresAt
 }
 
 // APIKeyEntry is the minimal runtime struct kept in gateway memory.
@@ -39,6 +46,13 @@ type APIKeyEntry struct {
 	Alias          string   // copied into ctx.CallerKey for logging
 	Enabled        bool
 	AllowedTenants []uint16 // nil = unrestricted
+	Scopes         []string // nil = unrestricted; non-nil = allowed scope set
+	ExpiresAt      int64    // unix seconds; 0 = no expiry
+}
+
+// IsExpired returns true if the key has a non-zero expiry that has passed.
+func (e *APIKeyEntry) IsExpired() bool {
+	return e.ExpiresAt > 0 && time.Now().Unix() > e.ExpiresAt
 }
 
 // APIKeyView is the API-safe projection of APIKeyRecord. Hash is omitted.
@@ -48,6 +62,8 @@ type APIKeyView struct {
 	Alias          string   `json:"alias"`
 	Prefix         string   `json:"prefix"`
 	AllowedTenants []uint16 `json:"allowed_tenants,omitempty"`
+	Scopes         []string `json:"scopes,omitempty"`
+	ExpiresAt      int64    `json:"expires_at,omitempty"`
 	Enabled        bool     `json:"enabled"`
 	CreatedAt      int64    `json:"created_at"`
 	UpdatedAt      int64    `json:"updated_at"`
@@ -141,6 +157,8 @@ func UpsertKey(rec APIKeyRecord) {
 		Alias:          rec.Alias,
 		Enabled:        rec.Enabled,
 		AllowedTenants: rec.AllowedTenants,
+		Scopes:         rec.Scopes,
+		ExpiresAt:      rec.ExpiresAt,
 	}
 	globalKeysByHash.Store(rec.Hash, entry)
 	globalKeysByID.Store(rec.KeyID, rec)

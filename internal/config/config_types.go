@@ -19,6 +19,24 @@ type CacheConfig struct {
 	Backend       StoreConfig `json:"backend"         yaml:"backend"`
 }
 
+// GeoConfig configures the geo-blocking subsystem.
+// DBPath is an optional local GeoLite2-Country.mmdb file to load at startup.
+// Datastore is the logical data domain name (from DataStoreConfig) used to
+// share and cache the mmdb binary across instances.  Leave empty to disable
+// datastore sync.
+// LicenseKey enables automatic MaxMind downloads; omit to use a local file only.
+// UpdateInterval is a Go duration string (e.g. "168h") controlling how often
+// the database is refreshed.  Defaults to 7 days when LicenseKey is set.
+// OnMissing controls behaviour when the database is unavailable: "block"
+// (default, fail-closed) or "allow" (fail-open).
+type GeoConfig struct {
+	Datastore      string `json:"datastore,omitempty"       yaml:"datastore,omitempty"`
+	LicenseKey     string `json:"license_key,omitempty"     yaml:"license_key,omitempty"`
+	UpdateInterval string `json:"update_interval,omitempty" yaml:"update_interval,omitempty"` // e.g. "168h"
+	DBPath         string `json:"db_path,omitempty"         yaml:"db_path,omitempty"`
+	OnMissing      string `json:"on_missing,omitempty"      yaml:"on_missing,omitempty"`
+}
+
 // LLMProviderAdapter identifies which wire-format adapter to use for a model.
 type LLMProviderAdapter string
 
@@ -265,10 +283,16 @@ type ObsStoreConfig struct {
 
 // ObsAccessLogConfig controls per-request access log capture.
 type ObsAccessLogConfig struct {
-	Enabled       bool           `json:"enabled,omitempty"        yaml:"enabled,omitempty"`
-	SampleRate    float64        `json:"sample_rate,omitempty"    yaml:"sample_rate,omitempty"`    // 0.0–1.0; default 1.0
-	RetentionDays int            `json:"retention_days,omitempty" yaml:"retention_days,omitempty"` // default 7
-	ExtraFields   []ObsExtraField `json:"extra_fields,omitempty"  yaml:"extra_fields,omitempty"`
+	Enabled       bool            `json:"enabled,omitempty"          yaml:"enabled,omitempty"`
+	SampleRate    float64         `json:"sample_rate,omitempty"      yaml:"sample_rate,omitempty"`      // 0.0–1.0; default 1.0
+	RetentionDays int             `json:"retention_days,omitempty"   yaml:"retention_days,omitempty"`   // default 7
+	ExtraFields   []ObsExtraField `json:"extra_fields,omitempty"     yaml:"extra_fields,omitempty"`
+	// SigningKeyRef, if non-empty, enables HMAC-SHA256 tamper-evidence on each log line.
+	// Resolved at startup via the secrets resolver (hex:, env:, vault://, etc.).
+	// The resolved value must be ≥16 bytes; 32 bytes is recommended.
+	// Each line gains a trailing sig=<hex64> field; verify with HMAC-SHA256 over
+	// the rest of the line (excluding the trailing " sig=..." field).
+	SigningKeyRef string `json:"signing_key_ref,omitempty" yaml:"signing_key_ref,omitempty"`
 }
 
 // ObsExtraField adds a custom column to every access log entry.

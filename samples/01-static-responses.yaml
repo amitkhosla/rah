@@ -1,0 +1,99 @@
+# ─── Static Response Samples ─────────────────────────────────────────────────
+#
+# These are the simplest possible API definitions. No upstream calls, no auth,
+# no rate limiting. Good for health-checks, feature-flag probes, and echo
+# endpoints during integration testing.
+#
+# POST to /sync or deploy via Studio.  All paths live under /samples/static/.
+#
+# Flows defined here:
+#   static_hello          – always returns a fixed JSON greeting
+#   static_status         – returns gateway version/status JSON
+#   echo_header_flow      – echoes the X-User-ID request header back
+#   echo_query_flow       – echoes the ?name= query parameter back
+#   echo_path_flow        – echoes the {id} path segment back
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ── 1. Static "Hello, World" ─────────────────────────────────────────────
+  - name: static_hello
+    action: upsert
+    code: |
+      return(200, '{"message":"hello, world!"}')
+
+  # ── 2. Static status / version ──────────────────────────────────────────
+  - name: static_status
+    action: upsert
+    code: |
+      return(200, '{"status":"ok","version":"1.0","gateway":"rah"}')
+
+  # ── 3. Echo request header ───────────────────────────────────────────────
+  # Reads the X-User-ID header and returns it wrapped in JSON.
+  # If the header is absent, user_id will be empty.
+  - name: echo_header_flow
+    action: upsert
+    code: |
+      user_id = header("X-User-ID")
+      body = '{"user_id":"{user_id}"}'
+      return(200, body)
+
+  # ── 4. Echo query parameter ──────────────────────────────────────────────
+  # Reads ?name=... and returns it as JSON.
+  - name: echo_query_flow
+    action: upsert
+    code: |
+      name_param = query("name")
+      body = '{"name":"{name_param}"}'
+      return(200, body)
+
+  # ── 5. Echo path parameter ───────────────────────────────────────────────
+  # Route: /samples/static/echo/{id}
+  # The {id} captures the first (index 0) path parameter.
+  - name: echo_path_flow
+    action: upsert
+    code: |
+      path_id = path("0")
+      body = '{"id":"{path_id}"}'
+      return(200, body)
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  # GET /samples/static/hello → {"message":"hello, world!"}
+  - name: sample-hello
+    path: /samples/static/hello
+    method: GET
+    flow_name: static_hello
+    action: upsert
+
+  # GET /samples/static/status → {"status":"ok","version":"1.0","gateway":"rah"}
+  - name: sample-status
+    path: /samples/static/status
+    method: GET
+    flow_name: static_status
+    action: upsert
+
+  # GET /samples/static/echo-header → echoes X-User-ID header
+  # Try: curl -H "X-User-ID: alice" http://localhost:8080/samples/static/echo-header
+  - name: sample-echo-header
+    path: /samples/static/echo-header
+    method: GET
+    flow_name: echo_header_flow
+    action: upsert
+
+  # GET /samples/static/echo-query → echoes ?name= query parameter
+  # Try: curl "http://localhost:8080/samples/static/echo-query?name=world"
+  - name: sample-echo-query
+    path: /samples/static/echo-query
+    method: GET
+    flow_name: echo_query_flow
+    action: upsert
+
+  # GET /samples/static/echo/{id} → echoes the {id} path segment
+  # Try: curl http://localhost:8080/samples/static/echo/42
+  - name: sample-echo-path
+    path: /samples/static/echo/{id}
+    method: GET
+    flow_name: echo_path_flow
+    action: upsert

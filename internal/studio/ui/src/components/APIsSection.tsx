@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { fetchGatewaySnapshot, listRateLimitConfigs, listRateLimitConfigsV2, syncFlows, upsertRateLimitConfig } from '../api'
-import type { ApiDef, EndpointDef, FlowStep, SavedFlow, UpstreamUrlConfig, RateLimitVar, RateLimitCountBy, RateLimitConfigSource, RateLimitCountByV2, RateLimitConfigRef, APIRateLimitEntry, RLFixedWindow, RLDynamicMapping, RateLimitWarning } from '../types'
+import { fetchGatewaySnapshot, importOpenAPI, listRateLimitConfigs, listRateLimitConfigsV2, syncFlows, upsertRateLimitConfig } from '../api'
+import type { ApiDef, EndpointDef, FlowStep, ImportedAPI, OpenAPIRuleConfig, SavedFlow, UpstreamUrlConfig, RateLimitVar, RateLimitCountBy, RateLimitConfigSource, RateLimitCountByV2, RateLimitConfigRef, APIRateLimitEntry, RLFixedWindow, RLDynamicMapping, RateLimitWarning } from '../types'
 import FlowSearchSelect from './FlowSearchSelect'
 
 interface Props {
@@ -132,6 +132,15 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   // Warnings from last sync, keyed by API name
   const [rlWarningsMap, setRlWarningsMap] = useState<Record<string, RateLimitWarning[]>>({})
 
+  // OpenAPI import state
+  const [showOpenAPIImport,   setShowOpenAPIImport]   = useState(false)
+  const [openAPISpec,         setOpenAPISpec]         = useState('')
+  const [openAPIImporting,    setOpenAPIImporting]    = useState(false)
+  const [openAPIImportErr,    setOpenAPIImportErr]    = useState('')
+  const [openAPIResults,      setOpenAPIResults]      = useState<ImportedAPI[]>([])
+  // Track which imported APIs have "add validation step" checked
+  const [openAPIAddValidation, setOpenAPIAddValidation] = useState<Record<string, boolean>>({})
+
   useEffect(() => {
     listRateLimitConfigs()
       .then(r => { setRateLimitConfigs(r.items.map(c => c.name)); setRateLimitError(false) })
@@ -230,6 +239,92 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   }
 
   const totalEndpoints = apis.reduce((sum, a) => sum + a.endpoints.length, 0)
+
+  // ── OpenAPI import helpers ────────────────────────────────────────────────
+
+  function openOpenAPIImport() {
+    setShowOpenAPIImport(true)
+    setOpenAPISpec('')
+    setOpenAPIImportErr('')
+    setOpenAPIResults([])
+    setOpenAPIAddValidation({})
+  }
+
+  function closeOpenAPIImport() {
+    setShowOpenAPIImport(false)
+  }
+
+  async function runOpenAPIImport() {
+    const spec = openAPISpec.trim()
+    if (!spec) { setOpenAPIImportErr('Paste an OpenAPI spec first'); return }
+    setOpenAPIImporting(true)
+    setOpenAPIImportErr('')
+    setOpenAPIResults([])
+    setOpenAPIAddValidation({})
+    try {
+      const res = await importOpenAPI(spec)
+      setOpenAPIResults(res.apis)
+      // Pre-check "add validation" for any APIs that have validation rules
+      const checks: Record<string, boolean> = {}
+      for (const api of res.apis) {
+        if (api.validateRouteRules && api.validateRouteRules.length > 0) {
+          checks[api.name] = true
+        }
+      }
+      setOpenAPIAddValidation(checks)
+    } catch (e: any) {
+      setOpenAPIImportErr(e?.message ?? 'Import failed')
+    } finally {
+      setOpenAPIImporting(false)
+    }
+  }
+
+  function applyOpenAPIImport() {
+    if (openAPIResults.length === 0) return
+    const newApis: ApiDef[] = []
+    const newFlows: Array<{ name: string; steps: FlowStep[] }> = []
+
+    for (const api of openAPIResults) {
+      const flowName = api.name + '_flow'
+      const steps: FlowStep[] = []
+
+      // If "add validation step" is checked and there are rules, prepend a validate_route step
+      if (openAPIAddValidation[api.name] && api.validateRouteRules && api.validateRouteRules.length > 0) {
+        // Convert openAPIRuleConfig → the shape validate_route expects
+        const rules: OpenAPIRuleConfig[] = api.validateRouteRules
+        steps.push({
+          action: 'validate_route',
+          rules: rules as any,
+        } as FlowStep)
+      }
+
+      newFlows.push({ name: flowName, steps })
+
+      newApis.push({
+        id: crypto.randomUUID(),
+        name: api.name,
+        basePath: api.path,
+        aliasPaths: [],
+        defaultFlow: flowName,
+        endpoints: [{ id: crypto.randomUUID(), subPath: '/', method: api.method }],
+      })
+    }
+
+    // Add APIs to state
+    setApis([...apis, ...newApis])
+
+    // Create flows via callback (one per imported API)
+    for (const f of newFlows) {
+      onCreateFlow(f.name)
+      // If there are steps (e.g. validate_route), load them into the flow
+      if (f.steps.length > 0) {
+        onLoadFlow(f.name, f.steps)
+      }
+    }
+
+    setShowOpenAPIImport(false)
+    if (newApis.length > 0) setSelectedApiId(newApis[0].id)
+  }
 
   // ── Wizard helpers ─────────────────────────────────────────────────────────
 
@@ -627,6 +722,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
+    <>
     <div style={{ display: 'flex', height: 'calc(100vh - 58px)', gap: 0, margin: -14 }}>
 
       {/* ── Left sidebar ──────────────────────────────────────────────── */}
@@ -643,13 +739,23 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
           <span style={{ fontSize: 13, fontWeight: 600 }}>API Catalog</span>
-          <button
-            className="btn"
-            style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12 }}
-            onClick={openNewWizard}
-          >
-            + New API
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              className="btn muted"
+              style={{ width: 'auto', padding: '4px 10px', marginTop: 0, fontSize: 11 }}
+              title="Import APIs from an OpenAPI / Swagger spec"
+              onClick={openOpenAPIImport}
+            >
+              Import OpenAPI
+            </button>
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '4px 12px', marginTop: 0, fontSize: 12 }}
+              onClick={openNewWizard}
+            >
+              + New API
+            </button>
+          </div>
         </div>
 
         {/* API accordion list */}
@@ -883,6 +989,133 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
         )}
       </div>
     </div>
+
+    {/* ── OpenAPI Import Modal ─────────────────────────────────────────── */}
+    {showOpenAPIImport && (
+      <div style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }} onClick={e => { if (e.target === e.currentTarget) closeOpenAPIImport() }}>
+        <div style={{
+          background: 'var(--panel)', border: '1px solid var(--border)',
+          borderRadius: 10, width: 680, maxHeight: '85vh',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        }}>
+          {/* Modal header */}
+          <div style={{
+            padding: '14px 18px', borderBottom: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Import from OpenAPI / Swagger</span>
+            <button
+              className="btn muted"
+              style={{ width: 'auto', padding: '2px 10px', marginTop: 0, fontSize: 12 }}
+              onClick={closeOpenAPIImport}
+            >
+              Close
+            </button>
+          </div>
+
+          {/* Modal body */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
+            {openAPIResults.length === 0 ? (
+              <>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+                  Paste an OpenAPI 3.x or Swagger 2.x spec (JSON or YAML). The gateway will extract
+                  paths, methods, and request body validation rules automatically.
+                </div>
+                <textarea
+                  className="input"
+                  style={{ height: 280, fontFamily: 'monospace', fontSize: 11, resize: 'vertical' }}
+                  placeholder={'{\n  "openapi": "3.0.0",\n  "paths": { ... }\n}'}
+                  value={openAPISpec}
+                  onChange={e => setOpenAPISpec(e.target.value)}
+                />
+                {openAPIImportErr && (
+                  <div style={{ color: '#f87171', fontSize: 12, marginTop: 6 }}>{openAPIImportErr}</div>
+                )}
+                <div style={{ marginTop: 12 }}>
+                  <button
+                    className="btn"
+                    style={{ width: 'auto', padding: '6px 20px' }}
+                    disabled={openAPIImporting}
+                    onClick={runOpenAPIImport}
+                  >
+                    {openAPIImporting ? 'Parsing…' : 'Parse Spec'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
+                  Found <strong>{openAPIResults.length}</strong> operation{openAPIResults.length !== 1 ? 's' : ''}.
+                  Each will be added as an API with its own flow. Check the box to prepend a
+                  <strong> validate_route</strong> step with auto-generated rules.
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+                  {openAPIResults.map(api => {
+                    const hasRules = api.validateRouteRules && api.validateRouteRules.length > 0
+                    return (
+                      <div key={api.name} style={{
+                        background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)',
+                        borderRadius: 7, padding: '10px 12px',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: hasRules ? 8 : 0 }}>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                            color: '#fff', background: METHOD_COLOR[api.method] ?? '#64748b',
+                            minWidth: 50, textAlign: 'center', display: 'inline-block',
+                          }}>
+                            {api.method}
+                          </span>
+                          <code style={{ fontSize: 12, color: 'var(--text)' }}>{api.path}</code>
+                          <span style={{ fontSize: 11, color: 'var(--muted)', flex: 1 }}>{api.name}</span>
+                        </div>
+                        {hasRules && (
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={!!openAPIAddValidation[api.name]}
+                              onChange={e => setOpenAPIAddValidation(prev => ({
+                                ...prev, [api.name]: e.target.checked,
+                              }))}
+                            />
+                            <span>
+                              Add <strong>validate_route</strong> step
+                              ({api.validateRouteRules!.length} rule{api.validateRouteRules!.length !== 1 ? 's' : ''})
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn"
+                    style={{ width: 'auto', padding: '6px 20px' }}
+                    onClick={applyOpenAPIImport}
+                  >
+                    Add {openAPIResults.length} API{openAPIResults.length !== 1 ? 's' : ''} to Catalog
+                  </button>
+                  <button
+                    className="btn muted"
+                    style={{ width: 'auto', padding: '6px 14px' }}
+                    onClick={() => { setOpenAPIResults([]); setOpenAPISpec('') }}
+                  >
+                    Back
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 

@@ -1,0 +1,432 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "RAH Bundle Schema",
+  "description": "JSON Schema for RAH unified sync bundle format (flows, APIs, rate limits)",
+  "additionalProperties": false,
+  "properties": {
+    "apis": {
+      "type": "array",
+      "title": "APIs",
+      "description": "Array of API route definitions",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Action type: upsert or delete",
+            "enum": [
+              "upsert",
+              "delete"
+            ]
+          },
+          "alias_paths": {
+            "type": "array",
+            "description": "Additional base paths that map to this API",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flow_name": {
+            "type": "string",
+            "description": "Reference to a flow name"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP method (GET, POST, etc.) or empty for all methods"
+          },
+          "name": {
+            "type": "string",
+            "description": "API definition name"
+          },
+          "path": {
+            "type": "string",
+            "description": "URL path pattern"
+          },
+          "rate_limit": {
+            "type": "string",
+            "description": "Rate limit configuration name"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "flow_name"
+        ]
+      }
+    },
+    "flows": {
+      "type": "array",
+      "title": "Flows",
+      "description": "Array of flow definitions",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Action type: upsert or delete",
+            "enum": [
+              "upsert",
+              "delete"
+            ]
+          },
+          "instructions": {
+            "type": "array",
+            "description": "Sequence of steps in this flow",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Instruction type",
+                  "enum": [
+                    "add",
+                    "aes_decrypt",
+                    "aes_decrypt_slot_key",
+                    "aes_encrypt",
+                    "aes_encrypt_slot_key",
+                    "api_rate_limits",
+                    "append_message",
+                    "append_tool_result",
+                    "assign_quota_group",
+                    "base64_decode",
+                    "base64_encode",
+                    "batch_flush",
+                    "bind_client_ip",
+                    "bind_correlation_id",
+                    "bind_header",
+                    "bind_path",
+                    "bind_query_param",
+                    "bind_request_url",
+                    "byte_length",
+                    "cache_delete",
+                    "cache_delete_global",
+                    "cache_exists",
+                    "cache_get",
+                    "cache_get_batched",
+                    "cache_get_global",
+                    "cache_incr",
+                    "cache_put",
+                    "cache_put_global",
+                    "cache_touch",
+                    "calculate_cost",
+                    "call",
+                    "call_mcp_tool",
+                    "call_mcp_tool",
+                    "capture_error",
+                    "check_context_fit",
+                    "check_rate_limit",
+                    "check_token_revoked",
+                    "check_upstream_rate_limit",
+                    "chunk_text",
+                    "circuit_breaker",
+                    "classify_llm",
+                    "compress_prompt",
+                    "concat",
+                    "contains",
+                    "cookie_flatten",
+                    "copy_header",
+                    "cors",
+                    "delete_identifier",
+                    "delete_meta",
+                    "delete_service_url",
+                    "detect_bot",
+                    "detect_intent",
+                    "detect_message_format",
+                    "div",
+                    "echo_request",
+                    "embed_text",
+                    "emit_event",
+                    "ends_with",
+                    "enforce_cost_budget",
+                    "estimate_tokens",
+                    "execute_plan",
+                    "extract_cookie",
+                    "extract_pattern",
+                    "fail",
+                    "foreach",
+                    "foreach_cookie",
+                    "foreach_header",
+                    "foreach_param",
+                    "format_response",
+                    "geo_block",
+                    "grpc_call",
+                    "hex_decode",
+                    "hex_encode",
+                    "hmac_sha1",
+                    "hmac_sha256",
+                    "http_call",
+                    "if",
+                    "index_of",
+                    "ip_restriction",
+                    "json_extract_emit",
+                    "json_foreach_emit",
+                    "json_set",
+                    "limit_body",
+                    "llm_call",
+                    "load_history",
+                    "load_identifier",
+                    "load_llm_key",
+                    "load_meta",
+                    "load_overflow_history",
+                    "load_secret",
+                    "load_secret_var",
+                    "load_service_url",
+                    "load_service_url_var",
+                    "log_field",
+                    "map_status",
+                    "mcp_call_tool",
+                    "mcp_fetch_schemas",
+                    "mcp_fetch_schemas",
+                    "mcp_list_tools",
+                    "mcp_list_tools",
+                    "md5_hash",
+                    "mul",
+                    "overflow_history",
+                    "owasp_check",
+                    "parallel",
+                    "parse_message_format",
+                    "parse_tool_calls",
+                    "pattern_match",
+                    "record_circuit_outcome",
+                    "record_cost",
+                    "registry_lookup",
+                    "remove_request_header",
+                    "remove_response_cookie",
+                    "remove_response_header",
+                    "rename_request_header",
+                    "replace",
+                    "rerank",
+                    "return",
+                    "route_llm",
+                    "sanitize_prompt",
+                    "save_history",
+                    "semantic_cache_get",
+                    "semantic_cache_put",
+                    "send_sse_event",
+                    "serve_mcp",
+                    "set_const",
+                    "set_identifier",
+                    "set_meta",
+                    "set_request_body",
+                    "set_request_cookie",
+                    "set_request_header",
+                    "set_response_body",
+                    "set_response_cookie",
+                    "set_response_header",
+                    "set_response_status",
+                    "set_response_status_from_slot",
+                    "set_security_headers",
+                    "set_service_url",
+                    "sha256_hash",
+                    "spike_arrest",
+                    "split",
+                    "starts_with",
+                    "store_internal_tx_id",
+                    "sub",
+                    "substring",
+                    "switch",
+                    "to_int",
+                    "to_lower",
+                    "to_upper",
+                    "token_validation",
+                    "transform_messages",
+                    "trim",
+                    "trim_history",
+                    "url_decode",
+                    "url_encode",
+                    "validate_api_key",
+                    "validate_dpop",
+                    "validate_pattern",
+                    "validate_route",
+                    "validate_token_introspection",
+                    "vector_search",
+                    "vector_upsert",
+                    "while"
+                  ]
+                },
+                "as": {
+                  "type": "string"
+                },
+                "block_headers": {
+                  "type": "array"
+                },
+                "body_var": {
+                  "type": "string"
+                },
+                "branches": {
+                  "type": "array"
+                },
+                "cases": {
+                  "type": "object"
+                },
+                "condition": {
+                  "type": "string"
+                },
+                "content_type": {
+                  "type": "string"
+                },
+                "delta": {
+                  "type": "integer"
+                },
+                "destination": {
+                  "type": "string"
+                },
+                "do": {
+                  "type": "array"
+                },
+                "else": {
+                  "type": "string"
+                },
+                "error_policy": {
+                  "type": "string"
+                },
+                "flow_name": {
+                  "type": "string"
+                },
+                "forward_incoming_headers": {
+                  "type": "boolean"
+                },
+                "forward_response_headers": {
+                  "type": "boolean"
+                },
+                "generate_if_missing": {
+                  "type": "boolean"
+                },
+                "include_query": {
+                  "type": "boolean"
+                },
+                "input": {
+                  "type": "object"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "key_identifier": {
+                  "type": "string"
+                },
+                "log_as": {
+                  "type": "string"
+                },
+                "max_retries": {
+                  "type": "integer"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "on_error": {
+                  "type": "string"
+                },
+                "on_error_body": {
+                  "type": "string"
+                },
+                "on_error_status": {
+                  "type": "integer"
+                },
+                "on_miss": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "array"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "response_body_var": {
+                  "type": "string"
+                },
+                "response_header_vars": {
+                  "type": "object"
+                },
+                "response_status_var": {
+                  "type": "string"
+                },
+                "retry_condition": {
+                  "type": "string"
+                },
+                "rules": {
+                  "type": "array"
+                },
+                "scope": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "then": {
+                  "type": "string"
+                },
+                "timeout": {
+                  "type": "integer"
+                },
+                "timeout_ms": {
+                  "type": "integer"
+                },
+                "tls_client_cert_ref": {
+                  "type": "string"
+                },
+                "tls_client_key_ref": {
+                  "type": "string"
+                },
+                "trace_capture": {
+                  "type": "boolean"
+                },
+                "trace_vars": {
+                  "type": "array"
+                },
+                "ttl": {
+                  "type": "integer"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "url_var": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                },
+                "variable": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique flow name"
+          }
+        },
+        "required": [
+          "name",
+          "instructions"
+        ]
+      }
+    },
+    "rate_limit_configs_v2": {
+      "type": "array",
+      "title": "Rate Limit Configs",
+      "description": "Array of rate limit configurations",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Rate limit configuration name"
+          },
+          "type": {
+            "type": "string",
+            "description": "Rate limit type"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  },
+  "required": []
+}

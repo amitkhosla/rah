@@ -179,3 +179,94 @@ func AESDecryptStep(src, result int, key []byte) (engine.Instruction, error) {
 		},
 	}, nil
 }
+
+// AESEncryptSlotKeyStep encrypts ByteSlots[src] using a 32-byte AES-256 key read
+// from ByteSlots[keySlot] at runtime. Unlike AESEncryptStep the key is NOT baked
+// at compile time — it is read from a slot on every request, enabling per-tenant
+// runtime keys loaded via load_secret_var.
+//
+// Output format: nonce(12) || ciphertext+tag — identical to AESEncryptStep.
+// Sets ctx.Failed = true and returns StopPlan if the key slot is not 32 bytes.
+func AESEncryptSlotKeyStep(src, keySlot, result int) engine.Instruction {
+	return engine.Instruction{
+		Name: "AES_ENCRYPT_SLOT_KEY",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) != 32 {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			block, err := aes.NewCipher(key)
+			if err != nil {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			aead, err := cipher.NewGCM(block)
+			if err != nil {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			plain := ctx.ByteSlots[src]
+			nonceSize := aead.NonceSize()
+			buf := ctx.Alloc(nonceSize + len(plain) + aead.Overhead())
+			nonce := buf[:nonceSize]
+			if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+				ctx.Failed = true
+				return engine.StopPlan
+			}
+			ciphertext := aead.Seal(buf[nonceSize:nonceSize], nonce, plain, nil)
+			ctx.ByteSlots[result] = buf[:nonceSize+len(ciphertext)]
+			return state.PC + 1
+		},
+	}
+}
+
+// AESDecryptSlotKeyStep decrypts ByteSlots[src] (nonce||ciphertext) using a
+// 32-byte AES-256 key read from ByteSlots[keySlot] at runtime.
+// Mirrors AESDecryptStep but reads the key from a slot instead of bake time.
+// Sets ctx.Failed = true on key length mismatch or authentication failure.
+func AESDecryptSlotKeyStep(src, keySlot, result int) engine.Instruction {
+	return engine.Instruction{
+		Name: "AES_DECRYPT_SLOT_KEY",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			key := ctx.ByteSlots[keySlot]
+			if len(key) != 32 {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			block, err := aes.NewCipher(key)
+			if err != nil {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			aead, err := cipher.NewGCM(block)
+			if err != nil {
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				return engine.StopPlan
+			}
+			in := ctx.ByteSlots[src]
+			nonceSize := aead.NonceSize()
+			if len(in) < nonceSize {
+				ctx.ByteSlots[result] = nil
+				ctx.Failed = true
+				ctx.ErrorCode = 400
+				return engine.StopPlan
+			}
+			plain, err := aead.Open(ctx.Alloc(len(in))[:0], in[:nonceSize], in[nonceSize:], nil)
+			if err != nil {
+				ctx.ByteSlots[result] = nil
+				ctx.Failed = true
+				ctx.ErrorCode = 400
+				return engine.StopPlan
+			}
+			ctx.ByteSlots[result] = plain
+			return state.PC + 1
+		},
+	}
+}

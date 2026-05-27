@@ -91,6 +91,24 @@ func LoadIdentifier(keyID uint16, destSlot int) engine.Instruction {
 	}
 }
 
+// LoadMeta loads a metadata value for the current tenant into destSlot.
+// keyID is the pre-resolved KeyID in the Meta store, obtained via
+// RegistryManager.EnsureMetaKeyID at bake time.
+// Hot-path cost: 1 atomic load ≈ 2–5 ns.
+//
+// Example: {"action": "load_meta", "key": "tier", "as": "tier_slot"}
+func LoadMeta(keyID uint16, destSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "LOAD_META",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			if val, ok := registry.GetMetaByKeyID(ctx.TenantID, keyID); ok {
+				ctx.ByteSlots[destSlot] = val
+			}
+			return s.PC + 1
+		},
+	}
+}
+
 // LoadServiceURLVar loads a service URL using a runtime key name from keySlot.
 // The key name (e.g. "payments_url") must already be in ctx.ByteSlots[keySlot].
 // Hot-path cost: ~50–100 ns (radix walk on immutable snapshot). Zero allocations.

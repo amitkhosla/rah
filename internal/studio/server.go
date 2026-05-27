@@ -3,19 +3,28 @@ package studio
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
-	"rah/internal/observability"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
+	"rah/internal/control"
+	"rah/internal/observability"
+	rahsync "rah/internal/sync"
 )
 
 //go:embed ui/dist
@@ -29,6 +38,12 @@ type ServerConfig struct {
 	ObsStoreDSN  string   `json:"obs_store_dsn,omitempty"`  // connection string for postgres/redis
 	ObsMaxLogs   int      `json:"obs_max_logs,omitempty"`   // max access log entries (default 10000)
 	ObsMaxTraces int      `json:"obs_max_traces,omitempty"` // max trace entries (default 500)
+
+	// Auth — Studio's own user store (independent of the gateway management API).
+	AuthEnabled   bool             `json:"auth_enabled,omitempty"`    // require login; default false
+	AuthRealm     string           `json:"auth_realm,omitempty"`      // WWW-Authenticate realm
+	AuthUsers     []StudioSeedUser `json:"auth_users,omitempty"`      // config-file seed users (bcrypt hashes)
+	AuthStorePath string           `json:"auth_store_path,omitempty"` // path to encrypted user file; empty = memory only
 }
 
 type DeployRequest struct {
@@ -56,12 +71,77 @@ type DeployRecord struct {
 	Results   []DeployResult `json:"results"`
 }
 
+type LintSummary struct {
+	Errors   int `json:"errors"`
+	Warnings int `json:"warnings"`
+	Infos    int `json:"infos"`
+}
+
+type ReleaseDeployResult struct {
+	Target  string `json:"target"`
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+}
+
+type EnvDeployment struct {
+	DeployedAt time.Time             `json:"deployed_at"`
+	Status     string                `json:"status"`
+	ByUser     string                `json:"by_user"`
+	Results    []ReleaseDeployResult `json:"results,omitempty"`
+}
+
 type ReleaseRecord struct {
-	ReleaseID             string            `json:"release_id"`
-	CreatedAt             timeJSON          `json:"created_at"`
-	InstructionSetVersion string            `json:"instruction_set_version,omitempty"`
-	APIVersions           map[string]string `json:"api_versions,omitempty"`
-	Payload               json.RawMessage   `json:"payload"`
+	ReleaseID             string                    `json:"release_id"`
+	CreatedAt             timeJSON                  `json:"created_at"`
+	InstructionSetVersion string                    `json:"instruction_set_version,omitempty"`
+	APIVersions           map[string]string         `json:"api_versions,omitempty"`
+	Payload               json.RawMessage           `json:"payload"`
+	BundleHash            string                    `json:"bundle_hash,omitempty"`
+	GitCommit             string                    `json:"git_commit,omitempty"`
+	GitBranch             string                    `json:"git_branch,omitempty"`
+	GitRepo               string                    `json:"git_repo,omitempty"`
+	SourcePath            string                    `json:"source_path,omitempty"`
+	Author                string                    `json:"author,omitempty"`
+	Tag                   string                    `json:"tag,omitempty"`
+	LintSummary           LintSummary               `json:"lint_summary,omitempty"`
+	Environments          map[string]EnvDeployment  `json:"environments,omitempty"`
+}
+
+// bundleWrapper is the JSON envelope accepted by POST /api/releases when the
+// caller wants to include metadata alongside the bundle in a single JSON body.
+type bundleWrapper struct {
+	Bundle     *control.UnifiedSyncRequest `json:"bundle"`
+	Tag        string                      `json:"tag,omitempty"`
+	GitCommit  string                      `json:"git_commit,omitempty"`
+	GitBranch  string                      `json:"git_branch,omitempty"`
+	GitRepo    string                      `json:"git_repo,omitempty"`
+	SourcePath string                      `json:"source_path,omitempty"`
+	Author     string                      `json:"author,omitempty"`
+}
+
+// releaseMeta holds the non-bundle metadata fields for a release.
+type releaseMeta struct {
+	Tag        string
+	GitCommit  string
+	GitBranch  string
+	GitRepo    string
+	SourcePath string
+	Author     string
+}
+
+// CreateReleaseResponse is returned by POST /api/releases.
+type CreateReleaseResponse struct {
+	ReleaseID   string              `json:"release_id,omitempty"`
+	LintSummary LintSummary         `json:"lint_summary"`
+	Warnings    []string            `json:"warnings,omitempty"`
+	Issues      []rahsync.LintIssue `json:"issues,omitempty"`
+}
+
+// ReleaseListResponse is returned by GET /api/releases.
+type ReleaseListResponse struct {
+	Releases   []ReleaseRecord `json:"releases"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+	Total      int             `json:"total"`
 }
 
 type Target struct {
@@ -111,10 +191,37 @@ type OpenAPIImportRequest struct {
 	Spec string `json:"spec"`
 }
 
+// openAPICondConfig mirrors control.CondConfig — local copy to avoid circular import.
+type openAPICondConfig struct {
+	Op       string              `json:"op,omitempty"`
+	Source   string              `json:"source,omitempty"`
+	Path     string              `json:"path,omitempty"`
+	Check    string              `json:"check,omitempty"`
+	Value    string              `json:"value,omitempty"`
+	ValueNum float64             `json:"valueNum,omitempty"`
+	InValues []string            `json:"inValues,omitempty"`
+	Children []openAPICondConfig `json:"children,omitempty"`
+}
+
+// openAPIOnMatchConfig mirrors control.OnMatchConfig.
+type openAPIOnMatchConfig struct {
+	Dest    string `json:"dest"`
+	Status  int    `json:"status,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// openAPIRuleConfig mirrors control.RuleConfig.
+type openAPIRuleConfig struct {
+	Label   string               `json:"label,omitempty"`
+	When    openAPICondConfig    `json:"when"`
+	OnMatch openAPIOnMatchConfig `json:"onMatch"`
+}
+
 type ImportedAPI struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Method string `json:"method"`
+	Name               string              `json:"name"`
+	Path               string              `json:"path"`
+	Method             string              `json:"method"`
+	ValidateRouteRules []openAPIRuleConfig `json:"validateRouteRules,omitempty"`
 }
 
 type OpenAPIImportResponse struct {
@@ -131,6 +238,16 @@ type Server struct {
 	httpClient        *http.Client
 	targets           []Target
 	store             ReleaseStore
+
+	// Auth — Studio's own user store + session map.
+	// Both are nil when auth is disabled (open access mode).
+	userStore        *StudioUserStore
+	sessions         *SessionStore
+
+	// gatewayBasicCred is the Authorization header value forwarded to the management
+	// API on every proxy call. Read from RAH_GATEWAY_AUTH_USERNAME / RAH_GATEWAY_AUTH_PASSWORD
+	// env vars at startup. Empty means no auth header is added (gateway has no auth).
+	gatewayBasicCred string
 
 	historyMu sync.RWMutex
 	history   []DeployRecord
@@ -178,6 +295,17 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
 	}
 
+	if cfg.AuthEnabled {
+		srv.userStore = newStudioUserStore(cfg.AuthStorePath, cfg.AuthUsers)
+		srv.sessions = newSessionStore()
+	}
+
+	// Gateway service-account credential for management API proxy calls.
+	// Separate from Studio users — the gateway may have its own auth.
+	if u, p := os.Getenv("RAH_GATEWAY_AUTH_USERNAME"), os.Getenv("RAH_GATEWAY_AUTH_PASSWORD"); u != "" && p != "" {
+		srv.gatewayBasicCred = base64.StdEncoding.EncodeToString([]byte(u + ":" + p))
+	}
+
 	// If an obs store type is configured, create a direct connection to it.
 	if strings.TrimSpace(cfg.ObsStoreType) != "" {
 		params := observability.ObsStoreParams{
@@ -198,76 +326,100 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 }
 
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/schema", s.schemaHandler)
-	mux.HandleFunc("/api/suggestions", s.suggestionsHandler)
-	mux.HandleFunc("/api/targets", s.targetsHandler)
-	mux.HandleFunc("/api/deploy", s.deployHandler)
-	mux.HandleFunc("/api/openapi/import", s.importOpenAPIHandler)
-	mux.HandleFunc("/api/getAllApis", s.getAllApisProxy)
-	mux.HandleFunc("/api/sync", s.syncProxy)
-	mux.HandleFunc("/api/flows/", s.flowsMgmtProxy)
-	mux.HandleFunc("/api/tenants", s.tenantsMgmtProxy)
-	mux.HandleFunc("/api/tenants/", s.tenantsMgmtProxy)
-	mux.HandleFunc("/api/rate-limit-configs", s.rateLimitConfigsMgmtProxy)
-	mux.HandleFunc("/api/rate-limit-configs/", s.rateLimitConfigsMgmtProxy)
-	mux.HandleFunc("/api/rate-limit-configs-v2", s.rateLimitConfigsV2MgmtProxy)
-	mux.HandleFunc("/api/rate-limit-configs-v2/", s.rateLimitConfigsV2MgmtProxy)
-	mux.HandleFunc("/api/tiers", s.tiersMgmtProxy)
-	mux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
-	mux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
-	mux.HandleFunc("/api/upstream-services/", s.upstreamServicesMgmtProxy)
-	mux.HandleFunc("/api/ai/", s.aiMgmtProxy)
-	mux.HandleFunc("/api/ai", s.aiMgmtProxy)
-	mux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
-	mux.HandleFunc("/api/apps", s.appsMgmtProxy)
-	mux.HandleFunc("/api/apps/", s.appsMgmtProxy)
-	mux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
-	mux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
-	mux.HandleFunc("/api/schemas", func(w http.ResponseWriter, r *http.Request) {
+	// apiMux handles all /api/* routes that require authentication.
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/auth/me", s.meHandler)
+	apiMux.HandleFunc("/api/auth/change-password", s.changePasswordHandler)
+	apiMux.HandleFunc("/api/studio/users", s.studioUsersHandler)
+	apiMux.HandleFunc("/api/studio/users/", s.studioUserDeleteHandler)
+	apiMux.HandleFunc("/api/schema", s.schemaHandler)
+	apiMux.HandleFunc("/api/suggestions", s.suggestionsHandler)
+	apiMux.HandleFunc("/api/targets", s.targetsHandler)
+	apiMux.HandleFunc("/api/deploy", s.deployHandler)
+	apiMux.HandleFunc("/api/releases", s.releasesHandler)
+	apiMux.HandleFunc("/api/releases/", s.releaseByIDHandler)
+	apiMux.HandleFunc("/api/openapi/import", s.importOpenAPIHandler)
+	apiMux.HandleFunc("/api/getAllApis", s.getAllApisProxy)
+	apiMux.HandleFunc("/api/sync", s.syncProxy)
+	apiMux.HandleFunc("/api/flows/", s.flowsMgmtProxy)
+	apiMux.HandleFunc("/api/tenants", s.tenantsMgmtProxy)
+	apiMux.HandleFunc("/api/tenants/", s.tenantsMgmtProxy)
+	apiMux.HandleFunc("/api/rate-limit-configs", s.rateLimitConfigsMgmtProxy)
+	apiMux.HandleFunc("/api/rate-limit-configs/", s.rateLimitConfigsMgmtProxy)
+	apiMux.HandleFunc("/api/rate-limit-configs-v2", s.rateLimitConfigsV2MgmtProxy)
+	apiMux.HandleFunc("/api/rate-limit-configs-v2/", s.rateLimitConfigsV2MgmtProxy)
+	apiMux.HandleFunc("/api/tiers", s.tiersMgmtProxy)
+	apiMux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
+	apiMux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
+	apiMux.HandleFunc("/api/upstream-services/", s.upstreamServicesMgmtProxy)
+	apiMux.HandleFunc("/api/ai/", s.aiMgmtProxy)
+	apiMux.HandleFunc("/api/ai", s.aiMgmtProxy)
+	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
+	apiMux.HandleFunc("/api/apps", s.appsMgmtProxy)
+	apiMux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	apiMux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
+	apiMux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
+	apiMux.HandleFunc("/api/schemas", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, "/schemas")
 	})
-	mux.HandleFunc("/api/schemas/", func(w http.ResponseWriter, r *http.Request) {
+	apiMux.HandleFunc("/api/schemas/", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 	})
-	mux.HandleFunc("/mcp", s.MCPHandler)
+	apiMux.HandleFunc("/api/egress/", func(w http.ResponseWriter, r *http.Request) {
+		s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	})
 
 	// Observability routes: serve from own store if configured, else proxy to gateway.
 	// Note: APIDetailHandler and TenantDetailHandler strip the /observability/ prefix;
 	// we rewrite the URL path to match what those handlers expect before forwarding.
 	if s.obsHandler != nil {
-		mux.HandleFunc("/api/observability/metrics", s.obsHandler.MetricsHandler)
-		mux.HandleFunc("/api/observability/access-log", s.obsHandler.AccessLogHandler)
-		mux.HandleFunc("/api/observability/traces", s.obsHandler.TracesHandler)
-		mux.HandleFunc("/api/observability/detail-log", s.obsHandler.DetailLogConfigHandler)
-		mux.HandleFunc("/api/observability/apis", s.obsHandler.APIsHandler)
-		mux.HandleFunc("/api/observability/apis/", func(w http.ResponseWriter, r *http.Request) {
+		apiMux.HandleFunc("/api/observability/metrics", s.obsHandler.MetricsHandler)
+		apiMux.HandleFunc("/api/observability/access-log", s.obsHandler.AccessLogHandler)
+		apiMux.HandleFunc("/api/observability/traces", s.obsHandler.TracesHandler)
+		apiMux.HandleFunc("/api/observability/detail-log", s.obsHandler.DetailLogConfigHandler)
+		apiMux.HandleFunc("/api/observability/apis", s.obsHandler.APIsHandler)
+		apiMux.HandleFunc("/api/observability/apis/", func(w http.ResponseWriter, r *http.Request) {
 			// Strip /api prefix so handler sees /observability/apis/{name}
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
 			s.obsHandler.APIDetailHandler(w, r2)
 		})
-		mux.HandleFunc("/api/observability/tenants/", func(w http.ResponseWriter, r *http.Request) {
+		apiMux.HandleFunc("/api/observability/tenants/", func(w http.ResponseWriter, r *http.Request) {
 			// Strip /api prefix so handler sees /observability/tenants/{alias}
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
 			s.obsHandler.TenantDetailHandler(w, r2)
 		})
 	} else {
-		mux.HandleFunc("/api/observability/", s.obsGatewayProxy)
+		apiMux.HandleFunc("/api/observability/", s.obsGatewayProxy)
 	}
 	// Observability config (GET/POST) — always proxy to /debug/observability on the management server.
 	// This endpoint is independent of the obs store presence, so it lives outside the if/else above.
-	mux.HandleFunc("/api/observability/config", func(w http.ResponseWriter, r *http.Request) {
+	apiMux.HandleFunc("/api/observability/config", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, "/debug/observability")
 	})
+
+	// outerMux adds the auth layer:
+	//   /api/auth/login  — public (credential validation, session creation)
+	//   /api/auth/logout — public (session deletion, cookie clear)
+	//   /api/auth/me     — protected (inside apiMux via studioAuthMiddleware)
+	//   /api/*           — protected via studioAuthMiddleware
+	//   /mcp             — public (MCP protocol handler; uses its own auth if needed)
+	//   /                — public (static React SPA — login form is rendered client-side)
+	outerMux := http.NewServeMux()
+	// Auth routes: login + logout are public; change-password and user management are protected.
+	outerMux.HandleFunc("/api/auth/login", s.loginHandler)
+	outerMux.HandleFunc("/api/auth/logout", s.logoutHandler)
+	outerMux.HandleFunc("/api/studio/users/hash", studioUsersHashHandler) // always public (bootstrap helper)
+	outerMux.Handle("/api/", s.studioAuthMiddleware(apiMux))
+	outerMux.HandleFunc("/mcp", s.MCPHandler)
 
 	// Serve the React SPA from the embedded ui/dist directory.
 	// Any path that doesn't match a real file falls back to index.html
 	// so that the browser can handle it (no server-side routing needed).
 	sub, _ := fs.Sub(uiFS, "ui/dist")
-	mux.Handle("/", newSPAHandler(http.FS(sub)))
-	return mux
+	outerMux.Handle("/", newSPAHandler(http.FS(sub)))
+	return outerMux
 }
 
 // spaHandler serves static files from fsys, falling back to index.html for
@@ -768,16 +920,28 @@ func parseOpenAPISpec(spec string) ([]ImportedAPI, string, error) {
 	var data map[string]any
 	source := "json"
 	if err := json.Unmarshal([]byte(spec), &data); err != nil {
-		apis, err2 := parseOpenAPIYAML(spec)
-		if err2 != nil {
-			return nil, "", errors.New("spec must be valid OpenAPI JSON or YAML")
+		// Try YAML → map conversion for full schema extraction
+		yamlData, yamlErr := yamlToMap(spec)
+		if yamlErr != nil {
+			// Fall back to the line-scanner YAML parser (paths/methods only)
+			apis, err2 := parseOpenAPIYAML(spec)
+			if err2 != nil {
+				return nil, "", errors.New("spec must be valid OpenAPI JSON or YAML")
+			}
+			return apis, "yaml", nil
 		}
-		return apis, "yaml", nil
+		data = yamlData
+		source = "yaml"
 	}
+
 	pathsRaw, ok := data["paths"].(map[string]any)
 	if !ok {
 		return nil, source, errors.New("openapi spec missing paths object")
 	}
+
+	// Extract top-level components for $ref resolution.
+	components, _ := data["components"].(map[string]any)
+
 	apis := make([]ImportedAPI, 0)
 	for p, methodsRaw := range pathsRaw {
 		methodsMap, ok := methodsRaw.(map[string]any)
@@ -791,13 +955,18 @@ func parseOpenAPISpec(spec string) ([]ImportedAPI, string, error) {
 			default:
 				continue
 			}
+			opMap, _ := opRaw.(map[string]any)
 			name := strings.ToLower(ml) + "_" + strings.ReplaceAll(strings.Trim(p, "/"), "/", "_")
-			if opMap, ok := opRaw.(map[string]any); ok {
+			if opMap != nil {
 				if opID, ok := opMap["operationId"].(string); ok && strings.TrimSpace(opID) != "" {
 					name = opID
 				}
 			}
-			apis = append(apis, ImportedAPI{Name: name, Path: p, Method: ml})
+			api := ImportedAPI{Name: name, Path: p, Method: ml}
+			if opMap != nil {
+				api.ValidateRouteRules = extractValidationRules(opMap, components)
+			}
+			apis = append(apis, api)
 		}
 	}
 	sort.Slice(apis, func(i, j int) bool {
@@ -807,6 +976,244 @@ func parseOpenAPISpec(spec string) ([]ImportedAPI, string, error) {
 		return apis[i].Path < apis[j].Path
 	})
 	return apis, source, nil
+}
+
+// yamlToMap unmarshals a YAML string into a generic map using yaml.v3.
+func yamlToMap(spec string) (map[string]any, error) {
+	var raw any
+	if err := yaml.Unmarshal([]byte(spec), &raw); err != nil {
+		return nil, err
+	}
+	return normalizeYAMLMap(raw)
+}
+
+// normalizeYAMLMap converts yaml.v3 map[string]any / map[any]any trees into
+// map[string]any so they can be consumed the same way as JSON-decoded data.
+func normalizeYAMLMap(v any) (map[string]any, error) {
+	out, err := deepNormalize(v)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		return nil, errors.New("yaml root is not a mapping")
+	}
+	return m, nil
+}
+
+func deepNormalize(v any) (any, error) {
+	switch val := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, vv := range val {
+			n, err := deepNormalize(vv)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = n
+		}
+		return out, nil
+	case map[any]any:
+		out := make(map[string]any, len(val))
+		for k, vv := range val {
+			ks := fmt.Sprintf("%v", k)
+			n, err := deepNormalize(vv)
+			if err != nil {
+				return nil, err
+			}
+			out[ks] = n
+		}
+		return out, nil
+	case []any:
+		out := make([]any, len(val))
+		for i, vv := range val {
+			n, err := deepNormalize(vv)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	default:
+		return val, nil
+	}
+}
+
+// resolveRef follows a $ref pointer (e.g. "#/components/schemas/Foo") within
+// the same document using the provided components map.
+func resolveRef(ref string, components map[string]any) map[string]any {
+	// Only support local refs: "#/components/schemas/..." and "#/components/requestBodies/..."
+	const prefix = "#/components/"
+	if !strings.HasPrefix(ref, prefix) || components == nil {
+		return nil
+	}
+	rest := strings.TrimPrefix(ref, prefix)
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	section, ok := components[parts[0]].(map[string]any)
+	if !ok {
+		return nil
+	}
+	target, ok := section[parts[1]].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return target
+}
+
+// extractValidationRules parses an OpenAPI operation object and returns a list
+// of validate_route rules for required fields, patterns, and enum constraints.
+func extractValidationRules(operation map[string]any, components map[string]any) []openAPIRuleConfig {
+	// Navigate: requestBody → content → application/json → schema
+	reqBody, _ := operation["requestBody"].(map[string]any)
+	if reqBody == nil {
+		return nil
+	}
+	content, _ := reqBody["content"].(map[string]any)
+	if content == nil {
+		return nil
+	}
+	jsonContent, _ := content["application/json"].(map[string]any)
+	if jsonContent == nil {
+		return nil
+	}
+	schema, _ := jsonContent["schema"].(map[string]any)
+	if schema == nil {
+		return nil
+	}
+	// Resolve top-level $ref if present
+	if ref, ok := schema["$ref"].(string); ok {
+		resolved := resolveRef(ref, components)
+		if resolved == nil {
+			return nil
+		}
+		schema = resolved
+	}
+
+	var rules []openAPIRuleConfig
+	collectSchemaRules(schema, "", components, &rules)
+	return rules
+}
+
+// collectSchemaRules recursively extracts validation rules from a JSON Schema object.
+// prefix is the dot-notation path prefix for nested objects (empty at top level).
+func collectSchemaRules(schema map[string]any, prefix string, components map[string]any, rules *[]openAPIRuleConfig) {
+	properties, _ := schema["properties"].(map[string]any)
+	if properties == nil {
+		return
+	}
+
+	// Build required set
+	requiredSet := map[string]bool{}
+	if reqArr, ok := schema["required"].([]any); ok {
+		for _, r := range reqArr {
+			if s, ok := r.(string); ok {
+				requiredSet[s] = true
+			}
+		}
+	}
+
+	// Sort property names for deterministic output
+	propNames := make([]string, 0, len(properties))
+	for k := range properties {
+		propNames = append(propNames, k)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRaw := properties[propName]
+		prop, _ := propRaw.(map[string]any)
+		if prop == nil {
+			continue
+		}
+		// Resolve $ref within the property
+		if ref, ok := prop["$ref"].(string); ok {
+			resolved := resolveRef(ref, components)
+			if resolved != nil {
+				prop = resolved
+			}
+		}
+
+		fieldPath := propName
+		if prefix != "" {
+			fieldPath = prefix + "." + propName
+		}
+
+		propType, _ := prop["type"].(string)
+
+		// Rule 1: required field → exists check
+		if requiredSet[propName] {
+			*rules = append(*rules, openAPIRuleConfig{
+				Label: "require " + fieldPath,
+				When: openAPICondConfig{
+					Source: "req_body",
+					Path:   fieldPath,
+					Check:  "missing",
+				},
+				OnMatch: openAPIOnMatchConfig{
+					Dest:    "fail",
+					Status:  400,
+					Message: "missing required field: " + fieldPath,
+				},
+			})
+		}
+
+		// Rule 2: enum constraint → in check
+		if enumRaw, ok := prop["enum"].([]any); ok && len(enumRaw) > 0 {
+			vals := make([]string, 0, len(enumRaw))
+			for _, e := range enumRaw {
+				vals = append(vals, fmt.Sprintf("%v", e))
+			}
+			*rules = append(*rules, openAPIRuleConfig{
+				Label: "enum " + fieldPath,
+				When: openAPICondConfig{
+					Op: "and",
+					Children: []openAPICondConfig{
+						{Source: "req_body", Path: fieldPath, Check: "exists"},
+						{Source: "req_body", Path: fieldPath, Check: "not_in", InValues: vals},
+					},
+				},
+				OnMatch: openAPIOnMatchConfig{
+					Dest:    "fail",
+					Status:  400,
+					Message: "invalid value for field: " + fieldPath,
+				},
+			})
+		}
+
+		// Rule 3: pattern constraint → regex check
+		if pattern, ok := prop["pattern"].(string); ok && pattern != "" {
+			*rules = append(*rules, openAPIRuleConfig{
+				Label: "pattern " + fieldPath,
+				When: openAPICondConfig{
+					Op: "and",
+					Children: []openAPICondConfig{
+						{Source: "req_body", Path: fieldPath, Check: "exists"},
+						{Source: "req_body", Path: fieldPath, Check: "not_regex", Value: pattern},
+					},
+				},
+				OnMatch: openAPIOnMatchConfig{
+					Dest:    "fail",
+					Status:  400,
+					Message: "invalid value for field: " + fieldPath,
+				},
+			})
+		}
+
+		// Rule 4: recurse into nested objects
+		if propType == "object" {
+			nestedSchema := prop
+			// Resolve nested $ref if needed
+			if ref, ok := nestedSchema["$ref"].(string); ok {
+				if resolved := resolveRef(ref, components); resolved != nil {
+					nestedSchema = resolved
+				}
+			}
+			collectSchemaRules(nestedSchema, fieldPath, components, rules)
+		}
+	}
 }
 
 func parseOpenAPIYAML(spec string) ([]ImportedAPI, error) {
@@ -1103,6 +1510,10 @@ func (s *Server) proxyPassThrough(w http.ResponseWriter, r *http.Request, target
 		return
 	}
 	req.Header = r.Header.Clone()
+	// Forward the gateway service-account credential when configured.
+	if s.gatewayBasicCred != "" {
+		req.Header.Set("Authorization", "Basic "+s.gatewayBasicCred)
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		http.Error(w, "management API unreachable", http.StatusBadGateway)
@@ -1117,6 +1528,628 @@ func (s *Server) proxyPassThrough(w http.ResponseWriter, r *http.Request, target
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
+// ─── Release Management (S9) ─────────────────────────────────────────────────
+
+// releasesHandler dispatches POST /api/releases (create) and GET /api/releases (list).
+func (s *Server) releasesHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		s.createReleaseHandler(w, r)
+	case http.MethodGet:
+		s.listReleasesHandler(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// releaseByIDHandler handles GET /api/releases/:id.
+// Sub-paths like /api/releases/:id/deploy are not handled here — they will be
+// added in S10. Unknown sub-paths return 404.
+func (s *Server) releaseByIDHandler(w http.ResponseWriter, r *http.Request) {
+	// strip /api/releases/
+	rest := strings.TrimPrefix(r.URL.Path, "/api/releases/")
+
+	// Parse the path to detect sub-paths: /deploy, /diff/:other_id
+	parts := strings.SplitN(rest, "/", 3)
+	id := parts[0]
+	if id == "" {
+		// Trailing-slash redirect to list handler.
+		s.releasesHandler(w, r)
+		return
+	}
+
+	// Handle sub-paths
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "deploy":
+			s.releaseDeployHandler(w, r, id)
+			return
+		case "diff":
+			if len(parts) < 3 || parts[2] == "" {
+				http.Error(w, "other release ID required", http.StatusBadRequest)
+				return
+			}
+			s.releaseDiffHandler(w, r, id, parts[2])
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// Handle bare ID lookup (existing behavior)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rec, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, "release not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rec)
+}
+
+// releaseDeployHandler handles POST /api/releases/:id/deploy.
+// Promotes a release to an environment, records deployment status, and fans out to gateways.
+func (s *Server) releaseDeployHandler(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Env    string `json:"env"`
+		ByUser string `json:"by_user"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	if req.Env == "" {
+		http.Error(w, "env is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get the release record
+	rec, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, "release not found", http.StatusNotFound)
+		return
+	}
+
+	// Select all targets (no level/name filtering)
+	selected := s.selectTargets(nil, nil)
+	if len(selected) == 0 {
+		http.Error(w, "no targets available", http.StatusInternalServerError)
+		return
+	}
+
+	// Deploy to all targets
+	results := make([]ReleaseDeployResult, 0)
+	for _, t := range selected {
+		for _, raw := range t.URLs {
+			targetURL, err := buildTargetURL(raw, "/sync", "")
+			if err != nil {
+				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
+				continue
+			}
+			hReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(rec.Payload))
+			if err != nil {
+				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
+				continue
+			}
+			hReq.Header.Set("Content-Type", "application/json")
+			resp, err := s.httpClient.Do(hReq)
+			if err != nil {
+				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
+				continue
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			success := resp.StatusCode >= 200 && resp.StatusCode < 300
+			msg := ""
+			if !success {
+				msg = "HTTP " + strconv.Itoa(resp.StatusCode)
+			}
+			results = append(results, ReleaseDeployResult{Target: t.Name, Success: success, Message: msg})
+		}
+	}
+
+	// Update ReleaseRecord.Environments[env]
+	if rec.Environments == nil {
+		rec.Environments = make(map[string]EnvDeployment)
+	}
+	rec.Environments[req.Env] = EnvDeployment{
+		DeployedAt: time.Now(),
+		Status:     "deployed",
+		ByUser:     req.ByUser,
+		Results:    results,
+	}
+
+	// Save updated record
+	if err := s.store.Put(context.Background(), rec); err != nil {
+		http.Error(w, "failed to save deployment record", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"release_id": rec.ReleaseID,
+		"env":        req.Env,
+		"results":    results,
+	})
+}
+
+// releaseDiffHandler handles GET /api/releases/:id/diff/:other_id.
+// Returns a diff of flow names and API paths between two releases.
+func (s *Server) releaseDiffHandler(w http.ResponseWriter, r *http.Request, id string, otherID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get both releases
+	rec1, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		http.Error(w, "first release not found", http.StatusNotFound)
+		return
+	}
+	rec2, err := s.store.Get(r.Context(), otherID)
+	if err != nil {
+		http.Error(w, "second release not found", http.StatusNotFound)
+		return
+	}
+
+	// Extract flow and API names from both releases
+	flows1, apis1 := extractFlowsAndAPIs(rec1.Payload)
+	flows2, apis2 := extractFlowsAndAPIs(rec2.Payload)
+
+	// Compute diff: flows/APIs only in rec1, only in rec2, and in both
+	resp := map[string]any{
+		"flows_added":    setDiff(flows2, flows1),
+		"flows_removed":  setDiff(flows1, flows2),
+		"apis_added":     setDiff(apis2, apis1),
+		"apis_removed":   setDiff(apis1, apis2),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// extractFlowsAndAPIs parses a release payload to extract flow names and API paths.
+func extractFlowsAndAPIs(payload json.RawMessage) (map[string]struct{}, map[string]struct{}) {
+	flows := make(map[string]struct{})
+	apis := make(map[string]struct{})
+
+	var bundle control.UnifiedSyncRequest
+	if err := json.Unmarshal(payload, &bundle); err != nil {
+		return flows, apis
+	}
+
+	for _, f := range bundle.Flows {
+		flows[f.Name] = struct{}{}
+	}
+	for _, a := range bundle.Apis {
+		apiKey := a.Path
+		if a.Method != "" {
+			apiKey = a.Method + " " + a.Path
+		}
+		apis[apiKey] = struct{}{}
+	}
+
+	return flows, apis
+}
+
+// setDiff returns elements in a that are not in b.
+func setDiff(a, b map[string]struct{}) []string {
+	var result []string
+	for k := range a {
+		if _, exists := b[k]; !exists {
+			result = append(result, k)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+// createReleaseHandler handles POST /api/releases.
+// Accepts application/json (plain bundle or envelope), application/yaml, or
+// multipart/form-data. Validates for forbidden _slot keys, translates named
+// variable fields to their internal _slot equivalents, runs the linter, and
+// stores the release. Supports ?dry_run=true to validate without storing.
+func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	bundle, meta, err := s.parseBundleRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate: reject _slot-suffixed keys in Input maps.
+	if err := validateNoSlotKeys(bundle.Flows); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Translate user-facing variable keys (e.g. input.url_var → input.url_slot).
+	translateBundleVarKeys(bundle.Flows)
+
+	// Run linter on the parsed bundle.
+	loadResult := rahsync.LoadResult{
+		Bundle:    bundle,
+		SourceMap: rahsync.SourceMap{},
+		Issues:    []rahsync.LintIssue{},
+	}
+	lintIssues := rahsync.Lint(loadResult)
+
+	var ls LintSummary
+	var warnings []string
+	for _, iss := range lintIssues {
+		switch iss.Severity {
+		case rahsync.SeverityError:
+			ls.Errors++
+		case rahsync.SeverityWarning:
+			ls.Warnings++
+			warnings = append(warnings, iss.Message)
+		case rahsync.SeverityInfo:
+			ls.Infos++
+		}
+	}
+
+	resp := CreateReleaseResponse{
+		LintSummary: ls,
+		Warnings:    warnings,
+		Issues:      lintIssues,
+	}
+
+	if dryRun {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Abort if there are lint errors (not warnings).
+	if ls.Errors > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Serialize the translated bundle as the stored payload.
+	payload, err := json.Marshal(bundle)
+	if err != nil {
+		http.Error(w, "failed to serialize bundle", http.StatusInternalServerError)
+		return
+	}
+
+	// Compute SHA-256 bundle hash.
+	sum := sha256.Sum256(payload)
+	bundleHash := hex.EncodeToString(sum[:])
+
+	rid := s.nextReleaseID()
+	rec := ReleaseRecord{
+		ReleaseID:   rid,
+		CreatedAt:   nowJSON(),
+		Payload:     json.RawMessage(payload),
+		BundleHash:  bundleHash,
+		Tag:         meta.Tag,
+		GitCommit:   meta.GitCommit,
+		GitBranch:   meta.GitBranch,
+		GitRepo:     meta.GitRepo,
+		SourcePath:  meta.SourcePath,
+		Author:      meta.Author,
+		LintSummary: ls,
+	}
+	if err := s.store.Put(r.Context(), rec); err != nil {
+		http.Error(w, "failed to store release", http.StatusInternalServerError)
+		return
+	}
+
+	resp.ReleaseID = rid
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// listReleasesHandler handles GET /api/releases with optional pagination and
+// environment-status filtering.
+//
+// Query params:
+//   - cursor     release ID to start after (exclusive)
+//   - limit      page size, 1-100 (default 20)
+//   - env        environment name to filter by (e.g. "uat")
+//   - env_status status value within that environment (e.g. "deployed")
+func (s *Server) listReleasesHandler(w http.ResponseWriter, r *http.Request) {
+	all, err := s.store.List(r.Context())
+	if err != nil {
+		http.Error(w, "failed to list releases", http.StatusInternalServerError)
+		return
+	}
+
+	// Optional environment filter.
+	envFilter := r.URL.Query().Get("env")
+	statusFilter := r.URL.Query().Get("env_status")
+	if envFilter != "" {
+		filtered := all[:0]
+		for _, rec := range all {
+			if dep, ok := rec.Environments[envFilter]; ok {
+				if statusFilter == "" || dep.Status == statusFilter {
+					filtered = append(filtered, rec)
+				}
+			}
+		}
+		all = filtered
+	}
+
+	total := len(all)
+
+	// Cursor-based pagination.
+	limit := 20
+	if n, err2 := strconv.Atoi(r.URL.Query().Get("limit")); err2 == nil && n > 0 {
+		if n > 100 {
+			n = 100
+		}
+		limit = n
+	}
+
+	cursor := r.URL.Query().Get("cursor")
+	if cursor != "" {
+		startIdx := -1
+		for i, rec := range all {
+			if rec.ReleaseID == cursor {
+				startIdx = i + 1
+				break
+			}
+		}
+		if startIdx < 0 || startIdx >= len(all) {
+			all = nil
+		} else {
+			all = all[startIdx:]
+		}
+	}
+
+	var nextCursor string
+	if len(all) > limit {
+		nextCursor = all[limit].ReleaseID
+		all = all[:limit]
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ReleaseListResponse{
+		Releases:   all,
+		NextCursor: nextCursor,
+		Total:      total,
+	})
+}
+
+// parseBundleRequest reads the request body and extracts the UnifiedSyncRequest
+// bundle and metadata fields.
+//
+// Metadata precedence: X-* request headers > body envelope / form fields.
+//
+// Supported content types:
+//   - application/json: plain UnifiedSyncRequest, or bundleWrapper envelope
+//   - application/yaml / text/yaml: plain UnifiedSyncRequest in YAML
+//   - multipart/form-data: "bundle" field (JSON or YAML), metadata as form values
+func (s *Server) parseBundleRequest(r *http.Request) (control.UnifiedSyncRequest, releaseMeta, error) {
+	var bundle control.UnifiedSyncRequest
+	var meta releaseMeta
+
+	// Headers take highest precedence.
+	meta.Tag = r.Header.Get("X-Tag")
+	meta.GitCommit = r.Header.Get("X-Git-Commit")
+	meta.GitBranch = r.Header.Get("X-Git-Branch")
+	meta.GitRepo = r.Header.Get("X-Git-Repo")
+	meta.SourcePath = r.Header.Get("X-Source-Path")
+	meta.Author = r.Header.Get("X-Author")
+
+	ct := r.Header.Get("Content-Type")
+
+	switch {
+	case strings.Contains(ct, "multipart/form-data"):
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			return bundle, meta, fmt.Errorf("failed to parse multipart form: %w", err)
+		}
+		var data []byte
+		if bundleStr := r.FormValue("bundle"); bundleStr != "" {
+			data = []byte(bundleStr)
+		} else {
+			f, _, err := r.FormFile("bundle")
+			if err != nil {
+				return bundle, meta, errors.New("multipart form missing 'bundle' field")
+			}
+			defer f.Close()
+			raw, err := io.ReadAll(f)
+			if err != nil {
+				return bundle, meta, fmt.Errorf("failed to read bundle file: %w", err)
+			}
+			data = raw
+		}
+		var err error
+		bundle, err = parseBundle(data)
+		if err != nil {
+			return bundle, meta, err
+		}
+		// Form fields fill in any metadata not supplied via headers.
+		if meta.Tag == "" {
+			meta.Tag = r.FormValue("tag")
+		}
+		if meta.GitCommit == "" {
+			meta.GitCommit = r.FormValue("git_commit")
+		}
+		if meta.GitBranch == "" {
+			meta.GitBranch = r.FormValue("git_branch")
+		}
+		if meta.GitRepo == "" {
+			meta.GitRepo = r.FormValue("git_repo")
+		}
+		if meta.SourcePath == "" {
+			meta.SourcePath = r.FormValue("source_path")
+		}
+		if meta.Author == "" {
+			meta.Author = r.FormValue("author")
+		}
+
+	case strings.Contains(ct, "application/yaml") || strings.Contains(ct, "text/yaml"):
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			return bundle, meta, fmt.Errorf("failed to read request body: %w", err)
+		}
+		bundle, err = parseBundleYAML(data)
+		if err != nil {
+			return bundle, meta, err
+		}
+
+	default: // application/json or unspecified — try envelope, then plain bundle
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			return bundle, meta, fmt.Errorf("failed to read request body: %w", err)
+		}
+		var env bundleWrapper
+		if jsonErr := json.Unmarshal(data, &env); jsonErr == nil && env.Bundle != nil {
+			bundle = *env.Bundle
+			if meta.Tag == "" {
+				meta.Tag = env.Tag
+			}
+			if meta.GitCommit == "" {
+				meta.GitCommit = env.GitCommit
+			}
+			if meta.GitBranch == "" {
+				meta.GitBranch = env.GitBranch
+			}
+			if meta.GitRepo == "" {
+				meta.GitRepo = env.GitRepo
+			}
+			if meta.SourcePath == "" {
+				meta.SourcePath = env.SourcePath
+			}
+			if meta.Author == "" {
+				meta.Author = env.Author
+			}
+		} else {
+			if err := json.Unmarshal(data, &bundle); err != nil {
+				return bundle, meta, fmt.Errorf("failed to parse JSON bundle: %w", err)
+			}
+		}
+	}
+
+	return bundle, meta, nil
+}
+
+// parseBundle tries JSON first, then YAML (via JSON intermediary) to decode
+// raw bytes into a UnifiedSyncRequest.
+func parseBundle(data []byte) (control.UnifiedSyncRequest, error) {
+	var bundle control.UnifiedSyncRequest
+	if err := json.Unmarshal(data, &bundle); err == nil {
+		return bundle, nil
+	}
+	return parseBundleYAML(data)
+}
+
+// parseBundleYAML parses YAML bytes into a UnifiedSyncRequest by first
+// converting YAML → generic map (preserving snake_case keys) → JSON → struct.
+// This is necessary because control structs have json: tags but not yaml: tags.
+func parseBundleYAML(data []byte) (control.UnifiedSyncRequest, error) {
+	var raw any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return control.UnifiedSyncRequest{}, fmt.Errorf("failed to parse YAML bundle: %w", err)
+	}
+	jsonData, err := json.Marshal(raw)
+	if err != nil {
+		return control.UnifiedSyncRequest{}, fmt.Errorf("failed to normalize YAML bundle: %w", err)
+	}
+	var bundle control.UnifiedSyncRequest
+	if err := json.Unmarshal(jsonData, &bundle); err != nil {
+		return bundle, fmt.Errorf("failed to decode bundle: %w", err)
+	}
+	return bundle, nil
+}
+
+// validateNoSlotKeys returns an error if any step in any flow contains a
+// _slot-suffixed key in its Input map. Such keys are internal compiler details
+// that must not appear in user-authored bundle files.
+func validateNoSlotKeys(flows []control.FlowUpdate) error {
+	for _, f := range flows {
+		if err := validateStepsNoSlotKeys(f.Instructions, f.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateStepsNoSlotKeys(steps []control.StepConfig, flowName string) error {
+	for i, step := range steps {
+		for k := range step.Input {
+			if strings.HasSuffix(k, "_slot") {
+				// Try to find a user-facing alternative.
+				alt := rahsync.SlotKeyAlternative("input." + k)
+				if alt == "" {
+					alt = rahsync.SlotKeyAlternative(k)
+				}
+				msg := fmt.Sprintf("flow %q step %d: input key %q is an internal slot index — use named variable fields instead of internal slot indices", flowName, i+1, k)
+				if alt != "" {
+					msg += fmt.Sprintf(" (use %q instead)", strings.TrimPrefix(alt, "input."))
+				}
+				return errors.New(msg)
+			}
+		}
+		// Recurse into inline sub-flows.
+		if len(step.Do) > 0 {
+			if err := validateStepsNoSlotKeys(step.Do, flowName); err != nil {
+				return err
+			}
+		}
+		for _, br := range step.Branches {
+			if err := validateStepsNoSlotKeys(br.Flow, flowName); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// translateBundleVarKeys rewrites user-facing variable field names in every
+// StepConfig.Input map to their internal _slot equivalents expected by the
+// compiler. For example, within the Input map, "url_var" → "url_slot" for
+// steps that pass variables through the input block (e.g. check_upstream_rate_limit,
+// emit_event).
+func translateBundleVarKeys(flows []control.FlowUpdate) {
+	for i := range flows {
+		translateStepVarKeys(flows[i].Instructions)
+	}
+}
+
+func translateStepVarKeys(steps []control.StepConfig) {
+	for i := range steps {
+		if len(steps[i].Input) > 0 {
+			newInput := make(map[string]string, len(steps[i].Input))
+			for k, v := range steps[i].Input {
+				// namedVarToSlotKey uses "input.KEY_var" as the lookup key.
+				slotKey, ok := rahsync.NamedVarToSlotKey("input." + k)
+				if ok {
+					// Strip the "input." prefix to get the bare map key.
+					newInput[strings.TrimPrefix(slotKey, "input.")] = v
+				} else {
+					newInput[k] = v
+				}
+			}
+			steps[i].Input = newInput
+		}
+		// Recurse into inline sub-flows.
+		if len(steps[i].Do) > 0 {
+			translateStepVarKeys(steps[i].Do)
+		}
+		for j := range steps[i].Branches {
+			translateStepVarKeys(steps[i].Branches[j].Flow)
+		}
+	}
+}
+
 func (s *Server) proxyToDefault(w http.ResponseWriter, r *http.Request, method, path string) {
 	if r.Method != method {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1143,6 +2176,10 @@ func (s *Server) proxyToDefault(w http.ResponseWriter, r *http.Request, method, 
 		return
 	}
 	req.Header = r.Header.Clone()
+	// Forward the gateway service-account credential when configured.
+	if s.gatewayBasicCred != "" {
+		req.Header.Set("Authorization", "Basic "+s.gatewayBasicCred)
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		http.Error(w, "Failed to call gateway management API", http.StatusBadGateway)

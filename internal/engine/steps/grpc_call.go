@@ -65,8 +65,10 @@ type GrpcCallConfig struct {
 	TimeoutMs    int
 	Compress     bool // enable gzip compression on the request
 	WaitForReady bool // wait for connection to be ready before sending
-	MaxRetries   int  // 0 = no retry
-	RetryOnCodes []codes.Code
+	MaxRetries          int           // 0 = no retry
+	RetryOnCodes        []codes.Code
+	RetryBaseBackoffMs  int           // base backoff between retries in ms (default 50)
+	RetryMaxBackoffMs   int           // backoff cap in ms (default 500)
 
 	// Header / metadata forwarding.
 	ForwardHeaders  bool
@@ -234,10 +236,18 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 			if pc, stop := StopIfCancelled(ctx); stop {
 				return pc
 			}
-			// Exponential backoff: 50ms, 100ms, 200ms … capped at 500ms.
-			backoff := time.Duration(50<<uint(attempt-2)) * time.Millisecond
-			if backoff > 500*time.Millisecond {
-				backoff = 500 * time.Millisecond
+			// Exponential backoff with configurable base and cap.
+			baseMs := g.RetryBaseBackoffMs
+			if baseMs <= 0 {
+				baseMs = 50
+			}
+			capMs := g.RetryMaxBackoffMs
+			if capMs <= 0 {
+				capMs = 500
+			}
+			backoff := time.Duration(baseMs<<uint(attempt-2)) * time.Millisecond
+			if backoff > time.Duration(capMs)*time.Millisecond {
+				backoff = time.Duration(capMs) * time.Millisecond
 			}
 			time.Sleep(backoff)
 		}

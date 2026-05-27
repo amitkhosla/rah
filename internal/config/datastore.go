@@ -94,6 +94,13 @@ const (
 
 	// gRPC descriptor sets — compiled FileDescriptorSet blobs for grpc_call transcoding
 	DomainGRPCDescriptors DataDomain = "grpc_descriptors"
+
+	// Geo-blocking — shared MaxMind GeoLite2-Country mmdb storage
+	DomainGeoData DataDomain = "geo_data"
+
+	// Hot-path security — optional; skip gracefully if not bound
+	DomainDPoPJTI            DataDomain = "dpop_jti"            // DPoP proof JTI replay prevention
+	DomainIntrospectionCache DataDomain = "introspection_cache" // token introspection response cache
 )
 
 var requiredDomains = []DataDomain{
@@ -211,12 +218,88 @@ func (c *StoreConnection) EffectiveAddress() string {
 	return c.Host
 }
 
+// VersionedKeyRef pairs a version byte with a key reference string.
+// Used by EncryptionConfig.Keys for AES key rotation.
+type VersionedKeyRef struct {
+	// Version identifies this key in the encrypted wire format (1–255).
+	// Version 0 is reserved; do not use.
+	Version byte `json:"version" yaml:"version"`
+	// KeyRef resolves to 32-byte AES-256 key material.
+	// Supported schemes are identical to EncryptionConfig.KeyRef.
+	KeyRef string `json:"key_ref" yaml:"key_ref"`
+}
+
+// EncryptionConfig configures AES-256-GCM value encryption for a store.
+// Values are encrypted before writing to the backend and decrypted on read.
+// Storage keys are never encrypted.
+//
+// Existing unencrypted values are passed through transparently on read,
+// allowing zero-downtime migration of existing data.
+//
+// Key rotation: populate Keys with multiple VersionedKeyRef entries and set
+// PrimaryVersion to the version that should encrypt new values. All listed
+// versions can decrypt existing values, enabling zero-downtime key rotation.
+type EncryptionConfig struct {
+	// Enabled activates value encryption for this store.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// KeyRef resolves to a 32-byte (256-bit) AES key (single-key mode).
+	// Ignored when Keys is non-empty.
+	// Supported schemes (no Vault/GSM required for the first two):
+	//   hex:<64 hex chars>                         — inline raw key (dev/test)
+	//   env:MY_VAR                                 — env var holding 64-char hex key
+	//   vault://path/to/secret                     — HashiCorp Vault
+	//   gsm://projects/p/secrets/s/versions/latest — GCP Secret Manager
+	//   awssm://secret-name                        — AWS Secrets Manager
+	//   enc:<base64>                               — encrypted with gateway master key
+	KeyRef string `json:"key_ref,omitempty" yaml:"key_ref,omitempty"`
+
+	// Keys holds versioned key refs for rotation support.
+	// When non-empty, KeyRef is ignored. Each entry maps a version byte to a key ref.
+	// New values are encrypted with the key at PrimaryVersion; old values encrypted
+	// under any listed version are decrypted transparently.
+	Keys []VersionedKeyRef `json:"keys,omitempty" yaml:"keys,omitempty"`
+
+	// PrimaryVersion selects which key in Keys encrypts new values. Defaults to 1.
+	// Must match a version listed in Keys when Keys is non-empty.
+	PrimaryVersion byte `json:"primary_version,omitempty" yaml:"primary_version,omitempty"`
+
+	// Domains lists which data domains on this store are encrypted.
+	// Empty = encrypt ALL domains bound to this store.
+	Domains []DataDomain `json:"domains,omitempty" yaml:"domains,omitempty"`
+
+	// HKDF activates per-tenant key derivation mode (recommended for multi-tenant deployments).
+	// When true, each encrypt/decrypt call derives a tenant-specific 32-byte AES subkey via
+	// HKDF-SHA256(masterKey, salt=tenantID, info=domain) before constructing the AEAD.
+	// The master key(s) from KeyRef / Keys are used as HKDF inputs; the wire format is unchanged.
+	// Incompatible with data encrypted in non-HKDF mode — enable on fresh stores only.
+	HKDF bool `json:"hkdf,omitempty" yaml:"hkdf,omitempty"`
+}
+
+// ShouldEncryptDomain returns true if the given domain should be encrypted.
+// Returns false when Enabled is false regardless of Domains.
+func (e EncryptionConfig) ShouldEncryptDomain(d DataDomain) bool {
+	if !e.Enabled {
+		return false
+	}
+	if len(e.Domains) == 0 {
+		return true // encrypt all domains bound to this store
+	}
+	for _, dom := range e.Domains {
+		if dom == d {
+			return true
+		}
+	}
+	return false
+}
+
 // StoreConfig defines a single named backend instance.
 type StoreConfig struct {
-	Name       string          `json:"name"       yaml:"name"`
-	Kind       StoreKind       `json:"kind"       yaml:"kind"`
-	Enabled    bool            `json:"enabled"    yaml:"enabled"`
-	Connection StoreConnection `json:"connection" yaml:"connection"`
+	Name       string           `json:"name"                 yaml:"name"`
+	Kind       StoreKind        `json:"kind"                 yaml:"kind"`
+	Enabled    bool             `json:"enabled"              yaml:"enabled"`
+	Connection StoreConnection  `json:"connection"           yaml:"connection"`
+	Encryption EncryptionConfig `json:"encryption,omitempty" yaml:"encryption,omitempty"`
 }
 
 // DataStoreConfig wires logical data domains to concrete store instances.

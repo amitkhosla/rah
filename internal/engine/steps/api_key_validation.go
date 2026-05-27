@@ -26,11 +26,12 @@ const (
 // APIKeyValidationConfig holds the compiled configuration for validate_api_key.
 type APIKeyValidationConfig struct {
 	Source            APIKeySource
-	SourceKey         string // header name, query param name, or cookie name
-	RequireTenant     bool   // if true, AllowedTenants must contain ctx.TenantID
-	OnFailureStatus   int    // HTTP status on auth failure (default 401)
-	OnFailureBody     string // response body on failure (default "unauthorized")
-	ContinueOnFailure bool   // if true, write result slot and continue instead of halting
+	SourceKey         string   // header name, query param name, or cookie name
+	RequireTenant     bool     // if true, AllowedTenants must contain ctx.TenantID
+	RequiredScopes    []string // if non-empty, key's Scopes must cover all entries
+	OnFailureStatus   int      // HTTP status on auth failure (default 401)
+	OnFailureBody     string   // response body on failure (default "unauthorized")
+	ContinueOnFailure bool     // if true, write result slot and continue instead of halting
 }
 
 // APIKeyValidationSlots holds slot indexes for the validate_api_key step.
@@ -88,6 +89,13 @@ func ParseAPIKeyValidationConfig(input map[string]string) APIKeyValidationConfig
 	if strings.ToLower(strings.TrimSpace(input["apikey.require_tenant"])) == "true" {
 		cfg.RequireTenant = true
 	}
+	if v := strings.TrimSpace(input["apikey.required_scopes"]); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				cfg.RequiredScopes = append(cfg.RequiredScopes, s)
+			}
+		}
+	}
 
 	return cfg
 }
@@ -130,6 +138,14 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 				return apiKeyFail(s, ctx, slots, cfg)
 			}
 
+			// Expiry check.
+			if entry.IsExpired() {
+				apikey.Global.Attempts.Add(1)
+				apikey.Global.Disabled.Add(1)
+				apikey.Global.RecordTiming(time.Now().UnixNano() - start)
+				return apiKeyFail(s, ctx, slots, cfg)
+			}
+
 			if cfg.RequireTenant && len(entry.AllowedTenants) > 0 {
 				allowed := false
 				for _, tid := range entry.AllowedTenants {
@@ -143,6 +159,23 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 					apikey.Global.TenantDenied.Add(1)
 					apikey.Global.RecordTiming(time.Now().UnixNano() - start)
 					return apiKeyFail(s, ctx, slots, cfg)
+				}
+			}
+
+			// Scope check — if key has scopes and required scopes are configured,
+			// the intersection must cover all required scopes.
+			if len(cfg.RequiredScopes) > 0 && len(entry.Scopes) > 0 {
+				scopeSet := make(map[string]struct{}, len(entry.Scopes))
+				for _, sc := range entry.Scopes {
+					scopeSet[sc] = struct{}{}
+				}
+				for _, req := range cfg.RequiredScopes {
+					if _, ok := scopeSet[req]; !ok {
+						apikey.Global.Attempts.Add(1)
+						apikey.Global.TenantDenied.Add(1)
+						apikey.Global.RecordTiming(time.Now().UnixNano() - start)
+						return apiKeyFail(s, ctx, slots, cfg)
+					}
 				}
 			}
 

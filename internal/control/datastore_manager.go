@@ -2,6 +2,9 @@ package control
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"rah/internal/datastore"
 	"rah/internal/secrets"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -117,6 +121,13 @@ func buildDomainStores(ctx context.Context, cfg config.DataStoreConfig, resolver
 		if err != nil {
 			return nil, err
 		}
+		if storeCfg.Encryption.ShouldEncryptDomain(domain) {
+			encStore, encErr := buildEncryptingStore(ctx, store, storeCfg.Encryption, string(domain), resolver)
+			if encErr != nil {
+				return nil, fmt.Errorf("domain %q: %w", domain, encErr)
+			}
+			store = encStore
+		}
 		if wrapFn != nil {
 			store = wrapFn(domain, store)
 		}
@@ -135,6 +146,100 @@ func (m *DataStoreManager) SetStoreWrapper(fn StoreWrapFn) {
 	for domain, store := range m.registryStore {
 		m.registryStore[domain] = fn(domain, store)
 	}
+}
+
+// buildEncryptingStore wraps inner with AES-256-GCM encryption based on EncryptionConfig.
+// Supports single-key (enc.KeyRef), multi-key rotation (enc.Keys), and per-tenant HKDF
+// (enc.HKDF) modes. HKDF mode can be combined with either key mode.
+func buildEncryptingStore(ctx context.Context, inner datastore.KeyValueStore, enc config.EncryptionConfig, domain string, resolver secrets.Resolver) (datastore.KeyValueStore, error) {
+	primaryVersion := enc.PrimaryVersion
+	if primaryVersion == 0 {
+		primaryVersion = 1
+	}
+
+	if len(enc.Keys) > 0 {
+		// Multi-key rotation mode.
+		if enc.HKDF {
+			// HKDF + multi-key: pass raw master keys to NewEncryptingStoreHKDF.
+			masterKeys := make(map[byte][]byte, len(enc.Keys))
+			for _, vkr := range enc.Keys {
+				if vkr.Version == 0 {
+					return nil, fmt.Errorf("encrypting store: version 0 is reserved; use version 1 or higher")
+				}
+				key, err := resolveEncryptionKey(ctx, vkr.KeyRef, resolver)
+				if err != nil {
+					return nil, fmt.Errorf("encrypting store: version %d: %w", vkr.Version, err)
+				}
+				masterKeys[vkr.Version] = key
+			}
+			return datastore.NewEncryptingStoreHKDF(inner, masterKeys, primaryVersion, domain)
+		}
+
+		// Non-HKDF multi-key: pre-build AEADs.
+		aeads := make(map[byte]cipher.AEAD, len(enc.Keys))
+		for _, vkr := range enc.Keys {
+			if vkr.Version == 0 {
+				return nil, fmt.Errorf("encrypting store: version 0 is reserved; use version 1 or higher")
+			}
+			key, err := resolveEncryptionKey(ctx, vkr.KeyRef, resolver)
+			if err != nil {
+				return nil, fmt.Errorf("encrypting store: version %d: %w", vkr.Version, err)
+			}
+			block, err := aes.NewCipher(key)
+			if err != nil {
+				return nil, fmt.Errorf("encrypting store: version %d: create cipher: %w", vkr.Version, err)
+			}
+			aead, err := cipher.NewGCM(block)
+			if err != nil {
+				return nil, fmt.Errorf("encrypting store: version %d: create GCM: %w", vkr.Version, err)
+			}
+			aeads[vkr.Version] = aead
+		}
+		return datastore.NewEncryptingStoreMulti(inner, aeads, primaryVersion, domain)
+	}
+
+	// Single-key mode.
+	encKey, err := resolveEncryptionKey(ctx, enc.KeyRef, resolver)
+	if err != nil {
+		return nil, fmt.Errorf("encrypting store: %w", err)
+	}
+	if enc.HKDF {
+		// HKDF + single-key: use version 1 master key.
+		return datastore.NewEncryptingStoreHKDF(inner, map[byte][]byte{1: encKey}, 1, domain)
+	}
+	return datastore.NewEncryptingStore(inner, encKey, domain)
+}
+
+// resolveEncryptionKey resolves an encryption key reference to raw 32-byte key material.
+// Supported schemes:
+//   - hex:<64 hex chars> — inline key, no resolver needed (dev/test)
+//   - anything else      — delegated to the secrets resolver (env:, vault://, gsm://, etc.)
+//
+// Returns an error if the resolved value is not exactly 32 bytes.
+func resolveEncryptionKey(ctx context.Context, keyRef string, resolver secrets.Resolver) ([]byte, error) {
+	if keyRef == "" {
+		return nil, fmt.Errorf("encryption is enabled but key_ref is empty")
+	}
+	var hexStr string
+	if strings.HasPrefix(keyRef, "hex:") {
+		hexStr = strings.TrimPrefix(keyRef, "hex:")
+	} else if resolver != nil {
+		raw, err := resolver.Resolve(ctx, keyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve key_ref %q: %w", keyRef, err)
+		}
+		hexStr = strings.TrimSpace(string(raw))
+	} else {
+		return nil, fmt.Errorf("encryption key_ref %q requires a secrets resolver (none configured); use hex: prefix for inline keys", keyRef)
+	}
+	key, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("decode hex encryption key: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("encryption key must be 32 bytes (AES-256), got %d bytes", len(key))
+	}
+	return key, nil
 }
 
 // resolveStoreCredentials returns a copy of storeCfg with credentials resolved

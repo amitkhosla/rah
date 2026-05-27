@@ -1,0 +1,110 @@
+# ─── Service Discovery Sample ─────────────────────────────────────────────────
+#
+# Problem: tenant-specific upstream URLs are not known at deploy time.  A
+# discovery service returns the correct URL (and credentials) for each tenant.
+#
+#   1. Check the registry first — if the URL is cached, skip the call.
+#   2. If not cached, call the discovery service (retry on 429, up to 3x).
+#   3. Parse URL, API key, and plan from the nested JSON response.
+#   4. Persist them into the tenant registry for future requests.
+#   5. Call the actual upstream using the discovered URL.
+#
+# Discovery service response shape:
+#   {
+#     "result": { "tenant": {
+#       "endpoints": [{"type":"primary","url":"https://api.acme.example.com"}],
+#       "credentials": {"api_key": "sk-abc123"},
+#       "plan": "enterprise"
+#     }}
+#   }
+#
+# Replace DISCOVERY_SERVICE_URL with your actual discovery endpoint.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ── Discovery: call service, extract fields, persist to registry ─────────
+  - name: discover_and_persist
+    action: upsert
+    code: |
+      // Call the discovery service; retry up to 3 times on 429
+      discovery_response = http.get("https://DISCOVERY_SERVICE_URL/v1/tenant-endpoints",
+        timeout: 10000,
+        retry_condition: "status == 429",
+        max_retries: 3)
+      // Extract fields from the nested JSON response using gjson paths
+      discovered_url     = body("result.tenant.endpoints.0.url")
+      discovered_api_key = body("result.tenant.credentials.api_key")
+      discovered_plan    = body("result.tenant.plan")
+      // Persist to registry so future requests skip discovery
+      registry.set_url("primary", discovered_url)
+      registry.set_id("api_key", discovered_api_key)
+      registry.set_meta("plan", discovered_plan)
+      // Make URL available in this request's slot context
+      upstream_url = discovered_url
+
+  # ── Call upstream using the discovered (or cached) URL ───────────────────
+  - name: call_tenant_upstream
+    action: upsert
+    code: |
+      tenant_api_key = registry.id("api_key")
+      set_upstream_header("X-API-Key", tenant_api_key)
+      resp = http.get(url_var: upstream_url, timeout: 5000)
+      return(200, resp)
+
+  # ── Main entry-point flow ─────────────────────────────────────────────────
+  - name: tenant_service_flow
+    action: upsert
+    code: |
+      // Identify tenant from X-Tenant-ID header
+      registry.lookup(header("X-Tenant-ID"))
+      // Try registry first — ~2–5 ns on hit
+      upstream_url = registry.url("primary")
+      // If no URL found → run discovery
+      if (upstream_url == "") {
+        call discover_and_persist
+      }
+      // If still empty after discovery → return 503
+      if (upstream_url == "") {
+        return(503, '{"error":"service temporarily unavailable"}')
+      }
+      call call_tenant_upstream
+
+  # ── Admin: force re-discovery ────────────────────────────────────────────
+  - name: force_rediscover
+    action: upsert
+    code: |
+      registry.lookup(header("X-Tenant-ID"))
+      registry.delete_url("primary")
+      call discover_and_persist
+      body = '{"status":"rediscovered","url":"{upstream_url}"}'
+      return(200, body)
+
+# ─────────────────────────────────────────────────────────────────────────────
+rate_limit_configs_v2:
+  - name: rl-per-tenant
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 100
+      - period: 1h
+        limit: 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  - name: sample-tenant-service
+    path: /samples/tenant/service
+    method: GET
+    flow_name: tenant_service_flow
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-per-tenant
+        count_by: tenant
+
+  - name: sample-tenant-rediscover
+    path: /samples/tenant/rediscover
+    method: POST
+    flow_name: force_rediscover
+    action: upsert

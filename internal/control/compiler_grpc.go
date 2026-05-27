@@ -29,7 +29,9 @@ func (c *Compiler) compileGrpcCall(step StepConfig) error {
 		Compress:          grpcBoolFromInput(step.Input, "compress"),
 		WaitForReady:      grpcBoolFromInput(step.Input, "wait_for_ready"),
 		ForwardHeaders:    grpcBoolFromInput(step.Input, "forward_headers"),
-		MaxRetries:        grpcIntFromInput(step.Input, "max_retries", 0),
+		MaxRetries:         grpcIntFromInput(step.Input, "max_retries", 0),
+		RetryBaseBackoffMs: grpcIntFromInput(step.Input, "retry_backoff_ms", 50),
+		RetryMaxBackoffMs:  grpcIntFromInput(step.Input, "retry_max_backoff_ms", 500),
 	}
 
 	// Pre-compute the gRPC full method path.

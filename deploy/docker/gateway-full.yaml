@@ -33,6 +33,9 @@ datastore:
     obs_access_log:  "postgres_primary"
     obs_metrics:     "postgres_primary"
     obs_traces:      "postgres_primary"
+    egress_profiles:     "postgres_primary"
+    validation_schemas:  "postgres_primary"
+    grpc_descriptors:    "postgres_primary"
     cache:           "redis_primary"
 
 cache:

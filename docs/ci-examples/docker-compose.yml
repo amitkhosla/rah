@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  # Build and test rah-sync locally
+  rah-sync-test:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.rah-sync
+    container_name: rah-sync-test
+    volumes:
+      # Mount your definitions directory
+      - ./../../definitions:/workspace/definitions:ro
+      # Mount output directory for JSON reports
+      - ./output:/workspace/output
+    environment:
+      # Optional: set studio URL for testing
+      STUDIO_URL: http://studio:8080
+    # Override entrypoint for linting
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Running rah-sync linting..."
+        rah-sync lint /workspace/definitions --output json > /workspace/output/lint-report.json
+        cat /workspace/output/lint-report.json
+        echo ""
+        echo "Linting complete. Report saved to output/lint-report.json"
+    networks:
+      - rah-network
+
+  # Optional: Local Studio instance for testing publish/promote
+  studio:
+    image: httpbin.org:latest
+    container_name: rah-studio-test
+    ports:
+      - "8080:80"
+    networks:
+      - rah-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Multi-stage test: lint, then publish (if successful)
+  rah-sync-full:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.rah-sync
+    container_name: rah-sync-full
+    depends_on:
+      studio:
+        condition: service_healthy
+    volumes:
+      - ./../../definitions:/workspace/definitions:ro
+      - ./output:/workspace/output
+    environment:
+      STUDIO_URL: http://studio:8080
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Step 1: Linting definitions..."
+        rah-sync lint /workspace/definitions --strict --output json > /workspace/output/lint-result.json
+        echo "✓ Linting passed"
+
+        echo ""
+        echo "Step 2: Publishing bundle..."
+        rah-sync publish /workspace/definitions \
+          --studio http://studio:8080 \
+          --tag local-test \
+          --git-branch development
+        echo "✓ Publishing complete"
+
+        echo ""
+        echo "All checks passed!"
+    networks:
+      - rah-network
+
+networks:
+  rah-network:
+    driver: bridge
+
+volumes:
+  output:
+    driver: local

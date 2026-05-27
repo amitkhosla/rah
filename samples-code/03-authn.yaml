@@ -1,0 +1,115 @@
+# ─── Authentication Samples — Code Style ─────────────────────────────────────
+#
+# Two auth patterns, each decomposed into small named building blocks.
+# The entry-point flows read like pseudocode:
+#
+#   api_jwt_protected:
+#     call validate_jwt                  # verify RS256 token; halt 401 on failure
+#     call log_verified_caller           # write subject to access log
+#     call proxy_to_protected_upstream   # forward to httpbin
+#
+#   api_introspect_protected:
+#     call introspect_access_token       # RFC 7662 call; halt 401 on failure
+#     call log_verified_caller           # same logging step — reused!
+#     call proxy_to_protected_upstream   # same upstream step — reused!
+#
+# Notice: log_verified_caller and proxy_to_protected_upstream are shared
+# between both auth patterns.  This is the key benefit of the code-style
+# approach — common steps are written once and called by name.
+#
+# Replace YOUR_IDP_DOMAIN / your-api-id with your actual IDP configuration.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SHARED BUILDING BLOCKS (used by both auth patterns)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Shared: log the verified caller subject to the access log Extra section.
+  # Works after either validate_jwt or introspect_access_token because
+  # both write to the same verified_subject slot.
+  - name: log_verified_caller
+    action: upsert
+    code: |
+      log("caller_subject", verified_subject)
+
+  # Shared: forward the request to the protected upstream and return the response.
+  - name: proxy_to_protected_upstream
+    action: upsert
+    code: |
+      upstream_body = http.get("https://httpbin.org/anything",
+        forward_incoming_headers: true,
+        timeout: 5000)
+      return(200, upstream_body)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PATTERN 1: JWT VALIDATION BUILDING BLOCK
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Validate the RS256 JWT in Authorization: Bearer <token>.
+  # Writes the verified sub claim to verified_subject on success.
+  # Halts with 401 on any failure — execution stops here, caller gets 401.
+  - name: validate_jwt
+    action: upsert
+    code: |
+      validate_token(header.Authorization,
+        jwks_url: "https://YOUR_IDP_DOMAIN/.well-known/jwks.json",
+        alg: "RS256",
+        issuer: "https://YOUR_IDP_DOMAIN/",
+        audience: "your-api-id",
+        checks: "signature,expiry,issuer,audience",
+        leeway: "30",
+        on_failure: stop,
+        failure_status: "401",
+        subject_var: verified_subject)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PATTERN 2: TOKEN INTROSPECTION BUILDING BLOCK
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Call the RFC 7662 introspection endpoint.
+  # Introspection response is cached for 30 s to avoid hammering the auth server.
+  # Writes the verified sub claim to verified_subject on success.
+  # Halts with 401 on failure.
+  - name: introspect_access_token
+    action: upsert
+    code: |
+      validate_introspection(
+        url: "https://YOUR_IDP_DOMAIN/oauth2/introspect",
+        token_header: "Authorization",
+        cache_ttl: "30",
+        subject_var: verified_subject)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS  — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_jwt_protected
+    action: upsert
+    code: |
+      call validate_jwt
+      call log_verified_caller
+      call proxy_to_protected_upstream
+
+  - name: api_introspect_protected
+    action: upsert
+    code: |
+      call introspect_access_token
+      call log_verified_caller
+      call proxy_to_protected_upstream
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  - name: sample-cs-jwt-protected
+    path: /samples/cs/protected/jwt
+    method: GET
+    flow_name: api_jwt_protected
+    action: upsert
+
+  - name: sample-cs-introspect-protected
+    path: /samples/cs/protected/introspect
+    method: GET
+    flow_name: api_introspect_protected
+    action: upsert

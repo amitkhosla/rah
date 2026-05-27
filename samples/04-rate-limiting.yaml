@@ -1,0 +1,112 @@
+# ─── Rate Limiting Samples ────────────────────────────────────────────────────
+#
+# Demonstrates four rate limiting patterns using the RAH V2 multi-window model.
+#
+# Rate limit configs are defined once in rate_limit_configs_v2 and referenced
+# from API definitions via rate_limit_policies.
+#
+#  Pattern A – By IP          → rate_limit_policies on the API definition
+#  Pattern B – By header value → flow binds the key, inline rate_limit_v2 step
+#  Pattern C – Global          → rate_limit_policies count_by: global
+#  Pattern D – Multi-window    → same config, three simultaneous windows
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # Shared: simple 200 response used by most rate-limited sample endpoints
+  - name: rl_ok_response
+    action: upsert
+    code: |
+      return(200, '{"status":"ok"}')
+
+  # Pattern B: bind the API key header, enforce inline, then respond
+  - name: rl_by_header_flow
+    action: upsert
+    code: |
+      api_key_slot = header("X-API-Key")
+      rate_limit_v2(config: "rl-by-header", count_by: slot, slot: api_key_slot)
+      return(200, '{"status":"ok"}')
+
+# ─────────────────────────────────────────────────────────────────────────────
+rate_limit_configs_v2:
+
+  # A. Per-IP limits: 10 req/s burst, 100 req/min sustained
+  - name: rl-by-ip
+    enforcement: approximate
+    windows:
+      - period: 1s
+        limit: 10
+      - period: 1m
+        limit: 100
+
+  # B. Per-header (API key) limits: 1000 requests per hour per key
+  - name: rl-by-header
+    enforcement: approximate
+    windows:
+      - period: 1h
+        limit: 1000
+
+  # C. Global limits: 5000 requests per minute across ALL callers
+  - name: rl-global
+    enforcement: approximate
+    exceeded_status: 429
+    exceeded_body: '{"error":"rate limit exceeded","retry_after":60}'
+    windows:
+      - period: 1m
+        limit: 5000
+
+  # D. Multi-window: burst + sustained + hourly cap (all per-IP)
+  - name: rl-multi-window
+    enforcement: approximate
+    windows:
+      - period: 1s
+        limit: 10
+      - period: 1m
+        limit: 100
+      - period: 1h
+        limit: 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  # A. Rate limit by IP (policy auto-injects before the flow)
+  - name: sample-rl-ip
+    path: /samples/rl/by-ip
+    method: GET
+    flow_name: rl_ok_response
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-by-ip
+        count_by: ip
+
+  # B. Rate limit by API key header (inline enforcement in flow)
+  - name: sample-rl-header
+    path: /samples/rl/by-header
+    method: GET
+    flow_name: rl_by_header_flow
+    action: upsert
+    skip_rate_limit: true     # flow handles it explicitly
+
+  # C. Global rate limit
+  - name: sample-rl-global
+    path: /samples/rl/global
+    method: GET
+    flow_name: rl_ok_response
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-global
+        count_by: global
+
+  # D. Multi-window rate limit (3 simultaneous windows, per IP)
+  - name: sample-rl-multi-window
+    path: /samples/rl/multi-window
+    method: GET
+    flow_name: rl_ok_response
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-multi-window
+        count_by: ip

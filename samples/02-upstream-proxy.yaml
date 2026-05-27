@@ -1,0 +1,69 @@
+# ─── Upstream Proxy Samples ───────────────────────────────────────────────────
+#
+# Demonstrates two core upstream patterns:
+#
+#  1. simple_proxy      – unconditional passthrough to a fixed upstream URL
+#  2. proxy_with_cache  – check L1 cache first; call upstream on miss; cache
+#                         the response for 5 minutes (300 s)
+#
+# Upstream used in these examples: https://httpbin.org (public echo/testing API)
+# Replace with your own upstream URL before deploying to production.
+#
+# The cache key is derived from the request path so each distinct path gets its
+# own cache slot.
+#
+# Flow topology (cache-first):
+#
+#   proxy_with_cache
+#     cache_key = request path
+#     cached_response = cache.get(cache_key)
+#     if (cached_response != "") → return 200, cached_response
+#     else:
+#       upstream_response = http.get(url)
+#       cache.set(cache_key, upstream_response, ttl: 300)
+#       return 200, upstream_response
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ── 1. Simple passthrough proxy ─────────────────────────────────────────
+  - name: simple_proxy
+    action: upsert
+    code: |
+      upstream_body = http.get("https://httpbin.org/get",
+        forward_incoming_headers: true,
+        forward_response_headers: true,
+        timeout: 5000)
+      return(200, upstream_body)
+
+  # ── 2. Cache-first proxy ─────────────────────────────────────────────────
+  - name: proxy_with_cache
+    action: upsert
+    code: |
+      cache_key = header("X-Cache-Key")
+      cached_response = cache.get(cache_key)
+      if (cached_response != "") {
+        return(200, cached_response)
+      }
+      upstream_response = http.get("https://httpbin.org/get", timeout: 5000)
+      cache.set(cache_key, upstream_response, ttl: 300)
+      return(200, upstream_response)
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  # GET /samples/proxy → simple passthrough
+  - name: sample-simple-proxy
+    path: /samples/proxy
+    method: GET
+    flow_name: simple_proxy
+    action: upsert
+
+  # GET /samples/cached → cache-first proxy
+  # First call per key hits the upstream; subsequent calls within 5 min are
+  # served from the L1 cache (~500 ns vs upstream RTT).
+  - name: sample-cached-proxy
+    path: /samples/cached
+    method: GET
+    flow_name: proxy_with_cache
+    action: upsert
