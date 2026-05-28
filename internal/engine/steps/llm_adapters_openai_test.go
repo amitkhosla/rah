@@ -60,3 +60,28 @@ func TestOpenAIUnmarshalToolCalls(t *testing.T) {
 		t.Errorf("tool name: %s", resp.ContentBlocks[0].ToolName)
 	}
 }
+
+func TestOpenAIUnmarshal_CachedTokens(t *testing.T) {
+	adapter := &openAIAdapter{}
+	body := []byte(`{
+		"choices": [{"message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 150,
+			"completion_tokens": 30,
+			"total_tokens": 180,
+			"prompt_tokens_details": {
+				"cached_tokens": 120
+			}
+		}
+	}`)
+	resp, err := adapter.Unmarshal(body)
+	if err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if resp.InputTokens != 150 {
+		t.Errorf("expected InputTokens=150, got %d", resp.InputTokens)
+	}
+	if resp.CacheReadTokens != 120 {
+		t.Errorf("expected CacheReadTokens=120, got %d", resp.CacheReadTokens)
+	}
+}

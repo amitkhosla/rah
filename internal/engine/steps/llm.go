@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -116,6 +117,18 @@ type LLMCallConfig struct {
 	// to ctx.ByteSlots[ThinkingOutSlot] after a successful call.
 	// Set to -1 (default) to skip.
 	ThinkingOutSlot int
+
+	// Anthropic provider-side prompt caching.
+	PromptCacheEnabled bool // bake-time opt-in; adds cache_control to the request
+	PromptCacheUpTo    int  // which message index to mark (-1 = last)
+	CacheReadSlot      int  // IntSlot to write cache_read_input_tokens into (-1 = skip)
+	CacheCreationSlot  int  // IntSlot to write cache_creation_input_tokens into (-1 = skip)
+
+	// StreamToClient enables true SSE streaming from the LLM provider to the HTTP client.
+	// When true and ctx.GetWriter() is non-nil, the response body is streamed token-by-token
+	// instead of buffered. The result slot is NOT populated in streaming mode.
+	// Must be false when ToolsSlot >= 0 (tool calling requires the full response buffered).
+	StreamToClient bool
 }
 
 // FallbackEntry holds one step in the fallback chain, resolved at bake time.
@@ -215,6 +228,23 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 	// Ensure ModelSlot default: 0 would conflict with a real slot, so callers
 	// that don't want dynamic routing must explicitly set ModelSlot = -1.
 	// For backward compatibility, treat ModelSlot == 0 with nil catalog as "disabled".
+
+	// Bake-time validation.
+	if cfg.StreamToClient && cfg.ToolsSlot >= 0 {
+		bakeErr := fmt.Errorf("llm_call: stream_to_client cannot be used with tools_slot (tool calling requires buffered response)")
+		return engine.Instruction{
+			Name: "llm_call[bad_config]",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				ctx.ResponseStatus = 500
+				ctx.Failed = true
+				ctx.ErrorCode = 500
+				msg := bakeErr.Error()
+				ctx.ErrorMsg = ctx.Alloc(len(msg))
+				copy(ctx.ErrorMsg, msg)
+				return engine.StopPlan
+			},
+		}
+	}
 
 	// Resolve baked params using the baked-in key; runtime slot key applied per-request below.
 	bakedParams, err := resolveCallParams(cfg.ModelConfig, cfg.APIKey)
@@ -405,6 +435,9 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				Temperature:         cfg.Temperature,
 				ProviderParams:      activeCfg.ProviderParams,
 				UseCompletionTokens: activeCfg.UseCompletionTokens,
+				PromptCacheEnabled:  cfg.PromptCacheEnabled,
+				PromptCacheUpTo:     cfg.PromptCacheUpTo,
+				StreamMode:          cfg.StreamToClient,
 			}
 
 			// 3b. Populate tools, tool_choice, and thinking from slots / baked config.
@@ -562,6 +595,29 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						break
 					}
 
+					// Streaming path: pipe SSE directly to the client.
+					if cfg.StreamToClient && ctx.GetWriter() != nil && resp.StatusCode == http.StatusOK {
+						streamProvider := "openai" // default (OpenAI-compatible)
+						if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
+							streamProvider = "anthropic"
+						}
+						inTok, outTok, streamErr := streamLLMToClient(ctx, resp.Body, streamProvider)
+						// Write token counts to slots even in streaming mode.
+						if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
+							ctx.IntSlots[cfg.InputTokensSlot] = int64(inTok)
+						}
+						if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
+							ctx.IntSlots[cfg.OutputTokensSlot] = int64(outTok)
+						}
+						if streamErr != nil {
+							// Streaming already started — cannot retry/fallback. Signal done.
+							ctx.Failed = true
+							return engine.StopPlan
+						}
+						// Streaming complete — skip the buffered response path entirely.
+						return state.PC + 1
+					}
+
 					respBody, readErr := io.ReadAll(resp.Body)
 					resp.Body.Close()
 					lastStatus = resp.StatusCode
@@ -640,6 +696,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					}
 					if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
 						ctx.IntSlots[cfg.OutputTokensSlot] = int64(llmResp.OutputTokens)
+					}
+					// Write cache token counts to IntSlots (if configured).
+					if cfg.CacheReadSlot >= 0 && cfg.CacheReadSlot < len(ctx.IntSlots) {
+						ctx.IntSlots[cfg.CacheReadSlot] = int64(llmResp.CacheReadTokens)
+					}
+					if cfg.CacheCreationSlot >= 0 && cfg.CacheCreationSlot < len(ctx.IntSlots) {
+						ctx.IntSlots[cfg.CacheCreationSlot] = int64(llmResp.CacheCreationTokens)
 					}
 					// 10. Write stop reason to ByteSlot (used by format_response).
 					if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
@@ -853,6 +916,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.OutputTokensSlot] = int64(fbLlmResp.OutputTokens)
 				}
+				if cfg.CacheReadSlot >= 0 && cfg.CacheReadSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[cfg.CacheReadSlot] = int64(fbLlmResp.CacheReadTokens)
+				}
+				if cfg.CacheCreationSlot >= 0 && cfg.CacheCreationSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[cfg.CacheCreationSlot] = int64(fbLlmResp.CacheCreationTokens)
+				}
 				if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
 					sr := ctx.Alloc(len(fbLlmResp.StopReason))
 					copy(sr, fbLlmResp.StopReason)
@@ -944,4 +1013,75 @@ func mergeProviderParams(base []byte, params map[string]any) ([]byte, error) {
 		m[k] = v
 	}
 	return json.Marshal(m)
+}
+
+// streamLLMToClient streams an LLM SSE response body directly to the HTTP client.
+// It reads the upstream body line-by-line, parses provider SSE chunks, writes
+// data frames to ctx.Writer, and accumulates token counts into totalIn/totalOut.
+// provider must be "anthropic" or "openai" (anything else is treated as openai-compatible).
+// Returns (inputTokens, outputTokens, error).
+func streamLLMToClient(ctx *rctx.Context, body io.ReadCloser, provider string) (int, int, error) {
+	defer body.Close()
+
+	w := ctx.GetWriter()
+	if w == nil {
+		return 0, 0, fmt.Errorf("streamLLMToClient: no writer available")
+	}
+
+	type flusher interface{ Flush() }
+	fl, canFlush := w.(flusher)
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+
+	var totalIn, totalOut int
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		// SSE lines starting with "data: "
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		payload := bytes.TrimPrefix(line, []byte("data: "))
+
+		var (
+			delta    string
+			inTok    int
+			outTok   int
+			done     bool
+			parseErr error
+		)
+
+		switch provider {
+		case "anthropic":
+			delta, inTok, outTok, done, parseErr = ParseAnthropicStreamChunk(payload)
+		default: // openai-compatible
+			delta, inTok, outTok, done, parseErr = ParseOpenAIStreamChunk(payload)
+		}
+
+		if parseErr != nil {
+			continue // skip malformed chunks
+		}
+
+		if inTok > 0 {
+			totalIn += inTok
+		}
+		if outTok > 0 {
+			totalOut += outTok
+		}
+
+		if len(delta) > 0 {
+			frame := "data: " + delta + "\n\n"
+			_, _ = io.WriteString(w, frame)
+			if canFlush {
+				fl.Flush()
+			}
+		}
+
+		if done {
+			break
+		}
+	}
+
+	return totalIn, totalOut, scanner.Err()
 }

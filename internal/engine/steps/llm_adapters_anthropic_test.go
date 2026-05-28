@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -151,5 +152,54 @@ func TestAnthropicUnmarshalMixedBlocks(t *testing.T) {
 	}
 	if resp.ThinkingTokens != 500 {
 		t.Errorf("ThinkingTokens: %d", resp.ThinkingTokens)
+	}
+}
+
+func TestAnthropicMarshal_PromptCache(t *testing.T) {
+	adapter := &anthropicAdapter{}
+	req := LLMRequest{
+		Model:     "claude-3-5-haiku-20241022",
+		MaxTokens: 100,
+		Messages: []CanonicalMessage{
+			{Role: RoleUser, Content: "You are a helpful assistant."},
+			{Role: RoleUser, Content: "Hello, world!"},
+		},
+		PromptCacheEnabled: true,
+		PromptCacheUpTo:    0, // mark first message
+	}
+	body, err := adapter.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, `"cache_control"`) {
+		t.Errorf("expected cache_control in marshaled body, got: %s", s)
+	}
+	if !strings.Contains(s, `"ephemeral"`) {
+		t.Errorf("expected ephemeral in marshaled body, got: %s", s)
+	}
+}
+
+func TestAnthropicUnmarshal_CacheTokens(t *testing.T) {
+	adapter := &anthropicAdapter{}
+	body := []byte(`{
+		"content": [{"type":"text","text":"hello"}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 100,
+			"output_tokens": 20,
+			"cache_creation_input_tokens": 80,
+			"cache_read_input_tokens": 50
+		}
+	}`)
+	resp, err := adapter.Unmarshal(body)
+	if err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if resp.CacheCreationTokens != 80 {
+		t.Errorf("expected CacheCreationTokens=80, got %d", resp.CacheCreationTokens)
+	}
+	if resp.CacheReadTokens != 50 {
+		t.Errorf("expected CacheReadTokens=50, got %d", resp.CacheReadTokens)
 	}
 }

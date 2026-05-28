@@ -53,6 +53,55 @@ func counterEpochCAS(slot *uint64, epoch uint32, limit uint32) (bool, uint32) {
 	}
 }
 
+// counterEpochCASBy is like counterEpochCAS but increments the counter by delta
+// instead of 1. delta == 0 is treated as 1 to prevent no-op increments.
+// If delta would exceed the limit, the request is denied and the counter is not modified.
+func counterEpochCASBy(slot *uint64, epoch uint32, limit uint32, delta uint32) (bool, uint32) {
+	if limit == 0 {
+		return false, 0
+	}
+	if delta == 0 {
+		delta = 1
+	}
+	for {
+		old := atomic.LoadUint64(slot)
+		storedEpoch := uint32(old >> 32)
+
+		if storedEpoch != epoch {
+			// New time window — reset to [epoch | delta].
+			if delta > limit {
+				// Delta alone exceeds limit — deny without modifying.
+				return false, 0
+			}
+			newVal := (uint64(epoch) << 32) | uint64(delta)
+			if atomic.CompareAndSwapUint64(slot, old, newVal) {
+				remaining := uint32(0)
+				if limit > delta {
+					remaining = limit - delta
+				}
+				return true, remaining
+			}
+			continue
+		}
+
+		// Same window.
+		count := uint32(old & 0xFFFFFFFF)
+		newCount := count + delta
+		if newCount > limit {
+			// Adding delta would exceed limit — deny.
+			return false, 0
+		}
+		newVal := (uint64(epoch) << 32) | uint64(newCount)
+		if atomic.CompareAndSwapUint64(slot, old, newVal) {
+			remaining := uint32(0)
+			if limit > newCount {
+				remaining = limit - newCount
+			}
+			return true, remaining
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -123,6 +172,19 @@ func (a *TenantCounterArena) Increment(tenantID uint16, windowIdx int, epoch uin
 	return counterEpochCAS(&a.slots[idx], epoch, limit)
 }
 
+// IncrementBy is like Increment but adds delta to the counter instead of 1.
+// Use this for token-weighted rate limiting where delta = tokens consumed.
+func (a *TenantCounterArena) IncrementBy(tenantID uint16, windowIdx int, epoch, limit, delta uint32) (bool, uint32) {
+	if limit == 0 {
+		return false, 0
+	}
+	if int(tenantID) >= a.maxTenants || windowIdx < 0 || windowIdx >= a.numWindows {
+		return true, 0
+	}
+	idx := int(tenantID)*a.numWindows + windowIdx
+	return counterEpochCASBy(&a.slots[idx], epoch, limit, delta)
+}
+
 // ---------------------------------------------------------------------------
 // Part B — SlotCounterArena
 // ---------------------------------------------------------------------------
@@ -163,6 +225,17 @@ func (a *SlotCounterArena) Increment(keyBytes []byte, windowIdx int, epoch uint3
 	h ^= uint32(windowIdx) * 2654435761
 	idx := h & a.mask
 	return counterEpochCAS(&a.slots[idx], epoch, limit)
+}
+
+// IncrementBy is like Increment but adds delta to the counter instead of 1.
+func (a *SlotCounterArena) IncrementBy(keyBytes []byte, windowIdx int, epoch, limit, delta uint32) (bool, uint32) {
+	if limit == 0 {
+		return false, 0
+	}
+	h := arenaFNV32a(keyBytes)
+	h ^= uint32(windowIdx) * 2654435761
+	idx := h & a.mask
+	return counterEpochCASBy(&a.slots[idx], epoch, limit, delta)
 }
 
 // CollisionRate returns an estimate of hash-table occupancy: activeKeys / arenaSize.

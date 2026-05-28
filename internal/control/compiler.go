@@ -697,13 +697,14 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 						Name: "CHECK_RATE_LIMIT_V2",
 						Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 							step := &steps.CheckRateLimitV2{
-								ConfigID:   capturedConfigID,
-								CountBy:    capturedCountBy,
-								Windows:    capturedWindows,
-								DeniedPC:   rlv2DeniedPC,
-								NextPC:     rlv2NextPC,
-								RemoteRL:   capturedRemoteRL,
-								ConfigName: capturedConfigName,
+								ConfigID:      capturedConfigID,
+								CountBy:       capturedCountBy,
+								Windows:       capturedWindows,
+								DeniedPC:      rlv2DeniedPC,
+								NextPC:        rlv2NextPC,
+								RemoteRL:      capturedRemoteRL,
+								ConfigName:    capturedConfigName,
+								WeightIntSlot: -1,
 							}
 							return step.Execute(ctx, s)
 						},
@@ -767,6 +768,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		//   xff_index     - integer string, XFF position (for count_by=ip, default 0)
 		//   on_empty      - "fail"|"skip"|"fallback_tenant" (default: "fail")
 		//   fail_fast     - "true"/"false" (default false)
+		//   duration      - human-readable window duration (e.g. "5m", "1h", "1d") (optional, overrides config)
+		//   weight_var    - slot name holding the token count weight for cost limits (optional)
 		//   denied_label  - label for the denied branch (optional)
 		countBy := buildRLCountBy(step.Input, func(name string) int {
 			idx, _ := c.getSlot(name)
@@ -797,6 +800,32 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				}
 			}
 		}
+		// If duration is specified, override/add a single window at index 0.
+		if durationStr := strings.TrimSpace(step.Input["duration"]); durationStr != "" {
+			durationSecs, durErr := steps.ParseWindowDuration(durationStr)
+			if durErr == nil {
+				windows = []steps.WindowSpec{
+					{
+						EpochDiv: durationSecs,
+						Limit:    0, // will be filled from config if available
+						Idx:      0,
+					},
+				}
+				// If we have a config, fill in the limit; otherwise use base limit = 1000
+				if c.RegMgr != nil && len(c.RegMgr.GetRateLimitConfigV2(configName).Windows) > 0 {
+					windows[0].Limit = c.RegMgr.GetRateLimitConfigV2(configName).Windows[0].Limit
+				} else {
+					windows[0].Limit = 1000 // reasonable default
+				}
+			}
+		}
+		// Resolve weight_var (optional IntSlot for token-count weighting).
+		weightIntSlot := -1
+		if weightVarName := strings.TrimSpace(step.Input["weight_var"]); weightVarName != "" {
+			if wIdx, wErr := c.getSlot(weightVarName); wErr == nil {
+				weightIntSlot = wIdx
+			}
+		}
 		// Wire distributed rate limiting when enforcement == "strict" and a
 		// RemoteRL provider is configured. Local (approximate) mode is the default.
 		var rlv2RemoteRL engine.ExternalRateLimitProvider
@@ -809,13 +838,14 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			Name: "CHECK_RATE_LIMIT_V2",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 				step := &steps.CheckRateLimitV2{
-					ConfigID:   configID,
-					CountBy:    countBy,
-					Windows:    windows,
-					DeniedPC:   rlv2DeniedPC,
-					NextPC:     rlv2NextPC,
-					RemoteRL:   rlv2RemoteRL,
-					ConfigName: configName,
+					ConfigID:      configID,
+					CountBy:       countBy,
+					Windows:       windows,
+					DeniedPC:      rlv2DeniedPC,
+					NextPC:        rlv2NextPC,
+					RemoteRL:      rlv2RemoteRL,
+					ConfigName:    configName,
+					WeightIntSlot: weightIntSlot,
 				}
 				return step.Execute(ctx, s)
 			},
@@ -3336,13 +3366,14 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 			StepIdx: -1, // system instruction — not a user-defined flow step
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 				rl := &steps.CheckRateLimitV2{
-					ConfigID:   capturedConfigID,
-					CountBy:    capturedCountBy,
-					Windows:    capturedWindows,
-					DeniedPC:   deniedPC,
-					NextPC:     nextPC,
-					RemoteRL:   capturedRemoteRL,
-					ConfigName: capturedConfigName,
+					ConfigID:      capturedConfigID,
+					CountBy:       capturedCountBy,
+					Windows:       capturedWindows,
+					DeniedPC:      deniedPC,
+					NextPC:        nextPC,
+					RemoteRL:      capturedRemoteRL,
+					ConfigName:    capturedConfigName,
+					WeightIntSlot: -1,
 				}
 				return rl.Execute(ctx, s)
 			},

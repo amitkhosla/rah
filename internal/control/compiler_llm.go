@@ -117,6 +117,11 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		ThinkingSlot:    -1,
 		ToolUseSlot:     -1,
 		ThinkingOutSlot: -1,
+		// Prompt caching — disabled by default
+		PromptCacheEnabled: false,
+		PromptCacheUpTo:    -1,
+		CacheReadSlot:      -1,
+		CacheCreationSlot:  -1,
 	}
 
 	// Dynamic model slot (optional)
@@ -356,6 +361,36 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			return fmt.Errorf("llm_call: thinking_out_slot: %w", err)
 		}
 		llmCfg.ThinkingOutSlot = s
+	}
+
+	// prompt_cache: "true"/"false" to enable Anthropic prompt caching.
+	if v, ok := step.Input["prompt_cache"]; ok && v != "" {
+		llmCfg.PromptCacheEnabled = v == "true"
+	}
+
+	// prompt_cache_up_to: which message index to mark for caching (default -1 = last).
+	if v, ok := step.Input["prompt_cache_up_to"]; ok && v != "" {
+		if idx, convErr := strconv.Atoi(v); convErr == nil {
+			llmCfg.PromptCacheUpTo = idx
+		}
+	}
+
+	// cache_read_var: IntSlot to write cache_read_input_tokens into.
+	if v, ok := step.Input["cache_read_var"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: cache_read_var: %w", err)
+		}
+		llmCfg.CacheReadSlot = s
+	}
+
+	// cache_creation_var: IntSlot to write cache_creation_input_tokens into.
+	if v, ok := step.Input["cache_creation_var"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("llm_call: cache_creation_var: %w", err)
+		}
+		llmCfg.CacheCreationSlot = s
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))

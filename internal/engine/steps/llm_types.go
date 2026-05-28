@@ -111,6 +111,15 @@ type LLMRequest struct {
 	Tools      []ToolDefinition
 	ToolChoice *ToolChoice
 	Thinking   *ThinkingConfig
+	// PromptCacheEnabled opts in to Anthropic provider-side prompt caching.
+	// When true, the adapter adds cache_control to the message at PromptCacheUpTo.
+	PromptCacheEnabled bool
+	// PromptCacheUpTo is the index of the message to mark with cache_control.
+	// -1 (default) means the last message in the list.
+	PromptCacheUpTo int
+	// StreamMode requests a streaming SSE response from the provider.
+	// Set automatically by llm_call when StreamToClient is true.
+	StreamMode bool
 }
 
 // LLMResponse is the provider-agnostic response from any LLM.
@@ -122,6 +131,12 @@ type LLMResponse struct {
 	// NEW: all response blocks (text + tool_use + thinking); ThinkingTokens for extended reasoning
 	ContentBlocks  []ContentBlock
 	ThinkingTokens int
+	// CacheReadTokens is the number of tokens served from Anthropic's prompt cache.
+	// Non-zero only when PromptCacheEnabled was true in the request.
+	CacheReadTokens int
+	// CacheCreationTokens is the number of tokens written into Anthropic's prompt cache.
+	// Non-zero only on the first request that populates the cache entry.
+	CacheCreationTokens int
 }
 
 // estimateTokens returns a rough token count estimate for a string.

@@ -245,3 +245,54 @@ func TestCounterArena_NextPow2(t *testing.T) {
 		}
 	}
 }
+
+// TestTenantCounterArena_IncrementBy tests delta-weighted increments.
+func TestTenantCounterArena_IncrementBy(t *testing.T) {
+	arena := NewTenantCounterArena(10, 2)
+	epoch := uint32(12345)
+
+	// First call with delta=500 should consume 500 of 1000 limit
+	ok, rem := arena.IncrementBy(1, 0, epoch, 1000, 500)
+	if !ok {
+		t.Fatal("expected allowed")
+	}
+	if rem != 500 {
+		t.Fatalf("expected remaining=500, got %d", rem)
+	}
+
+	// Second call with delta=500 should hit limit exactly
+	ok, _ = arena.IncrementBy(1, 0, epoch, 1000, 500)
+	if !ok {
+		t.Fatal("expected allowed on exact limit")
+	}
+
+	// Third call should be denied (over limit)
+	ok, _ = arena.IncrementBy(1, 0, epoch, 1000, 1)
+	if ok {
+		t.Fatal("expected denied after limit reached")
+	}
+
+	// New epoch should reset
+	ok, _ = arena.IncrementBy(1, 0, epoch+1, 1000, 1)
+	if !ok {
+		t.Fatal("expected allowed in new epoch")
+	}
+}
+
+// TestSlotCounterArena_IncrementBy tests delta-weighted increments for slot-based counters.
+func TestSlotCounterArena_IncrementBy(t *testing.T) {
+	arena := NewSlotCounterArena(1024)
+	key := []byte("user-123")
+	epoch := uint32(99999)
+
+	ok, _ := arena.IncrementBy(key, 0, epoch, 100, 60)
+	if !ok {
+		t.Fatal("expected allowed")
+	}
+
+	// Delta larger than remaining should be denied
+	ok, _ = arena.IncrementBy(key, 0, epoch, 100, 50)
+	if ok {
+		t.Fatal("expected denied: 60+50 > 100")
+	}
+}

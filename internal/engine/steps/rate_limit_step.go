@@ -2,7 +2,9 @@ package steps
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"rah/internal/engine"
@@ -560,4 +562,63 @@ func rateLimitIndex(
 		uint64(epoch)*1000003 ^
 		uint64(windowType)*2166136261
 	return uint32(h) % uint32(len(store.Arena))
+}
+
+// ParseWindowDuration converts a human-readable duration string to seconds (EpochDiv).
+// Accepted formats (case-insensitive):
+//   Ns / Nsec / Nsecond(s)  → N seconds
+//   Nm / Nmin / Nminute(s)  → N*60
+//   Nh / Nhr  / Nhour(s)    → N*3600
+//   Nd / Nday(s)            → N*86400
+//   Nw / Nweek(s)           → N*604800
+//   Nmo / Nmonth(s)         → N*2592000  (fixed 30-day window)
+//   Ny / Nyr / Nyear(s)     → N*31536000
+//   Raw integer string       → parsed directly as seconds (backward compat)
+// Returns an error if the string is empty or unparseable.
+func ParseWindowDuration(s string) (uint32, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, fmt.Errorf("empty duration string")
+	}
+	// Try raw integer first (backward compat).
+	if n, err := strconv.ParseUint(s, 10, 32); err == nil {
+		return uint32(n), nil
+	}
+	// Extract numeric prefix.
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9') {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("invalid duration %q: must start with a number", s)
+	}
+	n, err := strconv.ParseUint(s[:i], 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	unit := strings.TrimSpace(s[i:])
+	var mult uint64
+	switch {
+	case unit == "s" || unit == "sec" || strings.HasPrefix(unit, "second"):
+		mult = 1
+	case unit == "m" || unit == "min" || strings.HasPrefix(unit, "minute"):
+		mult = 60
+	case unit == "h" || unit == "hr" || strings.HasPrefix(unit, "hour"):
+		mult = 3600
+	case unit == "d" || strings.HasPrefix(unit, "day"):
+		mult = 86400
+	case unit == "w" || strings.HasPrefix(unit, "week"):
+		mult = 604800
+	case unit == "mo" || strings.HasPrefix(unit, "month"):
+		mult = 2592000
+	case unit == "y" || unit == "yr" || strings.HasPrefix(unit, "year"):
+		mult = 31536000
+	default:
+		return 0, fmt.Errorf("unknown duration unit %q in %q", unit, s)
+	}
+	result := n * mult
+	if result > math.MaxUint32 {
+		return 0, fmt.Errorf("duration %q overflows uint32", s)
+	}
+	return uint32(result), nil
 }

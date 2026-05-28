@@ -271,6 +271,56 @@ func TestSendSSEEvent_LargePayload(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicStreamChunk_TextDelta(t *testing.T) {
+	data := []byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}`)
+	delta, _, _, done, err := ParseAnthropicStreamChunk(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta != "hello" {
+		t.Errorf("expected delta=hello, got %q", delta)
+	}
+	if done {
+		t.Error("expected not done")
+	}
+}
+
+func TestParseAnthropicStreamChunk_MessageStop(t *testing.T) {
+	data := []byte(`{"type":"message_stop"}`)
+	_, _, _, done, err := ParseAnthropicStreamChunk(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !done {
+		t.Error("expected done=true on message_stop")
+	}
+}
+
+func TestParseOpenAIStreamChunk_Delta(t *testing.T) {
+	data := []byte(`{"choices":[{"delta":{"content":"world"},"finish_reason":null}]}`)
+	delta, _, _, done, err := ParseOpenAIStreamChunk(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta != "world" {
+		t.Errorf("expected delta=world, got %q", delta)
+	}
+	if done {
+		t.Error("expected not done")
+	}
+}
+
+func TestParseOpenAIStreamChunk_Done(t *testing.T) {
+	data := []byte(`[DONE]`)
+	_, _, _, done, err := ParseOpenAIStreamChunk(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !done {
+		t.Error("expected done=true on [DONE]")
+	}
+}
+
 func TestSendSSEEvent_EmptyIDSlot(t *testing.T) {
 	ctx := &rctx.Context{}
 	ctx.Writer = &mockSSEWriter{}

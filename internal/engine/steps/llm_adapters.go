@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -63,9 +64,14 @@ func NewAdapter(cfg config.LLMModelConfig) (ProviderAdapter, error) {
 
 type anthropicAdapter struct{}
 
+type anthropicCacheControl struct {
+	Type string `json:"type"` // always "ephemeral"
+}
+
 type anthropicReqMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"` // can be string or []block
+	Role         string                  `json:"role"`
+	Content      json.RawMessage         `json:"content"`      // can be string or []block
+	CacheControl *anthropicCacheControl  `json:"cache_control,omitempty"` // nil = not cached
 }
 
 type anthropicRequest struct {
@@ -76,6 +82,7 @@ type anthropicRequest struct {
 	Tools      []anthropicToolDef    `json:"tools,omitempty"`
 	ToolChoice json.RawMessage       `json:"tool_choice,omitempty"`
 	Thinking   json.RawMessage       `json:"thinking,omitempty"`
+	Stream     bool                  `json:"stream,omitempty"`
 }
 
 type anthropicToolDef struct {
@@ -103,9 +110,11 @@ type anthropicResponse struct {
 }
 
 type anthropicAdapterUsage struct {
-	InputTokens    int `json:"input_tokens"`
-	OutputTokens   int `json:"output_tokens"`
-	ThinkingTokens int `json:"thinking_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	ThinkingTokens           int `json:"thinking_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 // marshalAnthropicContent converts a CanonicalMessage's content blocks into
@@ -180,6 +189,7 @@ func (a *anthropicAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		MaxTokens: req.MaxTokens,
 		System:    system,
 		Messages:  msgs,
+		Stream:    req.StreamMode,
 	}
 
 	// Tools
@@ -231,6 +241,15 @@ func (a *anthropicAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		ar.Thinking = raw
 	}
 
+	// Prompt cache: mark the designated message with cache_control when enabled.
+	if req.PromptCacheEnabled && len(msgs) > 0 {
+		idx := req.PromptCacheUpTo
+		if idx < 0 || idx >= len(msgs) {
+			idx = len(msgs) - 1
+		}
+		msgs[idx].CacheControl = &anthropicCacheControl{Type: "ephemeral"}
+	}
+
 	return json.Marshal(ar)
 }
 
@@ -272,12 +291,14 @@ func (a *anthropicAdapter) Unmarshal(body []byte) (LLMResponse, error) {
 	}
 
 	return LLMResponse{
-		Content:        firstText,
-		StopReason:     resp.StopReason,
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		ContentBlocks:  contentBlocks,
-		ThinkingTokens: resp.Usage.ThinkingTokens,
+		Content:             firstText,
+		StopReason:          resp.StopReason,
+		InputTokens:         resp.Usage.InputTokens,
+		OutputTokens:        resp.Usage.OutputTokens,
+		ContentBlocks:       contentBlocks,
+		ThinkingTokens:      resp.Usage.ThinkingTokens,
+		CacheReadTokens:     resp.Usage.CacheReadInputTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationInputTokens,
 	}, nil
 }
 
@@ -323,14 +344,32 @@ type openAIFuncDef struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema
 }
 
+// openAIStreamOptions requests usage stats at the end of a streaming response.
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 type openAIRequest struct {
-	Model               string             `json:"model"`
-	MaxTokens           *int               `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`
-	Messages            []openAIReqMessage `json:"messages"`
-	Tools               []openAIToolDef    `json:"tools,omitempty"`
-	ToolChoice          any                `json:"tool_choice,omitempty"`
-	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
+	Model               string               `json:"model"`
+	MaxTokens           *int                 `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
+	Messages            []openAIReqMessage   `json:"messages"`
+	Tools               []openAIToolDef      `json:"tools,omitempty"`
+	ToolChoice          any                  `json:"tool_choice,omitempty"`
+	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	Stream              bool                 `json:"stream,omitempty"`
+	StreamOptions       *openAIStreamOptions `json:"stream_options,omitempty"`
+}
+
+type openAIPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type openAIUsage struct {
+	PromptTokens        int                        `json:"prompt_tokens"`
+	CompletionTokens    int                        `json:"completion_tokens"`
+	TotalTokens         int                        `json:"total_tokens"`
+	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type openAIResponse struct {
@@ -341,10 +380,7 @@ type openAIResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage openAIUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -486,6 +522,12 @@ func (o *openAIAdapter) Marshal(req LLMRequest) ([]byte, error) {
 		r.ReasoningEffort = req.Thinking.Effort
 	}
 
+	// Streaming mode: request SSE response with usage stats at the end.
+	if req.StreamMode {
+		r.Stream = true
+		r.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
+	}
+
 	return json.Marshal(r)
 }
 
@@ -517,13 +559,17 @@ func (o *openAIAdapter) Unmarshal(body []byte) (LLMResponse, error) {
 		}
 	}
 
-	return LLMResponse{
+	llmResp := LLMResponse{
 		Content:       text,
 		StopReason:    finishReason,
 		InputTokens:   resp.Usage.PromptTokens,
 		OutputTokens:  resp.Usage.CompletionTokens,
 		ContentBlocks: contentBlocks,
-	}, nil
+	}
+	if resp.Usage.PromptTokensDetails != nil {
+		llmResp.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedTokens
+	}
+	return llmResp, nil
 }
 
 func (o *openAIAdapter) Endpoint(baseURL, _ string) string {
@@ -1316,4 +1362,81 @@ func (c *customAdapter) Endpoint(baseURL, modelSlug string) string {
 
 func (c *customAdapter) AuthHeader(apiKey string) (string, string) {
 	return c.authHeaderName, c.authHeaderPrefix + apiKey
+}
+
+// ── SSE streaming chunk parsers ───────────────────────────────────────────────
+
+// anthropicStreamEvent holds one parsed Anthropic SSE data line.
+type anthropicStreamEvent struct {
+	Type    string `json:"type"` // "content_block_delta", "message_delta", "message_stop", etc.
+	Delta   *struct {
+		Type string `json:"type"` // "text_delta"
+		Text string `json:"text"`
+	} `json:"delta,omitempty"`
+	Usage   *anthropicAdapterUsage `json:"usage,omitempty"`
+	Message *struct {
+		Usage anthropicAdapterUsage `json:"usage"`
+	} `json:"message,omitempty"`
+}
+
+// ParseAnthropicStreamChunk parses one Anthropic SSE data-line payload.
+// Returns (textDelta, inputTokens, outputTokens, isDone, error).
+// isDone is true on "message_stop".
+func ParseAnthropicStreamChunk(data []byte) (delta string, inputTok, outputTok int, done bool, err error) {
+	var ev anthropicStreamEvent
+	if err = json.Unmarshal(data, &ev); err != nil {
+		return
+	}
+	switch ev.Type {
+	case "content_block_delta":
+		if ev.Delta != nil && ev.Delta.Type == "text_delta" {
+			delta = ev.Delta.Text
+		}
+	case "message_delta":
+		if ev.Usage != nil {
+			outputTok = ev.Usage.OutputTokens
+		}
+	case "message_start":
+		if ev.Message != nil {
+			inputTok = ev.Message.Usage.InputTokens
+		}
+	case "message_stop":
+		done = true
+	}
+	return
+}
+
+// openAIStreamChunk holds one parsed OpenAI SSE data line.
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *openAIUsage `json:"usage,omitempty"`
+}
+
+// ParseOpenAIStreamChunk parses one OpenAI SSE data-line payload.
+// Returns (textDelta, inputTokens, outputTokens, isDone, error).
+func ParseOpenAIStreamChunk(data []byte) (delta string, inputTok, outputTok int, done bool, err error) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+		done = true
+		return
+	}
+	var chunk openAIStreamChunk
+	if err = json.Unmarshal(data, &chunk); err != nil {
+		return
+	}
+	if len(chunk.Choices) > 0 {
+		delta = chunk.Choices[0].Delta.Content
+		if chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
+			done = true
+		}
+	}
+	if chunk.Usage != nil {
+		inputTok = chunk.Usage.PromptTokens
+		outputTok = chunk.Usage.CompletionTokens
+	}
+	return
 }
