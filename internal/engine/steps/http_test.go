@@ -32,7 +32,11 @@ func TestHttpActionRetriesTransientStatuses(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
+	req, _ := http.NewRequest("GET", ts.URL, nil)
+	ctx := &rctx.Context{
+		ByteSlots: make([][]byte, 20),
+		Request:   req,
+	}
 	ctx.ByteSlots[0] = []byte(ts.URL)
 	state := &engine.ExecutionState{PC: 7}
 
