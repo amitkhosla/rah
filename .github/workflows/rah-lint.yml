@@ -1,0 +1,141 @@
+name: RAH Bundle Linting & Publishing
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'definitions/**'
+      - '.github/workflows/rah-lint.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'definitions/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-pr:
+    name: Lint Bundle on PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build rah-sync
+        run: |
+          go build -o bin/rah-sync ./cmd/rah-sync/
+
+      - name: Lint bundle definitions
+        id: lint
+        run: |
+          ./bin/rah-sync lint ./definitions --strict --output json > /tmp/lint-result.json 2>&1 || true
+          cat /tmp/lint-result.json
+
+      - name: Comment PR with lint results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('/tmp/lint-result.json', 'utf8'));
+
+            let comment = '## Bundle Lint Report\n\n';
+
+            if (result.error_count > 0) {
+              comment += `❌ **${result.error_count} error(s) found**\n\n`;
+            } else if (result.warning_count > 0) {
+              comment += `⚠️ **${result.warning_count} warning(s) found**\n\n`;
+            } else {
+              comment += `✅ **No issues found**\n\n`;
+            }
+
+            if (result.issues && result.issues.length > 0) {
+              comment += '### Issues\n\n';
+              result.issues.forEach(issue => {
+                const icon = issue.severity === 'error' ? '❌' : issue.severity === 'warning' ? '⚠️' : 'ℹ️';
+                comment += `${icon} **${issue.severity}**: ${issue.file}:${issue.line}\n`;
+                comment += `   ${issue.message}\n`;
+                if (issue.suggestion) {
+                  comment += `   💡 ${issue.suggestion}\n`;
+                }
+                comment += '\n';
+              });
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  publish-on-merge:
+    name: Publish Bundle on Merge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git info
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build rah-sync
+        run: |
+          go build -o bin/rah-sync ./cmd/rah-sync/
+
+      - name: Lint bundle (fail on errors)
+        run: |
+          ./bin/rah-sync lint ./definitions --strict
+
+      - name: Get git info
+        id: git_info
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
+          echo "author=$(git log -1 --pretty=format:'%an')" >> $GITHUB_OUTPUT
+          echo "tag=$(git describe --tags --always)" >> $GITHUB_OUTPUT
+
+      - name: Publish to Studio
+        env:
+          STUDIO_URL: ${{ secrets.STUDIO_URL }}
+        run: |
+          if [ -z "$STUDIO_URL" ]; then
+            echo "Warning: STUDIO_URL not configured. Skipping publish."
+            exit 0
+          fi
+
+          ./bin/rah-sync publish ./definitions \
+            --studio "$STUDIO_URL" \
+            --tag "${{ steps.git_info.outputs.tag }}" \
+            --git-commit "${{ steps.git_info.outputs.commit }}" \
+            --git-branch "${{ steps.git_info.outputs.branch }}"
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Bundle published successfully"
+          echo "Commit: ${{ steps.git_info.outputs.commit }}"
+          echo "Author: ${{ steps.git_info.outputs.author }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Bundle publication failed"
+          exit 1
