@@ -1,0 +1,22 @@
+datastore:
+  stores:
+    local:
+      name: local
+      kind: disk
+      enabled: true
+      connection:
+        path: /app/data
+  bindings:
+    api_definitions: local
+    flows: local
+    tenant_data: local
+    cache: local
+cache:
+  mem_budget_mb: 256
+  backend:
+    kind: memory
+observability:
+  traces:
+    enabled: false
+    sample_rate: 0.0
+    instruction_timing: false

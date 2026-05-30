@@ -1,7 +1,9 @@
-# ─── Authentication Samples — Code Style ─────────────────────────────────────
+# ─── Authentication Flows ─────────────────────────────────────────────────────
 #
-# Two auth patterns, each decomposed into small named building blocks.
-# The entry-point flows read like pseudocode:
+# Building-block flows for the authentication samples.
+# APIs that use these flows are in apis/03-authn.yaml.
+#
+# Flow map:
 #
 #   api_jwt_protected:
 #     call validate_jwt                  # verify RS256 token; halt 401 on failure
@@ -12,10 +14,6 @@
 #     call introspect_access_token       # RFC 7662 call; halt 401 on failure
 #     call log_verified_caller           # same logging step — reused!
 #     call proxy_to_protected_upstream   # same upstream step — reused!
-#
-# Notice: log_verified_caller and proxy_to_protected_upstream are shared
-# between both auth patterns.  This is the key benefit of the code-style
-# approach — common steps are written once and called by name.
 #
 # Replace YOUR_IDP_DOMAIN / your-api-id with your actual IDP configuration.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,18 +96,3 @@ flows:
       call introspect_access_token
       call log_verified_caller
       call proxy_to_protected_upstream
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  - name: sample-cs-jwt-protected
-    path: /samples/cs/protected/jwt
-    method: GET
-    flow_name: api_jwt_protected
-    action: upsert
-
-  - name: sample-cs-introspect-protected
-    path: /samples/cs/protected/introspect
-    method: GET
-    flow_name: api_introspect_protected
-    action: upsert

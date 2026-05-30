@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"rah/internal/engine"
@@ -27,6 +28,7 @@ type RecordCostConfig struct {
 	IngestPipeline *ingest.Pipeline // nil = no-op for cost event emission
 	CostSlot       int
 	ModelSlot      int // -1 = not configured; reads model name from ByteSlots[ModelSlot] if >= 0
+	KeySlot        int // -1 = use ctx.TenantKey; >= 0 = read quota key from ByteSlots[KeySlot]
 }
 
 // EnforceCostBudget checks if a tenant can afford the estimated LLM cost before proceeding.
@@ -49,7 +51,8 @@ type RecordCostConfig struct {
 //
 // quotaManager: Central quota manager for all tenants (injected at bake time)
 // costSlot: IntSlot index containing estimated cost (interpreted as fixed-point: value/1e9 = cost in dollars)
-func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int) engine.Instruction {
+// keySlot: ByteSlot index containing a custom quota key (-1 = use ctx.TenantKey)
+func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int, keySlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "ENFORCE_COST_BUDGET",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -69,17 +72,20 @@ func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int) engin
 			// Convert from fixed-point to float64 (1e9 = base unit)
 			estimatedCost := float64(estimatedCostFixed) / 1e9
 
-			// Get tenant ID as string (for quota manager)
-			// TenantID is uint16, but we need the string key (TenantKey)
-			tenantKey := ctx.TenantKey
-			if tenantKey == "" {
-				// Fallback: use numeric tenant ID (shouldn't happen in normal flow)
-				// The quota manager expects the tenant key as registered
+			// Get quota key (use custom key if provided, otherwise fall back to tenant key)
+			quotaKey := ctx.TenantKey
+			if keySlot >= 0 && keySlot < len(ctx.ByteSlots) {
+				if k := strings.TrimSpace(string(ctx.ByteSlots[keySlot])); k != "" {
+					quotaKey = k
+				}
+			}
+			if quotaKey == "" {
+				// Fallback: if no key available, skip quota check
 				return s.PC + 1
 			}
 
 			// Check if tenant can afford this request
-			allowed, reason, _ := quotaManager.CanAfford(tenantKey, estimatedCost)
+			allowed, reason, _ := quotaManager.CanAfford(quotaKey, estimatedCost)
 
 			if !allowed {
 				// Budget exceeded — return 429 (Payment Required)
@@ -130,15 +136,20 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 			// Convert from fixed-point to float64 (1e9 = base unit)
 			actualCost := float64(actualCostFixed) / 1e9
 
-			// Get tenant key
-			tenantKey := ctx.TenantKey
-			if tenantKey == "" {
-				// Fallback: skip recording if tenant key not set
+			// Get quota key (use custom key if provided, otherwise fall back to tenant key)
+			quotaKey := ctx.TenantKey
+			if cfg.KeySlot >= 0 && cfg.KeySlot < len(ctx.ByteSlots) {
+				if k := strings.TrimSpace(string(ctx.ByteSlots[cfg.KeySlot])); k != "" {
+					quotaKey = k
+				}
+			}
+			if quotaKey == "" {
+				// Fallback: skip recording if no quota key available
 				return s.PC + 1
 			}
 
 			// 1. Update local quota manager (fast, in-memory)
-			err := cfg.QuotaManager.RecordCost(tenantKey, actualCost)
+			err := cfg.QuotaManager.RecordCost(quotaKey, actualCost)
 			if err != nil {
 				// Log error but don't fail the request (cost recording is best-effort)
 				ctx.ErrorMsg = []byte(err.Error())
@@ -153,14 +164,14 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 				if cfg.ModelSlot >= 0 && cfg.ModelSlot < len(ctx.ByteSlots) {
 					capturedModel = string(ctx.ByteSlots[cfg.ModelSlot])
 				}
-				capturedTenantKey := tenantKey
+				capturedQuotaKey := quotaKey
 				capturedTenantID := ctx.TenantID
 				capturedTimestamp := time.Now().UnixNano()
 
 				ctx.AfterResponse = append(ctx.AfterResponse, func() {
 					// Build cost event payload
 					payload := CostEventPayload{
-						TenantKey: capturedTenantKey,
+						TenantKey: capturedQuotaKey,
 						Cost:      capturedCost,
 						Model:     capturedModel,
 						Timestamp: capturedTimestamp,

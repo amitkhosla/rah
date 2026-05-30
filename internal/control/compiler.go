@@ -225,6 +225,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "extract_pattern":
 		return c.compileExtractPattern(step)
 
+	case "extract_jwt_claim":
+		return c.compileExtractJWTClaim(step)
+
 	case "switch":
 		slot, err := c.getSlot(step.As)
 		if err != nil {
@@ -907,7 +910,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return err
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.EnforceCostBudget(c.fm.CostQuotaManager, costSlot))
+		keySlot := -1
+		if ks := step.Input["key_slot"]; ks != "" {
+			if s, e2 := c.getSlot(ks); e2 == nil {
+				keySlot = s
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.EnforceCostBudget(c.fm.CostQuotaManager, costSlot, keySlot))
 
 	case "record_cost":
 		// Records actual cost after LLM call completes.
@@ -924,11 +933,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				modelSlot = s
 			}
 		}
+		keySlot := -1
+		if ks := step.Input["key_slot"]; ks != "" {
+			if s, e2 := c.getSlot(ks); e2 == nil {
+				keySlot = s
+			}
+		}
 		cfg := steps.RecordCostConfig{
 			QuotaManager:   c.fm.CostQuotaManager,
 			IngestPipeline: c.IngestPipeline,
 			CostSlot:       costSlot,
 			ModelSlot:      modelSlot,
+			KeySlot:        keySlot,
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.RecordCost(cfg))
 
@@ -1225,6 +1241,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// Enforces allow/deny CIDR policy for the resolved client IP.
 		// Optional key_identifier can point to a slot containing a pre-resolved IP
 		// (e.g. from bind_client_ip) and takes precedence over source resolution.
+		// For source "header.x-forwarded-for", only trusts XFF if the direct peer IP
+		// (RemoteAddr) is within one of the trusted_proxies CIDRs. If trusted_proxies
+		// is empty or peer is not in any CIDR, uses the direct peer IP instead.
 		cfg, err := steps.ParseIPRestrictionConfig(step.Input)
 		if err != nil {
 			return fmt.Errorf("ip_restriction: %w", err)
@@ -2216,6 +2235,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "echo_request":
 		c.GlobalTable = append(c.GlobalTable, steps.EchoRequestStep())
 
+	case "current_timestamp":
+		slot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("current_timestamp: %w", err)
+		}
+		var nowSec func() uint32
+		if c.fm.SlabMgr != nil {
+			nowSec = c.fm.SlabMgr.NowSec
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.CurrentTimestampStep(slot, step.Format, nowSec))
+
 	case "set_response_body":
 		var src int
 		if _, known := c.slotMap[step.Source]; !known {
@@ -2661,7 +2691,15 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if cbErr != nil {
 			return fmt.Errorf("circuit_breaker: %w", cbErr)
 		}
-		c.GlobalTable = append(c.GlobalTable, engine.CircuitBreakerGateStep(c.fm.CircuitBreakerArena, cbIdx))
+		fallbackFlowStart := int16(-1)
+		if ffName, ok := step.Input["fallback_flow"]; ok && ffName != "" {
+			if ffPC, found := c.FragmentMap[ffName]; found {
+				fallbackFlowStart = ffPC
+			} else {
+				return fmt.Errorf("circuit_breaker: fallback_flow %q not found in compiled fragments", ffName)
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.CircuitBreakerGateStep(c.fm.CircuitBreakerArena, cbIdx, fallbackFlowStart))
 
 	case "record_circuit_outcome":
 		cbIdx := c.fm.CircuitBreakerArena.Count() - 1

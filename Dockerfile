@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -15,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o /out/rah-gateway ./cmd/rah-gateway/
 
 # ── Stage 2: Gateway runtime ───────────────────────────────────────────────────
-FROM --platform=linux/amd64 gcr.io/distroless/static-debian12:nonroot AS runtime
+FROM --platform=$TARGETPLATFORM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /usr/share/zoneinfo              /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

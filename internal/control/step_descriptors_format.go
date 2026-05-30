@@ -14,12 +14,13 @@ func FormatStepDescriptors() []StepDescriptor {
 			Defaults: map[string]string{
 				"key_identifier": "var.request_body",
 				"as":             "canonical_messages",
-				"input":          `{"system_slot":"system_prompt","detected_fmt_slot":"detected_format","tools_slot":"var.tools","tool_choice_slot":"var.tool_choice","stream_slot":"var.stream"}`,
+				"input":          `{"system_slot":"system_prompt","detected_fmt_slot":"detected_format","tools_slot":"var.tools","tool_choice_slot":"var.tool_choice","stream_slot":"var.stream","model_slot":""}`,
 			},
 			Fields: []StepField{
 				sf("key_identifier", "Body slot", "Slot containing the raw JSON request body to parse", "var.request_body"),
 				sf("as", "Messages slot", "Slot to write the JSON-encoded canonical messages array into", "canonical_messages"),
-				sf("input", "Options (JSON)", `Keys: system_slot (slot for system prompt), detected_fmt_slot (slot for detected format: "anthropic"/"openai"/"gemini"), tools_slot (slot for JSON []ToolDefinition extracted from request), tool_choice_slot (slot for JSON ToolChoice), stream_slot (slot for "true"/"false" stream flag)`, `{"system_slot":"system_prompt","detected_fmt_slot":"detected_format","tools_slot":"var.tools"}`),
+				sf("input", "Options (JSON)", `Keys: system_slot (slot for system prompt), detected_fmt_slot (slot for detected format: "anthropic"/"openai"/"gemini"), tools_slot (slot for JSON []ToolDefinition extracted from request), tool_choice_slot (slot for JSON ToolChoice), stream_slot (slot for "true"/"false" stream flag), model_slot (slot for model name from request body — optional)`, `{"system_slot":"system_prompt","detected_fmt_slot":"detected_format","tools_slot":"var.tools"}`),
+				sf("model_slot", "Model slot (optional)", `Slot to write the model string from the request body (e.g. "gpt-4o"). Empty = skip extraction.`, ""),
 			},
 		},
 		{

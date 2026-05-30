@@ -12,11 +12,12 @@ import (
 
 // IPRestrictionConfig is bake-time configuration for ip_restriction.
 type IPRestrictionConfig struct {
-	Mode              string // allow | deny
-	CIDRs             string // comma-separated CIDR list
-	Source            string // remote_addr | header.X-Forwarded-For | header.X-Real-IP
+	Mode              string       // allow | deny
+	CIDRs             string       // comma-separated CIDR list
+	Source            string       // remote_addr | header.X-Forwarded-For | header.X-Real-IP
 	OnViolationStatus int
 	OnViolationBody   string
+	TrustedProxyCIDRs []*net.IPNet // only trust XFF if peer IP is in one of these; nil/empty = no trust
 }
 
 // ParseIPRestrictionConfig parses and validates flow input for ip_restriction.
@@ -24,7 +25,7 @@ func ParseIPRestrictionConfig(input map[string]string) (IPRestrictionConfig, err
 	cfg := IPRestrictionConfig{
 		Mode:              strings.ToLower(strings.TrimSpace(input["mode"])),
 		CIDRs:             strings.TrimSpace(input["cidrs"]),
-		Source:            strings.TrimSpace(input["source"]),
+		Source:            strings.ToLower(strings.TrimSpace(input["source"])),
 		OnViolationStatus: 403,
 		OnViolationBody:   "ip not allowed",
 	}
@@ -46,7 +47,11 @@ func ParseIPRestrictionConfig(input map[string]string) (IPRestrictionConfig, err
 		cfg.OnViolationBody = v
 	}
 	if cfg.Source == "" {
-		cfg.Source = "header.X-Forwarded-For"
+		cfg.Source = "header.x-forwarded-for"
+	}
+	// Parse trusted proxy CIDRs (comma-separated, optional).
+	if trustedProxies := strings.TrimSpace(input["trusted_proxies"]); trustedProxies != "" {
+		cfg.TrustedProxyCIDRs = parseCIDRs(trustedProxies)
 	}
 	return cfg, nil
 }
@@ -58,11 +63,12 @@ func IPRestriction(cfg IPRestrictionConfig, sourceSlot int) engine.Instruction {
 	modeAllow := cfg.Mode == "allow"
 	onViolationBody := []byte(cfg.OnViolationBody)
 	source := strings.ToLower(strings.TrimSpace(cfg.Source))
+	trustedProxyCIDRs := cfg.TrustedProxyCIDRs
 
 	return engine.Instruction{
 		Name: "IP_RESTRICTION",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			ip := resolveClientIP(ctx, sourceSlot, source)
+			ip := resolveClientIP(ctx, sourceSlot, source, trustedProxyCIDRs)
 			if ip == nil {
 				// Conservative default: unresolved IP behaves as no-match.
 				if modeAllow {
@@ -111,7 +117,11 @@ func parseCIDRs(raw string) []*net.IPNet {
 	return out
 }
 
-func resolveClientIP(ctx *rctx.Context, sourceSlot int, source string) net.IP {
+// resolveClientIP resolves the client IP according to the source config and trusted proxy settings.
+// If source is "header.x-forwarded-for", XFF is only trusted if the direct peer IP
+// (ctx.Request.RemoteAddr) is within one of the trustedProxyCIDRs. If no trusted proxies
+// are configured or the peer is not a trusted proxy, the direct peer IP is used instead.
+func resolveClientIP(ctx *rctx.Context, sourceSlot int, source string, trustedProxyCIDRs []*net.IPNet) net.IP {
 	if sourceSlot >= 0 && sourceSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[sourceSlot]) > 0 {
 		if ip := net.ParseIP(strings.TrimSpace(string(ctx.ByteSlots[sourceSlot]))); ip != nil {
 			return ip
@@ -130,16 +140,36 @@ func resolveClientIP(ctx *rctx.Context, sourceSlot int, source string) net.IP {
 			}
 		}
 	default: // header.x-forwarded-for
-		if ip := net.ParseIP(firstIPFromHeader(ctx.Request.Header.Get("X-Forwarded-For"))); ip != nil {
-			return ip
+		// First, extract the direct peer IP from RemoteAddr.
+		var peerIP net.IP
+		if host, _, err := net.SplitHostPort(ctx.Request.RemoteAddr); err == nil {
+			peerIP = net.ParseIP(strings.TrimSpace(host))
 		}
+
+		// Only trust XFF if the peer IP is in one of the trusted proxy CIDRs.
+		isTrustedProxy := false
+		if peerIP != nil && len(trustedProxyCIDRs) > 0 {
+			for _, cidr := range trustedProxyCIDRs {
+				if cidr.Contains(peerIP) {
+					isTrustedProxy = true
+					break
+				}
+			}
+		}
+
+		if isTrustedProxy {
+			// Peer is a trusted proxy; use the first IP from XFF.
+			if ip := net.ParseIP(firstIPFromHeader(ctx.Request.Header.Get("X-Forwarded-For"))); ip != nil {
+				return ip
+			}
+		}
+
+		// Fallback chain: X-Real-IP (if not trusting XFF), then direct peer IP.
 		if ip := net.ParseIP(strings.TrimSpace(ctx.Request.Header.Get("X-Real-IP"))); ip != nil {
 			return ip
 		}
-		if host, _, err := net.SplitHostPort(ctx.Request.RemoteAddr); err == nil {
-			if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil {
-				return ip
-			}
+		if peerIP != nil {
+			return peerIP
 		}
 	}
 	return nil

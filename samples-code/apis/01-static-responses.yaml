@@ -1,0 +1,42 @@
+# ─── Static Response APIs ─────────────────────────────────────────────────────
+#
+# API definitions for the static response samples.
+# Flows referenced here are defined in instructions/01-static-responses.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-cs-hello
+    path: /samples/cs/static/hello
+    method: GET
+    flow_name: api_hello
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-status
+    path: /samples/cs/static/status
+    method: GET
+    flow_name: api_status
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-echo-header
+    path: /samples/cs/static/echo-header
+    method: GET
+    flow_name: api_echo_header
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-echo-query
+    path: /samples/cs/static/echo-query
+    method: GET
+    flow_name: api_echo_query
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-echo-path
+    path: /samples/cs/static/echo/{id}
+    method: GET
+    flow_name: api_echo_path
+    action: upsert
+    skip_rate_limit: true

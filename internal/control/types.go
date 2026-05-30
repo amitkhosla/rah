@@ -64,6 +64,10 @@ type StepConfig struct {
 	// TX ID / Correlation
 	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
 
+	// Format specifies the output format for steps that produce formatted values
+	// (e.g. current_timestamp: "unix_s", "unix_ms", "unix_ns", "rfc3339").
+	Format string `json:"format,omitempty"`
+
 	// mTLS — opt-in client certificate for downstream HTTP and gRPC calls.
 	// Both refs must be set together. Secret refs follow the same scheme as
 	// load_secret steps (e.g. "env://CLIENT_CERT_PEM", "file:///run/secrets/cert.pem").

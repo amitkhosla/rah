@@ -18,6 +18,7 @@ import (
 //   - step.Input["timeout_ms"]       → int milliseconds (default 30000)
 //   - step.Input["max_concurrent"]   → int (0 = sequential; default 0)
 //   - step.Input["skip_new_tool_required"] → "true"/"false" (default "false")
+//   - step.Input["messages_slot"]    → slot name holding []CanonicalMessage history; result appended as assistant turn (-1 if absent)
 func (c *Compiler) compileExecutePlan(step StepConfig) error {
 	// Resolve MCP server.
 	alias := step.Input["mcp_server"]
@@ -76,6 +77,16 @@ func (c *Compiler) compileExecutePlan(step StepConfig) error {
 		skipNewTool = true
 	}
 
+	// Optional messages slot for conversation history append.
+	messagesSlot := -1
+	if msName := step.Input["messages_slot"]; msName != "" {
+		s, slotErr := c.getSlot(msName)
+		if slotErr != nil {
+			return fmt.Errorf("execute_plan: messages slot: %w", slotErr)
+		}
+		messagesSlot = s
+	}
+
 	cfg := steps.ExecutePlanConfig{
 		PlanSlot:            planSlot,
 		ResultSlot:          resultSlot,
@@ -85,6 +96,7 @@ func (c *Compiler) compileExecutePlan(step StepConfig) error {
 		MaxConcurrent:       maxConcurrent,
 		TimeoutMs:           timeoutMs,
 		SkipNewToolRequired: skipNewTool,
+		MessagesSlot:        messagesSlot,
 	}
 	c.GlobalTable = append(c.GlobalTable, steps.ExecutePlan(cfg))
 	return nil

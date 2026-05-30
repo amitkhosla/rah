@@ -374,9 +374,9 @@ func lintLevel2(result LoadResult) []LintIssue {
 		apiIndex[key] = result.SourceMap[key]
 	}
 
-	// Escalate loader-detected duplicate flow/API names from Warning → Error.
-	// The loader emits these during merge; L2 makes them hard errors since
-	// duplicate names produce unpredictable runtime behaviour.
+	// Escalate loader-detected duplicate flow/API names to errors.
+	// A flow or API must be defined in exactly one file; duplicates make the
+	// effective definition load-order-dependent and are never intentional.
 	for _, issue := range result.Issues {
 		if issue.Rule == "duplicate_flow" || issue.Rule == "duplicate_api" {
 			escalated := issue
@@ -681,11 +681,28 @@ func lintLevel3(result LoadResult) []LintIssue {
 	// Pre-populate variable sets from API/endpoint constants.
 	apiConstants := l3BuildAPIConstants(b)
 
+	// Build the set of flows that are direct entry points (referenced by api.FlowName).
+	// Sub-flows (not directly referenced by any API) receive warnings rather than
+	// errors for undefined variables, since their variable context is provided by
+	// the calling flow at runtime.
+	entryPoints := make(map[string]bool, len(b.Apis))
+	for _, api := range b.Apis {
+		if api.FlowName != "" {
+			entryPoints[api.FlowName] = true
+		}
+		for _, ep := range api.EndpointConfigs {
+			if ep.FlowName != "" {
+				entryPoints[ep.FlowName] = true
+			}
+		}
+	}
+
 	// Variable forward-use analysis — one flow at a time.
 	for _, flow := range b.Flows {
 		loc := result.SourceMap[flow.Name]
 		seed := apiConstants[flow.Name]
-		issues = append(issues, l3AnalyzeFlowVars(flow.Name, flow.Instructions, seed, loc)...)
+		isEntryPoint := entryPoints[flow.Name]
+		issues = append(issues, l3AnalyzeFlowVars(flow.Name, flow.Instructions, seed, loc, isEntryPoint)...)
 	}
 
 	// Cycle detection across the full call graph.
@@ -725,11 +742,15 @@ func l3BuildAPIConstants(b control.UnifiedSyncRequest) map[string]map[string]boo
 }
 
 // l3AnalyzeFlowVars runs forward variable analysis for a single flow.
+// isEntryPoint should be true for flows referenced directly by an API's flow_name.
+// Sub-flows (not direct entry points) emit warnings instead of errors for
+// undefined variables, since their variable context is provided by calling flows.
 func l3AnalyzeFlowVars(
 	flowName string,
 	steps []control.StepConfig,
 	seed map[string]bool,
 	loc SourceLocation,
+	isEntryPoint bool,
 ) []LintIssue {
 	// knownVars: variable name → step number that assigned it (0 = pre-seeded).
 	knownVars := make(map[string]int)
@@ -737,7 +758,7 @@ func l3AnalyzeFlowVars(
 		knownVars[v] = 0
 	}
 	var issues []LintIssue
-	l3WalkSteps(steps, flowName, 1, loc, knownVars, &issues)
+	l3WalkSteps(steps, flowName, 1, loc, knownVars, isEntryPoint, &issues)
 	return issues
 }
 
@@ -750,16 +771,23 @@ func l3WalkSteps(
 	startIdx int,
 	loc SourceLocation,
 	knownVars map[string]int,
+	isEntryPoint bool,
 	issues *[]LintIssue,
 ) {
 	for i, step := range steps {
 		stepNum := startIdx + i
 
 		// 1. Check input variable references before processing assignments.
+		//    Entry-point flows emit errors; sub-flows emit warnings (their variable
+		//    context is provided at runtime by the calling flow).
+		undefinedSeverity := SeverityError
+		if !isEntryPoint {
+			undefinedSeverity = SeverityWarning
+		}
 		for _, ref := range l3StepVarRefs(step) {
 			if _, known := knownVars[ref]; !known {
 				*issues = append(*issues, LintIssue{
-					Severity: SeverityError,
+					Severity: undefinedSeverity,
 					Rule:     "undefined_variable",
 					File:     loc.File,
 					Line:     loc.Line,
@@ -777,13 +805,13 @@ func l3WalkSteps(
 		//    The do-block shares knownVars so that variables assigned inside the
 		//    loop body are visible to subsequent steps outside the loop.
 		if len(step.Do) > 0 {
-			l3WalkSteps(step.Do, flowName, 1, loc, knownVars, issues)
+			l3WalkSteps(step.Do, flowName, 1, loc, knownVars, isEntryPoint, issues)
 		}
 
 		// 3. Recurse into parallel branches.
 		//    Only variables assigned in ALL branches are guaranteed after the join.
 		if len(step.Branches) > 0 {
-			guaranteed, partial := l3ParallelBranchVars(step.Branches, flowName, loc, knownVars, issues)
+			guaranteed, partial := l3ParallelBranchVars(step.Branches, flowName, loc, knownVars, isEntryPoint, issues)
 			for v := range guaranteed {
 				knownVars[v] = stepNum
 			}
@@ -821,6 +849,7 @@ func l3ParallelBranchVars(
 	flowName string,
 	loc SourceLocation,
 	baseKnown map[string]int,
+	isEntryPoint bool,
 	issues *[]LintIssue,
 ) (guaranteed map[string]bool, partial map[string]bool) {
 	if len(branches) == 0 {
@@ -830,7 +859,7 @@ func l3ParallelBranchVars(
 	branchNew := make([]map[string]bool, 0, len(branches))
 	for _, branch := range branches {
 		branchKnown := l3CopyVarMap(baseKnown)
-		l3WalkSteps(branch.Flow, flowName, 1, loc, branchKnown, issues)
+		l3WalkSteps(branch.Flow, flowName, 1, loc, branchKnown, isEntryPoint, issues)
 		newVars := make(map[string]bool)
 		for v := range branchKnown {
 			if _, inBase := baseKnown[v]; !inBase {
@@ -1255,6 +1284,9 @@ func l4CheckFlow(flow control.FlowUpdate, loc SourceLocation) []LintIssue {
 	// Check each step for advisory warnings.
 	issues = append(issues, l4CheckSteps(flow.Instructions, flow.Name, loc)...)
 
+	// Check security enforcement steps.
+	issues = append(issues, l4CheckSecuritySteps(flow.Instructions, flow.Name, loc)...)
+
 	return issues
 }
 
@@ -1347,6 +1379,19 @@ func looksLikeSecret(s string) bool {
 	if len(s) < 20 {
 		return false
 	}
+	// URLs are never secrets — they're endpoint addresses.
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return false
+	}
+	// Comma-separated word lists are enum/flag values, not secrets
+	// (e.g. "signature,expiry,issuer,audience").
+	if isWordList(s) {
+		return false
+	}
+	// Values containing spaces are human-readable text, not secrets.
+	if strings.ContainsRune(s, ' ') {
+		return false
+	}
 	// Count alphanumeric and secret-like characters.
 	count := 0
 	for _, c := range s {
@@ -1357,6 +1402,67 @@ func looksLikeSecret(s string) bool {
 	}
 	// If > 70% alphanumeric/secret-like, consider it a secret.
 	return float64(count)/float64(len(s)) > 0.7
+}
+
+// isWordList returns true if s is a comma-separated list of short lowercase words
+// (e.g. "signature,expiry,issuer,audience"). These are option/enum values, not secrets.
+func isWordList(s string) bool {
+	parts := strings.Split(s, ",")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if len(p) == 0 || len(p) > 30 {
+			return false
+		}
+		for _, c := range p {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// l4CheckSecuritySteps recursively checks security enforcement steps (validate_token,
+// validate_api_key, validate_introspection) for risky on_failure: continue patterns.
+// Bypassing failure halts on these steps is a critical security risk.
+func l4CheckSecuritySteps(steps []control.StepConfig, flowName string, loc SourceLocation) []LintIssue {
+	var issues []LintIssue
+
+	for _, step := range steps {
+		// Check if this is a security enforcement step.
+		isSecurityStep := false
+		switch step.Action {
+		case "validate_token", "validate_api_key", "validate_introspection":
+			isSecurityStep = true
+		}
+
+		if isSecurityStep {
+			// Check if on_failure is set to "continue" in the Input map.
+			if onFailure, ok := step.Input["on_failure"]; ok && onFailure == "continue" {
+				issues = append(issues, LintIssue{
+					Severity: SeverityWarning,
+					Rule:     "security_step_on_failure_continue",
+					File:     loc.File,
+					Line:     loc.Line,
+					Message: fmt.Sprintf(
+						"on_failure:continue on security step %q bypasses auth enforcement",
+						step.Action),
+					Suggestion: "remove on_failure:continue or use on_failure:jump to an error handler instead to enforce security",
+				})
+			}
+		}
+
+		// Recurse into nested steps.
+		issues = append(issues, l4CheckSecuritySteps(step.Do, flowName, loc)...)
+		for _, branch := range step.Branches {
+			issues = append(issues, l4CheckSecuritySteps(branch.Flow, flowName, loc)...)
+		}
+	}
+
+	return issues
 }
 
 // l4CountSteps recursively counts all steps (including nested in do/branches).

@@ -60,6 +60,13 @@ func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 		}
 	}
 
+	modelSlot := -1
+	if name := step.Input["model_slot"]; name != "" {
+		if s, slotErr := c.getSlot(name); slotErr == nil {
+			modelSlot = s
+		}
+	}
+
 	cfg := steps.ParseMessageFormatConfig{
 		BodySlot:        bodySlot,
 		MessagesSlot:    messagesSlot,
@@ -68,6 +75,7 @@ func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 		ToolsSlot:       toolsSlot,
 		ToolChoiceSlot:  toolChoiceSlot,
 		StreamSlot:      streamSlot,
+		ModelSlot:       modelSlot,
 	}
 	c.GlobalTable = append(c.GlobalTable, steps.ParseMessageFormat(cfg))
 	return nil

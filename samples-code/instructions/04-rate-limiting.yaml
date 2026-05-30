@@ -1,28 +1,20 @@
-# ─── Rate Limiting Samples — Code Style ──────────────────────────────────────
+# ─── Rate Limiting Flows ──────────────────────────────────────────────────────
 #
-# Four rate limiting patterns.  Each entry point is just a call sequence;
-# the "how" of each limit lives in a dedicated named block.
+# Building-block flows for the rate limiting samples.
+# APIs that use these flows are in apis/04-rate-limiting.yaml.
+# Rate limit configs referenced here are defined in apis/04-rate-limiting.yaml.
 #
-# Entry points read like:
+# Flow map:
 #
 #   api_rl_by_ip:
 #     call enforce_ip_rate_limit      # check counter keyed by client IP
-#     call send_ok
+#     call send_rl_ok
 #
 #   api_rl_by_header:
 #     call read_api_key_header        # bind X-API-Key → api_key_slot
 #     call enforce_api_key_rate_limit # check counter keyed by api_key_slot
-#     call send_ok
+#     call send_rl_ok
 #
-#   api_rl_global:
-#     call enforce_global_rate_limit  # single shared counter for all callers
-#     call send_ok
-#
-#   api_rl_multi_window:
-#     call enforce_multi_window_ip_limit  # 10/s + 100/min + 1000/h
-#     call send_ok
-#
-# Reuse pattern: send_ok is defined once and called by all four entry points.
 # ─────────────────────────────────────────────────────────────────────────────
 
 flows:
@@ -31,7 +23,7 @@ flows:
   # UTILITIES
   # ═══════════════════════════════════════════════════════════════════════════
 
-  - name: send_ok
+  - name: send_rl_ok
     action: upsert
     code: |
       return(200, '{"status":"ok"}')
@@ -77,93 +69,23 @@ flows:
     action: upsert
     code: |
       call enforce_ip_rate_limit
-      call send_ok
+      call send_rl_ok
 
   - name: api_rl_by_header
     action: upsert
     code: |
       call read_api_key_header
       call enforce_api_key_rate_limit
-      call send_ok
+      call send_rl_ok
 
   - name: api_rl_global
     action: upsert
     code: |
       call enforce_global_rate_limit
-      call send_ok
+      call send_rl_ok
 
   - name: api_rl_multi_window
     action: upsert
     code: |
       call enforce_multi_window_ip_limit
-      call send_ok
-
-# ─────────────────────────────────────────────────────────────────────────────
-rate_limit_configs_v2:
-
-  - name: rl-by-ip
-    enforcement: approximate
-    windows:
-      - period: 1s
-        limit: 10
-      - period: 1m
-        limit: 100
-
-  - name: rl-by-header
-    enforcement: approximate
-    windows:
-      - period: 1h
-        limit: 1000
-
-  - name: rl-global
-    enforcement: approximate
-    exceeded_status: 429
-    exceeded_body: '{"error":"rate limit exceeded","retry_after":60}'
-    windows:
-      - period: 1m
-        limit: 5000
-
-  - name: rl-multi-window
-    enforcement: approximate
-    windows:
-      - period: 1s
-        limit: 10
-      - period: 1m
-        limit: 100
-      - period: 1h
-        limit: 1000
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  # A. Rate limit by IP (enforce inside flow)
-  - name: sample-cs-rl-ip
-    path: /samples/cs/rl/by-ip
-    method: GET
-    flow_name: api_rl_by_ip
-    action: upsert
-    skip_rate_limit: true
-
-  # B. Rate limit by header — flow binds the key then enforces
-  - name: sample-cs-rl-header
-    path: /samples/cs/rl/by-header
-    method: GET
-    flow_name: api_rl_by_header
-    action: upsert
-    skip_rate_limit: true
-
-  # C. Global rate limit
-  - name: sample-cs-rl-global
-    path: /samples/cs/rl/global
-    method: GET
-    flow_name: api_rl_global
-    action: upsert
-    skip_rate_limit: true
-
-  # D. Multi-window (3 simultaneous windows)
-  - name: sample-cs-rl-multi-window
-    path: /samples/cs/rl/multi-window
-    method: GET
-    flow_name: api_rl_multi_window
-    action: upsert
-    skip_rate_limit: true
+      call send_rl_ok

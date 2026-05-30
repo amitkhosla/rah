@@ -1,0 +1,25 @@
+# ─── Service Discovery APIs ───────────────────────────────────────────────────
+#
+# API definitions for the service discovery samples.
+# Flows referenced here are defined in instructions/06-service-discovery.yaml.
+# Rate limit config rl-per-tenant is defined in apis/05-tenant-routing.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-cs-tenant-service
+    path: /samples/cs/tenant/service
+    method: GET
+    flow_name: api_tenant_service
+    action: upsert
+    rate_limit_policies:
+      - kind: named
+        config: rl-per-tenant
+        count_by: tenant
+
+  - name: sample-cs-tenant-rediscover
+    path: /samples/cs/tenant/rediscover
+    method: POST
+    flow_name: api_force_rediscover
+    action: upsert
+    skip_rate_limit: true

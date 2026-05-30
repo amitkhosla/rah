@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"rah/internal/sync"
 	"gopkg.in/yaml.v3"
@@ -109,7 +110,7 @@ func lintCmd(args []string) int {
 	fs.SetOutput(io.Discard)
 
 	// Parse flags
-	err := fs.Parse(args)
+	err := fs.Parse(hoistFlags(args))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
@@ -264,7 +265,7 @@ func publishCmd(args []string) int {
 
 	fs.SetOutput(io.Discard)
 
-	err := fs.Parse(args)
+	err := fs.Parse(hoistFlags(args))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
@@ -353,7 +354,7 @@ func promoteCmd(args []string) int {
 
 	fs.SetOutput(io.Discard)
 
-	err := fs.Parse(args)
+	err := fs.Parse(hoistFlags(args))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
@@ -404,7 +405,7 @@ func diffCmd(args []string) int {
 
 	fs.SetOutput(io.Discard)
 
-	err := fs.Parse(args)
+	err := fs.Parse(hoistFlags(args))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
@@ -597,4 +598,31 @@ func formatDiffText(releaseA, releaseB string, diff map[string]interface{}) {
 		}
 		fmt.Println()
 	}
+}
+
+// hoistFlags reorders args so that all --flag [value] pairs come before
+// positional arguments. This lets callers mix flags and positionals in any
+// order (e.g. "publish ./dir --studio URL" or "--studio URL publish ./dir").
+//
+// Go's flag.FlagSet stops parsing at the first non-flag argument, so without
+// this reordering flags that appear after the directory would be silently ignored.
+func hoistFlags(args []string) []string {
+	var flags, positionals []string
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			// If the flag uses --name=value form the value is embedded; don't consume next.
+			// Otherwise, if the next token doesn't start with '-', treat it as the flag's value.
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			positionals = append(positionals, a)
+		}
+		i++
+	}
+	return append(flags, positionals...)
 }

@@ -1,7 +1,10 @@
-# ─── Service Discovery Sample — Code Style ────────────────────────────────────
+# ─── Service Discovery Flows ──────────────────────────────────────────────────
 #
-# Service discovery flow, decomposed so each step is one named block.
-# The entry-point flows read like high-level pseudocode:
+# Building-block flows for the service discovery samples.
+# APIs that use these flows are in apis/06-service-discovery.yaml.
+# Rate limit configs referenced here are defined in apis/05-tenant-routing.yaml.
+#
+# Flow map:
 #
 #   api_tenant_service:
 #     call identify_tenant                # X-Tenant-ID → TenantID (401 if unknown)
@@ -16,18 +19,6 @@
 #     call evict_cached_upstream_url      # delete "primary" from registry
 #     call run_service_discovery          # call discovery service + persist
 #     call send_rediscover_confirmation   # return {"status":"rediscovered",...}
-#
-# Discovery sub-flow is decomposed further:
-#
-#   run_service_discovery:
-#     call call_discovery_service         # http.get with retry on 429
-#     call extract_url_from_response      # body(gjson path) → discovered_url
-#     call extract_api_key_from_response  # body(gjson path) → discovered_api_key
-#     call extract_plan_from_response     # body(gjson path) → discovered_plan
-#     call persist_url_to_registry        # registry.set_url "primary"
-#     call persist_api_key_to_registry    # registry.set_id "api_key"
-#     call persist_plan_to_registry       # registry.set_meta "plan"
-#     call copy_discovered_url_to_slot    # upstream_url = discovered_url
 #
 # Discovery service response shape expected:
 #   {
@@ -204,33 +195,3 @@ flows:
       call evict_cached_upstream_url
       call run_service_discovery
       call send_rediscover_confirmation
-
-# ─────────────────────────────────────────────────────────────────────────────
-rate_limit_configs_v2:
-
-  - name: rl-per-tenant
-    enforcement: approximate
-    windows:
-      - period: 1m
-        limit: 100
-      - period: 1h
-        limit: 1000
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  - name: sample-cs-tenant-service
-    path: /samples/cs/tenant/service
-    method: GET
-    flow_name: api_tenant_service
-    action: upsert
-    rate_limit_policies:
-      - kind: named
-        config: rl-per-tenant
-        count_by: tenant
-
-  - name: sample-cs-tenant-rediscover
-    path: /samples/cs/tenant/rediscover
-    method: POST
-    flow_name: api_force_rediscover
-    action: upsert

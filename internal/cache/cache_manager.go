@@ -681,6 +681,12 @@ func (cm *CacheManager) Stats() uint64 {
 	return cm.globalUsed.Load()
 }
 
+// NowSec returns the current unix-second from the coarse cached clock.
+// One atomic load (~1 ns) — safe to call from any goroutine at any rate.
+func (cm *CacheManager) NowSec() uint32 {
+	return cm.clock.now()
+}
+
 // Invalidate removes (tenantID, key) from the L1 index and deletes it from
 // the backend, then calls OnInvalidate so the caller can propagate the
 // deletion to other instances via the ingest pipeline.

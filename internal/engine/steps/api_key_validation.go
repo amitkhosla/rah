@@ -146,7 +146,7 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 				return apiKeyFail(s, ctx, slots, cfg)
 			}
 
-			if cfg.RequireTenant && len(entry.AllowedTenants) > 0 {
+			if len(entry.AllowedTenants) > 0 {
 				allowed := false
 				for _, tid := range entry.AllowedTenants {
 					if tid == ctx.TenantID {

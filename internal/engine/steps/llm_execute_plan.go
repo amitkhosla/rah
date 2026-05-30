@@ -57,6 +57,10 @@ type ExecutePlanConfig struct {
 	// SkipNewToolRequired: if true, silently skip steps with newToolRequired=true
 	// if false (default), stop plan with error
 	SkipNewToolRequired bool
+	// MessagesSlot: if >= 0, append the plan result as an assistant message to the
+	// []CanonicalMessage JSON stored in this slot. Enables multi-turn agentic flows.
+	// Set to -1 (default) to skip.
+	MessagesSlot int
 }
 
 // executePlanRPCRequest is the JSON-RPC 2.0 request body for a tools/call.
@@ -161,6 +165,19 @@ func ExecutePlan(cfg ExecutePlanConfig) engine.Instruction {
 			if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 				ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(out))
 				copy(ctx.ByteSlots[cfg.ResultSlot], out)
+			}
+
+			// Append result as assistant message to conversation history if configured.
+			if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) && cfg.ResultSlot >= 0 {
+				result := ctx.ByteSlots[cfg.ResultSlot]
+				var msgs []CanonicalMessage
+				if existing := ctx.ByteSlots[cfg.MessagesSlot]; len(existing) > 0 {
+					_ = json.Unmarshal(existing, &msgs)
+				}
+				msgs = append(msgs, CanonicalMessage{Role: RoleAssistant, Content: string(result)})
+				if b, err := json.Marshal(msgs); err == nil {
+					ctx.ByteSlots[cfg.MessagesSlot] = b
+				}
 			}
 
 			return state.PC + 1

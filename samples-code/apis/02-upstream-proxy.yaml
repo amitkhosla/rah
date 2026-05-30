@@ -1,0 +1,21 @@
+# ─── Upstream Proxy APIs ──────────────────────────────────────────────────────
+#
+# API definitions for the upstream proxy samples.
+# Flows referenced here are defined in instructions/02-upstream-proxy.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-cs-simple-proxy
+    path: /samples/cs/proxy
+    method: GET
+    flow_name: api_simple_proxy
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-cached-proxy
+    path: /samples/cs/cached
+    method: GET
+    flow_name: api_cached_proxy
+    action: upsert
+    skip_rate_limit: true

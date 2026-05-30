@@ -57,7 +57,7 @@ type DSLResult struct {
 // ExtraFlows will be non-nil only when anonymous flows were generated.
 func ParseDSL(code string) (*DSLResult, error) {
 	p := &dslParser{
-		lines:      splitLines(code),
+		lines:      joinContinuationLines(splitLines(code)),
 		extraFlows: make(map[string][]StepConfig),
 	}
 	steps := p.parseBlock(0)
@@ -65,6 +65,74 @@ func ParseDSL(code string) (*DSLResult, error) {
 		Steps:      steps,
 		ExtraFlows: p.extraFlows,
 	}, nil
+}
+
+// joinContinuationLines merges lines that are part of an unfinished function
+// call (unbalanced opening brackets) with the following lines until the call
+// is closed. This lets users write multi-line DSL calls like:
+//
+//	validate_token(header.Authorization,
+//	  jwks_url: "https://...",
+//	  alg: "RS256")
+func joinContinuationLines(lines []string) []string {
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		depth := countBracketDepth(line)
+		if depth <= 0 {
+			result = append(result, line)
+			i++
+			continue
+		}
+		// Unbalanced open brackets — join subsequent lines until depth reaches 0.
+		joined := line
+		i++
+		for i < len(lines) && depth > 0 {
+			next := strings.TrimSpace(lines[i])
+			joined += " " + next
+			depth += countBracketDepth(next)
+			i++
+		}
+		result = append(result, joined)
+	}
+	return result
+}
+
+// countBracketDepth counts the net opening-bracket depth of a single line,
+// ignoring characters inside single- or double-quoted strings.
+// Only counts ( ) [ ] — NOT { } which are block delimiters in DSL, not
+// function-call continuation markers.
+func countBracketDepth(line string) int {
+	depth := 0
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if inSingle {
+			if c == '\'' && (i == 0 || line[i-1] != '\\') {
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if c == '"' && (i == 0 || line[i-1] != '\\') {
+				inDouble = false
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		}
+	}
+	return depth
 }
 
 // ── Internal counter for anonymous flow/template slot names ──────────────────
@@ -767,10 +835,52 @@ func (p *dslParser) dslActionSteps(action, rawParams string, as_ string) []StepC
 
 	case "validate_introspection":
 		input := make(map[string]string)
-		for k, v := range params {
-			input[k] = v
+		if v, ok := params["url"]; ok {
+			input["introspect.endpoint"] = v
 		}
-		return []StepConfig{{Action: "token_introspection", Input: input}}
+		if v, ok := params["endpoint"]; ok {
+			input["introspect.endpoint"] = v
+		}
+		if v, ok := params["token_header"]; ok {
+			input["introspect.token_header"] = v
+		}
+		if v, ok := params["token_var"]; ok {
+			input["introspect.token_var"] = v
+		}
+		if v, ok := params["cache_ttl"]; ok {
+			input["introspect.cache_ttl_seconds"] = v
+		}
+		if v, ok := params["cache_ttl_seconds"]; ok {
+			input["introspect.cache_ttl_seconds"] = v
+		}
+		if v, ok := params["subject_var"]; ok {
+			input["introspect.claims_var"] = v
+		}
+		if v, ok := params["claims_var"]; ok {
+			input["introspect.claims_var"] = v
+		}
+		if v, ok := params["result_var"]; ok {
+			input["introspect.result_var"] = v
+		}
+		if v, ok := params["client_id"]; ok {
+			input["introspect.client_id"] = v
+		}
+		if v, ok := params["client_secret"]; ok {
+			input["introspect.client_secret"] = v
+		}
+		if v, ok := params["bearer_token"]; ok {
+			input["introspect.bearer_token"] = v
+		}
+		if v, ok := params["on_failure"]; ok {
+			input["introspect.on_failure"] = v
+		}
+		if v, ok := params["failure_status"]; ok {
+			input["introspect.failure_status"] = v
+		}
+		if v, ok := params["required_scopes"]; ok {
+			input["introspect.required_scopes"] = v
+		}
+		return []StepConfig{{Action: "validate_token_introspection", Input: input}}
 
 	// ── Secrets ───────────────────────────────────────────────────────────────
 	case "load_secret":

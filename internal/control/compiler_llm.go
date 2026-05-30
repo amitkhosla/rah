@@ -295,6 +295,11 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		llmCfg.MessagesSlot = s
 	}
 
+	// Mutual exclusivity: prompt_slot and messages_slot are alternatives.
+	if llmCfg.MessagesSlot >= 0 && llmCfg.PromptSlot >= 0 {
+		return fmt.Errorf("llm_call: specify either prompt_slot or messages_slot, not both")
+	}
+
 	// tools_slot: ByteSlot populated by parse_message_format containing JSON []ToolDefinition.
 	if v, ok := step.Input["tools_slot"]; ok && v != "" {
 		s, err := c.getSlot(v)
@@ -391,6 +396,11 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			return fmt.Errorf("llm_call: cache_creation_var: %w", err)
 		}
 		llmCfg.CacheCreationSlot = s
+	}
+
+	// stream_to_client: enables streaming response output to the client.
+	if v, ok := step.Input["stream_to_client"]; ok && v == "true" {
+		llmCfg.StreamToClient = true
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))

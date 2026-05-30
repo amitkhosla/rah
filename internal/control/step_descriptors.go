@@ -232,6 +232,26 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 
 		{
+			Type: "extract_jwt_claim", Title: "Extract JWT Claim", Category: "auth", Capability: "jwt",
+			Description: "Extract a single named claim from a JWT without signature verification. " +
+				"Use to pull identity or metadata claims (sub, scope, client_id, custom fields) " +
+				"into a slot for downstream rate limiting, routing, or cost keying. " +
+				"Does NOT validate the signature — use token_validation when cryptographic verification is required.",
+			Defaults: map[string]string{
+				"key_identifier": "header.Authorization",
+				"as":             "var.jwt_sub",
+			},
+			Fields: []StepField{
+				sf("key_identifier", "Token source",
+					`Where to read the JWT. Examples: "header.Authorization" (strips Bearer prefix automatically), "header.X-Custom-Token", "var.token_slot"`,
+					"header.Authorization"),
+				sf("as", "Output slot", "Slot to write the extracted claim value into", "var.jwt_sub"),
+				sf("claim_name", "Claim name", `JWT claim to extract (e.g. "sub", "scope", "client_id"). Default: "sub"`, "sub"),
+				sf("default_value", "Default value", "Value to write when claim is absent or token is invalid. Default: empty string.", ""),
+			},
+		},
+
+		{
 			Type: "load_secret", Title: "Load Secret", Category: "auth", Capability: "auth",
 			Description: "Fetch a secret from GSM, Vault, AWS SM, or env into a variable.",
 			Defaults: map[string]string{"ref": "", "as": "secret_value"},
@@ -351,6 +371,18 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "check_rate_limit_v2", Title: "Check Rate Limit (V2)", Category: "rate-limit", Capability: "throttle",
+			Description: "Enforce a named V2 rate limit config. Supports per-tenant, per-IP, per-slot, and global counting strategies with sliding or fixed windows. Returns 429 when any window is exceeded.",
+			Defaults: map[string]string{
+				"input.count_by": "tenant",
+			},
+			Fields: []StepField{
+				sf("input.config", "Config name", "Name of the rate_limit_configs_v2 entry to enforce (required)", "my_rl_config"),
+				sf("input.count_by", "Count by", `Counter key strategy: "tenant" (default), "ip", "slot", "global"`, "tenant"),
+				sf("input.slot", "Variable name (count_by=slot)", "Variable name whose value is used as the counter key when count_by=slot", ""),
+			},
+		},
+		{
 			Type: "api_rate_limits", Title: "API Rate Limits", Category: "rate-limit", Capability: "throttle",
 			Description: "Enforce the rate limits configured in the API definition at this position in the flow. If absent, limits are auto-injected at the start of the flow. No configuration needed — drag to control where enforcement happens.",
 			Defaults: map[string]string{},
@@ -380,12 +412,13 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 		{
 			Type: "circuit_breaker", Title: "Circuit Breaker", Category: "resilience", Capability: "gate",
-			Description: "Open the circuit after failure_threshold consecutive failures; return 503 while open. Probe recovery after open_duration_ms via half-open state.",
+			Description: "Open the circuit after failure_threshold consecutive failures; return 503 while open (or jump to fallback_flow if specified). Probe recovery after open_duration_ms via half-open state.",
 			Defaults: map[string]string{"input.failure_threshold": "5", "input.success_threshold": "2", "input.open_duration_ms": "30000"},
 			Fields: []StepField{
 				sf("input.failure_threshold", "Failure threshold", "Consecutive failures required to open the circuit. Default: 5.", "5"),
 				sf("input.success_threshold", "Success threshold", "Consecutive successes in half-open state required to close the circuit. Default: 2.", "2"),
 				sf("input.open_duration_ms", "Open duration (ms)", "How long the circuit stays open before attempting a probe request. Default: 30000 (30 s).", "30000"),
+				sf("input.fallback_flow", "Fallback flow (optional)", "Name of a compiled fragment/flow to jump to when the circuit is open. Omit to return a bare 503.", ""),
 			},
 		},
 		{
@@ -398,6 +431,15 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 
 		// ── Network ───────────────────────────────────────────────────────────────
+		{
+			Type: "bind_body", Title: "Read Body Field", Category: "request", Capability: "request",
+			Description: "Extract a field from the request body using a gjson path expression and store it in a variable.",
+			Defaults: map[string]string{"key": "", "as": "body_field"},
+			Fields: []StepField{
+				sf("key", "gjson path", "gjson path expression to extract from the request body (e.g. result.tenant.plan)", "result.id"),
+				sf("as", "Store into variable", "Variable name to write the extracted value into", "body_field"),
+			},
+		},
 		{
 			Type: "bind_header", Title: "Read Header", Category: "request", Capability: "request",
 			Description: "Extract an HTTP request header value into a variable.",
@@ -1347,6 +1389,15 @@ func AllStepDescriptors() []StepDescriptor {
 			Description: "Mirror the incoming request back as the response. Useful for testing flows.",
 			Defaults: map[string]string{},
 			Fields:   []StepField{},
+		},
+		{
+			Type: "current_timestamp", Title: "Current Timestamp", Category: "response", Capability: "time",
+			Description: "Write the current time into a variable. Format: unix_s (coarse, ~1 ns via cached clock), unix_ms (default), unix_ns, rfc3339.",
+			Defaults: map[string]string{"as": "ts", "format": "unix_ms"},
+			Fields: []StepField{
+				sf("as", "Store as", "Variable name to write the timestamp into.", "ts"),
+				sf("format", "Format", "Output format: unix_s | unix_ms | unix_ns | rfc3339. Default: unix_ms.", "unix_ms"),
+			},
 		},
 
 		// ── Validation ────────────────────────────────────────────────────────────

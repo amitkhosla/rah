@@ -1,0 +1,21 @@
+# ─── Authentication APIs ──────────────────────────────────────────────────────
+#
+# API definitions for the authentication samples.
+# Flows referenced here are defined in instructions/03-authn.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-cs-jwt-protected
+    path: /samples/cs/protected/jwt
+    method: GET
+    flow_name: api_jwt_protected
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-cs-introspect-protected
+    path: /samples/cs/protected/introspect
+    method: GET
+    flow_name: api_introspect_protected
+    action: upsert
+    skip_rate_limit: true

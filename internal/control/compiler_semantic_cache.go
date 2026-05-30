@@ -119,14 +119,20 @@ func (c *Compiler) compileSemanticCacheGet(step StepConfig) error {
 		MaxRetries: maxRetries,
 	}
 
+	sharedCollectionGet := false
+	if v, ok := step.Input["shared_collection"]; ok && v == "true" {
+		sharedCollectionGet = true
+	}
+
 	cfg := steps.SemanticCacheGetConfig{
-		EmbedCfg:   embedCfg,
-		Store:      store,
-		Collection: collection,
-		QuerySlot:  querySlot,
-		ResultSlot: resultSlot,
-		HitSlot:    hitSlot,
-		MinScore:   minScore,
+		EmbedCfg:         embedCfg,
+		Store:            store,
+		Collection:       collection,
+		SharedCollection: sharedCollectionGet,
+		QuerySlot:        querySlot,
+		ResultSlot:       resultSlot,
+		HitSlot:          hitSlot,
+		MinScore:         minScore,
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.SemanticCacheGet(cfg))
@@ -231,12 +237,18 @@ func (c *Compiler) compileSemanticCachePut(step StepConfig) error {
 		MaxRetries: maxRetries,
 	}
 
+	sharedCollectionPut := false
+	if v, ok := step.Input["shared_collection"]; ok && v == "true" {
+		sharedCollectionPut = true
+	}
+
 	cfg := steps.SemanticCachePutConfig{
-		EmbedCfg:     embedCfg,
-		Store:        store,
-		Collection:   collection,
-		QuerySlot:    querySlot,
-		ResponseSlot: responseSlot,
+		EmbedCfg:         embedCfg,
+		Store:            store,
+		Collection:       collection,
+		SharedCollection: sharedCollectionPut,
+		QuerySlot:        querySlot,
+		ResponseSlot:     responseSlot,
 	}
 
 	c.GlobalTable = append(c.GlobalTable, steps.SemanticCachePut(cfg))

@@ -1,7 +1,9 @@
-# ─── Static Response Samples — Code Style ────────────────────────────────────
+# ─── Static Response Flows ────────────────────────────────────────────────────
 #
-# Each entry-point flow reads like pseudocode — a short sequence of named calls.
-# Building blocks are small, focused flows that can be reused across entry points.
+# Building-block flows for the static response samples.
+# APIs that use these flows are in apis/01-static-responses.yaml.
+#
+# Flow map:
 #
 #   api_hello:
 #     call build_hello_payload     → sets response_body
@@ -113,36 +115,3 @@ flows:
       call read_path_id
       call wrap_path_id_as_json
       call send_ok
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  - name: sample-cs-hello
-    path: /samples/cs/static/hello
-    method: GET
-    flow_name: api_hello
-    action: upsert
-
-  - name: sample-cs-status
-    path: /samples/cs/static/status
-    method: GET
-    flow_name: api_status
-    action: upsert
-
-  - name: sample-cs-echo-header
-    path: /samples/cs/static/echo-header
-    method: GET
-    flow_name: api_echo_header
-    action: upsert
-
-  - name: sample-cs-echo-query
-    path: /samples/cs/static/echo-query
-    method: GET
-    flow_name: api_echo_query
-    action: upsert
-
-  - name: sample-cs-echo-path
-    path: /samples/cs/static/echo/{id}
-    method: GET
-    flow_name: api_echo_path
-    action: upsert

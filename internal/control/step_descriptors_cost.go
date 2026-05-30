@@ -38,6 +38,11 @@ func CostStepDescriptors() []StepDescriptor {
 			},
 			Fields: []StepField{
 				sf("key_identifier", "Cost slot (int)", "IntSlot containing the estimated cost (value = USD × 1e9, written by calculate_cost)", "var.cost"),
+				sf("key_slot", "Key slot (optional)",
+					"ByteSlot holding a custom quota key (e.g. JWT sub from extract_jwt_claim, a header value). "+
+					"When set and non-empty, this key is used instead of the tenant key. "+
+					"Enables per-user or per-dimension cost tracking without a user registry.",
+					""),
 			},
 		},
 		{
@@ -53,6 +58,11 @@ func CostStepDescriptors() []StepDescriptor {
 			Fields: []StepField{
 				sf("key_identifier", "Cost slot (int)", "IntSlot containing the actual cost (value = USD × 1e9)", "var.cost"),
 				sf("model_slot", "Model slot (optional)", "ByteSlot with model ID string — stamped on the ingest cost event for analytics", "var.model"),
+				sf("key_slot", "Key slot (optional)",
+					"ByteSlot holding a custom quota key (e.g. JWT sub from extract_jwt_claim, a header value). "+
+					"When set and non-empty, this key is used instead of the tenant key. "+
+					"Enables per-user or per-dimension cost tracking without a user registry.",
+					""),
 			},
 		},
 	}

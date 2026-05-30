@@ -69,6 +69,11 @@ type SemanticCacheGetConfig struct {
 	Store      vectorstore.VectorStore
 	Collection string
 
+	// SharedCollection disables per-tenant collection scoping.
+	// When false (default), the collection is scoped as "<collection>_<tenantID>".
+	// When true, all tenants share the same collection (cfg.Collection used as-is).
+	SharedCollection bool
+
 	// Slots
 	QuerySlot      int     // ByteSlots: query text
 	ResultSlot     int     // ByteSlots: write cached response here on hit
@@ -86,6 +91,11 @@ type SemanticCachePutConfig struct {
 	// Vector store handle
 	Store      vectorstore.VectorStore
 	Collection string
+
+	// SharedCollection disables per-tenant collection scoping.
+	// When false (default), the collection is scoped as "<collection>_<tenantID>".
+	// When true, all tenants share the same collection (cfg.Collection used as-is).
+	SharedCollection bool
 
 	// Slots
 	QuerySlot    int // ByteSlots: query text (to embed as key)
@@ -259,13 +269,19 @@ func SemanticCacheGet(cfg SemanticCacheGetConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
+			// Scope collection by tenant unless shared_collection is set.
+			collection := cfg.Collection
+			if !cfg.SharedCollection {
+				collection = fmt.Sprintf("%s_%d", cfg.Collection, ctx.TenantID)
+			}
+
 			// Use request context if available, else background
 			searchCtx := context.Background()
 			if ctx.Request != nil {
 				searchCtx = ctx.Request.Context()
 			}
 
-			results, searchErr := cfg.Store.Search(searchCtx, cfg.Collection, vector, 1, minScore, nil)
+			results, searchErr := cfg.Store.Search(searchCtx, collection, vector, 1, minScore, nil)
 			if searchErr != nil || len(results) == 0 {
 				if cfg.HitSlot >= 0 && cfg.HitSlot < len(ctx.BoolSlots) {
 					ctx.BoolSlots[cfg.HitSlot] = false
@@ -459,6 +475,12 @@ func SemanticCachePut(cfg SemanticCachePutConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
+			// Scope collection by tenant unless shared_collection is set.
+			collection := cfg.Collection
+			if !cfg.SharedCollection {
+				collection = fmt.Sprintf("%s_%d", cfg.Collection, ctx.TenantID)
+			}
+
 			// Use request context if available, else background
 			upsertCtx := context.Background()
 			if ctx.Request != nil {
@@ -474,7 +496,7 @@ func SemanticCachePut(cfg SemanticCachePutConfig) engine.Instruction {
 				},
 			}
 
-			_ = cfg.Store.Upsert(upsertCtx, cfg.Collection, items) // ignore errors (best-effort)
+			_ = cfg.Store.Upsert(upsertCtx, collection, items) // ignore errors (best-effort)
 
 			return state.PC + 1
 		},

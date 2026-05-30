@@ -143,7 +143,7 @@ func parseAndMergeJSON(rawBytes []byte, filePath string, result *LoadResult) err
 		return err
 	}
 
-	// Track source locations and merge
+	compileDSLFlowsInPartial(&partial)
 	trackSourcesAndMerge(filePath, partial, result)
 	return nil
 }
@@ -153,37 +153,84 @@ func parseAndMergeYAML(rawBytes []byte, filePath string, result *LoadResult) err
 	decoder := yaml.NewDecoder(strings.NewReader(string(rawBytes)))
 
 	for {
-		var partial control.UnifiedSyncRequest
-		err := decoder.Decode(&partial)
+		// Decode to interface{} first, then re-encode as JSON so that the
+		// existing json struct tags on control.UnifiedSyncRequest are applied.
+		// This handles snake_case keys (e.g. flow_name → FlowName) that yaml.v3
+		// would not map correctly using its own lowercase-only field resolution.
+		var rawDoc interface{}
+		err := decoder.Decode(&rawDoc)
 		if err != nil {
 			if err.Error() == "EOF" {
 				break
 			}
 			return err
 		}
+		if rawDoc == nil {
+			continue
+		}
 
-		// Track source locations and merge
+		jsonBytes, err := json.Marshal(rawDoc)
+		if err != nil {
+			return fmt.Errorf("yaml-to-json conversion: %w", err)
+		}
+
+		var partial control.UnifiedSyncRequest
+		if err := json.Unmarshal(jsonBytes, &partial); err != nil {
+			return err
+		}
+
+		compileDSLFlowsInPartial(&partial)
 		trackSourcesAndMerge(filePath, partial, result)
 	}
 
 	return nil
 }
 
+// compileDSLFlowsInPartial compiles the Code field of every flow in partial
+// that has code but no Instructions, populating Instructions with the result.
+// Any anonymous flows auto-generated for inline if/else blocks are appended to
+// partial.Flows so they appear in the bundle and source map.
+func compileDSLFlowsInPartial(partial *control.UnifiedSyncRequest) {
+	var extraFlows []control.FlowUpdate
+	for i := range partial.Flows {
+		flow := &partial.Flows[i]
+		if flow.Code == "" || len(flow.Instructions) > 0 {
+			continue
+		}
+		dslResult, err := control.ParseDSL(flow.Code)
+		if err != nil {
+			// Leave Instructions empty; the linter will report it.
+			continue
+		}
+		flow.Instructions = dslResult.Steps
+		for name, steps := range dslResult.ExtraFlows {
+			extraFlows = append(extraFlows, control.FlowUpdate{
+				Name:         name,
+				Instructions: steps,
+				Action:       flow.Action,
+			})
+		}
+	}
+	partial.Flows = append(partial.Flows, extraFlows...)
+}
+
 // trackSourcesAndMerge records source locations for definitions, tracks duplicates as warnings,
 // and merges the partial bundle.
 func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, result *LoadResult) {
-	// Track flow sources and detect duplicates
+	// Track flow sources and detect duplicates.
+	// A flow name must be unique across the entire bundle — even with action:upsert,
+	// defining the same flow in multiple files leads to load-order-dependent behaviour
+	// and makes it impossible to know which definition is authoritative.
 	for _, flow := range partial.Flows {
 		key := flow.Name
 		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
-			// Duplicate detected
 			result.Issues = append(result.Issues, LintIssue{
-				Severity:   SeverityWarning,
+				Severity:   SeverityWarning, // escalated to Error by lintLevel2
 				Rule:       "duplicate_flow",
 				File:       filePath,
 				Line:       1,
-				Message:    fmt.Sprintf("Flow '%s' already defined in %s:%d", key, existing.File, existing.Line),
-				Suggestion: "Remove the duplicate or rename the flow",
+				Message:    fmt.Sprintf("flow %q is already defined in %s — each flow must appear in exactly one file", key, existing.File),
+				Suggestion: fmt.Sprintf("Remove the duplicate definition from %s, or rename it if you need a distinct variation", filePath),
 			})
 		}
 		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}

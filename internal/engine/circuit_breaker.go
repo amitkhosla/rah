@@ -73,12 +73,16 @@ type OutcomeFunc = func(ctx *rctx.Context) bool
 //
 //   - Closed  → pass through.
 //   - Open    → if the open window has elapsed, transition to HalfOpen and allow
-//     one probe request; otherwise set ctx.ResponseStatus = 503 and stop.
+//     one probe request; otherwise: if fallbackFlowStart >= 0 jump to that flow;
+//     else set ctx.ResponseStatus = 503 and stop.
 //   - HalfOpen → pass through (one probe at a time; CAS ensures only one thread
 //     transitions the state).
 //
+// fallbackFlowStart is the absolute PC of the fallback flow's first instruction,
+// or -1 when no fallback is configured (bare 503 behaviour is preserved).
+//
 // Use RecordCircuitOutcomeStep after the guarded work to update the state machine.
-func CircuitBreakerGateStep(arena *CircuitBreakerArena, idx int) Instruction {
+func CircuitBreakerGateStep(arena *CircuitBreakerArena, idx int, fallbackFlowStart int16) Instruction {
 	return Instruction{
 		Name: "CIRCUIT_BREAKER_GATE",
 		Action: func(ctx *rctx.Context, state *ExecutionState) int16 {
@@ -97,6 +101,10 @@ func CircuitBreakerGateStep(arena *CircuitBreakerArena, idx int) Instruction {
 						atomic.StoreInt64(&cs.successCount, 0)
 					}
 					return state.PC + 1 // allow the probe (or the winner of the CAS race)
+				}
+				// Circuit is open and the probe window has not yet elapsed.
+				if fallbackFlowStart >= 0 {
+					return fallbackFlowStart // jump to the configured fallback flow
 				}
 				ctx.ResponseStatus = 503
 				return StopPlan

@@ -21,6 +21,7 @@ type ParseMessageFormatConfig struct {
 	ToolsSlot       int // output: write raw tools JSON array here (-1 = skip)
 	ToolChoiceSlot  int // output: write raw tool_choice JSON here (-1 = skip)
 	StreamSlot      int // output: write "true" or "false" string here (-1 = skip)
+	ModelSlot       int // output: write topLevel["model"] string here (-1 = skip)
 }
 
 // ParseMessageFormat returns an Instruction that reads a provider-specific JSON
@@ -323,6 +324,18 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 					}
 				}
 
+				// Extract model if configured.
+				if cfg.ModelSlot >= 0 {
+					if raw, ok := topLevel["model"]; ok {
+						var modelStr string
+						if json.Unmarshal(raw, &modelStr) == nil && modelStr != "" {
+							sl := ctx.Alloc(len(modelStr))
+							copy(sl, modelStr)
+							ctx.ByteSlots[cfg.ModelSlot] = sl
+						}
+					}
+				}
+
 			case "openai":
 				type openAIMsg struct {
 					Role       string          `json:"role"`
@@ -425,6 +438,18 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 					}
 				}
 
+				// Extract model if configured.
+				if cfg.ModelSlot >= 0 {
+					if raw, ok := topLevel["model"]; ok {
+						var modelStr string
+						if json.Unmarshal(raw, &modelStr) == nil && modelStr != "" {
+							sl := ctx.Alloc(len(modelStr))
+							copy(sl, modelStr)
+							ctx.ByteSlots[cfg.ModelSlot] = sl
+						}
+					}
+				}
+
 			case "gemini":
 				type geminiPart struct {
 					Text string `json:"text"`
@@ -466,6 +491,18 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 						text = c.Parts[0].Text
 					}
 					messages = append(messages, CanonicalMessage{Role: role, Content: text})
+				}
+
+				// Extract model if configured.
+				if cfg.ModelSlot >= 0 {
+					if raw, ok := topLevel["model"]; ok {
+						var modelStr string
+						if json.Unmarshal(raw, &modelStr) == nil && modelStr != "" {
+							sl := ctx.Alloc(len(modelStr))
+							copy(sl, modelStr)
+							ctx.ByteSlots[cfg.ModelSlot] = sl
+						}
+					}
 				}
 			}
 

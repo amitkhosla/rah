@@ -1,8 +1,9 @@
-# ─── Tenant Routing Samples — Code Style ─────────────────────────────────────
+# ─── Tenant Routing Flows ─────────────────────────────────────────────────────
 #
-# Three tenant identification patterns + one layered rate-limit variant.
-# The building-block approach makes the common "identify → resolve → proxy"
-# sequence obvious:
+# Building-block flows for the tenant routing samples.
+# APIs and rate limit configs are in apis/05-tenant-routing.yaml.
+#
+# Flow map:
 #
 #   api_tenant_from_header:
 #     call identify_tenant_from_header   # header → registry → TenantID
@@ -15,20 +16,6 @@
 #     call resolve_tenant_upstream       # reused
 #     call proxy_to_tenant              # reused
 #
-#   api_tenant_from_path:
-#     call read_tenant_path_param        # {alias} → tenant_alias
-#     call identify_tenant_from_slot     # reused
-#     call resolve_tenant_upstream       # reused
-#     call proxy_to_tenant              # reused
-#
-#   api_tenant_with_rate_limits:
-#     call identify_tenant_from_header   # reused
-#     call enforce_per_tenant_limit      # per-tenant counter
-#     call resolve_tenant_upstream       # reused
-#     call proxy_to_tenant              # reused
-#
-# Reuse count: resolve_tenant_upstream and proxy_to_tenant are shared by all
-# four variants.  identify_tenant_from_slot is shared by query and path variants.
 # ─────────────────────────────────────────────────────────────────────────────
 
 flows:
@@ -123,56 +110,3 @@ flows:
       call enforce_per_tenant_limit
       call resolve_tenant_upstream
       call proxy_to_tenant
-
-# ─────────────────────────────────────────────────────────────────────────────
-rate_limit_configs_v2:
-
-  - name: rl-per-tenant
-    enforcement: approximate
-    windows:
-      - period: 1m
-        limit: 100
-      - period: 1h
-        limit: 1000
-
-  - name: rl-overall
-    enforcement: approximate
-    windows:
-      - period: 1m
-        limit: 5000
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  # curl -H "X-Tenant-ID: acme" http://localhost:8080/samples/cs/tenant/header
-  - name: sample-cs-tenant-header
-    path: /samples/cs/tenant/header
-    method: GET
-    flow_name: api_tenant_from_header
-    action: upsert
-
-  # curl "http://localhost:8080/samples/cs/tenant/query?tenant_id=acme"
-  - name: sample-cs-tenant-query
-    path: /samples/cs/tenant/query
-    method: GET
-    flow_name: api_tenant_from_query
-    action: upsert
-
-  # curl http://localhost:8080/samples/cs/tenant/acme/data
-  - name: sample-cs-tenant-path
-    path: /samples/cs/tenant/{alias}/data
-    method: GET
-    flow_name: api_tenant_from_path
-    action: upsert
-
-  # Layered rate limits: per-tenant (in flow) + global (on API)
-  - name: sample-cs-tenant-rl
-    path: /samples/cs/tenant/limited
-    method: GET
-    flow_name: api_tenant_with_rate_limits
-    action: upsert
-    rate_limit_policies:
-      - kind: named
-        config: rl-overall
-        count_by: global
-    skip_rate_limit: true     # per-tenant enforced in-flow

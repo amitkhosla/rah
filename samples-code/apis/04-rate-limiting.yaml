@@ -1,0 +1,74 @@
+# ─── Rate Limiting APIs ───────────────────────────────────────────────────────
+#
+# API definitions and rate limit configs for the rate limiting samples.
+# Flows referenced here are defined in instructions/04-rate-limiting.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+rate_limit_configs_v2:
+
+  - name: rl-by-ip
+    enforcement: approximate
+    windows:
+      - period: 1s
+        limit: 10
+      - period: 1m
+        limit: 100
+
+  - name: rl-by-header
+    enforcement: approximate
+    windows:
+      - period: 1h
+        limit: 1000
+
+  - name: rl-global
+    enforcement: approximate
+    exceeded_status: 429
+    exceeded_body: '{"error":"rate limit exceeded","retry_after":60}'
+    windows:
+      - period: 1m
+        limit: 5000
+
+  - name: rl-multi-window
+    enforcement: approximate
+    windows:
+      - period: 1s
+        limit: 10
+      - period: 1m
+        limit: 100
+      - period: 1h
+        limit: 1000
+
+# ─────────────────────────────────────────────────────────────────────────────
+apis:
+
+  # A. Rate limit by IP (enforce inside flow)
+  - name: sample-cs-rl-ip
+    path: /samples/cs/rl/by-ip
+    method: GET
+    flow_name: api_rl_by_ip
+    action: upsert
+    skip_rate_limit: true
+
+  # B. Rate limit by header — flow binds the key then enforces
+  - name: sample-cs-rl-header
+    path: /samples/cs/rl/by-header
+    method: GET
+    flow_name: api_rl_by_header
+    action: upsert
+    skip_rate_limit: true
+
+  # C. Global rate limit
+  - name: sample-cs-rl-global
+    path: /samples/cs/rl/global
+    method: GET
+    flow_name: api_rl_global
+    action: upsert
+    skip_rate_limit: true
+
+  # D. Multi-window (3 simultaneous windows)
+  - name: sample-cs-rl-multi-window
+    path: /samples/cs/rl/multi-window
+    method: GET
+    flow_name: api_rl_multi_window
+    action: upsert
+    skip_rate_limit: true

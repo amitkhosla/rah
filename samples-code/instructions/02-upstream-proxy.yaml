@@ -1,7 +1,9 @@
-# ─── Upstream Proxy Samples — Code Style ─────────────────────────────────────
+# ─── Upstream Proxy Flows ─────────────────────────────────────────────────────
 #
-# Two upstream proxy patterns, decomposed into named building blocks.
-# The entry-point flows read like pseudocode:
+# Building-block flows for the upstream proxy samples.
+# APIs that use these flows are in apis/02-upstream-proxy.yaml.
+#
+# Flow map:
 #
 #   api_simple_proxy:
 #     call fetch_from_httpbin        # http.get → upstream_body
@@ -12,8 +14,6 @@
 #     call try_cache_read            # cache.get(cache_key) → cached_response
 #     call serve_from_cache_or_fetch # hit → serve_cached; miss → fetch_and_store
 #
-# Reuse pattern: send_upstream_response is called by api_simple_proxy; each
-# building block is small enough to read in one glance and reuse across flows.
 # ─────────────────────────────────────────────────────────────────────────────
 
 flows:
@@ -88,18 +88,3 @@ flows:
       call build_cache_key
       call try_cache_read
       call serve_from_cache_or_fetch
-
-# ─────────────────────────────────────────────────────────────────────────────
-apis:
-
-  - name: sample-cs-simple-proxy
-    path: /samples/cs/proxy
-    method: GET
-    flow_name: api_simple_proxy
-    action: upsert
-
-  - name: sample-cs-cached-proxy
-    path: /samples/cs/cached
-    method: GET
-    flow_name: api_cached_proxy
-    action: upsert
