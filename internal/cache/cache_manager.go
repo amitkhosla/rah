@@ -518,6 +518,12 @@ func (cm *CacheManager) put(
 
 	physOff, gen, old, hasOld, ok := region.Write(tenantID, keyMid, value, ttl)
 	if !ok {
+		// Internal cache write failed. Check if data is persisted in backend.
+		if cm.backend != nil {
+			// Data was enqueued to backend (line 507), so Put succeeds.
+			return 0, true
+		}
+		// No backend available and internal cache failed: data would be lost.
 		return 0, false
 	}
 
