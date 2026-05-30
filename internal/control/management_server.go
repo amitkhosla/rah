@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"rah/internal/config"
 	"rah/internal/engine"
+	"rah/internal/gatewaylog"
 	"rah/internal/router"
 	registrypkg "rah/internal/registry"
 	"strings"
@@ -67,7 +68,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 	for name, raw := range flowsSnapshot {
 		var steps []StepConfig
 		if err := json.Unmarshal(raw, &steps); err != nil {
-			log.Printf("[Bootstrap] Skipping unparseable flow %q: %v", name, err)
+			gatewaylog.Default.Warn("[Bootstrap] skipping unparseable flow", gatewaylog.F("name", name), gatewaylog.F("error", err.Error()))
 			continue
 		}
 		req.Flows = append(req.Flows, FlowUpdate{Name: name, Instructions: steps, Action: "upsert"})
@@ -76,7 +77,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 	for name, raw := range apisSnapshot {
 		var api ApiConfig
 		if err := json.Unmarshal(raw, &api); err != nil {
-			log.Printf("[Bootstrap] Skipping unparseable api %q: %v", name, err)
+			gatewaylog.Default.Warn("[Bootstrap] skipping unparseable api", gatewaylog.F("name", name), gatewaylog.F("error", err.Error()))
 			continue
 		}
 		if api.ApiID == "" {
@@ -106,7 +107,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 				}
 				req.RateLimitConfigsV2 = append(req.RateLimitConfigsV2, cfg)
 			} else {
-				log.Printf("[Bootstrap] Skipping unparseable rate_limit_config_v2 %q", name)
+				gatewaylog.Default.Warn("[Bootstrap] skipping unparseable rate_limit_config_v2", gatewaylog.F("name", name))
 			}
 		}
 	}
@@ -121,7 +122,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 				}
 				req.Tiers = append(req.Tiers, t)
 			} else {
-				log.Printf("[Bootstrap] Skipping unparseable tier %q", name)
+				gatewaylog.Default.Warn("[Bootstrap] skipping unparseable tier", gatewaylog.F("name", name))
 			}
 		}
 	}
@@ -136,7 +137,7 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 				}
 				req.UpstreamServices = append(req.UpstreamServices, svc)
 			} else {
-				log.Printf("[Bootstrap] Skipping unparseable upstream_service %q", name)
+				gatewaylog.Default.Warn("[Bootstrap] skipping unparseable upstream_service", gatewaylog.F("name", name))
 			}
 		}
 	}
@@ -149,8 +150,12 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 	if err := s.ApplyUnifiedSync(req); err != nil {
 		return fmt.Errorf("bootstrap: apply sync: %w", err)
 	}
-	log.Printf("[Bootstrap] Loaded %d flow(s), %d api(s), %d rl_v2(s), %d tier(s), %d upstream_svc(s)",
-		len(req.Flows), len(req.Apis), len(req.RateLimitConfigsV2), len(req.Tiers), len(req.UpstreamServices))
+	gatewaylog.Default.Info("[Bootstrap] loaded",
+		gatewaylog.Fint("flows", int64(len(req.Flows))),
+		gatewaylog.Fint("apis", int64(len(req.Apis))),
+		gatewaylog.Fint("rl_v2", int64(len(req.RateLimitConfigsV2))),
+		gatewaylog.Fint("tiers", int64(len(req.Tiers))),
+		gatewaylog.Fint("upstream_svcs", int64(len(req.UpstreamServices))))
 
 	// Sync per-tenant rate-limit multipliers into the engine's fixed array.
 	if s.RegMgr != nil {
@@ -178,14 +183,14 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 
 	var req UnifiedSyncRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[Management] Failed to decode sync request: %v", err)
+		gatewaylog.Default.Warn("[Management] failed to decode sync request", gatewaylog.F("error", err.Error()))
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
 
 	if r.URL.Query().Get("draft") == "true" {
 		if err := s.applyDraftSync(req); err != nil {
-			log.Printf("[Management] draft sync failed: %v", err)
+			gatewaylog.Default.Warn("[Management] draft sync failed", gatewaylog.F("error", err.Error()))
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -196,7 +201,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := s.ApplyUnifiedSync(req); err != nil {
-		log.Printf("[Management] sync failed: %v", err)
+		gatewaylog.Default.Warn("[Management] sync failed", gatewaylog.F("error", err.Error()))
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -912,7 +917,10 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				}
 			}
 			if err != nil {
-				log.Printf("[Management] Failed to persist %s %q: %v", op.kind, op.name, err)
+				gatewaylog.Default.Warn("[Management] failed to persist",
+					gatewaylog.F("kind", op.kind),
+					gatewaylog.F("name", op.name),
+					gatewaylog.F("error", err.Error()))
 			}
 		}
 	}

@@ -186,6 +186,19 @@ type TenantRecord struct {
 	Identifiers map[string]string `json:"identifiers,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	CreatedAt   int64             `json:"created_at,omitempty"` // Unix seconds; used for TTL sweep of test tenants
+
+	// LogLevel overrides the gateway-wide log level for requests belonging to this tenant.
+	// Valid values: "debug", "info", "warn", "error", "".
+	// Empty string = no override (gateway default applies).
+	LogLevel string `json:"log_level,omitempty"`
+
+	// DebugEnabled is a shorthand for LogLevel="debug" AND TraceSampleRate=1.0 for this tenant.
+	// When true it takes precedence over LogLevel.
+	DebugEnabled bool `json:"debug_enabled,omitempty"`
+
+	// TraceSampleRateOverride, when > 0, overrides the gateway-wide trace sample rate
+	// for this tenant. Range 0.0–1.0. 0 means no override.
+	TraceSampleRateOverride float64 `json:"trace_sample_rate_override,omitempty"`
 }
 
 // RateLimitRecord pairs a named rate limit config with its stored values.

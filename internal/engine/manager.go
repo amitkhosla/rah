@@ -3,10 +3,10 @@ package engine
 import (
 	"bytes"
 	"io"
-	"log"
 	"net/http"
 	"rah/internal/cache"
 	"rah/internal/config"
+	"rah/internal/gatewaylog"
 	"rah/internal/quota"
 	"rah/internal/rctx"
 	"rah/internal/registry"
@@ -128,7 +128,7 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		SpikeArrestStore:    NewSpikeArrestStore(),
 		CircuitBreakerArena: NewCircuitBreakerArena(),
 	}
-	log.Printf("instance fingerprint: %s", fm.TxIDGen.Fingerprint())
+	gatewaylog.Default.Info("startup", gatewaylog.F("fingerprint", fm.TxIDGen.Fingerprint()))
 
 	// Initialize with an empty but valid state
 	initialState := &EngineState{

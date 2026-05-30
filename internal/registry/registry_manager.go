@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"hash/maphash"
 	"sort"
 	"strings"
@@ -851,6 +852,84 @@ func (m *RegistryManager) GetRateLimitConfigId(name string) (uint16, bool) {
 	m.ensureInit()
 	id, ok := m.rateLimitNames[name]
 	return id, ok
+}
+
+// TenantTraceSampleRate returns the effective trace sample rate override for a
+// tenant, satisfying the observability.TenantTracer interface.
+//
+// Returns (1.0, true) when DebugEnabled is set.
+// Returns (override, true) when TraceSampleRateOverride > 0.
+// Returns (0, false) when the tenant is not found or has no override.
+func (m *RegistryManager) TenantTraceSampleRate(tenantID uint16) (float64, bool) {
+	m.mu.Lock()
+	rec := m.tenantData[tenantID]
+	m.mu.Unlock()
+	if rec == nil {
+		return 0, false
+	}
+	if rec.DebugEnabled {
+		return 1.0, true
+	}
+	if rec.TraceSampleRateOverride > 0 {
+		return rec.TraceSampleRateOverride, true
+	}
+	return 0, false
+}
+
+// SetTenantDebug enables or disables debug mode for a tenant.
+// When enabled: sets DebugEnabled=true, LogLevel="debug", TraceSampleRateOverride=1.0.
+// When disabled: clears all three fields (reverts to gateway defaults).
+// The change is persisted via the existing Store mechanism if a store is wired.
+// Returns an error if the tenant alias is not found.
+func (m *RegistryManager) SetTenantDebug(alias string, enabled bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	tID, found := m.aliasMap[alias]
+	if !found {
+		return fmt.Errorf("tenant not found: %s", alias)
+	}
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	if enabled {
+		rec.DebugEnabled = true
+		rec.LogLevel = "debug"
+		rec.TraceSampleRateOverride = 1.0
+	} else {
+		rec.DebugEnabled = false
+		rec.LogLevel = ""
+		rec.TraceSampleRateOverride = 0
+	}
+	m.persistTenant(*rec)
+	return nil
+}
+
+// SetTenantLogLevel sets an explicit log level override for a tenant without
+// enabling full debug mode. level must be one of "debug","info","warn","error","".
+// Empty string clears the override.
+// Returns an error if the tenant alias is not found or the level value is invalid.
+func (m *RegistryManager) SetTenantLogLevel(alias string, level string) error {
+	switch level {
+	case "debug", "info", "warn", "error", "":
+		// valid
+	default:
+		return fmt.Errorf("invalid log level %q: must be one of debug, info, warn, error or empty", level)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	tID, found := m.aliasMap[alias]
+	if !found {
+		return fmt.Errorf("tenant not found: %s", alias)
+	}
+	m.ensureTenantRecord(tID)
+	rec := m.tenantData[tID]
+	rec.LogLevel = level
+	m.persistTenant(*rec)
+	return nil
 }
 
 // SetStore registers the RegistryDatastore used for persistence after every

@@ -17,6 +17,7 @@ import (
 	"rah/internal/egress"
 	"rah/internal/engine"
 	enginesteps "rah/internal/engine/steps"
+	"rah/internal/gatewaylog"
 	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
@@ -100,6 +101,11 @@ func main() {
 	} else {
 		cfgMgr = config.Default()
 		log.Printf("no config file specified (-config), using built-in defaults")
+	}
+
+	// Wire global log level from config.
+	if lvlStr := cfgMgr.Gateway().Observability.LogLevel; lvlStr != "" {
+		gatewaylog.Default.SetLevel(gatewaylog.ParseLevel(lvlStr))
 	}
 
 	cfg := cfgMgr.Layout()
@@ -216,14 +222,23 @@ func main() {
 	accessLog := observability.NewAccessLogger(8192)
 	if obsCfg.AccessLog.SigningKeyRef != "" {
 		if sigKey, sigErr := secretsMgr.Resolve(gatewayCtx, obsCfg.AccessLog.SigningKeyRef); sigErr != nil {
-			log.Printf("[warn] access log signing key resolve failed: %v", sigErr)
+			gatewaylog.Default.Warn("[warn] access log signing key resolve failed", gatewaylog.F("error", sigErr.Error()))
 		} else if len(sigKey) >= 16 {
 			accessLog.SetSigningKey(sigKey)
 			clear(sigKey)
 		} else {
-			log.Printf("[warn] access log signing key is too short (%d bytes, need ≥16); signing disabled", len(sigKey))
+			gatewaylog.Default.Warn("[warn] access log signing key is too short; signing disabled",
+				gatewaylog.Fint("bytes", int64(len(sigKey))),
+				gatewaylog.F("need", ">=16"))
 		}
 	}
+	// Wire Enabled / SampleRate from config.
+	// Backward-compat: if the access_log section is absent entirely, both fields
+	// are zero-valued (Enabled=false, SampleRate=0). Treat that as "on by default"
+	// by enabling when neither was explicitly set to disable.
+	alCfg := obsCfg.AccessLog
+	accessLogEnabled := alCfg.Enabled || alCfg.SampleRate == 0
+	accessLog.UpdateConfig(accessLogEnabled, alCfg.SampleRate)
 	registry := control.NewNameRegistry()
 
 	// ── S8: OpenTelemetry SDK init ──────────────────────────────────────────────
@@ -308,6 +323,35 @@ func main() {
 			log.Printf("[ingest] pipeline disabled (ingest.enabled=false)")
 		}
 	}
+
+	// Wire structured access log emission into ingest pipeline (KindAccessLog).
+	// The text-format log.Print line in drain() remains; this adds a parallel
+	// structured JSON stream consumed by configured KindAccessLog sinks.
+	if ingestPipeline != nil {
+		accessLog.SetPipeline(ingestPipeline)
+		log.Printf("[access-log] structured KindAccessLog emission enabled")
+	}
+
+	// Wire the ingest pipeline for KindFlowLog events emitted by "log" flow steps.
+	if ingestPipeline != nil {
+		enginesteps.SetFlowLogPipeline(ingestPipeline)
+		log.Printf("[flow-log] KindFlowLog ingest emission enabled")
+	}
+
+	// 2b2. Metrics aggregator — window-based per-API metric flush to ingest pipeline.
+	// Enabled when observability.metrics.enabled=true. Starts background goroutines
+	// that flush aggregated snapshots at each configured window boundary.
+	metricWindows := parseMetricWindows(cfgMgr.Gateway().Observability.Metrics.Windows)
+	metricsAgg := observability.NewMetricsAggregator(metricWindows)
+	if ingestPipeline != nil {
+		metricsAgg.SetPipeline(ingestPipeline)
+	}
+	if cfgMgr.Gateway().Observability.Metrics.Enabled {
+		metricsAgg.Start()
+		defer metricsAgg.Stop()
+		log.Printf("[metrics] aggregator started: windows=%v", metricWindows)
+	}
+	obs.Metrics = metricsAgg
 
 	// 2c. Pricing Manager — initialize before compiler
 	// Loads pricing from config, with fallback to hardcoded defaults
@@ -607,6 +651,10 @@ func main() {
 	// pre-resolve KeyIDs at bake time (avoids radix walk on every request).
 	compiler.RegMgr = regMgr
 
+	// Wire per-tenant trace sampling overrides: RegistryManager satisfies
+	// observability.TenantTracer via TenantTraceSampleRate.
+	obs.SetTenantTracer(regMgr)
+
 	// Wire ingestion pipeline into compiler so emit_event steps capture it
 	// in their instruction closures at bake time.
 	compiler.IngestPipeline = ingestPipeline
@@ -667,7 +715,10 @@ func main() {
 			ctx.Obs = obs
 			ctx.Timing.StartNs = reqStart.UnixNano()
 
-			isSampledTrace := obs.ShouldTrace()
+			// tenantID is 0 here (before registry lookup in ProcessRequest).
+			// ShouldTraceTenant falls back to global sampling when tenantID==0.
+			// Per-tenant debug/override is applied when tenantID is resolved.
+			isSampledTrace := obs.ShouldTraceTenant(ctx.TenantID)
 			shouldStartTrace := isSampledTrace || alwaysTrace5xx
 			if shouldStartTrace {
 				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
@@ -792,6 +843,11 @@ func main() {
 			// Post-response: client already has the response, not on the critical path.
 			if ctx.ApiId != 0 {
 				obs.RecordRequest(ctx.ApiId, total.Nanoseconds(), req.ContentLength, ctx.Timing.ClientBytesSent)
+			}
+
+			// Record into window-based metrics aggregator (feeds KindMetric ingest events).
+			if ctx.ApiId != 0 && obs.Metrics != nil {
+				obs.Metrics.Record(ctx.TenantID, ctx.ApiId, ctx.ResponseStatus, clientTotal.Nanoseconds())
 			}
 
 			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
@@ -1206,5 +1262,25 @@ func main() {
 
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), adminUserStore.Middleware(mux)))
+}
+
+// parseMetricWindows converts a slice of duration strings (e.g. ["1m","5m","1h"])
+// into []time.Duration. Invalid or zero-value entries are silently skipped.
+// Returns a sensible default when the input slice is empty.
+func parseMetricWindows(windows []string) []time.Duration {
+	if len(windows) == 0 {
+		return []time.Duration{time.Minute, 5 * time.Minute, time.Hour}
+	}
+	durations := make([]time.Duration, 0, len(windows))
+	for _, w := range windows {
+		d, err := time.ParseDuration(w)
+		if err == nil && d > 0 {
+			durations = append(durations, d)
+		}
+	}
+	if len(durations) == 0 {
+		return []time.Duration{time.Minute}
+	}
+	return durations
 }
 

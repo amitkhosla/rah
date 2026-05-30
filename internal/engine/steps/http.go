@@ -11,6 +11,7 @@ import (
 	"net/http/httptrace"
 	"rah/internal/egress"
 	"rah/internal/engine"
+	"rah/internal/gatewaylog"
 	"rah/internal/observability"
 	"rah/internal/rctx"
 	"sort"
@@ -1218,6 +1219,24 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 				if ctx.Obs != nil {
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
+				}
+
+				// ── Structured upstream log ───────────────────────────────────────
+				if gatewaylog.Default.ShouldLog(gatewaylog.INFO) {
+					info := gatewaylog.UpstreamCallInfo{
+						Method:       method,
+						URL:          url,
+						StatusCode:   resp.StatusCode,
+						DurationMs:   float64(totalUpstream.Nanoseconds()) / 1e6,
+						RequestSize:  reqBytesSent,
+						ResponseSize: respBytes,
+						ConnectMs:    float64(event.ConnectDurationNs) / 1e6,
+						TLSMs:        float64(event.TLSDurationNs) / 1e6,
+						TTFBMs:       float64(event.TTFBNs) / 1e6,
+						RetryCount:   attempt - 1,
+					}
+					fields := gatewaylog.BuildUpstreamFields(gatewaylog.DefaultUpstreamFields, info)
+					gatewaylog.Default.Info("[upstream] call completed", fields...)
 				}
 
 				// ── Retry condition ───────────────────────────────────────────────

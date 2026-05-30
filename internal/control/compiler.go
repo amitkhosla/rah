@@ -439,6 +439,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "emit_event":
 		return c.compileEmitEvent(step)
 
+	case "log":
+		return c.compileFlowLog(step)
+
 	case "parse_message_format":
 		return c.compileParseMessageFormat(step)
 

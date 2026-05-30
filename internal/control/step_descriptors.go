@@ -666,6 +666,16 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("source", "Source variable", "Variable whose value is written to the access log", "var.client_id"),
 			},
 		},
+		{
+			Type: "log", Title: "Log Message", Category: "observability", Capability: "logging",
+			Description: "Emit a structured log message from within a flow. Writes to the gateway log and optionally to the ingest pipeline as a KindFlowLog event.",
+			Defaults: map[string]string{"level": "info", "message": ""},
+			Fields: []StepField{
+				sf("level", "Log level", "Log level: debug|info|warn|error. Default: info", "info"),
+				sf("message", "Message", "Log message text (required)", ""),
+				sf("fields", "Fields", "Optional static key=value fields (YAML map)", ""),
+			},
+		},
 
 		// ── Control Flow ─────────────────────────────────────────────────────────
 		{

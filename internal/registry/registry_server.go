@@ -340,6 +340,71 @@ func (s *TenantServer) UpsertTenantRateLimitOverrideHandler(w http.ResponseWrite
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
+// SetTenantDebugHandler handles PATCH /tenants/{alias}/debug
+//
+// Request body: {"enabled": true}
+// Response 204 on success, 404 if tenant not found, 400 on bad JSON.
+func (s *TenantServer) SetTenantDebugHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	alias := aliasFromPath(r.URL.Path, "/tenants/")
+	alias = strings.TrimSuffix(alias, "/debug")
+	if alias == "" {
+		http.Error(w, "alias required in path", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetTenantDebug(alias, req.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetTenantLogLevelHandler handles PATCH /tenants/{alias}/log-level
+//
+// Request body: {"level": "debug"}
+// Response 204 on success, 404 if tenant not found, 400 if level value is invalid or bad JSON.
+// Valid level values: "debug", "info", "warn", "error", "".
+func (s *TenantServer) SetTenantLogLevelHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	alias := aliasFromPath(r.URL.Path, "/tenants/")
+	alias = strings.TrimSuffix(alias, "/log-level")
+	if alias == "" {
+		http.Error(w, "alias required in path", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Level string `json:"level"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.mgr.SetTenantLogLevel(alias, req.Level); err != nil {
+		// SetTenantLogLevel returns 400-class errors for invalid level and 404-class for missing tenant.
+		// Distinguish by checking for "invalid log level" prefix.
+		if len(req.Level) > 0 && req.Level != "debug" && req.Level != "info" && req.Level != "warn" && req.Level != "error" {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ListTenantsHandler handles GET /tenants?cursor=<id>&limit=<n>
 //
 // Returns a paginated list of tenant summaries ordered by TenantID.
@@ -642,6 +707,10 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 		s.SetTenantModifierHandler(w, r)
 	case strings.HasSuffix(path, "/rate-limit-overrides") && r.Method == http.MethodPost:
 		s.UpsertTenantRateLimitOverrideHandler(w, r)
+	case strings.HasSuffix(path, "/debug") && r.Method == http.MethodPatch:
+		s.SetTenantDebugHandler(w, r)
+	case strings.HasSuffix(path, "/log-level") && r.Method == http.MethodPatch:
+		s.SetTenantLogLevelHandler(w, r)
 	case isCredentialsSubPath(path) && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodDelete):
 		if s.ExtraSubHandler != nil {
 			s.ExtraSubHandler.ServeHTTP(w, r)

@@ -2,8 +2,10 @@ package observability
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"strings"
+
+	"rah/internal/gatewaylog"
 )
 
 // ObsStoreParams holds the resolved parameters for creating an ObsStore.
@@ -35,20 +37,20 @@ func NewObsStoreFromParams(ctx context.Context, p ObsStoreParams) ObsStore {
 	switch storeType {
 	case "postgres", "postgresql":
 		if p.DSN == "" {
-			log.Printf("[obs] postgres type requested but DSN is empty — falling back to memory store")
+			gatewaylog.Default.Warn("obs store fallback", gatewaylog.F("reason", "postgres DSN is empty"), gatewaylog.F("fallback", "memory"))
 			break
 		}
 		s, err := NewPostgresObsStore(p.DSN)
 		if err != nil {
-			log.Printf("[obs] postgres store failed: %v — falling back to memory store", err)
+			gatewaylog.Default.Warn("obs store fallback", gatewaylog.F("reason", fmt.Sprintf("postgres store failed: %v", err)), gatewaylog.F("fallback", "memory"))
 			break
 		}
-		log.Printf("[obs] using PostgreSQL store")
+		gatewaylog.Default.Info("obs store", gatewaylog.F("type", "postgres"))
 		return s
 
 	case "redis", "dragonfly":
 		if p.DSN == "" {
-			log.Printf("[obs] redis type requested but address is empty — falling back to memory store")
+			gatewaylog.Default.Warn("obs store fallback", gatewaylog.F("reason", "redis address is empty"), gatewaylog.F("fallback", "memory"))
 			break
 		}
 		poolSize := p.PoolSize
@@ -57,16 +59,16 @@ func NewObsStoreFromParams(ctx context.Context, p ObsStoreParams) ObsStore {
 		}
 		s, err := NewRedisObsStore(ctx, p.DSN, p.Password, poolSize)
 		if err != nil {
-			log.Printf("[obs] redis store failed: %v — falling back to memory store", err)
+			gatewaylog.Default.Warn("obs store fallback", gatewaylog.F("reason", fmt.Sprintf("redis store failed: %v", err)), gatewaylog.F("fallback", "memory"))
 			break
 		}
-		log.Printf("[obs] using Redis store")
+		gatewaylog.Default.Info("obs store", gatewaylog.F("type", "redis"))
 		return s
 
 	case "memory":
 		// fall through to default below
 	default:
-		log.Printf("[obs] unknown store type %q — using memory store", p.Type)
+		gatewaylog.Default.Warn("obs store unknown type", gatewaylog.F("type", p.Type), gatewaylog.F("fallback", "memory"))
 	}
 
 	maxAL := p.MaxAccessLog
@@ -77,6 +79,6 @@ func NewObsStoreFromParams(ctx context.Context, p ObsStoreParams) ObsStore {
 	if maxT <= 0 {
 		maxT = 500
 	}
-	log.Printf("[obs] using in-memory store (max_access_log=%d, max_traces=%d)", maxAL, maxT)
+	gatewaylog.Default.Info("obs store", gatewaylog.F("type", "memory"), gatewaylog.Fint("max_access_log", int64(maxAL)), gatewaylog.Fint("max_traces", int64(maxT)))
 	return NewMemObsStore(maxAL, maxT)
 }

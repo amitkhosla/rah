@@ -41,6 +41,30 @@ const (
 	// ingest pipeline. Payload = the already-formatted log.Printf bytes.
 	// Use format: "raw" on the sink so lines are written verbatim.
 	KindLog EventKind = "log"
+
+	// KindAccessLog is emitted once per request as a structured access log record.
+	// Payload = JSON-encoded AccessLogRecord. Level field is always "info".
+	KindAccessLog EventKind = "access_log"
+
+	// KindGatewayLog carries an internal gateway operational log line.
+	// Payload = the formatted log message bytes. Level field = "debug"|"info"|"warn"|"error".
+	KindGatewayLog EventKind = "gateway_log"
+
+	// KindUpstreamLog carries one upstream call record.
+	// Payload = JSON-encoded upstream log fields chosen by config. Level field set by config.
+	KindUpstreamLog EventKind = "upstream_log"
+
+	// KindFlowLog is emitted by the log flow step inside a flow.
+	// Payload = JSON-encoded {message, fields}. Level field = step-configured level.
+	KindFlowLog EventKind = "flow_log"
+
+	// KindAuditLog records admin/management-plane actions (sync, tenant upsert, etc.).
+	// Payload = JSON-encoded audit record. Always emitted regardless of log level.
+	KindAuditLog EventKind = "audit_log"
+
+	// KindMetric carries a pre-aggregated metric window snapshot.
+	// Payload = JSON-encoded MetricSnapshot. Emitted by the metrics flush goroutine.
+	KindMetric EventKind = "metric"
 )
 
 // inlinePayloadMax is the threshold below which payload bytes are stored
@@ -77,6 +101,7 @@ type Event struct {
 	TenantID     uint16
 	APIID        uint32
 	Kind         EventKind
+	Level        string // "debug" | "info" | "warn" | "error" | ""
 	Model        string
 	SessionID    string
 	TxID         string
@@ -145,6 +170,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		TenantID     uint16          `json:"tenant_id"`
 		APIID        uint32          `json:"api_id"`
 		Kind         EventKind       `json:"kind"`
+		Level        string          `json:"level,omitempty"`
 		Model        string          `json:"model,omitempty"`
 		SessionID    string          `json:"session_id,omitempty"`
 		TxID         string          `json:"tx_id,omitempty"`
@@ -161,6 +187,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	e.TenantID = w.TenantID
 	e.APIID = w.APIID
 	e.Kind = w.Kind
+	e.Level = w.Level
 	e.Model = w.Model
 	e.SessionID = w.SessionID
 	e.TxID = w.TxID
@@ -188,6 +215,7 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 		TenantID     uint16          `json:"tenant_id"`
 		APIID        uint32          `json:"api_id"`
 		Kind         EventKind       `json:"kind"`
+		Level        string          `json:"level,omitempty"`
 		Model        string          `json:"model,omitempty"`
 		SessionID    string          `json:"session_id,omitempty"`
 		TxID         string          `json:"tx_id,omitempty"`
@@ -201,6 +229,7 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 		TenantID:     e.TenantID,
 		APIID:        e.APIID,
 		Kind:         e.Kind,
+		Level:        e.Level,
 		Model:        e.Model,
 		SessionID:    e.SessionID,
 		TxID:         e.TxID,

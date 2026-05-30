@@ -370,6 +370,14 @@ type ObservabilityConfig struct {
 	APIs      map[string]ObsAPIConfig    `json:"apis,omitempty"       yaml:"apis,omitempty"`
 	Tenants   map[string]ObsTenantConfig `json:"tenants,omitempty"    yaml:"tenants,omitempty"`
 	Export    ObsExportConfig            `json:"export,omitempty"     yaml:"export,omitempty"`
+	// UpstreamLogFields is a comma-separated list of fields to include in upstream call logs.
+	// Available: method, url, status_code, duration_ms, request_size, response_size,
+	// connect_time_ms, tls_time_ms, ttfb_ms, retry_count, error
+	// Default (empty string): "method,url,status_code,duration_ms,error"
+	UpstreamLogFields string `json:"upstream_log_fields,omitempty" yaml:"upstream_log_fields,omitempty"`
+	// LogLevel sets the gateway-wide minimum log level: debug|info|warn|error.
+	// Default: "info". Override per-tenant via PATCH /tenants/{alias}/log-level.
+	LogLevel string `json:"log_level,omitempty" yaml:"log_level,omitempty"`
 }
 
 // AdminUserConfig is one entry in the seed user list (loaded from gateway.yaml).

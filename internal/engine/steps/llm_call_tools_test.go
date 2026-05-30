@@ -201,3 +201,85 @@ func TestLLMCallNoToolsWhenSlotEmpty(t *testing.T) {
 		t.Error("tools field should NOT be in wire request when tools slot is empty")
 	}
 }
+
+func TestLLMCallFallbackChainPassesTools(t *testing.T) {
+	// Test that when primary model fails, fallback chain gets the same tools
+	var primaryBody, fallbackBody []byte
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf [65536]byte
+		n, _ := r.Body.Read(buf[:])
+		primaryBody = make([]byte, n)
+		copy(primaryBody, buf[:n])
+		// Primary fails
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal error"}`))
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf [65536]byte
+		n, _ := r.Body.Read(buf[:])
+		fallbackBody = make([]byte, n)
+		copy(fallbackBody, buf[:n])
+		// Fallback succeeds
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(mockAnthropicToolResponse())
+	}))
+	defer fallback.Close()
+
+	tools := []ToolDefinition{{
+		Name:        "read_file",
+		Description: "Read a file",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+	toolsJSON, _ := json.Marshal(tools)
+
+	ctx := &rctx.Context{}
+	ctx.InitSlots()
+	ctx.ByteSlots[0] = []byte("Read /tmp/test.txt") // prompt
+	ctx.ByteSlots[2] = toolsJSON                    // tools slot
+
+	cfg := LLMCallConfig{
+		ModelConfig: config.LLMModelConfig{
+			Alias:   "primary-model",
+			Adapter: config.AdapterAnthropic,
+			BaseURL: primary.URL,
+		},
+		APIKey:           "test-key",
+		PromptSlot:       0,
+		ResultSlot:       1,
+		ToolsSlot:        2,
+		ToolUseSlot:      3,
+		MaxTokens:        1024,
+		MaxRetries:       0,
+		TimeoutMs:        5000,
+		FallbackChain: []FallbackEntry{{
+			ModelConfig: config.LLMModelConfig{
+				Alias:   "fallback-model",
+				Adapter: config.AdapterAnthropic,
+				BaseURL: fallback.URL,
+			},
+			APIKey: "test-key",
+		}},
+	}
+
+	instr := LLMCall(cfg)
+	state := &engine.ExecutionState{PC: 0}
+	instr.Action(ctx, state)
+
+	// Verify fallback was called with tools
+	if !json.Valid(fallbackBody) {
+		t.Fatalf("fallback body not valid JSON: %s", fallbackBody)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(fallbackBody, &wire); err != nil {
+		t.Fatalf("failed to parse fallback request: %v", err)
+	}
+	if _, ok := wire["tools"]; !ok {
+		t.Error("tools field missing from fallback chain request - fix not working!")
+	}
+	if len(ctx.ByteSlots[3]) == 0 {
+		t.Error("tool use slot should be populated after fallback succeeds")
+	}
+}

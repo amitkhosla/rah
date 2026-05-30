@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"rah/internal/ingest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,8 @@ type InsightConfig struct {
 type accessLogConfig struct {
 	extraFields []ExtraField
 	insights    InsightConfig
+	enabled     bool    // mirrors ObsAccessLogConfig.Enabled; default true
+	sampleRate  float64 // 0.0–1.0; 0 means "not set" → treated as 1.0
 }
 
 // AccessLogEntry is the snapshot sent to the drain goroutine.
@@ -91,11 +94,20 @@ func (e *AccessLogEntry) reset() {
 // AccessLogger writes structured access logs asynchronously.
 // Snapshot() is called post-Finalize and never blocks the request goroutine.
 type AccessLogger struct {
-	ch         chan *AccessLogEntry
-	pool       sync.Pool
-	cfg        atomic.Pointer[accessLogConfig]
-	dropped    atomic.Uint64
-	signingKey atomic.Pointer[[]byte] // nil = no signing; set via SetSigningKey
+	ch              chan *AccessLogEntry
+	pool            sync.Pool
+	cfg             atomic.Pointer[accessLogConfig]
+	dropped         atomic.Uint64
+	signingKey      atomic.Pointer[[]byte]      // nil = no signing; set via SetSigningKey
+	snapshotCounter atomic.Uint64               // used for counter-based sampling
+	pipeline        atomic.Pointer[ingest.Pipeline] // nil until wired via SetPipeline
+}
+
+// SetPipeline wires the ingest pipeline into the access logger so that
+// drain() emits KindAccessLog events in addition to the text log line.
+// Safe to call at any time; takes effect on the next drained entry.
+func (l *AccessLogger) SetPipeline(p *ingest.Pipeline) {
+	l.pipeline.Store(p)
 }
 
 // NewAccessLogger creates an AccessLogger with a buffered drain channel.
@@ -114,7 +126,7 @@ func NewAccessLogger(queueSize int) *AccessLogger {
 			}
 		},
 	}
-	l.cfg.Store(&accessLogConfig{})
+	l.cfg.Store(&accessLogConfig{enabled: true, sampleRate: 1.0})
 	go l.drain()
 	return l
 }
@@ -124,13 +136,13 @@ func (l *AccessLogger) SetExtraFields(fields []ExtraField) {
 	old := l.cfg.Load()
 	cp := make([]ExtraField, len(fields))
 	copy(cp, fields)
-	l.cfg.Store(&accessLogConfig{extraFields: cp, insights: old.insights})
+	l.cfg.Store(&accessLogConfig{extraFields: cp, insights: old.insights, enabled: old.enabled, sampleRate: old.sampleRate})
 }
 
 // SetInsights atomically replaces the insight thresholds.
 func (l *AccessLogger) SetInsights(ins InsightConfig) {
 	old := l.cfg.Load()
-	l.cfg.Store(&accessLogConfig{extraFields: old.extraFields, insights: ins})
+	l.cfg.Store(&accessLogConfig{extraFields: old.extraFields, insights: ins, enabled: old.enabled, sampleRate: old.sampleRate})
 }
 
 // GetConfig returns current extra fields and insight config.
@@ -139,6 +151,44 @@ func (l *AccessLogger) GetConfig() ([]ExtraField, InsightConfig) {
 	cp := make([]ExtraField, len(c.extraFields))
 	copy(cp, c.extraFields)
 	return cp, c.insights
+}
+
+// UpdateConfig wires the ObsAccessLogConfig.Enabled and SampleRate fields into
+// the access logger. Must be called after NewAccessLogger, before the server
+// starts accepting requests.
+//
+// Backward-compat rule: if neither Enabled nor SampleRate is explicitly set by
+// the caller (both are zero-values), access logging remains on (Enabled=true,
+// SampleRate=1.0). To explicitly disable, pass enabled=false.
+func (l *AccessLogger) UpdateConfig(enabled bool, sampleRate float64) {
+	old := l.cfg.Load()
+	rate := sampleRate
+	if rate <= 0 {
+		rate = 1.0 // treat 0 as "not configured" → full sampling
+	}
+	if rate > 1.0 {
+		rate = 1.0
+	}
+	l.cfg.Store(&accessLogConfig{
+		extraFields: old.extraFields,
+		insights:    old.insights,
+		enabled:     enabled,
+		sampleRate:  rate,
+	})
+}
+
+// shouldSample returns true if this request should be included in the access log.
+// Uses a fast atomic counter — no rand, no allocation, no mutex.
+func (l *AccessLogger) shouldSample(rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	if rate >= 1.0 {
+		return true
+	}
+	n := l.snapshotCounter.Add(1)
+	threshold := uint64(rate * 10000)
+	return (n % 10000) < threshold
 }
 
 // Snapshot captures request data and enqueues a log entry non-blocking.
@@ -162,6 +212,15 @@ func (l *AccessLogger) Snapshot(
 	runtimeExtra ...KV,
 ) {
 	cfg := l.cfg.Load()
+
+	// Gate on Enabled flag (default true for backward compat).
+	if !cfg.enabled {
+		return
+	}
+	// Counter-based sampling — no rand, no allocation.
+	if !l.shouldSample(cfg.sampleRate) {
+		return
+	}
 
 	// Get a pooled entry and populate scalar fields.
 	entry := l.pool.Get().(*AccessLogEntry)
@@ -313,10 +372,37 @@ func (l *AccessLogger) drain() {
 
 		log.Print(sb.String())
 
+		if p := l.pipeline.Load(); p != nil {
+			emitAccessLogEvent(p, entry)
+		}
+
 		// Reset and return to pool — slice backing arrays are preserved.
 		entry.reset()
 		l.pool.Put(entry)
 	}
+}
+
+// emitAccessLogEvent marshals entry as JSON and emits a KindAccessLog event
+// into the ingest pipeline. Runs in the drain goroutine — allocations are fine.
+// AccessLogEntry fields do not have JSON tags; json.Marshal will use field names as-is.
+func emitAccessLogEvent(p *ingest.Pipeline, entry *AccessLogEntry) {
+	n := p.NumSinksForKind(ingest.KindAccessLog)
+	if n == 0 {
+		return
+	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	e := ingest.Event{
+		Kind:        ingest.KindAccessLog,
+		TenantID:    entry.TenantID,
+		APIID:       entry.ApiID,
+		Level:       "info",
+		TimestampNs: entry.TotalNs, // TotalNs is request duration; no absolute timestamp on entry
+	}
+	e.SetPayload(payload, n)
+	p.Emit(e)
 }
 
 // ConfigHandler handles GET/POST for the log configuration.

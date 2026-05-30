@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"rah/internal/apikey"
+	"rah/internal/gatewaylog"
 )
 
 type KV struct {
@@ -192,10 +192,24 @@ type ExportSink interface {
 type LogSink struct{}
 
 func (LogSink) EmitSummary(summary RequestSummary) {
-	log.Printf("[obs] summary trace=%d api=%d tenant=%d status=%d total_ns=%d upstream_ns=%d client_bytes=%d upstream_tx=%d upstream_rx=%d", summary.TraceID, summary.ApiID, summary.TenantID, summary.Status, summary.DurationNs, summary.UpstreamDurationNs, summary.ClientBytesSent, summary.UpstreamBytesTx, summary.UpstreamBytesRx)
+	gatewaylog.Default.Info("obs summary",
+		gatewaylog.Fint("trace", int64(summary.TraceID)),
+		gatewaylog.Fint("api", int64(summary.ApiID)),
+		gatewaylog.Fint("tenant", int64(summary.TenantID)),
+		gatewaylog.Fint("status", int64(summary.Status)),
+		gatewaylog.Fint("total_ns", summary.DurationNs),
+		gatewaylog.Fint("upstream_ns", summary.UpstreamDurationNs),
+		gatewaylog.Fint("client_bytes", summary.ClientBytesSent),
+		gatewaylog.Fint("upstream_tx", summary.UpstreamBytesTx),
+		gatewaylog.Fint("upstream_rx", summary.UpstreamBytesRx),
+	)
 }
 func (LogSink) EmitTrace(trace RequestTrace) {
-	log.Printf("[obs] trace_id=%d instructions=%d upstream_calls=%d", trace.Summary.TraceID, len(trace.Instructions), len(trace.Upstreams))
+	gatewaylog.Default.Info("obs trace",
+		gatewaylog.Fint("trace_id", int64(trace.Summary.TraceID)),
+		gatewaylog.Fint("instructions", int64(len(trace.Instructions))),
+		gatewaylog.Fint("upstream_calls", int64(len(trace.Upstreams))),
+	)
 }
 
 type upstreamLog struct {
@@ -237,6 +251,14 @@ type Telemetry struct {
 	// Grows under apiStatsMu only when a higher ApiID is first seen (rare, at deploy time).
 	apiStats   atomic.Pointer[[]apiStat]
 	apiStatsMu sync.Mutex
+
+	// Metrics is the window-based per-API metrics aggregator. May be nil when
+	// the metrics aggregator is not configured (metrics.enabled=false).
+	Metrics *MetricsAggregator
+
+	// tenantTracer provides per-tenant trace sample rate overrides.
+	// Nil by default — call SetTenantTracer to wire in the registry manager.
+	tenantTracer TenantTracer
 }
 
 func NewFromEnv() *Telemetry {
@@ -341,21 +363,26 @@ func (t *Telemetry) exportWorker() {
 			}
 		}
 		if t.infoLog.Load() {
-			log.Printf("[obs.info] %s", t.formatSummary(trace.Summary))
+			gatewaylog.Default.Info(t.formatSummary(trace.Summary))
 		}
 	}
 }
 
 func (t *Telemetry) upstreamWorker() {
 	for u := range t.upstreamCh {
-		log.Printf("[upstream] api=%d tenant=%d call=%d attempt=%d url=%s status=%d connect_ms=%.3f ttfb_ms=%.3f total_ms=%.3f bytes_tx=%d bytes_rx=%d err=%q",
-			u.ApiID, u.TenantID, u.Event.Seq, u.Event.Attempt,
-			u.Event.URL, u.Event.Status,
-			float64(u.Event.ConnectDurationNs)/1e6,
-			float64(u.Event.TTFBNs)/1e6,
-			float64(u.Event.TotalNs)/1e6,
-			u.Event.BytesSent, u.Event.BytesReceived,
-			u.Event.Err,
+		gatewaylog.Default.Info("upstream",
+			gatewaylog.Fint("api", int64(u.ApiID)),
+			gatewaylog.Fint("tenant", int64(u.TenantID)),
+			gatewaylog.Fint("call", int64(u.Event.Seq)),
+			gatewaylog.Fint("attempt", int64(u.Event.Attempt)),
+			gatewaylog.F("url", u.Event.URL),
+			gatewaylog.Fint("status", int64(u.Event.Status)),
+			gatewaylog.Ffloat("connect_ms", float64(u.Event.ConnectDurationNs)/1e6),
+			gatewaylog.Ffloat("ttfb_ms", float64(u.Event.TTFBNs)/1e6),
+			gatewaylog.Ffloat("total_ms", float64(u.Event.TotalNs)/1e6),
+			gatewaylog.Fint("bytes_tx", u.Event.BytesSent),
+			gatewaylog.Fint("bytes_rx", u.Event.BytesReceived),
+			gatewaylog.F("err", fmt.Sprintf("%q", u.Event.Err)),
 		)
 	}
 }
@@ -422,6 +449,21 @@ func (t *Telemetry) ShouldTimeRequests() bool         { return t.Enabled() }
 func (t *Telemetry) InstructionTimingEnabled() bool   { return t.Enabled() && t.instrEnabled.Load() }
 func (t *Telemetry) UpstreamPhaseTimingEnabled() bool { return t.Enabled() && t.phaseEnabled.Load() }
 
+// TenantTracer resolves per-tenant trace sampling overrides.
+// *registry.RegistryManager satisfies this interface via structural typing.
+type TenantTracer interface {
+	// TenantTraceSampleRate returns the override sample rate for a tenant.
+	// Returns (0, false) if the tenant has no override or is not found.
+	// Returns (1.0, true) if DebugEnabled is set for the tenant.
+	TenantTraceSampleRate(tenantID uint16) (rate float64, hasOverride bool)
+}
+
+// SetTenantTracer wires a per-tenant trace override resolver into Telemetry.
+// Pass nil to disable per-tenant overrides (falls back to global sampling).
+func (t *Telemetry) SetTenantTracer(tt TenantTracer) {
+	t.tenantTracer = tt
+}
+
 func (t *Telemetry) ShouldTrace() bool {
 	if !t.Enabled() || !t.traceMode.Load() {
 		return false
@@ -431,6 +473,31 @@ func (t *Telemetry) ShouldTrace() bool {
 		return false
 	}
 	return uint32(time.Now().UnixNano()%10000) < r
+}
+
+// ShouldTraceTenant is like ShouldTrace but applies a per-tenant override when
+// one is configured. If tenantID is 0 (not yet resolved) or no tenantTracer is
+// set, it falls through to the global ShouldTrace decision.
+func (t *Telemetry) ShouldTraceTenant(tenantID uint16) bool {
+	if tenantID != 0 && t.tenantTracer != nil {
+		if rate, ok := t.tenantTracer.TenantTraceSampleRate(tenantID); ok {
+			return t.shouldSampleAt(rate)
+		}
+	}
+	return t.ShouldTrace()
+}
+
+// shouldSampleAt returns true if the request should be sampled at the given rate
+// (0.0–1.0). Uses the same time-modulo approach as ShouldTrace for consistency.
+func (t *Telemetry) shouldSampleAt(rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	if rate >= 1.0 {
+		return true
+	}
+	threshold := uint32(rate * 10000)
+	return uint32(time.Now().UnixNano()%10000) < threshold
 }
 
 func (t *Telemetry) StartRequest(apiID uint32, tenantID uint16, method, path string) RequestTrace {

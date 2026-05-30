@@ -821,11 +821,19 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					fbWireModel = fb.ModelConfig.Alias
 				}
 				fbReq := LLMRequest{
-					Messages:    reqMessages, // reuse same messages (single or multi-turn)
-					System:      systemContent,
-					Model:       fbWireModel,
-					MaxTokens:   maxTokens,
-					Temperature: cfg.Temperature,
+					Messages:            reqMessages, // reuse same messages (single or multi-turn)
+					System:              systemContent,
+					Model:               fbWireModel,
+					MaxTokens:           maxTokens,
+					Temperature:         cfg.Temperature,
+					ProviderParams:      activeCfg.ProviderParams,
+					UseCompletionTokens: activeCfg.UseCompletionTokens,
+					PromptCacheEnabled:  cfg.PromptCacheEnabled,
+					PromptCacheUpTo:     cfg.PromptCacheUpTo,
+					// Preserve tools, tool choice, and thinking from primary request
+					Tools:      req.Tools,
+					ToolChoice: req.ToolChoice,
+					Thinking:   req.Thinking,
 				}
 
 				// Skip if prompt exceeds this fallback model's context limit.

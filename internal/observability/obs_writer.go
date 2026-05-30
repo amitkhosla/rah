@@ -2,9 +2,11 @@ package observability
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"sync"
 	"time"
+
+	"rah/internal/gatewaylog"
 )
 
 const (
@@ -77,7 +79,7 @@ func (w *ObsWriter) WriteAccessLog(r AccessLogRecord) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := w.store.WriteAccessLog(ctx, batch); err != nil {
-			log.Printf("[obs.writer] access log flush error: %v", err)
+			gatewaylog.Default.Warn("obs.writer access log flush error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
 		}
 	}
 }
@@ -86,14 +88,14 @@ func (w *ObsWriter) WriteAccessLog(r AccessLogRecord) {
 // Errors are logged but not returned; the caller should not block on tracing.
 func (w *ObsWriter) WriteTrace(ctx context.Context, trace TraceRecord) {
 	if err := w.store.WriteTrace(ctx, trace); err != nil {
-		log.Printf("[obs.writer] write trace error: %v", err)
+		gatewaylog.Default.Warn("obs.writer write trace error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
 	}
 }
 
 // WriteMetricSnapshot persists a metric snapshot immediately (not batched).
 func (w *ObsWriter) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot) {
 	if err := w.store.WriteMetricSnapshot(ctx, snap); err != nil {
-		log.Printf("[obs.writer] write metric snapshot error: %v", err)
+		gatewaylog.Default.Warn("obs.writer write metric snapshot error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
 	}
 }
 
@@ -142,6 +144,6 @@ func (w *ObsWriter) flush(ctx context.Context) {
 	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := w.store.WriteAccessLog(flushCtx, batch); err != nil {
-		log.Printf("[obs.writer] periodic flush error (%d records): %v", len(batch), err)
+		gatewaylog.Default.Warn("obs.writer periodic flush error", gatewaylog.Fint("records", int64(len(batch))), gatewaylog.F("err", fmt.Sprintf("%v", err)))
 	}
 }

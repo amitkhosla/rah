@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"rah/internal/engine/steps"
+	"rah/internal/gatewaylog"
 	"rah/internal/ingest"
 )
 
@@ -66,6 +67,37 @@ func (c *Compiler) compileEmitEvent(step StepConfig) error {
 		ModelSlot:   modelSlot,
 		SessionSlot: sessionSlot,
 		Deferred:    deferred,
+	}))
+	return nil
+}
+
+// compileFlowLog handles the "log" step type.
+//
+// Step input keys:
+//
+//	level   — log level string: debug|info|warn|error (default: info)
+//	message — log message text (required)
+//	field.* — any input key prefixed with "field." is treated as a static field;
+//	           the key suffix becomes the field name (e.g. "field.request_id" → key="request_id")
+func (c *Compiler) compileFlowLog(step StepConfig) error {
+	msg := step.Input["message"]
+	if msg == "" {
+		return fmt.Errorf("log: 'message' is required")
+	}
+
+	lvl := gatewaylog.ParseLevel(step.Input["level"])
+
+	var fields []gatewaylog.Field
+	for k, v := range step.Input {
+		if len(k) > 6 && k[:6] == "field." {
+			fields = append(fields, gatewaylog.F(k[6:], v))
+		}
+	}
+
+	c.GlobalTable = append(c.GlobalTable, steps.FlowLog(steps.FlowLogConfig{
+		Level:   lvl,
+		Message: msg,
+		Fields:  fields,
 	}))
 	return nil
 }
