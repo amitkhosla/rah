@@ -7,17 +7,20 @@ import "testing"
 func entryBytes(valueLen int) uint64 { return uint64(EntryHeaderSize + valueLen) }
 
 // TestPutOverwriteEvictedUpdatesTenantUsage verifies that when the circular
-// buffer evicts an existing slot, the old tenant's counter is decremented and
-// the new tenant's counter is incremented correctly.
+// buffer wraps and evicts an existing slot, the old tenant's counter is
+// decremented and the new tenant's counter is incremented correctly.
 //
-// Setup: totalMemory = 1 region of exactly 1 slot (stride = align8(16+64) = 80B).
-// Every Put claims slot 0, evicting the previous entry.
+// Setup: Region has 64-slot minimum (enforced by NewRegion). With 80B stride,
+// that's 5120 bytes. Circular wrapping happens after 64 puts.
+// This test puts 65 entries (0-64): entries 0-63 fill the buffer,
+// entry 64 wraps and evicts entry 0.
 func TestPutOverwriteEvictedUpdatesTenantUsage(t *testing.T) {
-	// stride = align8(16+64) = 80 bytes → 1 slot per region.
+	// Allocate enough for 64 slots * 80 bytes/slot = 5120 bytes
+	// (NewRegion enforces 64-slot minimum regardless of allocation)
 	cm, err := NewCacheManager(
-		80,            // exactly 1 slot
+		5120,          // 64 slots * 80 bytes stride
 		[]uint32{64},  // 1 size class: max 64 B values
-		[]uint32{0},   // 1 TTL tier: expires immediately (TTL=0 → expiry=now)
+		[]uint32{0},   // 1 TTL tier: expires immediately
 		1,
 		0,
 		nil, // nil → default disk backend
@@ -26,50 +29,45 @@ func TestPutOverwriteEvictedUpdatesTenantUsage(t *testing.T) {
 		t.Fatalf("NewCacheManager() error = %v", err)
 	}
 
-	k1v := []byte("1234567890")        // 10 B
-	k2v := []byte("12345678901234567890") // 20 B
-	k3v := []byte("1234567890123456")   // 16 B
+	smallVal := []byte("12345") // 5 B → entry size = 16+5 = 21 B
+	entrySize := entryBytes(len(smallVal))
 
-	// --- first Put ---
-	if _, ok := cm.Put(1, []byte("k1"), k1v, 0); !ok {
-		t.Fatalf("first Put failed")
-	}
-	want1 := entryBytes(len(k1v)) // 16+10 = 26
-	if got := cm.getTenantCounter(1).used.Load(); got != want1 {
-		t.Fatalf("tenant 1 usage after first put = %d, want %d", got, want1)
-	}
-	if got := cm.Stats(); got != want1 {
-		t.Fatalf("global usage after first put = %d, want %d", got, want1)
+	// --- Fill all 64 slots (entries 0-63, different tenants) ---
+	for i := 0; i < 64; i++ {
+		tenantID := uint16(i + 1)
+		key := []byte("k" + string(rune(i)))
+		if _, ok := cm.Put(tenantID, key, smallVal, 0); !ok {
+			t.Fatalf("Put %d failed", i)
+		}
+		if got := cm.getTenantCounter(tenantID).used.Load(); got != entrySize {
+			t.Fatalf("tenant %d usage after put %d = %d, want %d", tenantID, i, got, entrySize)
+		}
 	}
 
-	// --- second Put: evicts slot 0 (k1) ---
-	if _, ok := cm.Put(2, []byte("k2"), k2v, 0); !ok {
-		t.Fatalf("second Put failed")
+	// Global usage should be 64 entries
+	globalWant := entrySize * 64
+	if got := cm.Stats(); got != globalWant {
+		t.Fatalf("global usage after filling = %d, want %d", got, globalWant)
 	}
-	want2 := entryBytes(len(k2v)) // 16+20 = 36
+
+	// --- 65th Put: wraps to slot 0, evicts entry 0 (tenant 1) ---
+	if _, ok := cm.Put(65, []byte("k64"), smallVal, 0); !ok {
+		t.Fatalf("65th Put failed")
+	}
+
+	// Tenant 1 (evicted) should have 0 usage
 	if got := cm.getTenantCounter(1).used.Load(); got != 0 {
 		t.Fatalf("tenant 1 usage after eviction = %d, want 0", got)
 	}
-	if got := cm.getTenantCounter(2).used.Load(); got != want2 {
-		t.Fatalf("tenant 2 usage after second put = %d, want %d", got, want2)
-	}
-	if got := cm.Stats(); got != want2 {
-		t.Fatalf("global usage after second put = %d, want %d", got, want2)
+
+	// Tenant 65 (just inserted) should have normal usage
+	if got := cm.getTenantCounter(65).used.Load(); got != entrySize {
+		t.Fatalf("tenant 65 usage after put = %d, want %d", got, entrySize)
 	}
 
-	// --- third Put: evicts slot 0 (k2) ---
-	if _, ok := cm.Put(3, []byte("k3"), k3v, 0); !ok {
-		t.Fatalf("third Put failed")
-	}
-	want3 := entryBytes(len(k3v)) // 16+16 = 32
-	if got := cm.getTenantCounter(2).used.Load(); got != 0 {
-		t.Fatalf("tenant 2 usage after eviction = %d, want 0", got)
-	}
-	if got := cm.getTenantCounter(3).used.Load(); got != want3 {
-		t.Fatalf("tenant 3 usage after third put = %d, want %d", got, want3)
-	}
-	if got := cm.Stats(); got != want3 {
-		t.Fatalf("global usage after third put = %d, want %d", got, want3)
+	// Global usage should still be 64 entries (one evicted, one added)
+	if got := cm.Stats(); got != globalWant {
+		t.Fatalf("global usage after eviction = %d, want %d", got, globalWant)
 	}
 }
 
