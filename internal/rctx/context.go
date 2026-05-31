@@ -411,7 +411,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 
 	// Clean up body streams
 	if ctx.RequestBody != nil {
-		ctx.RequestBody.Close()
+		_ = ctx.RequestBody.Close()
 		ctx.RequestBody = nil
 	}
 

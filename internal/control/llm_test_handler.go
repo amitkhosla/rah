@@ -165,7 +165,7 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 		writeAIError(w, http.StatusBadGateway, "provider unreachable: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {

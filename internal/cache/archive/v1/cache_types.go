@@ -30,9 +30,6 @@ const (
 	xValClassShift = 46
 	xValTierShift  = 44
 	xValOffMask    = uint64((1 << 44) - 1)
-
-	// KeyIsValue / EmptyValue: full unix32 expiry in bits[47:16].
-	xValFullExpShift = 16
 )
 
 // SmartPointer is the 64-bit val stored in an xSlot, encoding entry location
@@ -105,7 +102,6 @@ const (
 )
 
 func (p xSlotPtr) laneBit() uint64 { return uint64(p) >> xPtrLaneBit & 0x1 }
-func (p xSlotPtr) shardIdx() uint8 { return uint8(uint64(p) >> xPtrShardBit & 0xFF) }
 func (p xSlotPtr) tagBits() uint64 { return uint64(p) & xPtrTagMask }
 
 // xSlotPtrTo6 serialises p into 6 little-endian bytes for EntryHeader.XSlotPtrB.

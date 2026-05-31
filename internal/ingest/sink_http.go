@@ -54,8 +54,8 @@ func (s *HTTPSink) Write(formatted []byte) error {
 	if err != nil {
 		return fmt.Errorf("http sink do: %w", err)
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("http sink upstream status %d", resp.StatusCode)
 	}

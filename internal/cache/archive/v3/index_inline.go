@@ -92,12 +92,6 @@ func h2Set(word uint64, i int, v uint16) uint64 {
 	return (word &^ (0xFFFF << shift)) | (uint64(v) << shift)
 }
 
-// h2AnyMatch reports whether any 16-bit group in word equals queryH2.
-func h2AnyMatch(word uint64, queryH2 uint16) bool {
-	x := word ^ (uint64(queryH2) * 0x0001000100010001)
-	return (x-0x0001000100010001)&^x&0x8000800080008000 != 0
-}
-
 // h2MatchMask returns a 4-bit mask: bit i set if slot i's stored H2 == queryH2.
 func h2MatchMask(word uint64, queryH2 uint16) uint8 {
 	x := word ^ (uint64(queryH2) * 0x0001000100010001)

@@ -18,7 +18,7 @@ type CacheController struct {
 
 func (c *CacheController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Use POST", 405)
+		http.Error(w, "Use POST", http.StatusMethodNotAllowed)
 		return
 	}
 

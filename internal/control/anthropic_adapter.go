@@ -33,50 +33,6 @@ type anthropicContentBlock struct {
 	Input json.RawMessage `json:"input,omitempty"`
 }
 
-// ── Anthropic wire types (response) ──────────────────────────────────────────
-
-type anthropicAdapterResp struct {
-	ID           string          `json:"id"`
-	Type         string          `json:"type"`
-	Role         string          `json:"role"`
-	Content      json.RawMessage `json:"content"` // Preserve raw to handle all block types
-	Model        string          `json:"model"`
-	StopReason   string          `json:"stop_reason"`
-	StopSequence *string         `json:"stop_sequence"`
-	Usage        anthropicAdapterUsage  `json:"usage"`
-}
-
-type anthropicAdapterUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-// ── OpenAI response types (for format normalization) ─────────────────────────
-
-type openAIAdapterResp struct {
-	ID      string              `json:"id"`
-	Object  string              `json:"object"`
-	Model   string              `json:"model"`
-	Choices []openAIAdapterChoice `json:"choices"`
-	Usage   openAIAdapterUsage  `json:"usage"`
-}
-
-type openAIAdapterChoice struct {
-	Index        int                `json:"index"`
-	Message      openAIAdapterMsg   `json:"message"`
-	FinishReason string             `json:"finish_reason"`
-}
-
-type openAIAdapterMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type openAIAdapterUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
 
 // RegisterAnthropicAdapter registers POST /ai/v1/messages on mux.
 //
@@ -150,7 +106,7 @@ func RegisterAnthropicAdapter(mux *http.ServeMux, gatewayBase string) {
 			anthropicWriteError(w, http.StatusBadGateway, "api_error", "gateway unreachable: "+err.Error())
 			return
 		}
-		defer gwResp.Body.Close()
+		defer func() { _ = gwResp.Body.Close() }()
 
 		respBytes, err := io.ReadAll(gwResp.Body)
 		if err != nil {

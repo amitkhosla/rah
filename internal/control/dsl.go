@@ -939,12 +939,12 @@ func (p *dslParser) dslActionSteps(action, rawParams string, as_ string) []StepC
 		if v, ok := params["max_retries"]; ok {
 			// parse as int best-effort
 			var n int
-			fmt.Sscanf(v, "%d", &n)
+			_, _ = fmt.Sscanf(v, "%d", &n)
 			step.MaxRetries = n
 		}
 		if v, ok := params["timeout"]; ok {
 			var ms uint32
-			fmt.Sscanf(v, "%d", &ms)
+			_, _ = fmt.Sscanf(v, "%d", &ms)
 			step.Timeout = ms
 		}
 		if as_ != "" {
@@ -1180,7 +1180,7 @@ func (p *dslParser) parseBlockR(lines []string, start int) (steps []StepConfig, 
 				pos := dslPositionals(args, 2)
 				status := 200
 				if len(pos) > 0 {
-					fmt.Sscanf(pos[0], "%d", &status)
+					_, _ = fmt.Sscanf(pos[0], "%d", &status)
 				}
 				body := ""
 				if len(pos) > 1 {

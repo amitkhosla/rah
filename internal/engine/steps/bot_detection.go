@@ -189,7 +189,7 @@ func DetectBot(cfg BotDetectionConfig) engine.Instruction {
 				status := cfg.OnFailureStatus
 				body := cfg.OnFailureBody
 				ctx.ResponseStatus = status
-				ctx.Write([]byte(body))
+				_, _ = ctx.Write([]byte(body))
 				ctx.Failed = true
 				ctx.ErrorCode = int16(status)
 				ctx.ErrorMsg = ctx.Alloc(len(body))

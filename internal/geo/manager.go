@@ -184,7 +184,7 @@ func (m *Manager) doSync() {
 					if data, found2, err2 := m.store.Get(context.Background(), datastore.Tenant("_geo"), keystoreData); err2 == nil && found2 && len(data) > 0 {
 						if r, err3 := maxminddb.FromBytes(data); err3 == nil {
 							if old := m.reader.Swap(r); old != nil {
-								old.Close()
+								_ = old.Close()
 							}
 							m.lastSyncMu.Lock()
 							m.lastSyncTime = storeTime
@@ -207,7 +207,7 @@ func (m *Manager) doSync() {
 		return
 	}
 	if old := m.reader.Swap(r); old != nil {
-		old.Close()
+		_ = old.Close()
 	}
 	now := time.Now()
 	m.lastSyncMu.Lock()
@@ -245,7 +245,7 @@ func extractMMDB(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("geo: decompress tar.gz: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	for {

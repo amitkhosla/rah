@@ -136,7 +136,7 @@ func CacheDelete(store CacheStore, keySlot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			key := ctx.ByteSlots[keySlot]
 			if len(key) > 0 {
-				store.Invalidate(ctx.TenantID, key)
+				_ = store.Invalidate(ctx.TenantID, key)
 			}
 			return s.PC + 1
 		},
@@ -152,7 +152,7 @@ func CacheDeleteGlobal(store CacheStore, keySlot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			key := ctx.ByteSlots[keySlot]
 			if len(key) > 0 {
-				store.Invalidate(globalCacheTenantID, key)
+				_ = store.Invalidate(globalCacheTenantID, key)
 			}
 			return s.PC + 1
 		},

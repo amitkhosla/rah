@@ -88,7 +88,6 @@ func init() {
 func shortKey(i int) []byte { return preShortKeys[i%numKeysPerTenant] }
 func longKey(i int) []byte  { return preLongKeys[i%numKeysPerTenant] }
 func value32() []byte       { return make([]byte, 32) }
-func value256() []byte      { return make([]byte, 256) }
 
 // allocDelta runs fn and returns heap bytes and object counts allocated during it.
 func allocDelta(fn func()) (allocBytes, allocObjs uint64) {
@@ -533,8 +532,6 @@ func snapHeap() heapSnap {
 		objects: ms.HeapObjects,
 	}
 }
-
-func heapInUseMB() float64 { return snapHeap().inUseMB }
 
 func TestThroughput(t *testing.T) {
 	goroutines := runtime.GOMAXPROCS(0)

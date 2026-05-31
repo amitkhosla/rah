@@ -118,7 +118,7 @@ func (d *diskBackend) Sweep() int {
 		}
 		var expBuf [4]byte
 		n, err := f.Read(expBuf[:])
-		f.Close()
+		_ = f.Close()
 		if err != nil || n < 4 {
 			return nil
 		}

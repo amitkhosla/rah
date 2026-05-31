@@ -153,7 +153,7 @@ func (s *DataStoreJobStore) gcLoop() {
 				if job.TTLSeconds > 0 {
 					expiry := job.CreatedAt + job.TTLSeconds*int64(time.Second)
 					if now > expiry {
-						s.kv.Delete(context.Background(), key)
+						_ = s.kv.Delete(context.Background(), key)
 					}
 				}
 			}

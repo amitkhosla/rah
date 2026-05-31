@@ -49,7 +49,7 @@ func TestQuotaManager(t *testing.T) {
 			}
 			// Record the cost if allowed to accumulate usage
 			if allowed {
-				manager.RecordCost(tt.tenantID, tt.estimatedCost)
+				_ = manager.RecordCost(tt.tenantID, tt.estimatedCost)
 			}
 		})
 	}
@@ -90,8 +90,8 @@ func TestGetQuotaStatus(t *testing.T) {
 	manager.RegisterQuota("startup-xyz", cfg)
 
 	// Record some costs
-	manager.RecordCost("startup-xyz", 30.00)
-	manager.RecordCost("startup-xyz", 15.50)
+	_ = manager.RecordCost("startup-xyz", 30.00)
+	_ = manager.RecordCost("startup-xyz", 15.50)
 
 	status := manager.GetQuotaStatus("startup-xyz")
 

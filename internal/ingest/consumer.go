@@ -51,7 +51,7 @@ func StartConsumers(ctx context.Context, cfg config.IngestConfig, handler EventH
 			continue
 		}
 		go func(s EventSource) {
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			RunConsumer(ctx, s, handler)
 		}(src)
 		log.Printf("[ingest/consumer] started %s source on stream %q (filter=%v)",

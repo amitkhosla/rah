@@ -159,7 +159,7 @@ func (b *Batcher) run(ctx context.Context) {
 		for i, req := range batch {
 			cmds[i] = pipe.Get(ctx, req.key)
 		}
-		pipe.Exec(ctx) //nolint:errcheck — individual cmd errors checked below
+		_, _ = pipe.Exec(ctx)
 
 		// 4. Route each result back to its goroutine by index.
 		for i, req := range batch {

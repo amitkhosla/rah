@@ -240,7 +240,7 @@ func (e *RedisExecutor) execBatch(ctx context.Context, acc pipelineAccum) {
 		}
 	}
 
-	pipe.Exec(ctx) //nolint:errcheck — per-cmd errors checked individually below
+	_, _ = pipe.Exec(ctx)
 
 	// Write GET results back before signalling callers.
 	for _, entry := range getCmds {

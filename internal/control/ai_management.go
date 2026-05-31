@@ -39,13 +39,13 @@ const (
 func writeAIOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(aiResponse{OK: true, Data: data})
+	_ = json.NewEncoder(w).Encode(aiResponse{OK: true, Data: data})
 }
 
 func writeAIError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(aiResponse{OK: false, Error: msg})
+	_ = json.NewEncoder(w).Encode(aiResponse{OK: false, Error: msg})
 }
 
 // RegisterAIRoutes wires the /ai/ route group into mux.
@@ -186,9 +186,9 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// Wrap in standard envelope
-			w.Write([]byte(`{"ok":true,"data":`))
-			w.Write(raw)
-			w.Write([]byte(`}`))
+			_, _ = w.Write([]byte(`{"ok":true,"data":`))
+			_, _ = w.Write(raw)
+			_, _ = w.Write([]byte(`}`))
 		case http.MethodPut:
 			body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
 			if err != nil {
@@ -504,7 +504,7 @@ func mcpProbeToolsHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *config
 		writeAIError(w, http.StatusBadGateway, "MCP server unreachable: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -587,8 +587,8 @@ func mcpPingHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *config.Manag
 		})
 		return
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	writeAIOK(w, map[string]interface{}{
 		"alias":       alias,

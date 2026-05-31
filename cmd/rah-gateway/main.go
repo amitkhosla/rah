@@ -1160,7 +1160,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"ok"}`)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/sync", ms.UnifiedSyncHandler)
 	mux.HandleFunc("/sync/draft/status", ms.DraftStatusHandler)
@@ -1210,7 +1210,7 @@ func main() {
 			fmt.Fprintf(w, `{"flushed":%q}`, issuer)
 		} else {
 			enginesteps.FlushAllJWKSCaches()
-			fmt.Fprint(w, `{"flushed":"all"}`)
+			_, _ = fmt.Fprint(w, `{"flushed":"all"}`)
 		}
 	})
 	if credReg != nil {

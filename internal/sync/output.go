@@ -63,7 +63,7 @@ func Run(dir string, opts LintOptions) (LintResult, error) {
 // Uses color output when writing to a TTY.
 func FormatText(result LintResult, w io.Writer) {
 	if len(result.Issues) == 0 {
-		fmt.Fprintf(w, "✓ No linting issues found\n")
+		_, _ = fmt.Fprintf(w, "✓ No linting issues found\n")
 		return
 	}
 
@@ -85,9 +85,9 @@ func FormatText(result LintResult, w io.Writer) {
 	}
 
 	// Print summary.
-	fmt.Fprintf(w, "\n")
+	_, _ = fmt.Fprintf(w, "\n")
 	if result.ErrorCount > 0 {
-		fmt.Fprintf(w, "Errors: %d  ", result.ErrorCount)
+		_, _ = fmt.Fprintf(w, "Errors: %d  ", result.ErrorCount)
 	}
 	if result.WarningCount > 0 {
 		fmt.Fprintf(w, "Warnings: %d  ", result.WarningCount)

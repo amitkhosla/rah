@@ -57,20 +57,20 @@ func (s *CacheServer) cacheHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		val, found := s.store.Get(tenantID, []byte(key))
 		if !found {
-			json.NewEncoder(w).Encode(map[string]interface{}{"found": false})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": false})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"found": true,
 			"value": string(val),
 		})
 
 	case http.MethodDelete:
-		s.store.Invalidate(tenantID, []byte(key))
-		w.Write([]byte(`{"status":"ok"}`))
+		_ = s.store.Invalidate(tenantID, []byte(key))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		w.Write([]byte(`{"error":"method not allowed"}`))
+		_, _ = w.Write([]byte(`{"error":"method not allowed"}`))
 	}
 }

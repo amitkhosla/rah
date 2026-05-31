@@ -50,7 +50,7 @@ func (s *MemoryJobStore) Get(jobID string) (*Job, bool) {
 	// Return a copy so callers cannot corrupt stored state.
 	data, _ := json.Marshal(src)
 	var copy Job
-	json.Unmarshal(data, &copy)
+	_ = json.Unmarshal(data, &copy)
 	return &copy, true
 }
 
@@ -61,7 +61,7 @@ func (s *MemoryJobStore) List(tenantID uint16, limit int) ([]*Job, error) {
 		if tenantID == 0 || job.TenantID == tenantID {
 			data, _ := json.Marshal(job)
 			var copy Job
-			json.Unmarshal(data, &copy)
+			_ = json.Unmarshal(data, &copy)
 			result = append(result, &copy)
 		}
 		return len(result) < limit

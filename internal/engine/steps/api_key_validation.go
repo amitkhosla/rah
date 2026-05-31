@@ -232,7 +232,7 @@ func apiKeyFail(s *engine.ExecutionState, ctx *rctx.Context, slots APIKeyValidat
 	}
 	body := cfg.OnFailureBody
 	ctx.ResponseStatus = cfg.OnFailureStatus
-	ctx.Write([]byte(body))
+	_, _ = ctx.Write([]byte(body))
 	ctx.Failed = true
 	ctx.ErrorCode = int16(cfg.OnFailureStatus)
 	ctx.ErrorMsg = ctx.Alloc(len(body))

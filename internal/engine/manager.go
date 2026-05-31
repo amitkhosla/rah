@@ -459,7 +459,7 @@ func (fm *FlowManager) ExecuteMultiWrite(ctx *rctx.Context, writers []io.Writer)
 					wg.Add(1)
 					go func(writer io.Writer, b []byte) {
 						defer wg.Done()
-						writer.Write(b)
+						_, _ = writer.Write(b)
 					}(w, chunk)
 				}
 				wg.Wait()

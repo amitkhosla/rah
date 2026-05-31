@@ -66,7 +66,7 @@ func (d *diskBackend) Get(tenantID uint16, key []byte) ([]byte, uint32, bool) {
 	expiry := binary.LittleEndian.Uint32(data[:4])
 	if expiry > 0 && expiry < uint32(time.Now().Unix()) {
 		// Lazy delete: expired entry.
-		os.Remove(path)
+		_ = os.Remove(path)
 		return nil, 0, false
 	}
 	return data[4:], expiry, true
@@ -118,7 +118,7 @@ func (d *diskBackend) Sweep() int {
 		}
 		var expBuf [4]byte
 		n, err := f.Read(expBuf[:])
-		f.Close()
+		_ = f.Close()
 		if err != nil || n < 4 {
 			return nil
 		}

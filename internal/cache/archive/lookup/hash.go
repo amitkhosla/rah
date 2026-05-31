@@ -100,20 +100,6 @@ func makeTagTiny(tenantID uint16, key []byte) uint64 {
 	return tag
 }
 
-// makeTagHash builds the hashIdx tag from a 128-bit fingerprint.
-// Uses H2 (fp[8:16]) as the identity: H1 was already consumed for routing
-// and H2 stored in EntryHeader.KeyMid provides the per-entry identity check.
-func makeTagHash(fp [16]byte) uint64 {
-	h2 := binary.LittleEndian.Uint64(fp[8:16])
-	if h2 == iEmpty {
-		h2 = 1
-	}
-	if h2 == iTombstone {
-		h2 ^= 1
-	}
-	return h2
-}
-
 // makeTagHashH2 builds the hashIdx tag from a 128-bit fingerprint, packing
 // the upper 16 bits of H2 into bits 48-63 of the tag so InlineIndex's
 // h2ForTag extracts real fingerprint bytes instead of routing bits.

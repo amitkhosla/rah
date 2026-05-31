@@ -117,7 +117,7 @@ func NewCacheManager(
 // Call once on shutdown.
 func (cm *CacheManager) Stop() {
 	close(cm.cleanerStop)
-	cm.backend.Close()
+	_ = cm.backend.Close()
 }
 
 func (cm *CacheManager) allocateRegions() {
@@ -436,7 +436,7 @@ func (cm *CacheManager) Stats() uint64 {
 	return cm.globalUsed.Load()
 }
 
-// deleteKey removes the index entry for (tenantID, key). Used in tests.
+// deleteKey removes the index entry for (tenantID, key). Used to allow customers to delete from cache on the fly.
 func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 	if isHashLane(key) {
 		fp := Hash128(tenantID, key)

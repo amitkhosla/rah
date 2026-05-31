@@ -28,15 +28,6 @@ var hasherPool = sync.Pool{
 	},
 }
 
-// routingPool holds single-hasher instances for the fast single-pass path.
-var routingPool = sync.Pool{
-	New: func() any {
-		h := new(maphash.Hash)
-		h.SetSeed(routingSeed)
-		return h
-	},
-}
-
 // Hash128 produces a 128-bit fingerprint for (tenantID, key).
 //
 //	[0:8]  H1 — routing hash: determines shard and bucket within the index.
@@ -105,64 +96,6 @@ func makeTagTiny(tenantID uint16, key []byte) uint64 {
 	return tag
 }
 
-// makeTagHash builds the hashIdx tag from a 128-bit fingerprint.
-// Uses H2 (fp[8:16]) as the identity: H1 was already consumed for routing
-// and H2 stored in EntryHeader.KeyMid provides the per-entry identity check.
-func makeTagHash(fp [16]byte) uint64 {
-	h2 := binary.LittleEndian.Uint64(fp[8:16])
-	if h2 == iEmpty {
-		h2 = 1
-	}
-	if h2 == iTombstone {
-		h2 ^= 1
-	}
-	return h2
-}
-
-// hashTagFast builds the hashIdx tag for (tenantID, key) using a SINGLE
-// maphash call instead of two, saving ~12–15 ns per Get/Put on hashLane keys.
-//
-// H2 filter bits are derived from H1 via cheap bit mixing rather than a
-// second independent hash. This is safe because:
-//
-//   - The slab EntryHeader does NOT store H2; it stores KeyMid (key[len/2]),
-//     which is the authoritative identity check on region.Read().
-//   - H2 in the tag is purely a filter hint: false positives cause an extra
-//     slot scan, not a correctness error.
-//   - Mixed H2 bits still differ from H1 routing bits in the upper word,
-//     maintaining useful filter discrimination (false-positive rate ≈ 1/2^14).
-//
-// Routing tag layout (same as makeTagHashH2):
-//
-//	[47: 0] lower 48 bits of H1 (shard + trie traversal)
-//	[63:48] 16 mixed bits derived from H1 (h2 filter word per slot)
-func hashTagFast(tenantID uint16, key []byte) uint64 {
-	h := routingPool.Get().(*maphash.Hash)
-
-	var t [2]byte
-	binary.LittleEndian.PutUint16(t[:], tenantID)
-	h.Reset()
-	_, _ = h.Write(t[:])
-	_, _ = h.Write(key)
-	h1 := h.Sum64()
-
-	routingPool.Put(h)
-
-	// Derive 16 filter bits from H1 by XOR-folding two independent 16-bit
-	// halves of the upper 32 bits. Constant 0x9e37 breaks symmetry.
-	h2mix := uint16(h1>>32) ^ uint16(h1>>48) ^ 0x9e37
-	if h2mix == 0 {
-		h2mix = 1
-	}
-	tag := (h1 & 0x0000FFFFFFFFFFFF) | (uint64(h2mix) << 48)
-	if tag == iEmpty {
-		tag |= 1 << 48
-	}
-	if tag == iTombstone {
-		tag ^= 1 << 48
-	}
-	return tag
-}
 
 // makeTagHashH2 builds the hashIdx tag from a 128-bit fingerprint, packing
 // the upper 16 bits of H2 into bits 48-63 of the tag so InlineIndex's

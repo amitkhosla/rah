@@ -886,7 +886,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 
 				fbRespBody, fbReadErr := io.ReadAll(fbResp.Body)
-				fbResp.Body.Close()
+				_ = fbResp.Body.Close()
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesRx, int64(len(fbRespBody)))
 				atomic.AddInt64(&ctx.Timing.UpstreamBytesTx, int64(len(fbBody)))
 
@@ -1029,7 +1029,7 @@ func mergeProviderParams(base []byte, params map[string]any) ([]byte, error) {
 // provider must be "anthropic" or "openai" (anything else is treated as openai-compatible).
 // Returns (inputTokens, outputTokens, error).
 func streamLLMToClient(ctx *rctx.Context, body io.ReadCloser, provider string) (int, int, error) {
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	w := ctx.GetWriter()
 	if w == nil {

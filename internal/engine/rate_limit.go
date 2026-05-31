@@ -104,10 +104,7 @@ func (cs *CounterStore) FixedWindow(idx uint32, limit uint32) bool {
 	val := atomic.AddUint64(&cs.Arena[idx], 1)
 	count := uint32(val & 0xFFFFFFFF)
 
-	if count > limit {
-		return false
-	}
-	return true
+	return count <= limit
 }
 
 // FixedWindowEpoch is a lock-free, self-resetting fixed-window counter.
