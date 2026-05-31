@@ -98,7 +98,11 @@ func TestHttpActionUsesMultipleUpstreams(t *testing.T) {
 	}))
 	defer b.Close()
 
-	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
+	req, _ := http.NewRequest("GET", a.URL, nil)
+	ctx := &rctx.Context{
+		ByteSlots: make([][]byte, 20),
+		Request:   req,
+	}
 	ctx.ByteSlots[0] = []byte(a.URL + "," + b.URL)
 	state := &engine.ExecutionState{PC: 0}
 
