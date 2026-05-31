@@ -69,7 +69,11 @@ func TestHttpActionDoesNotRetryBadResponse(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
+	req, _ := http.NewRequest("GET", ts.URL, nil)
+	ctx := &rctx.Context{
+		ByteSlots: make([][]byte, 20),
+		Request:   req,
+	}
 	ctx.ByteSlots[0] = []byte(ts.URL)
 	state := &engine.ExecutionState{PC: 2}
 
@@ -102,7 +106,11 @@ func TestHttpActionUsesStaticURLWhenNoSlot(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ctx := &rctx.Context{ByteSlots: make([][]byte, 20)}
+	req, _ := http.NewRequest("GET", ts.URL, nil)
+	ctx := &rctx.Context{
+		ByteSlots: make([][]byte, 20),
+		Request:   req,
+	}
 	state := &engine.ExecutionState{PC: 5}
 
 	next := HttpAction(-1, ts.URL, 0, "", 0, nil).Action(ctx, state)
