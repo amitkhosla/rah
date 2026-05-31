@@ -32,7 +32,7 @@ func TestLLMCallPassesToolsToAdapter(t *testing.T) {
 		capturedBody = make([]byte, n)
 		copy(capturedBody, buf[:n])
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockAnthropicToolResponse())
+		_, _ = w.Write(mockAnthropicToolResponse()) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestLLMCallPassesToolsToAdapter(t *testing.T) {
 		t.Fatalf("captured body not valid JSON: %s", capturedBody)
 	}
 	var wire map[string]json.RawMessage
-	json.Unmarshal(capturedBody, &wire)
+	_ = json.Unmarshal(capturedBody, &wire) //nolint:errcheck
 	if _, ok := wire["tools"]; !ok {
 		t.Error("tools field missing from wire request sent to adapter")
 	}
@@ -93,7 +93,7 @@ func TestLLMCallPassesToolsToAdapter(t *testing.T) {
 func TestLLMCallWritesToolUseToSlot(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockAnthropicToolResponse())
+		_, _ = w.Write(mockAnthropicToolResponse()) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -156,7 +156,7 @@ func TestLLMCallNoToolsWhenSlotEmpty(t *testing.T) {
 		copy(capturedBody, buf[:n])
 		w.Header().Set("Content-Type", "application/json")
 		// Return a simple text response
-		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`)) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -213,7 +213,7 @@ func TestLLMCallFallbackChainPassesTools(t *testing.T) {
 		copy(primaryBody, buf[:n])
 		// Primary fails
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal error"}`))
+		_, _ = w.Write([]byte(`{"error":"internal error"}`)) //nolint:errcheck
 	}))
 	defer primary.Close()
 
@@ -224,7 +224,7 @@ func TestLLMCallFallbackChainPassesTools(t *testing.T) {
 		copy(fallbackBody, buf[:n])
 		// Fallback succeeds
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(mockAnthropicToolResponse())
+		_, _ = w.Write(mockAnthropicToolResponse()) //nolint:errcheck
 	}))
 	defer fallback.Close()
 
