@@ -1,0 +1,54 @@
+# docker-compose.bench.yml — Gateway + Studio for benchmarking (no external datastores)
+#
+# Usage:
+#   docker compose -f docker-compose.bench.yml up -d
+#   docker compose -f docker-compose.bench.yml logs -f gateway
+#   docker stats rah-bench-gateway
+#   docker compose -f docker-compose.bench.yml down
+
+services:
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: rah-gateway:bench
+    container_name: rah-bench-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Data plane
+      - "8081:8081"   # Management plane
+    volumes:
+      - ./deploy/docker/gateway-bench.yaml:/app/gateway.yaml:ro
+    command: ["-port", "8080", "-mport", "8081", "-config", "/app/gateway.yaml"]
+    # CPU/memory limits — comment out or adjust for unconstrained benchmarks.
+    # 4.0 cpus = 4 cores max. Remove deploy section to remove all limits.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rah-gateway", "-health", "-mport", "8081"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile.studio
+    image: rah-studio:bench
+    container_name: rah-bench-studio
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/rah-studio"]
+    command: ["-gateway-management-url", "http://gateway:8081", "-port", "8092"]
+    ports:
+      - "8092:8092"
+    depends_on:
+      - gateway

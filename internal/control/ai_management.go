@@ -112,6 +112,11 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
+	// Chat endpoint — full multi-turn conversation through any registered model alias.
+	mux.HandleFunc("/ai/llm/chat", func(w http.ResponseWriter, r *http.Request) {
+		llmChatModelHandler(w, r, cfgMgr, sm)
+	})
+
 	// MCP server routes.
 	mux.HandleFunc("/ai/mcp/servers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

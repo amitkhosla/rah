@@ -854,6 +854,23 @@ func (m *RegistryManager) GetRateLimitConfigId(name string) (uint16, bool) {
 	return id, ok
 }
 
+// EnsureRateLimitV2ID returns the stable integer ID for a V2 rate limit config,
+// creating one if it does not yet exist. Safe to call repeatedly — idempotent.
+// Called by the management server after UpsertRateLimitConfigV2 so the compiler
+// can resolve the name to a configID at bake time.
+func (m *RegistryManager) EnsureRateLimitV2ID(name string) uint16 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+	if id, ok := m.rateLimitNames[name]; ok {
+		return id
+	}
+	m.nextRLConfigID++
+	id := m.nextRLConfigID
+	m.rateLimitNames[name] = id
+	return id
+}
+
 // TenantTraceSampleRate returns the effective trace sample rate override for a
 // tenant, satisfying the observability.TenantTracer interface.
 //

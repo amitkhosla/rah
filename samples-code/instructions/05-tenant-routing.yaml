@@ -43,11 +43,11 @@ flows:
     code: |
       tenant_alias = query("tenant_id")
 
-  # Read tenant alias from the first path segment {alias} → tenant_alias slot
+  # Read tenant alias from the {alias} path segment → tenant_alias slot
   - name: read_tenant_path_param
     action: upsert
     code: |
-      tenant_alias = path("0")
+      tenant_alias = path("alias")
 
   # ═══════════════════════════════════════════════════════════════════════════
   # UPSTREAM RESOLUTION & PROXY BLOCKS (shared by all variants)

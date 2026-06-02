@@ -44,6 +44,7 @@ type ServerConfig struct {
 	AuthRealm     string           `json:"auth_realm,omitempty"`      // WWW-Authenticate realm
 	AuthUsers     []StudioSeedUser `json:"auth_users,omitempty"`      // config-file seed users (bcrypt hashes)
 	AuthStorePath string           `json:"auth_store_path,omitempty"` // path to encrypted user file; empty = memory only
+	MCPSecret     string           `json:"mcp_secret,omitempty"`
 }
 
 type DeployRequest struct {
@@ -234,10 +235,12 @@ type timeJSON struct{ T string }
 func nowJSON() timeJSON { return timeJSON{T: nowUTC().Format(time.RFC3339)} }
 
 type Server struct {
+	config            ServerConfig
 	managementBaseURL *url.URL
 	httpClient        *http.Client
 	targets           []Target
 	store             ReleaseStore
+	chatStore         ChatHistoryStore
 
 	// Auth — Studio's own user store + session map.
 	// Both are nil when auth is disabled (open access mode).
@@ -289,10 +292,12 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		}
 	}
 	srv := &Server{
+		config:            cfg,
 		managementBaseURL: parsed,
 		httpClient:        http.DefaultClient,
 		targets:           targets,
 		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
+		chatStore:         newChatHistoryStore(cfg.StoreKind, cfg.StorePath),
 	}
 
 	if cfg.AuthEnabled {
@@ -352,6 +357,9 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
 	apiMux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
 	apiMux.HandleFunc("/api/upstream-services/", s.upstreamServicesMgmtProxy)
+	apiMux.HandleFunc("/api/ai/chat", s.aiChatHandler)
+	apiMux.HandleFunc("/api/ai/project-context", s.aiProjectContextHandler)
+	apiMux.HandleFunc("/api/ai/chat-history", s.aiChatHistoryHandler)
 	apiMux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)

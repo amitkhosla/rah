@@ -3,7 +3,9 @@ package steps
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"rah/internal/engine"
@@ -176,8 +178,22 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 		return cb.StaticKey, false
 
 	case engine.CountByIP:
-		key := slotBytesOrNil(ctx, cb.SlotIndex)
-		return s.handleEmpty(ctx, key)
+		// Extract IP directly from the request — XFFIndex selects the XFF entry.
+		ip := ipFromXFF(ctx.Request.Header.Get("X-Forwarded-For"), cb.XFFIndex)
+		if ip == "" {
+			ip = strings.TrimSpace(ctx.Request.Header.Get("X-Real-IP"))
+		}
+		if ip == "" {
+			if host, _, err := net.SplitHostPort(ctx.Request.RemoteAddr); err == nil {
+				ip = host
+			}
+		}
+		if ip == "" {
+			return s.handleEmpty(ctx, nil)
+		}
+		buf := ctx.Alloc(len(ip))
+		copy(buf, ip)
+		return buf, false
 
 	case engine.CountBySlot:
 		key := slotBytesOrNil(ctx, cb.SlotIndex)

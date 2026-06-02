@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -134,3 +135,150 @@ func releaseStoreFromConfig(kind, path string) ReleaseStore {
 }
 
 func nowUTC() time.Time { return time.Now().UTC() }
+
+// ── Chat history ──────────────────────────────────────────────────────────────
+
+type ChatAuditRecord struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	Summary     string    `json:"summary"`
+	Artifacts   []string  `json:"artifacts"`
+	GatewayName string    `json:"gateway_name"`
+}
+
+type ProjectContextRecord struct {
+	ID        string    `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Content   string    `json:"content"`
+}
+
+type ChatHistoryStore interface {
+	AppendAudit(ctx context.Context, r ChatAuditRecord) error
+	ListAudits(ctx context.Context) ([]ChatAuditRecord, error)
+	GetProjectContext(ctx context.Context) (ProjectContextRecord, error)
+	PutProjectContext(ctx context.Context, r ProjectContextRecord) error
+}
+
+type InMemoryChatHistoryStore struct {
+	mu      sync.RWMutex
+	audits  []ChatAuditRecord
+	context ProjectContextRecord
+}
+
+func NewInMemoryChatHistoryStore() *InMemoryChatHistoryStore {
+	return &InMemoryChatHistoryStore{}
+}
+
+func (s *InMemoryChatHistoryStore) AppendAudit(_ context.Context, r ChatAuditRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audits = append(s.audits, r)
+	return nil
+}
+
+func (s *InMemoryChatHistoryStore) ListAudits(_ context.Context) ([]ChatAuditRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ChatAuditRecord, len(s.audits))
+	copy(out, s.audits)
+	return out, nil
+}
+
+func (s *InMemoryChatHistoryStore) GetProjectContext(_ context.Context) (ProjectContextRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.context, nil
+}
+
+func (s *InMemoryChatHistoryStore) PutProjectContext(_ context.Context, r ProjectContextRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.context = r
+	return nil
+}
+
+type FileChatHistoryStore struct {
+	mu          sync.Mutex
+	auditPath   string
+	contextPath string
+}
+
+func NewFileChatHistoryStore(dir string) *FileChatHistoryStore {
+	return &FileChatHistoryStore{
+		auditPath:   dir + "/chat_audit.ndjson",
+		contextPath: dir + "/project_context.json",
+	}
+}
+
+func (s *FileChatHistoryStore) AppendAudit(_ context.Context, r ChatAuditRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := os.OpenFile(s.auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	line, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(append(line, '\n'))
+	return err
+}
+
+func (s *FileChatHistoryStore) ListAudits(_ context.Context) ([]ChatAuditRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.auditPath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []ChatAuditRecord
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var r ChatAuditRecord
+		if err := json.Unmarshal([]byte(line), &r); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (s *FileChatHistoryStore) GetProjectContext(_ context.Context) (ProjectContextRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.contextPath)
+	if os.IsNotExist(err) {
+		return ProjectContextRecord{ID: "project_context"}, nil
+	}
+	if err != nil {
+		return ProjectContextRecord{}, err
+	}
+	var r ProjectContextRecord
+	if err := json.Unmarshal(data, &r); err != nil {
+		return ProjectContextRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *FileChatHistoryStore) PutProjectContext(_ context.Context, r ProjectContextRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.contextPath, data, 0644)
+}
+
+func newChatHistoryStore(kind, path string) ChatHistoryStore {
+	if kind == "file" && path != "" {
+		return NewFileChatHistoryStore(path)
+	}
+	return NewInMemoryChatHistoryStore()
+}

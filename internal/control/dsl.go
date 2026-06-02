@@ -331,7 +331,9 @@ func dslPositionals(raw string, n int) []string {
 		case ',':
 			if depth == 0 {
 				token := strings.TrimSpace(cur.String())
-				if strings.Contains(token, ":") {
+				// A token is a key:value named param only when it contains ':'
+				// AND is NOT a quoted string (quoted strings can contain ':' in URLs).
+				if strings.Contains(token, ":") && !dslIsQuoted(token) {
 					// Encountered a key: val pair — stop
 					goto done
 				}
@@ -349,7 +351,8 @@ func dslPositionals(raw string, n int) []string {
 done:
 	if cur.Len() > 0 && len(out) < n {
 		token := strings.TrimSpace(cur.String())
-		if !strings.Contains(token, ":") && token != "" {
+		isNamedPair := strings.Contains(token, ":") && !dslIsQuoted(token)
+		if !isNamedPair && token != "" {
 			out = append(out, token)
 		}
 	}
@@ -904,15 +907,16 @@ func (p *dslParser) dslActionSteps(action, rawParams string, as_ string) []StepC
 		method := strings.ToUpper(strings.TrimPrefix(action, "http."))
 		pos := dslPositionals(rawParams, 1)
 		step := StepConfig{Action: "http_call", Method: method}
-		if len(pos) > 0 && pos[0] != "" && !strings.Contains(pos[0], ":") {
-			// Static URL or url_var reference
+		if len(pos) > 0 && pos[0] != "" {
 			urlVal := pos[0]
 			if dslIsQuoted(urlVal) {
+				// Quoted first arg is always a literal URL (may contain ':').
 				step.URL = dslUnquote(urlVal)
-			} else {
-				// Check if it's a url_var param key
+			} else if !strings.Contains(urlVal, ":") {
+				// Unquoted with no ':' → variable reference.
 				step.UrlVar = urlVal
 			}
+			// Unquoted with ':' would be a named param like "url: foo" — handled below.
 		}
 		// Apply named params
 		if v, ok := params["url"]; ok {
@@ -948,7 +952,8 @@ func (p *dslParser) dslActionSteps(action, rawParams string, as_ string) []StepC
 			step.Timeout = ms
 		}
 		if as_ != "" {
-			step.As = as_
+			// LHS var (e.g. body = http.get(...)) → store response body there.
+			step.ResponseBodyVar = as_
 		}
 		return []StepConfig{step}
 
@@ -1182,11 +1187,15 @@ func (p *dslParser) parseBlockR(lines []string, start int) (steps []StepConfig, 
 				if len(pos) > 0 {
 					_, _ = fmt.Sscanf(pos[0], "%d", &status)
 				}
-				body := ""
+				body, as := "", ""
 				if len(pos) > 1 {
-					body = dslUnquote(pos[1])
+					if dslIsQuoted(pos[1]) {
+						body = dslUnquote(pos[1])
+					} else {
+						as = pos[1] // unquoted → slot reference
+					}
 				}
-				steps = append(steps, StepConfig{Action: "return", Status: status, Body: body})
+				steps = append(steps, StepConfig{Action: "return", Status: status, Body: body, As: as})
 				i++
 				continue
 			}
@@ -1201,11 +1210,15 @@ func (p *dslParser) parseBlockR(lines []string, start int) (steps []StepConfig, 
 				if len(pos) > 0 {
 					fmt.Sscanf(pos[0], "%d", &status)
 				}
-				body := ""
+				body, as := "", ""
 				if len(pos) > 1 {
-					body = dslUnquote(pos[1])
+					if dslIsQuoted(pos[1]) {
+						body = dslUnquote(pos[1])
+					} else {
+						as = pos[1] // unquoted → slot reference
+					}
 				}
-				steps = append(steps, StepConfig{Action: "fail", Status: status, Body: body})
+				steps = append(steps, StepConfig{Action: "fail", Status: status, Body: body, As: as})
 				i++
 				continue
 			}

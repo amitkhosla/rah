@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { fetchGatewaySnapshot, importOpenAPI, listRateLimitConfigs, listRateLimitConfigsV2, syncFlows, upsertRateLimitConfig } from '../api'
-import type { ApiDef, EndpointDef, FlowStep, ImportedAPI, OpenAPIRuleConfig, SavedFlow, UpstreamUrlConfig, RateLimitVar, RateLimitCountBy, RateLimitConfigSource, RateLimitCountByV2, RateLimitConfigRef, APIRateLimitEntry, RLFixedWindow, RLDynamicMapping, RateLimitWarning } from '../types'
+import { fetchGatewaySnapshot, importOpenAPI, listRateLimitConfigs, listRateLimitConfigsV2, syncFlows, upsertRateLimitConfig, upsertAPITool, fetchTargets } from '../api'
+import type { ApiDef, EndpointDef, FlowStep, ImportedAPI, OpenAPIRuleConfig, SavedFlow, UpstreamUrlConfig, RateLimitVar, RateLimitCountBy, RateLimitConfigSource, RateLimitCountByV2, RateLimitConfigRef, APIRateLimitEntry, RLFixedWindow, RLDynamicMapping, RateLimitWarning, Target } from '../types'
 import FlowSearchSelect from './FlowSearchSelect'
 
 interface Props {
@@ -59,6 +59,39 @@ function suggestName(path: string): string {
     .replace(/[/:.-]/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_|_$/g, '')
+}
+
+// ── Toolify: auto-generate MCP tool name ────────────────────────────────────
+
+function makeToolName(apiName: string, subPath: string, method: string): string {
+  const parts = [apiName, subPath, method].join('_')
+  return parts.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
+}
+
+// ── Toolify state type ───────────────────────────────────────────────────────
+
+type ToolifyResult = { ok: boolean; error?: string }
+
+type ToolifyState = {
+  open: boolean
+  api: ApiDef | null
+  targets: Target[]
+  selectedTarget: string
+  checked: Record<string, boolean>
+  toolNames: Record<string, string>
+  descriptions: Record<string, string>
+  schemas: Record<string, string>
+  submitting: boolean
+  progress: string
+  results: Record<string, ToolifyResult>
+}
+
+function blankToolify(): ToolifyState {
+  return {
+    open: false, api: null, targets: [], selectedTarget: '',
+    checked: {}, toolNames: {}, descriptions: {}, schemas: {},
+    submitting: false, progress: '', results: {},
+  }
 }
 
 // ── Full path computation ─────────────────────────────────────────────────────
@@ -140,6 +173,9 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   const [openAPIResults,      setOpenAPIResults]      = useState<ImportedAPI[]>([])
   // Track which imported APIs have "add validation step" checked
   const [openAPIAddValidation, setOpenAPIAddValidation] = useState<Record<string, boolean>>({})
+
+  // Toolify modal state
+  const [toolify, setToolify] = useState<ToolifyState>(blankToolify())
 
   useEffect(() => {
     listRateLimitConfigs()
@@ -252,6 +288,87 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
 
   function closeOpenAPIImport() {
     setShowOpenAPIImport(false)
+  }
+
+  // ── Toolify handlers ───────────────────────────────────────────────────────
+
+  async function openToolify(api: ApiDef) {
+    // Initialise state immediately so modal opens with a loading indicator
+    const checked: Record<string, boolean> = {}
+    const toolNames: Record<string, string> = {}
+    const descriptions: Record<string, string> = {}
+    const schemas: Record<string, string> = {}
+    for (const ep of api.endpoints) {
+      checked[ep.id] = true
+      toolNames[ep.id] = makeToolName(api.name, ep.subPath, ep.method)
+      descriptions[ep.id] = ''
+      schemas[ep.id] = ''
+    }
+    setToolify({
+      open: true, api, targets: [], selectedTarget: '',
+      checked, toolNames, descriptions, schemas,
+      submitting: false, progress: '', results: {},
+    })
+    // Fetch targets
+    try {
+      const res = await fetchTargets()
+      const tgts = res.targets ?? []
+      setToolify(prev => ({
+        ...prev,
+        targets: tgts,
+        selectedTarget: tgts.length > 0 ? tgts[0].name : '',
+      }))
+    } catch {
+      // targets will stay empty — user will see empty dropdown
+    }
+  }
+
+  function closeToolify() {
+    setToolify(blankToolify())
+  }
+
+  async function submitToolify() {
+    const { api, targets, selectedTarget, checked, toolNames, descriptions, schemas } = toolify
+    if (!api) return
+    const target = targets.find(t => t.name === selectedTarget)
+    const targetBaseURL = target?.urls?.[0] ?? ''
+    const endpoints = api.endpoints.filter(ep => checked[ep.id])
+    if (endpoints.length === 0) return
+
+    setToolify(prev => ({ ...prev, submitting: true, results: {} }))
+
+    const results: Record<string, ToolifyResult> = {}
+    for (let i = 0; i < endpoints.length; i++) {
+      const ep = endpoints[i]
+      setToolify(prev => ({ ...prev, progress: `Registering ${i + 1} of ${endpoints.length}…` }))
+
+      const schemaStr = schemas[ep.id]?.trim()
+      let inputSchema: Record<string, unknown> | undefined
+      if (schemaStr) {
+        try {
+          inputSchema = JSON.parse(schemaStr)
+        } catch {
+          results[ep.id] = { ok: false, error: 'Invalid JSON schema' }
+          continue
+        }
+      }
+
+      try {
+        await upsertAPITool({
+          name: toolNames[ep.id],
+          description: descriptions[ep.id],
+          path: fullPath(api.basePath, ep.subPath),
+          method: ep.method,
+          ...(inputSchema ? { input_schema: inputSchema } : {}),
+          ...(targetBaseURL ? { auth_kind: 'none' } : {}),
+        })
+        results[ep.id] = { ok: true }
+      } catch (e: any) {
+        results[ep.id] = { ok: false, error: e?.message ?? 'Failed' }
+      }
+    }
+
+    setToolify(prev => ({ ...prev, submitting: false, progress: '', results }))
   }
 
   async function runOpenAPIImport() {
@@ -809,6 +926,15 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
                       {api.name}
                     </div>
                   </div>
+                  {/* Toolify button */}
+                  <button
+                    className="btn muted"
+                    style={{ width: 'auto', padding: '1px 7px', marginTop: 0, fontSize: 11, flexShrink: 0, color: '#a78bfa' }}
+                    title="Convert endpoints to MCP tools"
+                    onClick={e => { e.stopPropagation(); openToolify(api) }}
+                  >
+                    MCP
+                  </button>
                   {/* + button to add endpoint */}
                   <button
                     className="btn muted"
@@ -1111,6 +1237,255 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
                 </div>
               </>
             )}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── Toolify Modal ────────────────────────────────────────────────── */}
+    {toolify.open && toolify.api && (
+      <div style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }} onClick={e => { if (e.target === e.currentTarget && !toolify.submitting) closeToolify() }}>
+        <div style={{
+          background: 'var(--panel)', border: '1px solid var(--border)',
+          borderRadius: 10, width: 760, maxHeight: '88vh',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        }}>
+          {/* Modal header */}
+          <div style={{
+            padding: '14px 18px', borderBottom: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <div>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>Convert Endpoints to MCP Tools</span>
+              <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 10 }}>{toolify.api.name}</span>
+            </div>
+            <button
+              className="btn muted"
+              style={{ width: 'auto', padding: '2px 10px', marginTop: 0, fontSize: 12 }}
+              disabled={toolify.submitting}
+              onClick={closeToolify}
+            >
+              Close
+            </button>
+          </div>
+
+          {/* Modal body */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
+
+            {/* Success state */}
+            {Object.keys(toolify.results).length > 0 && !toolify.submitting && (() => {
+              const successes = Object.values(toolify.results).filter(r => r.ok).length
+              const total = Object.keys(toolify.results).length
+              return (
+                <>
+                  {successes === total ? (
+                    <div style={{
+                      background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)',
+                      borderRadius: 7, padding: '10px 14px', marginBottom: 14, fontSize: 12,
+                    }}>
+                      <strong style={{ color: '#22c55e' }}>{successes} tool{successes !== 1 ? 's' : ''} registered.</strong>
+                      {' '}Go to <strong>AI &gt; MCP Servers &gt; API Tools</strong> to add them to a virtual server.
+                    </div>
+                  ) : (
+                    <div style={{
+                      background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+                      borderRadius: 7, padding: '10px 14px', marginBottom: 14, fontSize: 12,
+                    }}>
+                      <strong style={{ color: '#f87171' }}>{successes} of {total} succeeded.</strong>
+                      {' '}See results below. Failed tools can be retried after fixing the issue.
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+
+            {/* Target selector */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
+                Target Gateway
+              </label>
+              {toolify.targets.length === 0 ? (
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>Loading targets…</div>
+              ) : (
+                <select
+                  className="input"
+                  style={{ maxWidth: 340, marginTop: 0 }}
+                  value={toolify.selectedTarget}
+                  disabled={toolify.submitting}
+                  onChange={e => setToolify(prev => ({ ...prev, selectedTarget: e.target.value }))}
+                >
+                  {toolify.targets.map(t => (
+                    <option key={t.name} value={t.name}>
+                      {t.name}{t.urls?.[0] ? ` — ${t.urls[0]}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {/* Endpoints table */}
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Endpoints</div>
+            <div style={{
+              border: '1px solid var(--border)', borderRadius: 7, overflow: 'hidden',
+            }}>
+              {/* Table header */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '32px 1fr 1fr 1fr',
+                gap: 0, padding: '7px 10px',
+                background: 'rgba(255,255,255,0.04)',
+                borderBottom: '1px solid var(--border)',
+                fontSize: 11, fontWeight: 600, color: 'var(--muted)',
+              }}>
+                <div></div>
+                <div>Tool Name</div>
+                <div>Description <span style={{ color: '#ef4444' }}>*</span></div>
+                <div>Schema (optional)</div>
+              </div>
+
+              {/* Endpoint rows */}
+              {toolify.api.endpoints.map((ep, idx) => {
+                const isChecked = !!toolify.checked[ep.id]
+                const toolName = toolify.toolNames[ep.id] ?? ''
+                const desc = toolify.descriptions[ep.id] ?? ''
+                const schema = toolify.schemas[ep.id] ?? ''
+                const result = toolify.results[ep.id]
+                const descEmpty = isChecked && !desc.trim()
+                return (
+                  <div
+                    key={ep.id}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '32px 1fr 1fr 1fr',
+                      gap: 0, padding: '8px 10px',
+                      borderBottom: idx < toolify.api!.endpoints.length - 1 ? '1px solid var(--border)' : 'none',
+                      background: result
+                        ? result.ok
+                          ? 'rgba(34,197,94,0.05)'
+                          : 'rgba(239,68,68,0.07)'
+                        : 'transparent',
+                      alignItems: 'start',
+                    }}
+                  >
+                    {/* Checkbox + method+path label */}
+                    <div style={{ paddingTop: 6 }}>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        disabled={toolify.submitting}
+                        onChange={e => setToolify(prev => ({
+                          ...prev,
+                          checked: { ...prev.checked, [ep.id]: e.target.checked },
+                        }))}
+                      />
+                    </div>
+
+                    {/* Tool name column — also shows method+path label above */}
+                    <div style={{ paddingRight: 8 }}>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                          color: '#fff', background: METHOD_COLOR[ep.method] ?? '#64748b',
+                          marginRight: 5,
+                        }}>{ep.method}</span>
+                        <code style={{ fontFamily: 'monospace' }}>{ep.subPath}</code>
+                      </div>
+                      <input
+                        className="input"
+                        style={{ marginTop: 0, fontSize: 11, padding: '3px 6px' }}
+                        value={toolName}
+                        disabled={toolify.submitting || !isChecked}
+                        onChange={e => setToolify(prev => ({
+                          ...prev,
+                          toolNames: { ...prev.toolNames, [ep.id]: e.target.value },
+                        }))}
+                      />
+                    </div>
+
+                    {/* Description column */}
+                    <div style={{ paddingRight: 8 }}>
+                      <input
+                        className="input"
+                        style={{
+                          marginTop: 0, fontSize: 11, padding: '3px 6px',
+                          borderColor: descEmpty ? '#ef4444' : undefined,
+                        }}
+                        placeholder="Required description"
+                        value={desc}
+                        disabled={toolify.submitting || !isChecked}
+                        onChange={e => setToolify(prev => ({
+                          ...prev,
+                          descriptions: { ...prev.descriptions, [ep.id]: e.target.value },
+                        }))}
+                      />
+                      {descEmpty && (
+                        <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>Required</div>
+                      )}
+                      {result && !result.ok && (
+                        <div style={{ fontSize: 10, color: '#f87171', marginTop: 2 }}>{result.error}</div>
+                      )}
+                      {result?.ok && (
+                        <div style={{ fontSize: 10, color: '#22c55e', marginTop: 2 }}>Registered</div>
+                      )}
+                    </div>
+
+                    {/* Schema column */}
+                    <div>
+                      <textarea
+                        className="input"
+                        style={{ marginTop: 0, fontSize: 10, padding: '3px 6px', height: 54, resize: 'vertical', fontFamily: 'monospace' }}
+                        placeholder={'JSON object schema, leave empty if not needed'}
+                        value={schema}
+                        disabled={toolify.submitting || !isChecked}
+                        onChange={e => setToolify(prev => ({
+                          ...prev,
+                          schemas: { ...prev.schemas, [ep.id]: e.target.value },
+                        }))}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Modal footer */}
+          <div style={{
+            padding: '12px 18px', borderTop: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            {(() => {
+              const checkedEps = toolify.api!.endpoints.filter(ep => toolify.checked[ep.id])
+              const allHaveDesc = checkedEps.every(ep => !!toolify.descriptions[ep.id]?.trim())
+              const canSubmit = checkedEps.length > 0 && allHaveDesc && !toolify.submitting
+              return (
+                <>
+                  <button
+                    className="btn"
+                    style={{ width: 'auto', padding: '6px 20px' }}
+                    disabled={!canSubmit}
+                    onClick={submitToolify}
+                  >
+                    Register Tools
+                  </button>
+                  {toolify.submitting && toolify.progress && (
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>{toolify.progress}</span>
+                  )}
+                  <button
+                    className="btn muted"
+                    style={{ width: 'auto', padding: '6px 14px', marginLeft: 'auto' }}
+                    disabled={toolify.submitting}
+                    onClick={closeToolify}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )
+            })()}
           </div>
         </div>
       </div>

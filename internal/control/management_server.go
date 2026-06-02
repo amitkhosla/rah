@@ -519,9 +519,18 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		s.Compiler.LLMCfg = s.LLMProvider()
 	}
 
-	// Apply V2 rate limit configs — in-memory store only; persistence handled below.
+	// Apply V2 rate limit configs — store config + assign stable integer ID +
+	// register counter arenas so the compiled CheckRateLimitV2 step can count.
 	for _, cfg := range req.RateLimitConfigsV2 {
 		registrypkg.UpsertRateLimitConfigV2(cfg)
+		id := s.RegMgr.EnsureRateLimitV2ID(cfg.Name)
+		numWindows := len(cfg.Windows)
+		if numWindows == 0 {
+			numWindows = 1
+		}
+		reg := engine.ActiveCounterRegistry()
+		reg.RegisterSlotConfig(id, numWindows, 65536)  // IP, slot, static, global, composite
+		reg.RegisterTenantConfig(id, numWindows, 1024) // tenant-based counting
 	}
 	// Apply tier definitions.
 	for _, t := range req.Tiers {

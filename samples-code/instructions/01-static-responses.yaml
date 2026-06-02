@@ -58,7 +58,7 @@ flows:
   - name: read_path_id
     action: upsert
     code: |
-      path_id = path("0")
+      path_id = path("id")
 
   # ═══════════════════════════════════════════════════════════════════════════
   # JSON WRAPPERS
@@ -78,6 +78,15 @@ flows:
     action: upsert
     code: |
       response_body = '{"id":"{path_id}"}'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BUILT-IN ECHO (dumps ALL headers + query params as JSON in one step)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_echo_all
+    action: upsert
+    code: |
+      echo_request()
 
   # ═══════════════════════════════════════════════════════════════════════════
   # ENTRY POINTS  — reads like pseudocode

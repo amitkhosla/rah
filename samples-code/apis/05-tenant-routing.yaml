@@ -42,11 +42,13 @@ apis:
 
   # curl http://localhost:8080/samples/cs/tenant/acme/data
   - name: sample-cs-tenant-path
-    path: /samples/cs/tenant/{alias}/data
-    method: GET
+    path: /samples/cs/tenant
     flow_name: api_tenant_from_path
     action: upsert
     skip_rate_limit: true
+    endpoint_configs:
+      - path: /{alias}/data
+        method: GET
 
   # Layered rate limits: per-tenant (in flow) + global (on API)
   - name: sample-cs-tenant-rl

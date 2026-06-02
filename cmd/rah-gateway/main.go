@@ -33,6 +33,8 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 
 	"go.opentelemetry.io/otel"
 	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -953,6 +955,10 @@ func main() {
 		if cfgMgr.Gateway().Admin.RequireGatewayAuth {
 			gwHandler = adminUserStore.Middleware(handler)
 		}
+		// Wrap with h2c handler to support inbound HTTP/2 cleartext alongside
+		// HTTP/1.1. h2c.NewHandler peeks at the connection preface and routes
+		// accordingly — HTTP/1.1 clients are unaffected. TLS listeners use ALPN.
+		gwHandler = h2c.NewHandler(gwHandler, &http2.Server{})
 		// Use http.Server with ConnContext to capture TCP accept time for connection
 		// setup latency tracking. Zero overhead on the hot path — runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.

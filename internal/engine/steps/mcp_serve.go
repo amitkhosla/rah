@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -477,21 +479,79 @@ func mcpServCallAPITool(
 	timeoutMs int,
 	ctx *rctx.Context,
 ) {
-	url := cfg.GatewayBase + tool.Path
 	method := tool.Method
 	if method == "" {
 		method = http.MethodPost
 	}
 
-	body := params.Arguments
-	if len(body) == 0 {
-		body = []byte("{}")
+	// Decode arguments into map[string]json.RawMessage.
+	var args map[string]json.RawMessage
+	if len(params.Arguments) > 0 && string(params.Arguments) != "null" && string(params.Arguments) != "{}" {
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			mcpServWriteToolResult(w, req.ID, "invalid arguments: "+err.Error(), true)
+			return
+		}
+	}
+	if args == nil {
+		args = make(map[string]json.RawMessage)
+	}
+
+	// Substitute path parameters: scan for {name} placeholders.
+	path := tool.Path
+	for {
+		startIdx := strings.Index(path, "{")
+		if startIdx == -1 {
+			break
+		}
+		endIdx := strings.Index(path[startIdx:], "}")
+		if endIdx == -1 {
+			break
+		}
+		endIdx += startIdx
+
+		paramName := path[startIdx+1 : endIdx]
+		argVal, ok := args[paramName]
+		if !ok {
+			mcpServWriteToolResult(w, req.ID, "missing required path param: {"+paramName+"}", true)
+			return
+		}
+
+		// Unquote the JSON string value.
+		unquoted := strings.Trim(string(argVal), `"`)
+		path = path[:startIdx] + unquoted + path[endIdx+1:]
+		delete(args, paramName)
+	}
+
+	// Build final URL and body.
+	finalURL := cfg.GatewayBase + path
+	var bodyReader io.Reader = http.NoBody
+
+	if method == http.MethodGet || method == http.MethodDelete {
+		// Append remaining args as query string.
+		if len(args) > 0 {
+			queryParts := make([]string, 0, len(args))
+			for key, val := range args {
+				unquoted := strings.Trim(string(val), `"`)
+				queryParts = append(queryParts, key+"="+url.QueryEscape(unquoted))
+			}
+			if len(queryParts) > 0 {
+				finalURL += "?" + strings.Join(queryParts, "&")
+			}
+		}
+	} else {
+		// Re-encode remaining args as JSON body.
+		body, err := json.Marshal(args)
+		if err != nil {
+			mcpServWriteToolResult(w, req.ID, "failed to marshal arguments: "+err.Error(), true)
+			return
+		}
+		bodyReader = bytes.NewReader(body)
 	}
 
 	reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(reqCtx, method, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(reqCtx, method, finalURL, bodyReader)
 	if err != nil {
 		mcpServWriteToolResult(w, req.ID, "failed to build request: "+err.Error(), true)
 		return

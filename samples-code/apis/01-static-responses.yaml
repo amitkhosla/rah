@@ -35,8 +35,17 @@ apis:
     skip_rate_limit: true
 
   - name: sample-cs-echo-path
-    path: /samples/cs/static/echo/{id}
-    method: GET
+    path: /samples/cs/static/echo
     flow_name: api_echo_path
+    action: upsert
+    skip_rate_limit: true
+    endpoint_configs:
+      - path: /{id}
+        method: GET
+
+  - name: sample-cs-echo-all
+    path: /samples/cs/static/echo-all
+    method: GET
+    flow_name: api_echo_all
     action: upsert
     skip_rate_limit: true

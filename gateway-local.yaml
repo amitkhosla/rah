@@ -1,0 +1,27 @@
+# RAH Gateway — local no-dependency config
+#
+# Uses disk store only. No Redis or PostgreSQL required.
+# Data is written to ./local-data/ and survives restarts.
+#
+# Start:
+#   make run-local              (gateway only)
+#   make studio-run             (studio, separate terminal)
+#   make samples-publish        (push all samples once gateway + studio are up)
+
+datastore:
+  stores:
+    local_disk:
+      name: local_disk
+      kind: disk
+      enabled: true
+      connection:
+        path: ./local-data   # written relative to the working directory
+
+  bindings:
+    api_definitions: "local_disk"
+    flows:           "local_disk"
+    tenant_data:     "local_disk"
+    cache:           "local_disk"
+
+ingest:
+  enabled: false   # no Redis stream, no cross-instance sync — single process only

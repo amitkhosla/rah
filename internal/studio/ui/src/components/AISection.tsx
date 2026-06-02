@@ -4,15 +4,17 @@ import MCPServers     from './MCPServers'
 import AIRoutes       from './AIRoutes'
 import AgentBuilder   from './AgentBuilder'
 import PromptsLibrary from './PromptsLibrary'
+import AIAssistant    from './AIAssistant'
 
-type AITab = 'models' | 'mcp' | 'routes' | 'agents' | 'prompts'
+type AITab = 'models' | 'mcp' | 'routes' | 'agents' | 'prompts' | 'assistant'
 
 const AI_TABS: { id: AITab; label: string; desc: string }[] = [
-  { id: 'models',  label: 'Models',      desc: 'LLM catalog — providers, adapters, context limits' },
-  { id: 'mcp',     label: 'MCP Servers', desc: 'External servers, virtual tool sets, API tools' },
-  { id: 'routes',  label: 'AI Routes',   desc: 'High-level LLM endpoint builder — no raw instructions needed' },
-  { id: 'agents',  label: 'Agents',      desc: 'Visual agent builder — model + tools + execution config' },
-  { id: 'prompts', label: 'Prompts',     desc: 'Saved system prompts library' },
+  { id: 'models',    label: 'Models',      desc: 'LLM catalog — providers, adapters, context limits' },
+  { id: 'mcp',       label: 'MCP Servers', desc: 'External servers, virtual tool sets, API tools' },
+  { id: 'routes',    label: 'AI Routes',   desc: 'High-level LLM endpoint builder — no raw instructions needed' },
+  { id: 'agents',    label: 'Agents',      desc: 'Visual agent builder — model + tools + execution config' },
+  { id: 'prompts',   label: 'Prompts',     desc: 'Saved system prompts library' },
+  { id: 'assistant', label: 'Assistant',   desc: 'Generate flows and APIs with AI' },
 ]
 
 export default function AISection() {
@@ -56,11 +58,12 @@ export default function AISection() {
       </div>
 
       {/* ── Content ── */}
-      {tab === 'models'  && <AIModels />}
-      {tab === 'mcp'     && <MCPServers />}
-      {tab === 'routes'  && <AIRoutes />}
-      {tab === 'agents'  && <AgentBuilder />}
-      {tab === 'prompts' && <PromptsLibrary />}
+      {tab === 'models'     && <AIModels />}
+      {tab === 'mcp'        && <MCPServers />}
+      {tab === 'routes'     && <AIRoutes />}
+      {tab === 'agents'     && <AgentBuilder />}
+      {tab === 'prompts'    && <PromptsLibrary />}
+      {tab === 'assistant'  && <AIAssistant />}
     </div>
   )
 }

@@ -146,6 +146,26 @@ var studioMCPTools = []mcpToolDef{
 		Description: "Delete a tenant by alias.",
 		InputSchema: paramSchema("alias", "Alias of the tenant to delete"),
 	},
+	{
+		Name:        "get_tenant",
+		Description: "Get details of a specific tenant by alias.",
+		InputSchema: paramSchema("alias", "Alias of the tenant to look up"),
+	},
+	{
+		Name:        "get_rate_limit_config",
+		Description: "Get a specific rate limit configuration by name.",
+		InputSchema: paramSchema("name", "Name of the rate limit configuration"),
+	},
+	{
+		Name:        "list_egress_profiles",
+		Description: "List all egress upstream profiles configured on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_egress_profile",
+		Description: "Create or update an egress upstream profile.",
+		InputSchema: bodySchema("JSON body of the egress profile definition"),
+	},
 }
 
 // toolMetaTable maps tool name → routing metadata.
@@ -167,6 +187,10 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"create_tenant":        {HTTPMethod: http.MethodPost, Path: "/tenants", BodyParam: "body"},
 	"list_tenants":         {HTTPMethod: http.MethodGet, Path: "/tenants", QuerySuffix: "cursor=0&limit=50"},
 	"delete_tenant":        {HTTPMethod: http.MethodDelete, Path: "/tenants/{alias}", PathParam: "alias"},
+	"get_tenant":            {HTTPMethod: http.MethodGet, Path: "/tenants/{alias}", PathParam: "alias"},
+	"get_rate_limit_config": {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs/{name}", PathParam: "name"},
+	"list_egress_profiles":  {HTTPMethod: http.MethodGet, Path: "/egress/profiles"},
+	"upsert_egress_profile": {HTTPMethod: http.MethodPost, Path: "/egress/profiles", BodyParam: "body"},
 }
 
 // ── Schema helpers ────────────────────────────────────────────────────────────
@@ -254,6 +278,21 @@ func (s *Server) MCPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auth gate — skip for initialize (MCP protocol requirement).
+	if req.Method != "initialize" && s.config.MCPSecret != "" {
+		token := ""
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+		if token == "" {
+			token = r.Header.Get("X-Studio-Key")
+		}
+		if token != s.config.MCPSecret {
+			mcpWriteError(w, req.ID, -32001, "unauthorized")
+			return
+		}
+	}
+
 	switch req.Method {
 	case "initialize":
 		s.mcpHandleInitialize(w, req)
@@ -261,6 +300,8 @@ func (s *Server) MCPHandler(w http.ResponseWriter, r *http.Request) {
 		s.mcpHandleToolsList(w, req)
 	case "tools/call":
 		s.mcpHandleToolsCall(w, r.Context(), req)
+	case "notifications/initialized":
+		mcpWriteResult(w, req.ID, map[string]any{})
 	default:
 		mcpWriteError(w, req.ID, -32601, "method not found: "+req.Method)
 	}
@@ -290,6 +331,7 @@ func (s *Server) mcpHandleToolsList(w http.ResponseWriter, req mcpRequest) {
 type mcpToolCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Target    string          `json:"target,omitempty"` // optional: named gateway target
 }
 
 func (s *Server) mcpHandleToolsCall(w http.ResponseWriter, ctx context.Context, req mcpRequest) {
@@ -299,13 +341,13 @@ func (s *Server) mcpHandleToolsCall(w http.ResponseWriter, ctx context.Context, 
 		return
 	}
 
-	text, isError := s.proxyToolCall(ctx, params.Name, params.Arguments)
+	text, isError := s.proxyToolCall(ctx, params.Name, params.Arguments, params.Target)
 	mcpWriteToolResult(w, req.ID, text, isError)
 }
 
 // proxyToolCall resolves the tool name to a management server request, executes
 // it, and returns the response body (or error message) as a string.
-func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments json.RawMessage) (text string, isError bool) {
+func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments json.RawMessage, targetName string) (text string, isError bool) {
 	meta, ok := toolMetaTable[toolName]
 	if !ok {
 		return fmt.Sprintf("unknown tool: %s", toolName), true
@@ -313,7 +355,18 @@ func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments j
 
 	// Resolve management base URL.
 	base := ""
-	if s.managementBaseURL != nil {
+	if targetName != "" {
+		// Named target requested — find it.
+		for _, t := range s.targets {
+			if t.Name == targetName && len(t.URLs) > 0 {
+				base = t.URLs[0]
+				break
+			}
+		}
+		if base == "" {
+			return fmt.Sprintf("unknown target: %s", targetName), true
+		}
+	} else if s.managementBaseURL != nil {
 		base = s.managementBaseURL.String()
 	} else if len(s.targets) > 0 && len(s.targets[0].URLs) > 0 {
 		base = s.targets[0].URLs[0]

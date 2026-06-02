@@ -603,7 +603,11 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 
 				resp, err := bundle.Client.Do(req)
-				cancel()
+				// NOTE: cancel() is intentionally NOT called here.
+				// Calling cancel() before resp.Body is fully read causes Go's HTTP
+				// transport to mark the connection as broken and discard it instead
+				// of returning it to the idle pool — destroying connection reuse.
+				// cancel() is called after resp.Body.Close() on every exit path below.
 				totalUpstream := time.Since(upstreamStart)
 				event.TotalNs = totalUpstream.Nanoseconds()
 				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
@@ -615,10 +619,10 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
+					cancel() // safe to cancel here — no body to read on error path
 					// Client disconnected during upstream call — mark and stop cleanly.
 					if errors.Is(err, context.Canceled) {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
-						cancel()
 						return engine.StopCancelled
 					}
 					event.BytesSent = reqBytesSent
@@ -662,6 +666,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+				cancel() // body fully read — safe to release context now
 				if ctx.Trace != nil {
 					respBytes += int64(len(event.ResponseBody))
 				}
@@ -1048,7 +1053,11 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ctx.StagedContentType = nil
 				}
 
-				cancel()
+				// NOTE: cancel() is intentionally NOT called here.
+				// Calling cancel() before resp.Body is fully read causes Go's HTTP
+				// transport to mark the connection as broken and discard it — destroying
+				// connection reuse (observed: 0% reuse rate without this fix).
+				// cancel() is called after resp.Body.Close() on every exit path below.
 				totalUpstream := time.Since(upstreamStart)
 				event.TotalNs = totalUpstream.Nanoseconds()
 				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
@@ -1059,6 +1068,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if doErr != nil {
+					cancel() // safe to cancel here — no body to read on error path
 					// Client disconnect
 					if errors.Is(doErr, context.Canceled) || ctx.Request.Context().Err() != nil {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
@@ -1141,6 +1151,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						n, readErr := io.ReadFull(resp.Body, bodyBuf)
 						respBytes = int64(n)
 						resp.Body.Close()
+						cancel()
 						if readErr != nil && readErr != io.ErrUnexpectedEOF {
 							event.Err = readErr.Error()
 							if ctx.Trace != nil && ctx.Obs != nil {
@@ -1170,6 +1181,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 							_, _ = io.Copy(buf, resp.Body)
 						}
 						resp.Body.Close()
+						cancel()
 						respBytes = int64(buf.Len())
 						// Copy captured body into arena.
 						arena := ctx.Alloc(buf.Len())
@@ -1195,6 +1207,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						respBytes, _ = io.Copy(io.Discard, resp.Body)
 					}
 					resp.Body.Close()
+					cancel()
 				}
 
 				event.BytesSent = reqBytesSent
