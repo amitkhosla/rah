@@ -3,7 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"rah/internal/gatewaylog"
@@ -15,24 +15,26 @@ const (
 )
 
 // ObsWriter batches access log records and flushes them to an ObsStore
-// asynchronously.  Traces and metric snapshots are written immediately because
-// they are far less frequent.
+// asynchronously. Traces and metric snapshots are written immediately.
 //
-// ObsWriter is safe for concurrent use.  It must be started with Start() and
-// stopped by cancelling the context passed to Start().
+// WriteAccessLog is the hot path: it stamps a record into a pre-allocated slab
+// slot via a single atomic.Add, with no mutex and no per-call allocation.
+// A background drain goroutine rotates slabs every 10 ms and writes batches to
+// the store when batchSize is reached or flushEvery elapses.
+//
+// ObsWriter is safe for concurrent use. Call Start() once before use and
+// Close() (or cancel the context passed to Start()) to shut down cleanly.
 type ObsWriter struct {
-	store      ObsStore
-	mu         sync.Mutex
-	accessBuf  []AccessLogRecord
-	batchSize  int
-	flushEvery time.Duration
-	stopCh     chan struct{}
-	flushTick  *time.Ticker
+	store   ObsStore
+	ring    *obsSlabRing
+	stop    chan struct{}
+	enabled atomic.Bool
 }
 
-// NewObsWriter creates an ObsWriter that writes to store.
+// NewObsWriter creates an ObsWriter backed by store.
 // batchSize <= 0 defaults to 200.
 // flushEvery <= 0 defaults to 2 seconds.
+// Slab capacity is derived from runtime.GOMAXPROCS(0); see obsComputeSlabCap.
 func NewObsWriter(store ObsStore, batchSize int, flushEvery time.Duration) *ObsWriter {
 	if store == nil {
 		store = NoopObsStore{}
@@ -43,107 +45,81 @@ func NewObsWriter(store ObsStore, batchSize int, flushEvery time.Duration) *ObsW
 	if flushEvery <= 0 {
 		flushEvery = defaultFlushEvery
 	}
-	return &ObsWriter{
-		store:      store,
-		batchSize:  batchSize,
-		flushEvery: flushEvery,
-		accessBuf:  make([]AccessLogRecord, 0, batchSize),
-		stopCh:     make(chan struct{}),
+	w := &ObsWriter{
+		store: store,
+		ring:  newObsSlabRing(store, obsComputeSlabCap(), batchSize, flushEvery),
+		stop:  make(chan struct{}),
 	}
+	w.enabled.Store(true)
+	return w
 }
 
-// Start launches the background flush goroutine.  It returns immediately.
-// The goroutine stops when ctx is cancelled or Close() is called.
-// Start must be called exactly once.
+// Start launches the background drain goroutine. Call once before the first
+// WriteAccessLog. Stops when ctx is cancelled or Close() is called.
 func (w *ObsWriter) Start(ctx context.Context) {
-	w.flushTick = time.NewTicker(w.flushEvery)
-	go w.loop(ctx)
+	w.ring.start()
+	go func() {
+		select {
+		case <-ctx.Done():
+			w.Close()
+		case <-w.stop:
+		}
+	}()
 }
 
-// WriteAccessLog adds r to the batch buffer.  If the buffer reaches batchSize
-// it is flushed synchronously in the caller's goroutine to apply back-pressure.
-// This is the only write path that batches; it is designed to be called from
-// the request hot-path where individual records arrive at high throughput.
-func (w *ObsWriter) WriteAccessLog(r AccessLogRecord) {
-	w.mu.Lock()
-	w.accessBuf = append(w.accessBuf, r)
-	full := len(w.accessBuf) >= w.batchSize
-	var batch []AccessLogRecord
-	if full {
-		batch = w.accessBuf
-		w.accessBuf = make([]AccessLogRecord, 0, w.batchSize)
-	}
-	w.mu.Unlock()
+// SetEnabled atomically sets whether access log writes are enabled.
+// When disabled, WriteAccessLog returns immediately with zero cost.
+func (w *ObsWriter) SetEnabled(v bool) {
+	w.enabled.Store(v)
+}
 
-	if full {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := w.store.WriteAccessLog(ctx, batch); err != nil {
-			gatewaylog.Default.Warn("obs.writer access log flush error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
-		}
+// WriteAccessLog stamps r into the active slab slot — no mutex, no allocation.
+// Hot path cost: one atomic.Add (slot claim) + plain field writes + one
+// atomic.Store (ready signal). Any records that arrive while a slab rotation
+// is in progress are counted in DroppedCount; this is extremely rare at normal
+// operating TPS.
+//
+// Fast path (when disabled): single atomic.Load, returns immediately.
+func (w *ObsWriter) WriteAccessLog(r AccessLogRecord) {
+	if !w.enabled.Load() {
+		return
 	}
+	w.ring.write(r)
+}
+
+// DroppedCount returns the total number of records dropped due to slab-full or
+// rotation-race conditions since the writer was created.
+func (w *ObsWriter) DroppedCount() uint64 {
+	return w.ring.dropped
 }
 
 // WriteTrace persists a trace record immediately (not batched).
-// Errors are logged but not returned; the caller should not block on tracing.
 func (w *ObsWriter) WriteTrace(ctx context.Context, trace TraceRecord) {
 	if err := w.store.WriteTrace(ctx, trace); err != nil {
-		gatewaylog.Default.Warn("obs.writer write trace error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
+		gatewaylog.Default.Warn("obs.writer write trace error",
+			gatewaylog.F("err", fmt.Sprintf("%v", err)))
 	}
 }
 
 // WriteMetricSnapshot persists a metric snapshot immediately (not batched).
 func (w *ObsWriter) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot) {
 	if err := w.store.WriteMetricSnapshot(ctx, snap); err != nil {
-		gatewaylog.Default.Warn("obs.writer write metric snapshot error", gatewaylog.F("err", fmt.Sprintf("%v", err)))
+		gatewaylog.Default.Warn("obs.writer write metric snapshot error",
+			gatewaylog.F("err", fmt.Sprintf("%v", err)))
 	}
 }
 
-// Store returns the underlying ObsStore so callers can execute queries directly.
+// Store returns the underlying ObsStore for direct queries.
 func (w *ObsWriter) Store() ObsStore { return w.store }
 
-// Close stops the background goroutine and performs a final flush.
-// It is safe to call Close more than once.
+// Close stops the background drain goroutine, performs a final flush, and
+// waits for all in-flight store writes to complete. Safe to call more than once.
 func (w *ObsWriter) Close() {
 	select {
-	case <-w.stopCh:
+	case <-w.stop:
 		// already stopped
 	default:
-		close(w.stopCh)
-	}
-}
-
-// loop is the background goroutine started by Start.
-func (w *ObsWriter) loop(ctx context.Context) {
-	defer w.flushTick.Stop()
-	for {
-		select {
-		case <-w.flushTick.C:
-			w.flush(ctx)
-		case <-ctx.Done():
-			w.flush(ctx) // final flush before exit
-			return
-		case <-w.stopCh:
-			w.flush(context.Background()) // final flush with fresh context
-			return
-		}
-	}
-}
-
-// flush drains the access log buffer and writes it to the store.
-func (w *ObsWriter) flush(ctx context.Context) {
-	w.mu.Lock()
-	if len(w.accessBuf) == 0 {
-		w.mu.Unlock()
-		return
-	}
-	batch := w.accessBuf
-	w.accessBuf = make([]AccessLogRecord, 0, w.batchSize)
-	w.mu.Unlock()
-
-	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := w.store.WriteAccessLog(flushCtx, batch); err != nil {
-		gatewaylog.Default.Warn("obs.writer periodic flush error", gatewaylog.Fint("records", int64(len(batch))), gatewaylog.F("err", fmt.Sprintf("%v", err)))
+		close(w.stop)
+		w.ring.stopAndWait()
 	}
 }

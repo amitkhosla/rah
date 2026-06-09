@@ -1,17 +1,19 @@
 package observability
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"rah/internal/ingest"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ExtraField is a customer-configured column added to every access log line.
@@ -311,74 +313,96 @@ func (l *AccessLogger) SetSigningKey(key []byte) {
 }
 
 func (l *AccessLogger) drain() {
+	// 64 KB buffer: at ~200 bytes/line this batches ~320 lines per syscall.
+	// bufio auto-flushes when full; the ticker handles low-traffic flushing.
+	// Writing directly to os.Stderr avoids the global log.Print mutex entirely,
+	// and decouples access logs from log.SetOutput redirections (e.g. ingest).
+	out := bufio.NewWriterSize(os.Stderr, 1<<16)
+	ticker := time.NewTicker(100 * time.Millisecond) // flush at most 100ms stale at low traffic; 1ms caused 1000 wakeups/sec idle overhead
+	defer func() {
+		ticker.Stop()
+		_ = out.Flush()
+	}()
+
 	var sb strings.Builder
-	for entry := range l.ch {
-		sb.Reset()
-		sb.WriteString("[access]")
+	for {
+		select {
+		case entry, ok := <-l.ch:
+			if !ok {
+				return
+			}
+			sb.Reset()
+			sb.WriteString("[access]")
 
-		// API identity — prefer name over internal ID
-		if entry.ApiName != "" {
-			writeKV(&sb, "api", entry.ApiName)
-		} else {
-			writeKVUint(&sb, "api_id", uint64(entry.ApiID))
+			// API identity — prefer name over internal ID
+			if entry.ApiName != "" {
+				writeKV(&sb, "api", entry.ApiName)
+			} else {
+				writeKVUint(&sb, "api_id", uint64(entry.ApiID))
+			}
+
+			// Tenant identity — prefer key over internal ID
+			if entry.TenantKey != "" {
+				writeKV(&sb, "tenant", entry.TenantKey)
+			} else if entry.TenantID != 0 {
+				writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
+			}
+
+			// Caller identity — omit when no API key auth was used
+			if entry.CallerKey != "" {
+				writeKV(&sb, "caller_key", entry.CallerKey)
+			}
+			if entry.CallerID != 0 {
+				writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
+			}
+
+			writeKV(&sb, "method", entry.Method)
+			writeKV(&sb, "path", entry.Path)
+			writeKVInt(&sb, "status", int64(entry.Status))
+
+			// Timing breakdown
+			writeKVFloat(&sb, "total_ms", float64(entry.TotalNs)/1e6)
+			writeKVFloat(&sb, "gateway_ms", float64(entry.GatewayNs)/1e6)
+			writeKVFloat(&sb, "upstream_ms", float64(entry.UpstreamNs)/1e6)
+			writeKVFloat(&sb, "ttfb_ms", float64(entry.TTFBNs)/1e6)
+
+			// Bytes
+			writeKVInt(&sb, "req_bytes", entry.ReqBytes)
+			writeKVInt(&sb, "res_bytes", entry.ResBytes)
+
+			// Customer-configured extra fields
+			for _, kv := range entry.Extra {
+				writeKV(&sb, kv.K, kv.V)
+			}
+
+			// Insights (derived flags)
+			for _, kv := range entry.Insights {
+				writeKV(&sb, kv.K, kv.V)
+			}
+
+			// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
+			// Signing happens in the async drain goroutine — allocation here is acceptable.
+			if kp := l.signingKey.Load(); kp != nil {
+				mac := hmac.New(sha256.New, *kp)
+				mac.Write([]byte(sb.String()))
+				writeKV(&sb, "sig", hex.EncodeToString(mac.Sum(nil)))
+			}
+
+			sb.WriteByte('\n')
+			_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
+
+			// Emit to ingest pipeline BEFORE reset so fields are still populated.
+			if p := l.pipeline.Load(); p != nil {
+				emitAccessLogEvent(p, entry)
+			}
+
+			// Reset and return to pool — slice backing arrays are preserved.
+			entry.reset()
+			l.pool.Put(entry)
+
+		case <-ticker.C:
+			_ = out.Flush() // one syscall per ms at low traffic; noop when buffer is empty
 		}
-
-		// Tenant identity — prefer key over internal ID
-		if entry.TenantKey != "" {
-			writeKV(&sb, "tenant", entry.TenantKey)
-		} else if entry.TenantID != 0 {
-			writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
-		}
-
-		// Caller identity — omit when no API key auth was used
-		if entry.CallerKey != "" {
-			writeKV(&sb, "caller_key", entry.CallerKey)
-		}
-		if entry.CallerID != 0 {
-			writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
-		}
-
-		writeKV(&sb, "method", entry.Method)
-		writeKV(&sb, "path", entry.Path)
-		writeKVInt(&sb, "status", int64(entry.Status))
-
-		// Timing breakdown
-		writeKVFloat(&sb, "total_ms", float64(entry.TotalNs)/1e6)
-		writeKVFloat(&sb, "gateway_ms", float64(entry.GatewayNs)/1e6)
-		writeKVFloat(&sb, "upstream_ms", float64(entry.UpstreamNs)/1e6)
-		writeKVFloat(&sb, "ttfb_ms", float64(entry.TTFBNs)/1e6)
-
-		// Bytes
-		writeKVInt(&sb, "req_bytes", entry.ReqBytes)
-		writeKVInt(&sb, "res_bytes", entry.ResBytes)
-
-		// Customer-configured extra fields
-		for _, kv := range entry.Extra {
-			writeKV(&sb, kv.K, kv.V)
-		}
-
-		// Insights (derived flags)
-		for _, kv := range entry.Insights {
-			writeKV(&sb, kv.K, kv.V)
-		}
-
-		// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
-		// Signing happens in the async drain goroutine — allocation here is acceptable.
-		if kp := l.signingKey.Load(); kp != nil {
-			mac := hmac.New(sha256.New, *kp)
-			mac.Write([]byte(sb.String()))
-			writeKV(&sb, "sig", hex.EncodeToString(mac.Sum(nil)))
-		}
-
-		log.Print(sb.String())
-
-		if p := l.pipeline.Load(); p != nil {
-			emitAccessLogEvent(p, entry)
-		}
-
-		// Reset and return to pool — slice backing arrays are preserved.
-		entry.reset()
-		l.pool.Put(entry)
 	}
 }
 

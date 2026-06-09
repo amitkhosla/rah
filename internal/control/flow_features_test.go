@@ -111,7 +111,7 @@ func runRequest(t *testing.T, fm *engine.FlowManager, method, path string, heade
 		t.Fatalf("route %s not found in router", req.URL.Path)
 	}
 	resp := httptest.NewRecorder()
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	ctx.Reset(resp)
 	ctx.ApiId = apiID
 	ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
@@ -375,7 +375,7 @@ func TestJSONExtractEmitDispatchesBatch(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v1/extract", nil)
 	resp := httptest.NewRecorder()
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	ctx.Reset(resp)
 	ctx.ApiId = apiID
 	ctx.SnapshotMetadata("POST", "/v1/extract", "")
@@ -474,7 +474,7 @@ func TestJSONForeachEmitIteratesArray(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("POST", "/v1/foreach", nil)
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	ctx.Reset(httptest.NewRecorder())
 	ctx.ApiId = apiID
 	ctx.SnapshotMetadata("POST", "/v1/foreach", "")
@@ -819,7 +819,7 @@ func TestJSONForeachEmitToRegistry(t *testing.T) {
 	apiID := state.Router.Lookup("/v1/reg-batch")
 
 	req := httptest.NewRequest("POST", "/v1/reg-batch", nil)
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	ctx.Reset(httptest.NewRecorder())
 	ctx.ApiId = apiID
 	ctx.TenantID = tID // set tenant so RegistryExecutor can resolve alias

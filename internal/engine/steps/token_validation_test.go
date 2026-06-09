@@ -115,7 +115,7 @@ func TestTokenValidationAcceptsValidRS256JWTFromJWKS(t *testing.T) {
 	})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestTokenValidationRejectsInvalidSignature(t *testing.T) {
 	})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -215,7 +215,7 @@ func TestTokenValidationAllowsSkippingAudienceValidation(t *testing.T) {
 	})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -257,7 +257,7 @@ func TestTokenValidationUsesExternalJWTCacheProvider(t *testing.T) {
 	token := signJWT(t, priv, "kid-1", map[string]any{"exp": time.Now().Add(2 * time.Minute).Unix()})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -295,7 +295,7 @@ func TestTokenValidationResolvesJWKSURIFromReference(t *testing.T) {
 	token := signJWT(t, priv, "kid-1", map[string]any{"exp": time.Now().Add(2 * time.Minute).Unix()})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -347,7 +347,7 @@ func TestTokenValidationSupportsDifferentJWKSPerRequest(t *testing.T) {
 	run := func(priv *rsa.PrivateKey, issuer string, pc int16) int16 {
 		token := signJWT(t, priv, "kid-1", map[string]any{"exp": time.Now().Add(2 * time.Minute).Unix()})
 		fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-		ctx := fm.Pool.Get().(*rctx.Context)
+		ctx := fm.GetContext()
 		defer fm.Pool.Put(ctx)
 
 		resp := httptest.NewRecorder()
@@ -405,7 +405,7 @@ func TestTokenValidationReadsTokenDirectlyFromHeaderSource(t *testing.T) {
 
 	token := signJWT(t, priv, "kid-1", map[string]any{"exp": time.Now().Add(2 * time.Minute).Unix()})
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 
 	resp := httptest.NewRecorder()
@@ -448,7 +448,7 @@ func TestTokenValidationRejectsWhenRequiredScopeMissing(t *testing.T) {
 	})
 
 	fm := engine.NewFlowManager(16, config.GlobalLayout{MaxBytesSlots: 32, MaxIntsSlots: 16, MaxBoolsSlots: 8})
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 	resp := httptest.NewRecorder()
 	ctx.Reset(resp)

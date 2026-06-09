@@ -23,10 +23,35 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // ObsHandler serves the observability REST API on the management mux (port 8081).
+// APISchemaInstr describes a single instruction in a compiled endpoint plan.
+// PC matches the index in the InstrCounter array; Name and StepType are resolved
+// from InstrMeta baked at compile time. Collectors use this to label raw metrics.
+type APISchemaInstr struct {
+	PC       int    `json:"pc"`
+	Name     string `json:"name"`
+	StepType string `json:"step_type"`
+}
+
+// APISchemaEndpoint describes one endpoint's instruction schema.
+type APISchemaEndpoint struct {
+	EndpointID   uint8            `json:"endpoint_id"`
+	Instructions []APISchemaInstr `json:"instructions"`
+}
+
+// APISchema is the per-API schema response returned by GET /observability/api-schemas.
+// Gateway emits raw (apiID, versionID, pc, durationNs) tuples; collectors fetch
+// this schema to resolve pc→name offline without burdening the hot path.
+type APISchema struct {
+	APIID     uint32              `json:"api_id"`
+	VersionID uint32              `json:"version_id"`
+	Endpoints []APISchemaEndpoint `json:"endpoints"`
+}
+
 type ObsHandler struct {
-	writer       *ObsWriter
-	obs          *Telemetry
-	nameResolver func(uint32) string // optional; maps ApiID → name for in-memory fallback
+	writer         *ObsWriter
+	obs            *Telemetry
+	nameResolver   func(uint32) string // optional; maps ApiID → name for in-memory fallback
+	schemaProvider func() []APISchema  // optional; returns live API schemas
 }
 
 // NewObsHandler creates an ObsHandler backed by the given writer and telemetry.
@@ -39,9 +64,17 @@ func NewObsHandler(writer *ObsWriter, obs *Telemetry, nameResolver ...func(uint3
 	return h
 }
 
-// RegisterObsRoutes registers all observability REST routes on mux.
+// SetSchemaProvider wires a function that returns the current live API schemas.
+// Called from main.go after the FlowManager is ready. Safe to call once before
+// serving traffic; no synchronisation needed after that.
+func (h *ObsHandler) SetSchemaProvider(fn func() []APISchema) {
+	h.schemaProvider = fn
+}
+
+// RegisterObsRoutes registers all observability REST routes on mux and returns
+// the handler so callers can call SetSchemaProvider after registration.
 // nameResolver is optional; pass registry.GetNameByID to enable the in-memory API stats fallback.
-func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, nameResolver ...func(uint32) string) {
+func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, nameResolver ...func(uint32) string) *ObsHandler {
 	h := NewObsHandler(writer, obs, nameResolver...)
 	mux.HandleFunc("/observability/metrics", h.MetricsHandler)
 	mux.HandleFunc("/observability/access-log", h.AccessLogHandler)
@@ -50,6 +83,24 @@ func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, na
 	mux.HandleFunc("/observability/apis", h.APIsHandler)
 	mux.HandleFunc("/observability/apis/", h.APIDetailHandler)
 	mux.HandleFunc("/observability/tenants/", h.TenantDetailHandler)
+	mux.HandleFunc("/observability/api-schemas", h.APISchemaHandler)
+	return h
+}
+
+// APISchemaHandler handles GET /observability/api-schemas.
+// Returns the schema for every live API: (apiID, versionID, endpoint, pc, name, stepType).
+// Collectors call this once on startup and after any schema-change event to
+// resolve raw integer metrics to human-readable instruction names.
+func (h *ObsHandler) APISchemaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.schemaProvider == nil {
+		writeJSON(w, http.StatusOK, []APISchema{})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.schemaProvider())
 }
 
 // parseFrom parses the ?from query param: tries duration first, then RFC3339.

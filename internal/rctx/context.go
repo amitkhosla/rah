@@ -2,9 +2,11 @@ package rctx
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"rah/internal/observability"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -118,7 +120,8 @@ type Context struct {
 	ResponseBuffer  []byte // Collects data if IsBuffered = true
 	headerSent      bool
 	ResponseHeaders []HeaderMutation // Pre-allocated in Pool
-	ResHeaderCount  int
+	ResHeaderCount      int
+	StreamResponseBody  bool // set by compiler: true = http_call streams body directly to client
 	TenantID  uint16
 	TenantKey string // human-readable tenant identifier (set by registry_lookup)
 
@@ -193,11 +196,32 @@ type Context struct {
 	// by FlowManager via TxIDGenerator. Use rctx.FormatTxID to format.
 	InternalTxID [2]uint64
 
+	// InstrPC / InstrDurNs / InstrCount accumulate per-instruction timing
+	// during Execute(). Stored here (not on ExecutionState) so Execute() can
+	// return void, avoiding a ~1200-byte struct copy + GC pointer scan per
+	// request. InstrCount is zeroed in Reset(); the arrays are overwritten
+	// in-place so they need no explicit clear.
+	InstrPC    [64]int16
+	InstrDurNs [64]int32
+	InstrCount uint8
+
 	// AfterResponse holds zero-allocation callbacks invoked by the gateway
 	// after the HTTP response is committed. Used by ingest steps to emit
 	// events (e.g. the final response body) without blocking the caller.
 	// Nil slice is safe; the gateway checks len before ranging.
 	AfterResponse []func()
+
+	// ── Timeout / context.Context implementation ─────────────────────────────
+	// Grouped into one cache-line block to prevent false-sharing from
+	// sync.Once.mu. Only touched during upstream calls — never in the executor
+	// hot path. Byte layout: 24+8+16+4+4+8+1 = 65 bytes (compiler pads to 72).
+	requestDeadline    time.Time     // 24 bytes: deadline set per upstream call
+	doneChan           chan struct{}  // 8 bytes: closed on cancel/timeout; nil = no timeout
+	cancelOnce         sync.Once     // 16 bytes: ensures doneChan closed exactly once
+	cancelState        int32         // 4 bytes: 0=none 1=DeadlineExceeded 2=Canceled
+	timedOut           int32         // 4 bytes: 1 if deadline exceeded (read by access log)
+	generation         atomic.Uint64 // 8 bytes: guards stale timer callbacks after pool reuse
+	hadUpstreamTimeout bool          // 1 byte: true if SetUpstreamTimeout called this req; gates Reset cleanup
 
 	// ── Inline slot headers (no heap allocation) ─────────────────────────────
 	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
@@ -301,6 +325,106 @@ func (ctx *Context) InitSlots() {
 	ctx.IntSlots = ctx.intSlotBase[:BaseIntSlots]
 	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
 	ctx.Ops = ctx.opsBase[:0]
+	ctx.doneChan = make(chan struct{}) // pre-allocate for context.Context impl
+}
+
+// ── context.Context implementation ───────────────────────────────────────────
+
+// Deadline implements context.Context.
+func (c *Context) Deadline() (time.Time, bool) {
+	if c.requestDeadline.IsZero() {
+		return time.Time{}, false
+	}
+	return c.requestDeadline, true
+}
+
+// Done implements context.Context. Returns nil when no timeout is active —
+// net/http (and context.propagateCancel) treat nil as "never cancel", skipping
+// the watcher goroutine on every upstream call. doneChan is returned only when
+// a deadline is armed so the timer callback can abort the in-flight request.
+func (c *Context) Done() <-chan struct{} {
+	if c.requestDeadline.IsZero() {
+		return nil
+	}
+	return c.doneChan
+}
+
+// Err implements context.Context.
+func (c *Context) Err() error {
+	switch atomic.LoadInt32(&c.cancelState) {
+	case 1:
+		return context.DeadlineExceeded
+	case 2:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
+// Value implements context.Context. Delegates to the inbound request context
+// so trace spans and other values set by middleware are still propagated.
+func (c *Context) Value(key any) any {
+	if c.Request != nil {
+		return c.Request.Context().Value(key)
+	}
+	return nil
+}
+
+// SetUpstreamTimeout arms the per-call deadline on ctx and returns the current
+// generation token that the caller must capture before launching time.AfterFunc.
+// The caller passes the token to CancelIfGeneration so stale callbacks are no-ops.
+//
+//	capturedGen := ctx.SetUpstreamTimeout(200 * time.Millisecond)
+//	timer = time.AfterFunc(200*time.Millisecond, func() {
+//	    ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
+//	})
+func (c *Context) SetUpstreamTimeout(d time.Duration) uint64 {
+	c.hadUpstreamTimeout = true
+	c.requestDeadline = time.Now().Add(d)
+	if c.doneChan == nil {
+		c.doneChan = make(chan struct{})
+	}
+	return c.generation.Load()
+}
+
+// ClearUpstreamTimeout resets the per-call deadline after the upstream call
+// completes (or when the request-level deadline timer is stopped).
+func (c *Context) ClearUpstreamTimeout() {
+	c.requestDeadline = time.Time{}
+}
+
+// CancelIfGeneration calls Cancel(err) only if the current generation matches
+// capturedGen. Use this from time.AfterFunc callbacks to avoid acting on a
+// context that has already been returned to the pool and reused.
+func (c *Context) CancelIfGeneration(capturedGen uint64, err error) {
+	if c.generation.Load() != capturedGen {
+		return
+	}
+	c.Cancel(err)
+}
+
+// TimedOut reports whether the upstream call exceeded its deadline.
+// Read by the access log after Execute() returns.
+func (c *Context) TimedOut() bool {
+	return atomic.LoadInt32(&c.timedOut) != 0
+}
+
+// Cancel marks the context as cancelled with the given error and closes doneChan.
+// Safe to call from any goroutine; closes doneChan exactly once.
+func (c *Context) Cancel(err error) {
+	state := int32(2) // Canceled
+	if err == context.DeadlineExceeded {
+		state = 1
+	}
+	c.cancelOnce.Do(func() {
+		atomic.StoreInt32(&c.cancelState, state)
+		if err == context.DeadlineExceeded {
+			atomic.StoreInt32(&c.timedOut, 1)
+		}
+		if c.doneChan != nil {
+			close(c.doneChan)
+		}
+	})
 }
 
 // Alloc carves n bytes from the arena without any heap allocation in the
@@ -378,6 +502,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ResponseStatus = 200
 	ctx.headerSent = false
 	ctx.IsBuffered = false
+	ctx.StreamResponseBody = false
 	ctx.detachedFromPool.Store(false)
 	ctx.TenantKey = ""
 	ctx.TenantID = 0
@@ -403,7 +528,30 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ErrorCode = 0
 	ctx.ErrorMsg = nil
 	ctx.InternalTxID = [2]uint64{}
+	ctx.InstrCount = 0
 	ctx.AfterResponse = ctx.AfterResponse[:0] // keep capacity, drop closures
+
+	// Reset timeout / context.Context state — only when a timeout was actually
+	// armed this request. Static and no-upstream flows skip this block entirely,
+	// saving 5 atomic ops (2 loads + Add + 2 stores) per request.
+	if ctx.hadUpstreamTimeout {
+		ctx.hadUpstreamTimeout = false
+		// Read cancelState/timedOut BEFORE zeroing — needed to decide if
+		// doneChan was closed and must be replaced.
+		needNewChan := ctx.doneChan == nil ||
+			atomic.LoadInt32(&ctx.cancelState) != 0 ||
+			atomic.LoadInt32(&ctx.timedOut) != 0
+		// Increment generation so any in-flight timer callback is a no-op
+		// if it fires after ctx is returned to the pool.
+		ctx.generation.Add(1)
+		ctx.requestDeadline = time.Time{}
+		ctx.cancelOnce = sync.Once{}
+		atomic.StoreInt32(&ctx.cancelState, 0)
+		atomic.StoreInt32(&ctx.timedOut, 0)
+		if needNewChan {
+			ctx.doneChan = make(chan struct{})
+		}
+	}
 
 	// Reset inline arena — one integer write, all slot data is implicitly gone.
 	// arenaExt is already nil after ReleaseOverflow in ReturnContext.

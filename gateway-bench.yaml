@@ -15,6 +15,9 @@ cache:
   mem_budget_mb: 256
   backend:
     kind: memory
+layout:
+  transport_shards_per_cpu: 16
+
 observability:
   traces:
     enabled: false

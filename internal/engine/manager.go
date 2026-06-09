@@ -7,6 +7,7 @@ import (
 	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/gatewaylog"
+	"rah/internal/observability"
 	"rah/internal/quota"
 	"rah/internal/rctx"
 	"rah/internal/registry"
@@ -80,6 +81,16 @@ type FlowManager struct {
 	DraftState atomic.Pointer[EngineState]
 	Pool    sync.Pool
 	Config  config.GlobalLayout
+
+	// Limiter gates the number of requests that may be in-flight simultaneously.
+	// TryAcquire is called before pool.Get; Release is deferred until after the
+	// response is sent. The adaptive controller adjusts Limiter.limit each tick.
+	Limiter ConcurrencyLimiter
+
+	// LatencyRing is the two-generation rolling latency histogram that feeds
+	// the adaptive controller. Record() is called post-response with
+	// (clientTotal − upstreamTime) in milliseconds.
+	LatencyRing LatencyRing
 	SlabMgr *cache.CacheManager
 	Strategy ExecutionStrategy // Pre-determined at startup
 	Metrics  OverflowMetrics
@@ -111,6 +122,9 @@ type FlowManager struct {
 	// CircuitBreakerArena holds all named circuit breaker states (max 256).
 	// Slots are allocated at bake time; state is updated atomically at request time.
 	CircuitBreakerArena *CircuitBreakerArena
+	// InstrRing is the lock-free slab ring for per-instruction timing aggregation.
+	// Nil when the feature is disabled. Set from main.go before serving traffic.
+	InstrRing *observability.InstrSlabRing
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
@@ -210,6 +224,29 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	// 5. Plan Execution
 	Execute(ctx, endpoint.Plan, 0)
 
+	// 5a. Async instruction-timing aggregation: stamp into the lock-free slab ring.
+	// Nil-gated so it's zero-cost when the feature is not enabled.
+	if fm.InstrRing != nil && ctx.InstrCount > 0 {
+		var traced uint8
+		if ctx.Trace != nil {
+			traced = 1
+		}
+		// Build InstrBatch by value — Write takes it by value too, so no
+		// pointer into ctx or into this stack frame is retained. ctx can be
+		// returned to the pool the moment ProcessRequest returns.
+		var batch observability.InstrBatch
+		batch.TimestampNs = ctx.Timing.StartNs
+		batch.APIID = uint32(ctx.ApiId)
+		batch.VersionID = def.VersionID
+		batch.TenantID = ctx.TenantID
+		batch.EndpointID = ctx.EndpointId
+		batch.Traced = traced
+		batch.Count = ctx.InstrCount
+		copy(batch.PCs[:ctx.InstrCount], ctx.InstrPC[:ctx.InstrCount])
+		copy(batch.DurNs[:ctx.InstrCount], ctx.InstrDurNs[:ctx.InstrCount])
+		fm.InstrRing.Write(batch)
+	}
+
 	// 6. Flush any storage ops that accumulated but didn't hit MaxOps.
 	if (fm.CacheExec != nil || fm.RegistryExec != nil) && ctx.OpCount > 0 {
 		fm.flushOps(ctx)
@@ -300,9 +337,15 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
+// GetContext acquires a Context from the GC-resistant pool.
+// Callers must call ReturnContext when done.
+func (fm *FlowManager) GetContext() *rctx.Context {
+	return fm.Pool.Get().(*rctx.Context)
+}
+
 // ReturnContext records overflow metrics, releases pool-borrowed overflow
 // resources, then returns the context to the pool.
-// Must be called instead of Pool.Put directly.
+// Must be called instead of pool.Put directly.
 func (fm *FlowManager) ReturnContext(ctx *rctx.Context) {
 	if ctx.ArenaOverflowed {
 		fm.Metrics.ArenaOverflows.Add(1)

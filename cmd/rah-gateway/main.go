@@ -28,6 +28,9 @@ import (
 	tenantregistry "rah/internal/registry"
 	"rah/internal/secrets"
 	"rah/internal/vectorstore"
+	"net/http/pprof"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -91,6 +94,13 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Start async log pipeline — eliminates log.Logger mutex from hot path.
+	logPool := gatewaylog.NewBufPool(512)
+	asyncLog := gatewaylog.NewAsyncWriter(os.Stdout, logPool, 65536, 1024)
+	asyncLog.Start()
+	defer asyncLog.Stop()
+	gatewaylog.Default.SetWriter(asyncLog, logPool)
+
 	// 1. Load Configuration
 	var cfgMgr *config.Manager
 	if *configPath != "" {
@@ -111,6 +121,10 @@ func main() {
 	}
 
 	cfg := cfgMgr.Layout()
+
+	if cfg.TransportShardsPerCPU > 0 {
+		enginesteps.SetTransportShardsPerCPU(cfg.TransportShardsPerCPU)
+	}
 
 	gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
 	defer gatewayCancel()
@@ -161,6 +175,10 @@ func main() {
 	obsWriter := observability.NewObsWriter(obsStore, 200, 2*time.Second)
 	obsWriter.Start(gatewayCtx)
 
+	// Instruction-timing slab ring: lock-free counter aggregation, one batch per request.
+	// The drain function is set after fm is initialised (below), just before serving traffic.
+	instrRing := observability.NewInstrSlabRing(observability.ComputeSlabCap())
+
 	bootstrapCtx := gatewayCtx
 
 	if dataStoreMgr.IsConfigured(config.DomainAPIDefinitions) {
@@ -206,6 +224,9 @@ func main() {
 	// ApplyUnifiedSync → registry.GetOrAssignId, and resolved post-response via
 	// registry.GetNameByID with no hot-path cost.
 	fm := engine.NewFlowManager(12000, cfg)
+	fm.StartController(gatewayCtx, cfgMgr.Gateway().Concurrency)
+	log.Printf("[concurrency] limit=%d adaptive=%v",
+		fm.Limiter.Limit(), !cfgMgr.Gateway().Concurrency.Disabled)
 	obs := observability.NewFromEnv()
 	// Prefer explicit gateway config for observability trace controls.
 	// This overrides env defaults from NewFromEnv and keeps runtime behavior
@@ -241,6 +262,7 @@ func main() {
 	alCfg := obsCfg.AccessLog
 	accessLogEnabled := alCfg.Enabled || alCfg.SampleRate == 0
 	accessLog.UpdateConfig(accessLogEnabled, alCfg.SampleRate)
+	obsWriter.SetEnabled(accessLogEnabled)
 	registry := control.NewNameRegistry()
 
 	// ── S8: OpenTelemetry SDK init ──────────────────────────────────────────────
@@ -661,6 +683,33 @@ func main() {
 	// in their instruction closures at bake time.
 	compiler.IngestPipeline = ingestPipeline
 
+	// Wire instruction-timing slab ring: aggregates per-instruction counters
+	// lock-free after each Execute() call. Drain closure captures fm so it
+	// can resolve live Endpoint.Counters without importing engine from observability.
+	instrRing.SetDrainFn(func(slot *observability.InstrSlot) {
+		st := fm.State.Load()
+		if st == nil || int(slot.APIID) >= len(st.Definitions) {
+			return
+		}
+		def := st.Definitions[slot.APIID]
+		if def == nil || int(slot.EndpointID) >= len(def.Endpoints) {
+			return
+		}
+		ep := &def.Endpoints[slot.EndpointID]
+		for i := uint8(0); i < slot.Count; i++ {
+			pc := int(slot.PCs[i])
+			if pc >= 0 && pc < len(ep.Counters) {
+				ep.Counters[pc].Count.Add(1)
+				if slot.Durs[i] > 0 {
+					ep.Counters[pc].TotalNs.Add(uint64(slot.Durs[i]))
+				}
+			}
+		}
+	})
+	instrRing.Start()
+	defer instrRing.StopAndWait()
+	fm.InstrRing = instrRing
+
 	// Load default rate limit presets from config into the registry.
 	for _, preset := range cfg.DefaultRateLimits {
 		if preset.Name == "" {
@@ -701,7 +750,7 @@ func main() {
 				accessLog.Snapshot(
 					"", 0, "", 0,
 					"", 0,
-					req.Method, req.URL.Path,
+					req.Method, req.URL.RequestURI(),
 					http.StatusNotFound,
 					time.Since(reqStart).Nanoseconds(), 0, 0, 0,
 					req.ContentLength, 0,
@@ -709,6 +758,14 @@ func main() {
 				)
 				return
 			}
+
+			// B0. Concurrency gate — fast reject before touching pool or arena.
+			// ~5 ns on the reject path; zero allocation, zero pool interaction.
+			if !fm.Limiter.TryAcquire() {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			defer fm.Limiter.Release()
 
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
@@ -783,6 +840,14 @@ func main() {
 			upstream := time.Duration(upstreamNs)
 			gateway := max(clientTotal-upstream, 0)
 
+			// Feed gateway overhead (client total minus upstream wait) to the
+			// adaptive concurrency controller. Zero upstream = pure gateway work.
+			overheadMs := (clientTotal.Nanoseconds() - upstreamNs) / 1_000_000
+			if overheadMs < 0 {
+				overheadMs = 0
+			}
+			fm.LatencyRing.Record(overheadMs)
+
 			ttfbNs := max(ctx.Timing.FirstByteSentNs-ctx.Timing.StartNs, 0)
 
 			// API name: resolved from registry (populated at sync time).
@@ -817,7 +882,7 @@ func main() {
 				ctx.TenantID,
 				ctx.CallerKey,
 				ctx.CallerID,
-				req.Method, req.URL.Path,
+				req.Method, req.URL.RequestURI(),
 				ctx.ResponseStatus,
 				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
 				req.ContentLength, ctx.Timing.ClientBytesSent,
@@ -963,9 +1028,11 @@ func main() {
 		// setup latency tracking. Zero overhead on the hot path — runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
 		srv := &http.Server{
-			Addr:           addr,
-			Handler:        gwHandler,
-			MaxHeaderBytes: cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
+			Addr:              addr,
+			Handler:           gwHandler,
+			MaxHeaderBytes:    cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
+			ReadHeaderTimeout: 5 * time.Second,  // prevent slowloris
+			IdleTimeout:       30 * time.Second, // close idle keep-alive connections promptly
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, connAcceptKey{}, time.Now())
 			},
@@ -986,9 +1053,11 @@ func main() {
 					tlsHandler = adminUserStore.Middleware(handler)
 				}
 				tlsSrv := &http.Server{
-					Addr:           tlsAddr,
-					Handler:        tlsHandler,
-					MaxHeaderBytes: cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
+					Addr:              tlsAddr,
+					Handler:           tlsHandler,
+					MaxHeaderBytes:    cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
+					ReadHeaderTimeout: 5 * time.Second,
+					IdleTimeout:       30 * time.Second,
 					ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 						return context.WithValue(ctx, connAcceptKey{}, time.Now())
 					},
@@ -1179,10 +1248,44 @@ func main() {
 		control.RegisterCacheRoutes(mux, cacheMgr)
 	}
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
-	observability.RegisterObsRoutes(mux, obsWriter, obs, registry.GetNameByID)
+	obsHandler := observability.RegisterObsRoutes(mux, obsWriter, obs, registry.GetNameByID)
+	obsHandler.SetSchemaProvider(func() []observability.APISchema {
+		st := fm.State.Load()
+		if st == nil {
+			return nil
+		}
+		schemas := make([]observability.APISchema, 0, len(st.Definitions))
+		for _, def := range st.Definitions {
+			if def == nil {
+				continue
+			}
+			schema := observability.APISchema{
+				APIID:     def.Id,
+				VersionID: def.VersionID,
+			}
+			for _, ep := range def.Endpoints {
+				epSchema := observability.APISchemaEndpoint{EndpointID: ep.EndpointId}
+				for pc, meta := range ep.InstrSchema {
+					epSchema.Instructions = append(epSchema.Instructions, observability.APISchemaInstr{
+						PC:       pc,
+						Name:     meta.Name,
+						StepType: meta.StepType,
+					})
+				}
+				schema.Endpoints = append(schema.Endpoints, epSchema)
+			}
+			schemas = append(schemas, schema)
+		}
+		return schemas
+	})
 	if obsCfg.Export.Prometheus.Enabled {
 		mux.Handle("/metrics", observability.PrometheusHandler(obs))
 	}
+	mux.HandleFunc("/debug/log", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops())
+	})
+	mux.HandleFunc("/admin/concurrency", fm.ConcurrencyHandler)
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
 		// Reports cumulative overflow counts since process start.
 		// Non-zero ArenaOverflows indicates ArenaInlineSize needs tuning.
@@ -1195,6 +1298,88 @@ func main() {
 			rctx.SlotValueThreshold,
 		)
 	})
+	// ── Runtime / GC diagnostics ──────────────────────────────────────────────
+	// GET  /debug/runtime — lightweight JSON snapshot of goroutine count, heap,
+	//   GC pause, and pool health. Safe to poll; ReadMemStats is non-STW in Go 1.15+.
+	// POST /admin/gc     — force an immediate GC cycle + return freed pages to OS.
+	//   Use after a traffic spike to collapse the heap quickly and restore latency.
+	// /debug/pprof/*     — standard pprof endpoints (CPU, heap, goroutine profiles).
+	//   All on the management port (8081) only — never exposed on the data plane.
+	mux.HandleFunc("/debug/runtime", func(w http.ResponseWriter, _ *http.Request) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms) // non-STW in Go 1.15+; safe to call on demand
+		lastPauseUs := int64(0)
+		if ms.NumGC > 0 {
+			lastPauseUs = int64(ms.PauseNs[(ms.NumGC+255)%256]) / 1000
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w,
+			`{"goroutines":%d,"heap_alloc_mb":%.1f,"heap_sys_mb":%.1f,"heap_objects":%d,`+
+				`"stack_inuse_mb":%.1f,"gc_num":%d,"last_gc_pause_us":%d,"next_gc_mb":%.1f,`+
+				`"gc_cpu_fraction":%.4f,"arena_overflows":%d,"dropped_access_logs":%d,`+
+				`"concurrency_limit":%d,"concurrency_active":%d,"concurrency_rejected":%d}`,
+			runtime.NumGoroutine(),
+			float64(ms.HeapAlloc)/(1<<20),
+			float64(ms.HeapSys)/(1<<20),
+			ms.HeapObjects,
+			float64(ms.StackInuse)/(1<<20),
+			ms.NumGC,
+			lastPauseUs,
+			float64(ms.NextGC)/(1<<20),
+			ms.GCCPUFraction,
+			fm.Metrics.ArenaOverflows.Load(),
+			accessLog.DroppedCount(),
+			fm.Limiter.Limit(),
+			fm.Limiter.Active(),
+			fm.Limiter.Rejected(),
+		)
+	})
+	mux.HandleFunc("/admin/gc", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		runtime.GC()          // immediate GC cycle
+		debug.FreeOSMemory()  // return freed pages to OS immediately (Go normally defers this)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"gc":"done"}`)
+	})
+	// pprof endpoints — registered explicitly on the management mux (not DefaultServeMux).
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+	mux.Handle("/debug/pprof/allocs", pprof.Handler("allocs"))
+	mux.Handle("/debug/pprof/block", pprof.Handler("block"))
+	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
+
+	// POST /admin/profiling?block=N&mutex=N — enable block/mutex profiling at runtime.
+	// Both are off (rate=0) by default because they add per-op overhead.
+	// Enable just before a load test; disable afterwards.
+	// block=N: record a blocking event if it lasts > N nanoseconds (1 = all events; 1000000 = >1ms).
+	// mutex=N: sample 1-in-N mutex contention events (1 = all; 100 = 1%).
+	mux.HandleFunc("/admin/profiling", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		blockRate := 0
+		mutexRate := 0
+		if v := r.URL.Query().Get("block"); v != "" {
+			fmt.Sscan(v, &blockRate)
+		}
+		if v := r.URL.Query().Get("mutex"); v != "" {
+			fmt.Sscan(v, &mutexRate)
+		}
+		runtime.SetBlockProfileRate(blockRate)
+		runtime.SetMutexProfileFraction(mutexRate)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"block_rate":%d,"mutex_rate":%d}`, blockRate, mutexRate)
+	})
+
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
 	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
 	mux.HandleFunc("/admin/jwks/flush", func(w http.ResponseWriter, r *http.Request) {
@@ -1265,6 +1450,46 @@ func main() {
 
 	control.RegisterAnthropicAdapter(mux, fmt.Sprintf("http://localhost:%d", *port))
 	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
+
+	// Background GC stats logger — writes a compact [gc-stats] line to stderr
+	// every 30 seconds. Useful for correlating latency spikes with GC behaviour
+	// without needing pprof attached. Reads MemStats (non-STW in Go 1.15+) and
+	// includes goroutine count, heap, last GC pause, and dropped access log count.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-gatewayCtx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				lastPauseUs := int64(0)
+				if ms.NumGC > 0 {
+					lastPauseUs = int64(ms.PauseNs[(ms.NumGC+255)%256]) / 1000
+				}
+				// Write directly to stderr — bypasses log.SetOutput redirect (ingest pipeline)
+				// so GC diagnostics always reach the container log regardless of ingest config.
+				fmt.Fprintf(os.Stderr,
+					"[gc-stats] goroutines=%d heap_alloc_mb=%.1f heap_sys_mb=%.1f heap_objects=%d"+
+						" stack_mb=%.1f gc_num=%d last_pause_us=%d next_gc_mb=%.1f"+
+						" gc_cpu_pct=%.2f arena_overflows=%d dropped_logs=%d\n",
+					runtime.NumGoroutine(),
+					float64(ms.HeapAlloc)/(1<<20),
+					float64(ms.HeapSys)/(1<<20),
+					ms.HeapObjects,
+					float64(ms.StackInuse)/(1<<20),
+					ms.NumGC,
+					lastPauseUs,
+					float64(ms.NextGC)/(1<<20),
+					ms.GCCPUFraction*100,
+					fm.Metrics.ArenaOverflows.Load(),
+					accessLog.DroppedCount(),
+				)
+			}
+		}
+	}()
 
 	log.Printf("Management API running on %d", *mPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), adminUserStore.Middleware(mux)))

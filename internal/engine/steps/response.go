@@ -8,6 +8,21 @@ import (
 	"strconv"
 )
 
+// SetStreamResponseBodyStep is emitted by the compiler as the FIRST instruction
+// of every compiled flow. It sets ctx.StreamResponseBody once at flow start
+// based on compile-time analysis: true = http_call will stream response body
+// directly to the client socket (no slot capture), false = body is captured
+// into a slot for downstream processing.
+func SetStreamResponseBodyStep(stream bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "SET_STREAM_RESPONSE_BODY",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			ctx.StreamResponseBody = stream
+			return state.PC + 1
+		},
+	}
+}
+
 // EchoRequestStep writes all incoming request headers and query params as a
 // JSON body. Useful for debugging and as a building block for custom responses.
 func EchoRequestStep() engine.Instruction {
@@ -40,8 +55,10 @@ func SetResponseBodyStep(src int) engine.Instruction {
 	return engine.Instruction{
 		Name: "SET_RESPONSE_BODY",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ResponseBuffer = ctx.ByteSlots[src]
-			ctx.IsBuffered = true
+			if !ctx.StreamResponseBody {
+				ctx.ResponseBuffer = ctx.ByteSlots[src]
+				ctx.IsBuffered = true
+			}
 			return state.PC + 1
 		},
 	}
@@ -130,8 +147,11 @@ func RespondStep(src int) engine.Instruction {
 	return engine.Instruction{
 		Name: "RESPOND",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.ResponseBuffer = ctx.ByteSlots[src]
-			ctx.IsBuffered = true
+			if !ctx.StreamResponseBody {
+				ctx.ResponseBuffer = ctx.ByteSlots[src]
+				ctx.IsBuffered = true
+			}
+			// if StreamResponseBody = true, http_call already piped body to client
 			return engine.StopPlan
 		},
 	}

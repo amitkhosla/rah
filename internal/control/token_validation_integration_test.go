@@ -310,7 +310,7 @@ func TestGatewayIntegration_TokenValidationComprehensiveGatewayCases(t *testing.
 			}
 			runtimeResp := httptest.NewRecorder()
 
-			ctx := fm.Pool.Get().(*rctx.Context)
+			ctx := fm.GetContext()
 			defer fm.Pool.Put(ctx)
 			ctx.Reset(runtimeResp)
 			ctx.ApiId = apiID
@@ -513,7 +513,7 @@ func assertTokenValidationResult(t *testing.T, fm *engine.FlowManager, apiID uin
 	}
 	runtimeResp := httptest.NewRecorder()
 
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 	ctx.Reset(runtimeResp)
 	ctx.ApiId = apiID

@@ -2878,6 +2878,9 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
 
+	// Emit stream-response-body flag as first instruction — set once at flow start.
+	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBody(flow)))
+
 	// Auto-bind preamble: discover and bind header/query dependencies.
 	deps := c.discoverDependenciesWithFragments(flow, fragments)
 	for _, dep := range deps {
@@ -3781,6 +3784,10 @@ type Dependency struct {
 func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
+
+	// Emit stream-response-body flag as first instruction — set once at flow start.
+	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBody(flow)))
+
 	if err := c.bakeFlow(flow, nil); err != nil {
 		return nil, err
 	}
@@ -3831,4 +3838,37 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (in
 func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
 	p, ok := c.FlowProfiles[name]
 	return p, ok
+}
+
+// canStreamResponseBody returns true when the compiler determines the http_call's
+// response body does not need to be captured into a slot for downstream processing.
+// When true, the runtime will pipe the upstream response body directly to the client
+// socket instead of buffering it — transparent to the customer's flow definition.
+//
+// Rule: streaming is safe when the response_body_var (if any) is ONLY referenced
+// as the `as` field of a top-level `return` or `respond` step, and by no other step.
+func canStreamResponseBody(steps []StepConfig) bool {
+	// Find the first http_call's response_body_var
+	bodyVar := ""
+	for _, s := range steps {
+		if s.Action == "http_call" && s.ResponseBodyVar != "" {
+			bodyVar = s.ResponseBodyVar
+			break
+		}
+	}
+	if bodyVar == "" {
+		return true // no body captured at all — always stream
+	}
+	// Check every step: if any non-return/respond step references bodyVar → cannot stream
+	for _, s := range steps {
+		switch s.Action {
+		case "http_call", "return", "respond":
+			continue // http_call produces it; return/respond are pass-through consumers
+		}
+		if s.As == bodyVar || s.Key == bodyVar || s.Source == bodyVar ||
+			s.SourceVar == bodyVar || s.KeyIdentifier == bodyVar || s.Variable == bodyVar {
+			return false
+		}
+	}
+	return true
 }

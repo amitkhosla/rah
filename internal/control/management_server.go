@@ -13,6 +13,7 @@ import (
 	registrypkg "rah/internal/registry"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // ManagementServer coordinates the Control Plane. It translates high-level
@@ -36,6 +37,8 @@ type ManagementServer struct {
 	// compiler's model catalog. Wire this to cfgMgr.LLM so that models
 	// registered via the UI are visible to the compiler at sync time.
 	LLMProvider func() config.LLMConfig
+
+	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
 
 // NewManagementServer initializes the server with the required compiler and manager.
@@ -48,6 +51,12 @@ func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry,
 		flowConfigs: make(map[string][]StepConfig),
 		apiConfigs:  make(map[string]ApiUpdate),
 	}
+}
+
+// ConfigVersion returns the current config version counter.
+// Incremented on every ApplyUnifiedSync; set from DB version when InstanceSync is active.
+func (s *ManagementServer) ConfigVersion() uint32 {
+	return s.configVersion.Load()
 }
 
 // Bootstrap reads flows and APIs persisted in dsm and applies them via
@@ -543,6 +552,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	oldState := s.FlowManager.State.Load()
 
+	// Capture the version that will be live after this sync completes.
+	// configVersion.Add(1) fires at the end of this function; predict it here
+	// so all endpoints compiled in this batch share the same VersionID.
+	thisVersion := s.configVersion.Load() + 1
+
 	s.mu.RLock()
 	newFlowConfigs := make(map[string][]StepConfig, len(s.flowConfigs))
 	for k, v := range s.flowConfigs {
@@ -734,6 +748,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					}
 				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+				bakeEndpointSchema(def)
 			} else {
 				for ecIdx, ec := range a.EndpointConfigs {
 					// Resolve and register multi-entry RL policies at endpoint level.
@@ -815,6 +830,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 					}
 
 					s.Compiler.BakeSubRouter(def, epPath, method, epInstructions, isStrict, apiRLId, epRLId, asyncMode)
+					bakeEndpointSchema(def)
 				}
 			}
 
@@ -823,6 +839,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				copy(expanded, newDefs)
 				newDefs = expanded
 			}
+			def.VersionID = thisVersion
 			newDefs[id] = def
 			newApiConfigs[a.Name] = a
 			routerChanged = true
@@ -935,6 +952,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	}
 
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
+	s.configVersion.Add(1)
 	return nil
 }
 
@@ -1046,6 +1064,70 @@ func mergeConstants(apiConsts, epConsts map[string]string) map[string]string {
 		merged[k] = v
 	}
 	return merged
+}
+
+// bakeEndpointSchema sets InstrSchema and Counters on the most recently appended
+// endpoint of def. Must be called immediately after BakeSubRouter so the Plan
+// (including any prepended BindPath instructions) is final.
+func bakeEndpointSchema(def *engine.ApiDefinition) {
+	ep := &def.Endpoints[len(def.Endpoints)-1]
+	ep.InstrSchema = buildInstrSchema(ep.Plan)
+	ep.Counters = make([]engine.InstrCounter, len(ep.Plan))
+}
+
+// buildInstrSchema derives a read-only []InstrMeta from a compiled plan.
+// The result is parallel to plan: schema[i] describes plan[i].
+func buildInstrSchema(plan []engine.Instruction) []engine.InstrMeta {
+	schema := make([]engine.InstrMeta, len(plan))
+	for i, instr := range plan {
+		schema[i] = engine.InstrMeta{
+			Name:     instr.Name,
+			StepType: instrStepType(instr.Name),
+		}
+	}
+	return schema
+}
+
+// instrStepType maps an instruction name to a broad step-type category.
+// Used by the schema endpoint so collectors can label metrics without
+// knowing every concrete instruction name.
+func instrStepType(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(lower, "http_call"):
+		return "http"
+	case strings.HasPrefix(lower, "cache_"):
+		return "cache"
+	case strings.HasPrefix(lower, "bind_"):
+		return "binding"
+	case strings.HasPrefix(lower, "validate_token"), strings.HasPrefix(lower, "token_"):
+		return "token_validation"
+	case strings.HasPrefix(lower, "rate_limit"), strings.HasPrefix(lower, "fixed_window"), strings.HasPrefix(lower, "token_bucket"):
+		return "rate_limit"
+	case strings.HasPrefix(lower, "log"):
+		return "log"
+	case strings.HasPrefix(lower, "response"):
+		return "response"
+	case strings.HasPrefix(lower, "validate"):
+		return "validation"
+	case strings.HasPrefix(lower, "cors"):
+		return "cors"
+	case strings.HasPrefix(lower, "set_"), strings.HasPrefix(lower, "load_"),
+		strings.HasPrefix(lower, "copy_"), strings.HasPrefix(lower, "remove_"),
+		strings.HasPrefix(lower, "rename_"), strings.HasPrefix(lower, "to_"),
+		strings.HasPrefix(lower, "concat"), strings.HasPrefix(lower, "trim"),
+		strings.HasPrefix(lower, "contains"), strings.HasPrefix(lower, "replace"),
+		strings.HasPrefix(lower, "split"), strings.HasPrefix(lower, "join"):
+		return "transform"
+	case strings.HasPrefix(lower, "extract_"), strings.HasPrefix(lower, "cookie"):
+		return "cookie"
+	case strings.HasPrefix(lower, "switch"), strings.HasPrefix(lower, "retry"),
+		strings.HasPrefix(lower, "jump"), strings.HasPrefix(lower, "branch"),
+		strings.HasPrefix(lower, "batch"):
+		return "flow_control"
+	default:
+		return "system"
+	}
 }
 
 // the compiler supports. Studio fetches this at load time to build its palette

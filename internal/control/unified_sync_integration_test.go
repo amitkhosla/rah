@@ -65,7 +65,7 @@ func TestUnifiedSyncRegistersApiAndRuntimeConsumesCompiledFlow(t *testing.T) {
 	runtimeReq := httptest.NewRequest(http.MethodGet, "http://localhost/v1/users", nil)
 	runtimeResp := httptest.NewRecorder()
 
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 	ctx.Reset(runtimeResp)
 	ctx.ApiId = apiID
@@ -192,7 +192,7 @@ func TestUnifiedSyncConfiguredTextResponseViaCompilerAPI(t *testing.T) {
 	runtimeReq := httptest.NewRequest(http.MethodGet, "http://localhost/v1/text", nil)
 	runtimeResp := httptest.NewRecorder()
 
-	ctx := fm.Pool.Get().(*rctx.Context)
+	ctx := fm.GetContext()
 	defer fm.Pool.Put(ctx)
 	ctx.Reset(runtimeResp)
 	ctx.ApiId = apiID

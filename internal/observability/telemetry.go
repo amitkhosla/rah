@@ -225,16 +225,13 @@ type Telemetry struct {
 	instrEnabled   atomic.Bool
 	phaseEnabled   atomic.Bool
 	alwaysExport   atomic.Bool
-	infoLog        atomic.Bool
+	reqSummaryLog  atomic.Bool
 	traceID        atomic.Uint64
 	metrics        GatewayMetrics
 	droppedExports atomic.Uint64
 	metricDropped  atomic.Uint64
 
-	mu         sync.Mutex
-	instr      map[string]*counter
-	upstream   map[string]*counter
-	cacheStats map[string]*cacheCounter
+	mu        sync.Mutex
 	tenant5xx map[uint16]uint64
 	traces    []RequestTrace
 	custom    map[string]*metricCounter
@@ -325,7 +322,7 @@ func New(cfg Config) *Telemetry {
 	if cfg.MetricQueueSize <= 0 {
 		cfg.MetricQueueSize = 4096
 	}
-	t := &Telemetry{cfg: cfg, instr: make(map[string]*counter), upstream: make(map[string]*counter), tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), cacheStats: make(map[string]*cacheCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	t := &Telemetry{cfg: cfg, tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
 	if len(cfg.TraceHeaderNames) == 1 && cfg.TraceHeaderNames[0] == "*" {
 		t.captureAll = true
 	} else {
@@ -343,7 +340,7 @@ func New(cfg Config) *Telemetry {
 	t.instrEnabled.Store(cfg.InstructionTimingEnabled)
 	t.phaseEnabled.Store(cfg.UpstreamPhaseTimingEnabled)
 	t.alwaysExport.Store(cfg.AlwaysExportSummary)
-	t.infoLog.Store(cfg.InfoLogEnabled)
+	t.reqSummaryLog.Store(cfg.InfoLogEnabled)
 	// Pre-allocate 64 slots — covers most deployments without a single grow.
 	initial := make([]apiStat, 64)
 	t.apiStats.Store(&initial)
@@ -362,7 +359,7 @@ func (t *Telemetry) exportWorker() {
 				t.sink.EmitTrace(trace)
 			}
 		}
-		if t.infoLog.Load() {
+		if t.reqSummaryLog.Load() {
 			gatewaylog.Default.Info(t.formatSummary(trace.Summary))
 		}
 	}
@@ -563,61 +560,15 @@ func (t *Telemetry) QueueMetric(point MetricPoint) {
 // RecordCacheOp records a single cache GET outcome: whether it was a hit or miss,
 // and how long the underlying store call took (excluding slot writes and overhead).
 // name should be the instruction name, e.g. "cache_get" or "cache_get_global".
-func (t *Telemetry) RecordCacheOp(name string, hit bool, durationNs int64) {
-	if !t.Enabled() || durationNs < 0 {
-		return
-	}
-	t.mu.Lock()
-	c := t.cacheStats[name]
-	if c == nil {
-		c = &cacheCounter{}
-		t.cacheStats[name] = c
-	}
-	if hit {
-		c.hits++
-		c.hitNs += uint64(durationNs)
-	} else {
-		c.misses++
-		c.missNs += uint64(durationNs)
-	}
-	t.mu.Unlock()
-}
+// RecordCacheOp is a no-op. Cache stats are now aggregated via the ingest pipeline.
+func (t *Telemetry) RecordCacheOp(_ string, _ bool, _ int64) {}
 
-func (t *Telemetry) RecordInstruction(name string, d time.Duration) {
-	if !t.InstructionTimingEnabled() {
-		return
-	}
-	t.mu.Lock()
-	c := t.instr[name]
-	if c == nil {
-		c = &counter{}
-		t.instr[name] = c
-	}
-	c.count++
-	c.totalNs += uint64(d)
-	t.mu.Unlock()
-}
+// RecordInstruction is a no-op. Per-instruction aggregation is now handled
+// lock-free via instrSlabRing (see internal/observability/instr_slab.go).
+func (t *Telemetry) RecordInstruction(_ string, _ time.Duration) {}
 
-func (t *Telemetry) RecordUpstream(host string, d time.Duration, bytesTx, bytesRx int64) {
-	if !t.Enabled() {
-		return
-	}
-	t.mu.Lock()
-	c := t.upstream[host]
-	if c == nil {
-		c = &counter{}
-		t.upstream[host] = c
-	}
-	c.count++
-	c.totalNs += uint64(d)
-	if bytesTx > 0 {
-		c.bytesTx += uint64(bytesTx)
-	}
-	if bytesRx > 0 {
-		c.bytesRx += uint64(bytesRx)
-	}
-	t.mu.Unlock()
-}
+// RecordUpstream is a no-op. Upstream stats are aggregated via the ingest pipeline.
+func (t *Telemetry) RecordUpstream(_ string, _ time.Duration, _, _ int64) {}
 
 func (t *Telemetry) LogUpstream(apiID uint32, tenantID uint16, event UpstreamEvent) {
 	if !t.Enabled() {
@@ -885,14 +836,11 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	}
 	m := GatewayMetrics{RequestsTotal: atomic.LoadUint64(&t.metrics.RequestsTotal), Requests5xx: atomic.LoadUint64(&t.metrics.Requests5xx), GatewayLatencyTotalNs: atomic.LoadUint64(&t.metrics.GatewayLatencyTotalNs), UpstreamLatencyTotalNs: atomic.LoadUint64(&t.metrics.UpstreamLatencyTotalNs), ClientBytesSentTotal: atomic.LoadUint64(&t.metrics.ClientBytesSentTotal), UpstreamBytesTxTotal: atomic.LoadUint64(&t.metrics.UpstreamBytesTxTotal), UpstreamBytesRxTotal: atomic.LoadUint64(&t.metrics.UpstreamBytesRxTotal), LastRequestUnixNano: atomic.LoadInt64(&t.metrics.LastRequestUnixNano), DroppedExports: t.droppedExports.Load()}
 	t.mu.Lock()
-	m.InstructionTopSlow = topNFromMap(t.instr, topN)
-	m.UpstreamTopSlow = topNFromMap(t.upstream, topN)
 	m.TenantTop5xx = topNTenants(t.tenant5xx, topN)
 	m.CustomMetricTop = topNMetrics(t.custom, topN)
-	m.CacheStats = cacheStatsSlice(t.cacheStats)
 	traces := append([]RequestTrace(nil), t.traces...)
 	t.mu.Unlock()
-	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.infoLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}
+	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.reqSummaryLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}
 	return map[string]any{"metrics": m, "recent_traces": traces, "config": cfg, "export": map[string]any{"otel": "use sink implementation", "bigquery": "use sink implementation"}, "api_key_stats": apikey.Global.Snapshot()}
 }
 
@@ -920,7 +868,7 @@ func (t *Telemetry) UpdateConfig(traceMode *bool, sampleRate *float64, instructi
 		t.alwaysExport.Store(*alwaysExportSummary)
 	}
 	if infoLogEnabled != nil {
-		t.infoLog.Store(*infoLogEnabled)
+		t.reqSummaryLog.Store(*infoLogEnabled)
 	}
 	if len(infoLogFields) > 0 {
 		t.cfg.InfoLogFields = append([]string(nil), infoLogFields...)

@@ -1,5 +1,9 @@
 package engine
 
+import (
+	"sync/atomic"
+)
+
 /*
 ApiDefinition represents one Stage-1 routed API group.
 
@@ -28,6 +32,18 @@ const (
 	RateLimitModeGlobal RateLimitMode = 1 // counter key is tenant-agnostic (shared across all tenants)
 )
 
+// InstrMeta describes a single compiled instruction — set once at compile time, never modified.
+type InstrMeta struct {
+	Name     string // instruction name e.g. "HTTP_CALL", "validate_token"
+	StepType string // step category e.g. "http", "token_validation", "system"
+}
+
+// InstrCounter holds atomic aggregate counters for one instruction PC position.
+type InstrCounter struct {
+	Count   atomic.Uint64
+	TotalNs atomic.Uint64
+}
+
 type Endpoint struct {
 	EndpointId          uint8         // sequential within ApiDefinition (0–255)
 	AsyncMode           AsyncMode     // set at bake time from ApiConfig.Async
@@ -35,10 +51,13 @@ type Endpoint struct {
 	APIRateLimitId      uint16        // rate limit config at API level; 0 = gateway default
 	EndpointRateLimitId uint16        // rate limit config at endpoint level; 0 = inherit API
 	Plan                []Instruction
+	InstrSchema         []InstrMeta    // length == len(Plan); set at compile time, read-only at runtime
+	Counters            []InstrCounter // length == len(Plan); updated atomically by drain goroutine
 }
 
 type ApiDefinition struct {
 	Id          uint32
+	VersionID   uint32
 	BaseRawPath string
 	AliasPaths  []string // additional basepaths that also route to this API
 

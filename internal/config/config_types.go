@@ -440,6 +440,53 @@ type TLSConfig struct {
 	Port     int    `json:"port,omitempty"      yaml:"port,omitempty"`      // default 8443
 }
 
+// ConcurrencyConfig tunes the adaptive concurrency limiter and its AIMD controller.
+// All fields are optional; zero values are replaced with GOMAXPROCS-derived defaults
+// by engine.FlowManager.StartController.
+type ConcurrencyConfig struct {
+	// TargetOverheadMs is the gateway-overhead p99 target in milliseconds.
+	// Gateway overhead = total client latency − upstream wait time.
+	// Default: 50 ms.
+	TargetOverheadMs int64 `json:"target_overhead_ms,omitempty" yaml:"target_overhead_ms,omitempty"`
+
+	// InitialLimit is the starting concurrency cap. The AIMD controller probes
+	// upward from here under healthy conditions. Default: GOMAXPROCS × 1000.
+	InitialLimit int64 `json:"initial_limit,omitempty" yaml:"initial_limit,omitempty"`
+
+	// MinLimit is the AIMD floor — the controller will never cut below this value
+	// regardless of how stressed the system is. Set it high enough that normal
+	// low-traffic periods never produce 429s. Rule of thumb: at least your expected
+	// peak-low-traffic concurrency. Default: GOMAXPROCS × 500.
+	MinLimit int64 `json:"min_limit,omitempty" yaml:"min_limit,omitempty"`
+
+	// MaxLimit is the ceiling the controller will never grow above.
+	// Default: GOMAXPROCS × 4000.
+	MaxLimit int64 `json:"max_limit,omitempty" yaml:"max_limit,omitempty"`
+
+	// AddStep is the additive increase applied each tick when conditions are healthy.
+	// Default: 50.
+	AddStep int64 `json:"add_step,omitempty" yaml:"add_step,omitempty"`
+
+	// CutFactor is the multiplicative decrease factor applied when distress is detected
+	// (0 < CutFactor < 1). Default: 0.85 (cut 15 % per tick).
+	CutFactor float64 `json:"cut_factor,omitempty" yaml:"cut_factor,omitempty"`
+
+	// TickSec is the controller evaluation interval in seconds. Default: 2.
+	TickSec int `json:"tick_sec,omitempty" yaml:"tick_sec,omitempty"`
+
+	// MinSamples is the minimum request count in a tick window before the controller
+	// acts. Prevents reacting to statistical noise at low traffic. Default: 50.
+	MinSamples int64 `json:"min_samples,omitempty" yaml:"min_samples,omitempty"`
+
+	// CooldownTicks is how many ticks the controller waits after a cut before
+	// cutting again. Prevents oscillation. Default: 3.
+	CooldownTicks int `json:"cooldown_ticks,omitempty" yaml:"cooldown_ticks,omitempty"`
+
+	// Disabled turns off the adaptive controller. The limit stays fixed at
+	// InitialLimit unless changed via POST /admin/concurrency?limit=N.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout          GlobalLayout        `json:"layout"                   yaml:"layout"`
 	DataStore       DataStoreConfig     `json:"datastore"                yaml:"datastore"`
@@ -454,6 +501,7 @@ type GatewayConfig struct {
 	Observability   ObservabilityConfig `json:"observability,omitempty"  yaml:"observability,omitempty"`
 	Instance        InstanceConfig      `json:"instance,omitempty"       yaml:"instance,omitempty"`
 	Admin           AdminConfig         `json:"admin,omitempty"          yaml:"admin,omitempty"`
+	Concurrency     ConcurrencyConfig   `json:"concurrency,omitempty"    yaml:"concurrency,omitempty"`
 	Egress          *EgressConfig       `json:"egress,omitempty"         yaml:"egress,omitempty"`
 	Grpc            *GrpcConfig         `json:"grpc,omitempty"           yaml:"grpc,omitempty"`
 	TLS             *TLSConfig          `json:"tls,omitempty"            yaml:"tls,omitempty"`
@@ -583,6 +631,7 @@ type GlobalLayout struct {
 	MaxBoolsSlots      int               `json:"max_bools_slots,omitempty"      yaml:"max_bools_slots,omitempty"`
 	MaxHeapBytes       int64             `json:"max_heap_bytes,omitempty"       yaml:"max_heap_bytes,omitempty"`
 	DefaultLimits      ResourceLimit     `json:"default_limits"       yaml:"default_limits"`
-	SlotValueThreshold int               `json:"slot_value_threshold,omitempty" yaml:"slot_value_threshold,omitempty"` // per-value arena limit; 0 = rctx default (256)
-	DefaultRateLimits  []RateLimitPreset `json:"default_rate_limits,omitempty"  yaml:"default_rate_limits,omitempty"`  // system-wide defaults loaded at startup
+	SlotValueThreshold    int               `json:"slot_value_threshold,omitempty"    yaml:"slot_value_threshold,omitempty"`    // per-value arena limit; 0 = rctx default (256)
+	DefaultRateLimits     []RateLimitPreset `json:"default_rate_limits,omitempty"     yaml:"default_rate_limits,omitempty"`     // system-wide defaults loaded at startup
+	TransportShardsPerCPU int               `json:"transport_shards_per_cpu,omitempty" yaml:"transport_shards_per_cpu,omitempty"` // http transport pool shards per CPU; 0 = default (4)
 }

@@ -1,7 +1,8 @@
 package steps
 
 import (
-	"encoding/json"
+	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"rah/internal/engine"
@@ -19,75 +20,120 @@ func SetFlowLogPipeline(p *ingest.Pipeline) {
 	flowLogPipeline.Store(p)
 }
 
-// FlowLogConfig is baked at compile time and captured in the instruction closure.
-type FlowLogConfig struct {
-	Level   gatewaylog.Level
-	Message string
-	// Fields are static key=value pairs set at compile time.
-	// Dynamic values (from slots) are a future extension.
-	Fields []gatewaylog.Field
+// DynamicLogField is a field whose value comes from a ByteSlot at runtime.
+type DynamicLogField struct {
+	JSONKey []byte // pre-built JSON fragment e.g. `,"user_id":"`
+	SlotIdx int
 }
 
-// flowLogPayload is the JSON structure emitted as KindFlowLog.
-type flowLogPayload struct {
-	Level    string            `json:"level"`
-	Message  string            `json:"message"`
-	TenantID uint16            `json:"tenant_id,omitempty"`
-	APIID    uint32            `json:"api_id,omitempty"`
-	Fields   map[string]string `json:"fields,omitempty"`
+// FlowLogConfig is baked at compile time. All static content is pre-serialised
+// into PayloadPrefix/Mid/Suffix so the hot path never calls json.Marshal.
+type FlowLogConfig struct {
+	Level gatewaylog.Level
+
+	// Pre-built static JSON fragments. At runtime the instruction assembles:
+	//   PayloadPrefix + strconv.AppendUint(tenantID) + PayloadMid +
+	//   strconv.AppendUint(apiID) + dynamic fields + PayloadSuffix
+	PayloadPrefix []byte
+	PayloadMid    []byte
+	PayloadSuffix []byte
+
+	// DynamicFields holds slot-backed fields whose values are resolved at runtime.
+	DynamicFields []DynamicLogField
+
+	// BufPool is a per-step pool of []byte pre-sized to hold the max payload.
+	// One pool per compiled log step — size is exact for this step's shape.
+	BufPool *sync.Pool
+
+	// GatewayMsg is the plain message string used for gatewaylog.Default
+	// warn/error entries. Only used at warn/error frequency so no alloc concern.
+	GatewayMsg string
 }
 
 // FlowLog returns an engine.Instruction that emits a structured log message from
-// within a flow. It writes to gatewaylog.Default at the configured level and
-// optionally to the ingest pipeline as a KindFlowLog event.
-// The instruction is fast when ingest is not wired: one atomic load returning nil.
+// within a flow. Routing:
+//   - debug/info → ingest pipeline only (not gatewaylog.Default, which would
+//     silently drop them when the gateway log level is INFO or higher).
+//   - warn/error → ingest pipeline AND gatewaylog.Default (low frequency,
+//     allocations acceptable).
+//
+// The hot path is zero-allocation: JSON payload is assembled from pre-built
+// static fragments (PayloadPrefix/Mid/Suffix) plus runtime slot values.
 func FlowLog(cfg FlowLogConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "log[" + cfg.Level.String() + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// Emit to gatewaylog.Default using the named level methods.
-			switch cfg.Level {
-			case gatewaylog.DEBUG:
-				gatewaylog.Default.Debug(cfg.Message, cfg.Fields...)
-			case gatewaylog.WARN:
-				gatewaylog.Default.Warn(cfg.Message, cfg.Fields...)
-			case gatewaylog.ERROR:
-				gatewaylog.Default.Error(cfg.Message, cfg.Fields...)
-			default: // INFO and anything else
-				gatewaylog.Default.Info(cfg.Message, cfg.Fields...)
+			// Routing fix: warn/error also go to gateway operational log.
+			if cfg.Level == gatewaylog.WARN {
+				gatewaylog.Default.Warn(cfg.GatewayMsg)
+			} else if cfg.Level == gatewaylog.ERROR {
+				gatewaylog.Default.Error(cfg.GatewayMsg)
+			}
+			// debug/info intentionally not sent to gatewaylog.Default —
+			// they would be silently dropped when the gateway level is INFO+.
+
+			// Emit to ingest pipeline (always — not conditional on level).
+			p := flowLogPipeline.Load()
+			if p == nil {
+				return state.PC + 1
+			}
+			n := p.NumSinksForKind(ingest.KindFlowLog)
+			if n == 0 {
+				return state.PC + 1
 			}
 
-			// Emit to ingest pipeline if wired and has sinks.
-			if p := flowLogPipeline.Load(); p != nil {
-				n := p.NumSinksForKind(ingest.KindFlowLog)
-				if n > 0 {
-					payload := flowLogPayload{
-						Level:    cfg.Level.String(),
-						Message:  cfg.Message,
-						TenantID: ctx.TenantID,
-						APIID:    uint32(ctx.ApiId),
-					}
-					if len(cfg.Fields) > 0 {
-						payload.Fields = make(map[string]string, len(cfg.Fields))
-						for _, f := range cfg.Fields {
-							payload.Fields[f.Key] = f.Value
-						}
-					}
-					b, err := json.Marshal(payload)
-					if err == nil {
-						e := ingest.Event{
-							Kind:     ingest.KindFlowLog,
-							TenantID: ctx.TenantID,
-							APIID:    uint32(ctx.ApiId),
-							Level:    cfg.Level.String(),
-						}
-						e.SetPayload(b, n)
-						p.Emit(e)
-					}
-				}
+			// Zero-alloc hot path: assemble payload from pre-built fragments.
+			buf := cfg.BufPool.Get().([]byte)
+			buf = buf[:0]
+			buf = append(buf, cfg.PayloadPrefix...)
+			buf = strconv.AppendUint(buf, uint64(ctx.TenantID), 10)
+			buf = append(buf, cfg.PayloadMid...)
+			buf = strconv.AppendUint(buf, uint64(ctx.ApiId), 10)
+
+			// Dynamic slot fields (resolved at runtime).
+			for i := range cfg.DynamicFields {
+				df := &cfg.DynamicFields[i]
+				buf = append(buf, df.JSONKey...)
+				val := ctx.ByteSlots[df.SlotIdx]
+				buf = appendJSONBytes(buf, val)
+				buf = append(buf, '"')
 			}
 
+			buf = append(buf, cfg.PayloadSuffix...)
+
+			e := ingest.Event{
+				Kind:     ingest.KindFlowLog,
+				TenantID: ctx.TenantID,
+				APIID:    uint32(ctx.ApiId),
+				Level:    cfg.Level.String(),
+			}
+			e.SetPayload(buf, n)
+			p.Emit(e)
+
+			cfg.BufPool.Put(buf)
 			return state.PC + 1
 		},
 	}
+}
+
+// appendJSONBytes appends b as a JSON string value (without surrounding quotes —
+// caller writes the opening quote via JSONKey and closing quote after this call).
+func appendJSONBytes(dst []byte, b []byte) []byte {
+	for _, c := range b {
+		switch c {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			dst = append(dst, c)
+		}
+	}
+	return dst
 }

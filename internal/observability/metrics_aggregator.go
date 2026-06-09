@@ -45,10 +45,10 @@ type APIMetricSnapshot struct {
 }
 
 // MetricsAggregator collects per-API metrics and flushes them at window boundaries.
-// Safe for concurrent use: RWMutex guards the map; atomics guard per-entry counters.
+// Safe for concurrent use: copy-on-write atomic pointer for the map; atomics guard per-entry counters.
 type MetricsAggregator struct {
-	mu      sync.RWMutex
-	metrics map[uint64]*APIMetrics // key: (uint64(tenantID)<<32)|uint64(apiID)
+	writeMu sync.Mutex                            // held only during new-key insertion
+	metrics atomic.Pointer[map[uint64]*APIMetrics] // COW; hot path reads via Load(), no lock
 
 	pipeline atomic.Pointer[ingest.Pipeline]
 	windows  []time.Duration // flush intervals
@@ -61,11 +61,13 @@ func NewMetricsAggregator(windows []time.Duration) *MetricsAggregator {
 	if len(windows) == 0 {
 		windows = []time.Duration{time.Minute}
 	}
-	return &MetricsAggregator{
-		metrics: make(map[uint64]*APIMetrics),
+	a := &MetricsAggregator{
 		windows: windows,
 		stopCh:  make(chan struct{}),
 	}
+	initial := make(map[uint64]*APIMetrics)
+	a.metrics.Store(&initial)
+	return a
 }
 
 // SetPipeline wires the ingest pipeline into the aggregator.
@@ -79,22 +81,10 @@ func (a *MetricsAggregator) SetPipeline(p *ingest.Pipeline) {
 func (a *MetricsAggregator) Record(tenantID uint16, apiID uint32, statusCode int, durationNs int64) {
 	key := uint64(tenantID)<<32 | uint64(apiID)
 
-	a.mu.RLock()
-	m := a.metrics[key]
-	a.mu.RUnlock()
+	m := (*a.metrics.Load())[key]  // zero-lock read
 
 	if m == nil {
-		a.mu.Lock()
-		m = a.metrics[key]
-		if m == nil {
-			m = &APIMetrics{
-				APIID:       apiID,
-				TenantID:    tenantID,
-				WindowStart: time.Now().Unix(),
-			}
-			a.metrics[key] = m
-		}
-		a.mu.Unlock()
+		m = a.getOrCreate(key, apiID, tenantID)
 	}
 
 	// Update status counters.
@@ -120,6 +110,31 @@ func (a *MetricsAggregator) Record(tenantID uint16, apiID uint32, statusCode int
 	}
 	m.Latency[bucket].Add(1)
 	m.TotalNs.Add(durationNs)
+}
+
+// getOrCreate atomically creates or retrieves an APIMetrics entry using copy-on-write.
+// This is called only on cache misses (new keys), not on the hot path.
+func (a *MetricsAggregator) getOrCreate(key uint64, apiID uint32, tenantID uint16) *APIMetrics {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	// Re-check under write lock (another goroutine may have inserted)
+	old := a.metrics.Load()
+	if m := (*old)[key]; m != nil {
+		return m
+	}
+	m := &APIMetrics{
+		APIID:       apiID,
+		TenantID:    tenantID,
+		WindowStart: time.Now().Unix(),
+	}
+	// Copy-on-write: copy map, insert, store atomically
+	newMap := make(map[uint64]*APIMetrics, len(*old)+1)
+	for k, v := range *old {
+		newMap[k] = v
+	}
+	newMap[key] = m
+	a.metrics.Store(&newMap)
+	return m
 }
 
 // Start launches a background flush goroutine for each configured window.
@@ -158,10 +173,12 @@ func (a *MetricsAggregator) flush(window time.Duration) {
 	// Swap the map under write lock — callers that arrive mid-flush will
 	// create entries in the new map. The old map is processed below without
 	// holding the lock.
-	a.mu.Lock()
-	old := a.metrics
-	a.metrics = make(map[uint64]*APIMetrics, len(old))
-	a.mu.Unlock()
+	a.writeMu.Lock()
+	oldPtr := a.metrics.Load()
+	newMap := make(map[uint64]*APIMetrics, len(*oldPtr))
+	a.metrics.Store(&newMap)
+	a.writeMu.Unlock()
+	old := *oldPtr
 
 	for _, m := range old {
 		snap := snapshotMetrics(m, now)

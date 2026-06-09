@@ -196,6 +196,7 @@ func (s *InstanceSync) pollConfigVersion(ctx context.Context) {
 		return
 	}
 	s.currentVersion = rec.ID
+	s.ms.configVersion.Store(uint32(rec.ID))
 	log.Printf("[InstanceSync] applied config version %d", rec.ID)
 	s.writeHeartbeat(ctx) // update heartbeat immediately with new version
 }

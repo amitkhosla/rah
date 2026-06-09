@@ -14,7 +14,6 @@ import (
 	"rah/internal/gatewaylog"
 	"rah/internal/observability"
 	"rah/internal/rctx"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +29,15 @@ var responseBodyPool = sync.Pool{New: func() any {
 	b := new(bytes.Buffer)
 	b.Grow(4096)
 	return b
+}}
+
+// streamCopyPool recycles 32 KB scratch buffers for io.CopyBuffer in the streaming
+// path. Stores *[]byte (pointer) to avoid boxing the slice header into the interface,
+// which would allocate. Prevents per-request heap allocation that io.Copy triggers
+// when the destination does not implement io.ReaderFrom.
+var streamCopyPool = sync.Pool{New: func() any {
+	b := make([]byte, 32*1024)
+	return &b
 }}
 
 // HttpActionConfig holds the bake-time configuration for an http_call instruction.
@@ -131,6 +139,26 @@ func flowBool(flowInput map[string]string, key string, fallback bool) bool {
 	return fallback
 }
 
+// statusBitset covers HTTP status codes 400–655 (256 bits = 4×uint64, 32 bytes).
+// Replaces map[int]struct{} in httpClientConfig — value type, no heap, no GC, O(1) lookup.
+type statusBitset [4]uint64
+
+func (b *statusBitset) set(code int) {
+	if code < 400 || code >= 656 {
+		return
+	}
+	idx := code - 400
+	b[idx>>6] |= 1 << uint(idx&63)
+}
+
+func (b statusBitset) has(code int) bool {
+	if code < 400 || code >= 656 {
+		return false
+	}
+	idx := code - 400
+	return b[idx>>6]&(1<<uint(idx&63)) != 0
+}
+
 // All duration values are in milliseconds (ms) when provided via flow input.
 // DialTimeout is the maximum time allowed to establish a TCP connection to upstream.
 type httpClientConfig struct {
@@ -148,7 +176,7 @@ type httpClientConfig struct {
 	RetryBaseBackoff      time.Duration
 	RetryMaxBackoff       time.Duration
 	RetryJitter           time.Duration
-	RetryOnStatuses       map[int]struct{}
+	RetryOnStatuses       statusBitset
 	HonorRetryAfter       bool
 	RetryAfterMaxWait     time.Duration
 	UpstreamCooldown      bool
@@ -159,21 +187,56 @@ type cachedClient struct {
 	Cfg    httpClientConfig
 }
 
+// transportShard owns one http.Client/Transport and its connection pool.
+// Padded to a full cache line to prevent false sharing between adjacent shards.
+type transportShard struct {
+	_      [64]byte
+	client *http.Client
+}
+
+// upstreamTransportPool distributes requests across N independent transports
+// for a single upstream target, reducing http.Transport.idleMu contention.
+type upstreamTransportPool struct {
+	shards []transportShard
+	mask   uint64 // shards-1; bitwise AND replaces modulo
+	ctr    atomic.Uint64
+}
+
+func (p *upstreamTransportPool) get() *http.Client {
+	return p.shards[p.ctr.Add(1)&p.mask].client
+}
+
 type clientCacheKey struct {
 	Upstream   string
 	ConfigKey  string
 	EgressType egress.EgressType // 0=Auto, 1=HTTP1, 2=HTTPS, 3=H2C
 }
 
+var globalShardsPerCPU = 4
+
+// SetTransportShardsPerCPU sets the per-CPU transport shard multiplier.
+// Must be called before the first HTTP request. Default is 4.
+func SetTransportShardsPerCPU(n int) {
+	if n >= 1 {
+		globalShardsPerCPU = n
+	}
+}
+
 var (
 	cfgOnce                  sync.Once
 	cachedDefaultHTTPConfig  httpClientConfig
 	defaultHTTPClient        *http.Client
+	defaultTransportPool     *upstreamTransportPool
 	perTargetClientCache     sync.Map
 	perTargetClientCacheSize atomic.Int64
 )
 
 func loadHTTPClientConfig() httpClientConfig {
+	var retryStatuses statusBitset
+	retryStatuses.set(429)
+	retryStatuses.set(502)
+	retryStatuses.set(503)
+	retryStatuses.set(504)
 	return httpClientConfig{
 		MaxIdleConns:          2000,
 		MaxIdleConnsPerHost:   200,
@@ -189,7 +252,7 @@ func loadHTTPClientConfig() httpClientConfig {
 		RetryBaseBackoff:      25 * time.Millisecond,
 		RetryMaxBackoff:       250 * time.Millisecond,
 		RetryJitter:           10 * time.Millisecond,
-		RetryOnStatuses:       map[int]struct{}{429: {}, 502: {}, 503: {}, 504: {}},
+		RetryOnStatuses:       retryStatuses,
 		HonorRetryAfter:       true,
 		RetryAfterMaxWait:     30 * time.Second,
 		UpstreamCooldown:      true,
@@ -280,28 +343,46 @@ func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flo
 	return created
 }
 
-func parseStatusSet(raw string, fallback map[int]struct{}) map[int]struct{} {
+// getClientForBakedConfig is the per-request client resolver for dynamic-URL flows.
+// bakedCfg and bakedFingerprint are computed once at bake time; the hot path here
+// is a single sync.Map.Load (cache hit). Cache misses build and store a new client.
+func getClientForBakedConfig(profile *egress.EgressProfile, upstreamHost string, bakedCfg httpClientConfig, bakedFingerprint string, maxEntries int) cachedClient {
+	var et egress.EgressType
+	if profile != nil {
+		et = profile.Type
+	}
+	key := clientCacheKey{Upstream: upstreamHost, ConfigKey: bakedFingerprint, EgressType: et}
+	if existing, ok := perTargetClientCache.Load(key); ok {
+		return existing.(cachedClient)
+	}
+	created := cachedClient{Client: buildClientForProfile(profile, bakedCfg), Cfg: bakedCfg}
+	if int(perTargetClientCacheSize.Load()) >= maxEntries {
+		return cachedClient{Client: defaultHTTPClient, Cfg: getDefaultHTTPConfig()}
+	}
+	actual, loaded := perTargetClientCache.LoadOrStore(key, created)
+	if loaded {
+		return actual.(cachedClient)
+	}
+	perTargetClientCacheSize.Add(1)
+	return created
+}
+
+func parseStatusSet(raw string, fallback statusBitset) statusBitset {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fallback
 	}
-	out := make(map[int]struct{})
+	var out statusBitset
+	found := false
 	for part := range strings.SplitSeq(raw, ",") {
 		code, err := strconv.Atoi(strings.TrimSpace(part))
 		if err == nil && code > 0 {
-			out[code] = struct{}{}
+			out.set(code)
+			found = true
 		}
 	}
-	if len(out) == 0 {
+	if !found {
 		return fallback
-	}
-	return out
-}
-
-func cloneStatusSet(in map[int]struct{}) map[int]struct{} {
-	out := make(map[int]struct{}, len(in))
-	for k := range in {
-		out[k] = struct{}{}
 	}
 	return out
 }
@@ -332,8 +413,7 @@ func flowDurationMs(flowInput map[string]string, key string, fallback time.Durat
 func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string) httpClientConfig {
 	_ = upstreamHost
 	base := getDefaultHTTPConfig()
-	cfg := base
-	cfg.RetryOnStatuses = cloneStatusSet(base.RetryOnStatuses)
+	cfg := base // statusBitset copies by value — no allocation
 
 	cfg.MaxIdleConns = flowInt(flowInput, "http.max_idle_conns", cfg.MaxIdleConns)
 	cfg.MaxIdleConnsPerHost = flowInt(flowInput, "http.max_idle_conns_per_host", cfg.MaxIdleConnsPerHost)
@@ -357,15 +437,11 @@ func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string
 }
 
 func configFingerprint(cfg httpClientConfig) string {
-	codes := make([]int, 0, len(cfg.RetryOnStatuses))
-	for k := range cfg.RetryOnStatuses {
-		codes = append(codes, k)
-	}
-	sort.Ints(codes)
-	parts := make([]string, 0, len(codes))
-	for _, c := range codes {
-		parts = append(parts, strconv.Itoa(c))
-	}
+	// statusBitset encoded as 4 hex words — no sorting needed, deterministic.
+	statusKey := strconv.FormatUint(cfg.RetryOnStatuses[0], 16) + "," +
+		strconv.FormatUint(cfg.RetryOnStatuses[1], 16) + "," +
+		strconv.FormatUint(cfg.RetryOnStatuses[2], 16) + "," +
+		strconv.FormatUint(cfg.RetryOnStatuses[3], 16)
 	return strings.Join([]string{
 		strconv.Itoa(cfg.MaxIdleConns),
 		strconv.Itoa(cfg.MaxIdleConnsPerHost),
@@ -381,7 +457,7 @@ func configFingerprint(cfg httpClientConfig) string {
 		strconv.FormatInt(int64(cfg.RetryBaseBackoff/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.RetryMaxBackoff/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.RetryJitter/time.Millisecond), 10),
-		strings.Join(parts, ","),
+		statusKey,
 		strconv.FormatBool(cfg.HonorRetryAfter),
 		strconv.FormatInt(int64(cfg.RetryAfterMaxWait/time.Millisecond), 10),
 		strconv.FormatBool(cfg.UpstreamCooldown),
@@ -434,8 +510,7 @@ func getClientForTarget(upstreamHost string, flowInput map[string]string) cached
 }
 
 func isRetryableStatus(status int, cfg httpClientConfig) bool {
-	_, ok := cfg.RetryOnStatuses[status]
-	return ok
+	return cfg.RetryOnStatuses.has(status)
 }
 
 func shouldRetryError(err error) bool {
@@ -530,15 +605,23 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					return pc
 				}
 
-				reqCtx := ctx.Request.Context()
-				cancel := func() {}
+				// Set deadline on ctx — ctx implements context.Context so it is passed
+				// directly to NewRequestWithContext. No timerCtx allocation needed.
+				var deadlineTimer *time.Timer
 				if timeout > 0 {
-					reqCtx, cancel = context.WithTimeout(reqCtx, time.Duration(timeout)*time.Millisecond)
+					dur := time.Duration(timeout) * time.Millisecond
+					capturedGen := ctx.SetUpstreamTimeout(dur)
+					deadlineTimer = time.AfterFunc(dur, func() {
+						ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
+					})
 				}
 
-				req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)
+				req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 				if err != nil {
-					cancel()
+					if deadlineTimer != nil {
+						deadlineTimer.Stop()
+						ctx.ClearUpstreamTimeout()
+					}
 					ctx.ResponseStatus = 500
 					ctx.Failed = true
 					ctx.ErrorCode = 500
@@ -603,11 +686,15 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 
 				resp, err := bundle.Client.Do(req)
-				// NOTE: cancel() is intentionally NOT called here.
-				// Calling cancel() before resp.Body is fully read causes Go's HTTP
-				// transport to mark the connection as broken and discard it instead
-				// of returning it to the idle pool — destroying connection reuse.
-				// cancel() is called after resp.Body.Close() on every exit path below.
+				// Stop timer — if it already fired, Cancel was already called (fine;
+				// the request was aborted). If it hasn't fired yet, stop it from firing
+				// after ctx is returned to the pool. Unlike context.WithTimeout.cancel(),
+				// stopping our timer never marks the connection as broken.
+				if deadlineTimer != nil {
+					deadlineTimer.Stop()
+					deadlineTimer = nil
+					ctx.ClearUpstreamTimeout()
+				}
 				totalUpstream := time.Since(upstreamStart)
 				event.TotalNs = totalUpstream.Nanoseconds()
 				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
@@ -619,7 +706,6 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
-					cancel() // safe to cancel here — no body to read on error path
 					// Client disconnected during upstream call — mark and stop cleanly.
 					if errors.Is(err, context.Canceled) {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
@@ -666,7 +752,6 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
-				cancel() // body fully read — safe to release context now
 				if ctx.Trace != nil {
 					respBytes += int64(len(event.ResponseBody))
 				}
@@ -745,6 +830,38 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 	flowInput := cfg.FlowInput
 
+	// ── HTTP config resolved once at bake time ────────────────────────────────
+	// flowInput is fixed; resolveHTTPConfigForTarget ignores upstreamHost entirely.
+	// configFingerprint, retry budget, and (for static URLs) the full *http.Client
+	// are all computed here so the per-request hot path carries zero config work.
+	bakedCfg := resolveHTTPConfigForTarget("", flowInput)
+	bakedFingerprint := configFingerprint(bakedCfg)
+	bakedMaxCacheEntries := flowInt(flowInput, "http.max_client_cache_entries", 2048)
+
+	bakedAttempts := bakedCfg.RetryMaxAttempts + 1
+	if cfg.MaxRetries >= 0 {
+		bakedAttempts = cfg.MaxRetries + 1
+	}
+	if bakedAttempts < 1 {
+		bakedAttempts = 1
+	}
+
+	// For static URLs the upstream host is known — build and cache the *http.Client
+	// once here. Per-request cost becomes a single pointer read from the closure.
+	var staticHTTPClient *http.Client
+	hasStaticURL := cfg.StaticURL != "" && cfg.URLSlot < 0
+	if hasStaticURL {
+		effectiveProfile := cfg.EgressProfile
+		effectiveURL := cfg.StaticURL
+		if strings.HasPrefix(effectiveURL, "h2c://") {
+			effectiveURL = "http://" + effectiveURL[len("h2c://"):]
+			if effectiveProfile == nil || effectiveProfile.Type != egress.EgressTypeH2C {
+				effectiveProfile = &egress.EgressProfile{Type: egress.EgressTypeH2C}
+			}
+		}
+		staticHTTPClient = getClientForBakedConfig(effectiveProfile, extractUpstreamHost(effectiveURL), bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Client
+	}
+
 	// ── Parse mTLS client certificate at bake time ─────────────────────────────
 	// tls.X509KeyPair is called once here, not per request. If parsing fails we
 	// return an instruction that always fails with a clear 500 error so the
@@ -776,13 +893,12 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		mtlsClientOnce sync.Once
 		mtlsClient     *http.Client
 	)
-	getMTLSClient := func(upstreamHost string) *http.Client {
+	getMTLSClient := func() *http.Client {
 		if mtlsCert == nil {
 			return nil
 		}
 		mtlsClientOnce.Do(func() {
-			cfg2 := resolveHTTPConfigForTarget(upstreamHost, flowInput)
-			dialer := &net.Dialer{Timeout: cfg2.DialTimeout, KeepAlive: cfg2.KeepAlive}
+			dialer := &net.Dialer{Timeout: bakedCfg.DialTimeout, KeepAlive: bakedCfg.KeepAlive}
 			tlsCfg := &tls.Config{
 				Certificates: []tls.Certificate{*mtlsCert},
 				MinVersion:   tls.VersionTLS12,
@@ -793,15 +909,15 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					DialContext:           dialer.DialContext,
 					ForceAttemptHTTP2:     true,
 					TLSClientConfig:       tlsCfg,
-					MaxIdleConns:          cfg2.MaxIdleConns,
-					MaxIdleConnsPerHost:   cfg2.MaxIdleConnsPerHost,
-					MaxConnsPerHost:       cfg2.MaxConnsPerHost,
-					IdleConnTimeout:       cfg2.IdleConnTimeout,
-					TLSHandshakeTimeout:   cfg2.TLSHandshakeTimeout,
-					ResponseHeaderTimeout: cfg2.ResponseHeaderTimeout,
-					ExpectContinueTimeout: cfg2.ExpectContinueTimeout,
+					MaxIdleConns:          bakedCfg.MaxIdleConns,
+					MaxIdleConnsPerHost:   bakedCfg.MaxIdleConnsPerHost,
+					MaxConnsPerHost:       bakedCfg.MaxConnsPerHost,
+					IdleConnTimeout:       bakedCfg.IdleConnTimeout,
+					TLSHandshakeTimeout:   bakedCfg.TLSHandshakeTimeout,
+					ResponseHeaderTimeout: bakedCfg.ResponseHeaderTimeout,
+					ExpectContinueTimeout: bakedCfg.ExpectContinueTimeout,
 				},
-				Timeout: cfg2.RequestTimeout,
+				Timeout: bakedCfg.RequestTimeout,
 			}
 		})
 		return mtlsClient
@@ -838,26 +954,20 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 
 			upstreamHost := extractUpstreamHost(url)
 
-			// ── Select HTTP client: mTLS-capable or shared pool ───────────────
-			// When a client certificate is configured, use the dedicated mTLS
-			// client instead of the shared per-target pool so TLS configs do not
-			// bleed across steps.
-			var bundle cachedClient
+			// ── Select HTTP client ────────────────────────────────────────────
+			// mTLS: dedicated client (lazy sync.Once). Static URL: pointer baked at
+			// instruction creation. Dynamic URL: sync.Map.Load with baked fingerprint.
+			var httpClient *http.Client
 			if mtlsCert != nil {
-				mc := getMTLSClient(upstreamHost)
-				bundle = cachedClient{Client: mc, Cfg: resolveHTTPConfigForTarget(upstreamHost, flowInput)}
+				httpClient = getMTLSClient()
+			} else if hasStaticURL {
+				httpClient = staticHTTPClient
 			} else {
-				bundle = getClientForProfile(profile, upstreamHost, flowInput)
+				httpClient = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Client
 			}
 
-			// ── Retry budget ──────────────────────────────────────────────────────
-			attempts := bundle.Cfg.RetryMaxAttempts + 1
-			if cfg.MaxRetries >= 0 {
-				attempts = cfg.MaxRetries + 1
-			}
-			if attempts < 1 {
-				attempts = 1
-			}
+			// ── Retry budget (baked at instruction creation time) ─────────────
+			attempts := bakedAttempts
 
 			// ── Method ────────────────────────────────────────────────────────────
 			method := cfg.StaticMethod
@@ -870,7 +980,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 
 			for attempt := 1; attempt <= attempts; attempt++ {
 				// ── Cooldown guard ────────────────────────────────────────────────
-				if bundle.Cfg.UpstreamCooldown {
+				if bakedCfg.UpstreamCooldown {
 					if cooling, _ := inCooldown(upstreamHost); cooling {
 						ctx.ResponseStatus = 503
 						ctx.Failed = true
@@ -891,11 +1001,15 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
-				// ── Build request context with optional timeout ───────────────────
-				reqCtx := ctx.Request.Context()
-				cancel := func() {}
+				// ── Set deadline on ctx — ctx implements context.Context ─────────
+				// Passed directly to NewRequestWithContext; no timerCtx allocation.
+				var deadlineTimer *time.Timer
 				if cfg.Timeout > 0 {
-					reqCtx, cancel = context.WithTimeout(reqCtx, time.Duration(cfg.Timeout)*time.Millisecond)
+					dur := time.Duration(cfg.Timeout) * time.Millisecond
+					capturedGen := ctx.SetUpstreamTimeout(dur)
+					deadlineTimer = time.AfterFunc(dur, func() {
+						ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
+					})
 				}
 
 				// ── Resolve body ──────────────────────────────────────────────────
@@ -921,11 +1035,14 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				if len(bodyBytes) > 0 {
 					pooledReader = bytesReaderPool.Get().(*bytes.Reader)
 					pooledReader.Reset(bodyBytes)
-					req, err = http.NewRequestWithContext(reqCtx, method, url, pooledReader)
+					req, err = http.NewRequestWithContext(ctx, method, url, pooledReader)
 					if err != nil {
 						bytesReaderPool.Put(pooledReader)
 						pooledReader = nil
-						cancel()
+						if deadlineTimer != nil {
+							deadlineTimer.Stop()
+							ctx.ClearUpstreamTimeout()
+						}
 						ctx.ResponseStatus = 500
 						ctx.Failed = true
 						ctx.ErrorCode = 500
@@ -935,9 +1052,12 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 					req.ContentLength = int64(len(bodyBytes))
 				} else {
-					req, err = http.NewRequestWithContext(reqCtx, method, url, nil)
+					req, err = http.NewRequestWithContext(ctx, method, url, nil)
 					if err != nil {
-						cancel()
+						if deadlineTimer != nil {
+							deadlineTimer.Stop()
+							ctx.ClearUpstreamTimeout()
+						}
 						ctx.ResponseStatus = 500
 						ctx.Failed = true
 						ctx.ErrorCode = 500
@@ -1040,7 +1160,14 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				resp, doErr := bundle.Client.Do(req)
+				resp, doErr := httpClient.Do(req)
+				// Stop timer immediately — unlike context.WithTimeout.cancel(), stopping
+				// our timer never marks the connection as broken, preserving connection reuse.
+				if deadlineTimer != nil {
+					deadlineTimer.Stop()
+					deadlineTimer = nil
+					ctx.ClearUpstreamTimeout()
+				}
 
 				// Return the bytes.Reader to pool now that Do() has consumed it.
 				if pooledReader != nil {
@@ -1053,11 +1180,6 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ctx.StagedContentType = nil
 				}
 
-				// NOTE: cancel() is intentionally NOT called here.
-				// Calling cancel() before resp.Body is fully read causes Go's HTTP
-				// transport to mark the connection as broken and discard it — destroying
-				// connection reuse (observed: 0% reuse rate without this fix).
-				// cancel() is called after resp.Body.Close() on every exit path below.
 				totalUpstream := time.Since(upstreamStart)
 				event.TotalNs = totalUpstream.Nanoseconds()
 				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
@@ -1068,7 +1190,6 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if doErr != nil {
-					cancel() // safe to cancel here — no body to read on error path
 					// Client disconnect
 					if errors.Is(doErr, context.Canceled) || ctx.Request.Context().Err() != nil {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
@@ -1086,7 +1207,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
 					}
 					if attempt < attempts && shouldRetryError(doErr) {
-						time.Sleep(backoffDelay(attempt, bundle.Cfg, upstreamHost))
+						time.Sleep(backoffDelay(attempt, bakedCfg, upstreamHost))
 						continue
 					}
 					ctx.ResponseStatus = 502
@@ -1140,10 +1261,27 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				// ── Read response body ────────────────────────────────────────────
+				// Compiler sets StreamResponseBody=true when the body needs no slot
+				// capture (no response_body_var, or only used in respond/return).
+				// In that case: pipe directly to client, track bytes only.
+				// Otherwise: read into arena slot for downstream steps.
 				var respBytes int64
-				captureBody := cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots)
-
-				if captureBody {
+				if ctx.StreamResponseBody {
+					ctx.ResponseStatus = resp.StatusCode
+					if ctx.Trace != nil {
+						bodyPreview, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+						if len(bodyPreview) > 0 {
+							event.ResponseBody = string(bodyPreview)
+							nw, _ := ctx.Write(bodyPreview)
+							respBytes = int64(nw)
+						}
+					}
+					copyBuf := streamCopyPool.Get().(*[]byte)
+					n, _ := io.CopyBuffer(ctx, resp.Body, *copyBuf)
+					streamCopyPool.Put(copyBuf)
+					respBytes += n
+					resp.Body.Close()
+				} else if cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots) {
 					cl := resp.ContentLength
 					if cl > 0 {
 						// Fast path: known Content-Length — allocate exactly.
@@ -1151,7 +1289,6 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						n, readErr := io.ReadFull(resp.Body, bodyBuf)
 						respBytes = int64(n)
 						resp.Body.Close()
-						cancel()
 						if readErr != nil && readErr != io.ErrUnexpectedEOF {
 							event.Err = readErr.Error()
 							if ctx.Trace != nil && ctx.Obs != nil {
@@ -1181,7 +1318,6 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 							_, _ = io.Copy(buf, resp.Body)
 						}
 						resp.Body.Close()
-						cancel()
 						respBytes = int64(buf.Len())
 						// Copy captured body into arena.
 						arena := ctx.Alloc(buf.Len())
@@ -1195,19 +1331,8 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						responseBodyPool.Put(buf)
 					}
 				} else {
-					// No body capture — trace preview + discard.
-					if ctx.Trace != nil {
-						bodyPreview, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-						if len(bodyPreview) > 0 {
-							event.ResponseBody = string(bodyPreview)
-						}
-						n, _ := io.Copy(io.Discard, resp.Body)
-						respBytes = int64(len(bodyPreview)) + n
-					} else {
-						respBytes, _ = io.Copy(io.Discard, resp.Body)
-					}
+					respBytes, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
-					cancel()
 				}
 
 				event.BytesSent = reqBytesSent
@@ -1219,7 +1344,10 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				// ── Set response status ───────────────────────────────────────────
-				ctx.ResponseStatus = resp.StatusCode
+				// For streaming: status was already set before io.Copy (headers already sent).
+				if !ctx.StreamResponseBody {
+					ctx.ResponseStatus = resp.StatusCode
+				}
 				event.Status = resp.StatusCode
 
 				// ── Capture response status into slot ─────────────────────────────
@@ -1255,16 +1383,16 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				// ── Retry condition ───────────────────────────────────────────────
 				if attempt < attempts {
 					// Config-level retry-on-status
-					doStatusRetry := isRetryableStatus(resp.StatusCode, bundle.Cfg)
+					doStatusRetry := isRetryableStatus(resp.StatusCode, bakedCfg)
 					// User-supplied condition retry (overrides config-level)
 					doCondRetry := cfg.RetryCondFunc != nil && cfg.RetryCondFunc(ctx)
 
 					if doStatusRetry || doCondRetry {
-						sleepFor := backoffDelay(attempt, bundle.Cfg, upstreamHost)
-						if bundle.Cfg.HonorRetryAfter {
+						sleepFor := backoffDelay(attempt, bakedCfg, upstreamHost)
+						if bakedCfg.HonorRetryAfter {
 							if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
-								if ra > bundle.Cfg.RetryAfterMaxWait {
-									if bundle.Cfg.UpstreamCooldown {
+								if ra > bakedCfg.RetryAfterMaxWait {
+									if bakedCfg.UpstreamCooldown {
 										markCooldown(upstreamHost, time.Now().Add(ra))
 									}
 									ctx.ResponseStatus = resp.StatusCode

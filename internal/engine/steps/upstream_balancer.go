@@ -36,8 +36,7 @@ type UpstreamStats struct {
 type upstreamBalancer struct {
 	strategy  DistributionStrategy
 	instances []UpstreamInstance
-	nextIdx   int
-	mu        sync.Mutex
+	counter   atomic.Uint64
 
 	selectionCount atomic.Uint64
 	errorCount     atomic.Uint64
@@ -74,17 +73,16 @@ func newUpstreamBalancer(strategy DistributionStrategy, instances []UpstreamInst
 }
 
 func (b *upstreamBalancer) Next() (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if len(b.instances) == 0 {
+	n := uint64(len(b.instances))
+	if n == 0 {
 		b.errorCount.Add(1)
 		return "", errors.New("no upstream instances available")
 	}
 
-	for i := 0; i < len(b.instances); i++ {
-		candidate := b.instances[b.nextIdx]
-		b.nextIdx = (b.nextIdx + 1) % len(b.instances)
+	start := b.counter.Add(1)
+	for i := range n {
+		idx := (start - 1 + i) % n
+		candidate := b.instances[idx]
 		if candidate.Healthy == nil || *candidate.Healthy {
 			b.selectionCount.Add(1)
 			return candidate.URL, nil

@@ -73,14 +73,25 @@ func Ffloat(key string, value float64) Field {
 // Logger emits leveled log lines in logfmt format.
 // All exported methods are safe for concurrent use.
 type Logger struct {
-	level atomic.Int32 // stores Level value
+	level  atomic.Int32 // stores Level value
+	writer LogWriter    // nil = synchronous fallback (startup, tests)
+	pool   *BufPool     // nil when writer is nil
 }
 
-// New creates a Logger at the given level.
+// New creates a Logger at the given level using synchronous log.Print (fallback mode).
+// Call SetWriter to enable async mode.
 func New(level Level) *Logger {
 	l := &Logger{}
 	l.level.Store(int32(level))
 	return l
+}
+
+// SetWriter switches the logger to async mode.
+// Must be called before the logger is used at high concurrency.
+// pool is used to allocate/recycle log line buffers.
+func (l *Logger) SetWriter(w LogWriter, pool *BufPool) {
+	l.pool = pool
+	l.writer = w // assign last: writer != nil means async mode is active
 }
 
 // SetLevel changes the level atomically (no restart needed).
@@ -135,7 +146,30 @@ func (l *Logger) log(level Level, msg string, fields ...Field) {
 
 // emit formats and logs the message with fields in logfmt format.
 func (l *Logger) emit(levelStr, msg string, fields []Field) {
-	var buf strings.Builder
+	w := l.writer
+	if w == nil {
+		// Synchronous fallback: used during startup / in tests that don't call SetWriter
+		var buf strings.Builder
+		formatLogLine(&buf, levelStr, msg, fields)
+		log.Print(buf.String())
+		return
+	}
+
+	// Async path: get pooled buffer, format into it, send to ring
+	lb := l.pool.Get()
+	formatIntoLogBuf(lb, levelStr, msg, fields)
+
+	policy := DropSilently
+	if levelStr == "WARN" || levelStr == "ERROR" {
+		policy = BlockOnFull
+	}
+	w.Write(lb, policy)
+	// Note: do NOT call pool.Put(lb) here — the async writer owns lb now
+	// and will Put it back after draining it to the batch
+}
+
+// formatLogLine writes the logfmt line into a strings.Builder (sync fallback path).
+func formatLogLine(buf *strings.Builder, levelStr, msg string, fields []Field) {
 	buf.WriteString("level=")
 	buf.WriteString(levelStr)
 	buf.WriteString(" msg=")
@@ -164,8 +198,33 @@ func (l *Logger) emit(levelStr, msg string, fields []Field) {
 			buf.WriteString(f.Value)
 		}
 	}
+}
 
-	log.Print(buf.String())
+// formatIntoLogBuf writes the logfmt line directly into a *LogBuf (async path).
+// No allocation: appends to lb.b in place.
+func formatIntoLogBuf(lb *LogBuf, levelStr, msg string, fields []Field) {
+	lb.WriteString("level=")
+	lb.WriteString(levelStr)
+	lb.WriteString(" msg=")
+	if strings.ContainsAny(msg, " ") {
+		lb.WriteString(`"`)
+		lb.WriteString(msg)
+		lb.WriteString(`"`)
+	} else {
+		lb.WriteString(msg)
+	}
+	for _, f := range fields {
+		lb.WriteString(" ")
+		lb.WriteString(f.Key)
+		lb.WriteString("=")
+		if strings.ContainsAny(f.Value, " =") {
+			lb.WriteString(`"`)
+			lb.WriteString(f.Value)
+			lb.WriteString(`"`)
+		} else {
+			lb.WriteString(f.Value)
+		}
+	}
 }
 
 // Default is the process-wide logger, starts at INFO.

@@ -33,6 +33,7 @@ type ExecutionState struct {
 
 	TraceAttrs     [24][2]string
 	traceAttrCount int8
+
 }
 
 func (s *ExecutionState) AddTraceAttr(k, v string) {
@@ -61,49 +62,57 @@ type Instruction struct {
 }
 
 // Execute runs a compiled instruction table using absolute jumps.
-// It assumes each Instruction.Action returns the ABSOLUTE next PC.
+// Per-instruction timing is written into ctx.InstrPC / ctx.InstrDurNs /
+// ctx.InstrCount so callers can hand them off to instrSlabRing.Write without
+// paying the cost of returning a large struct by value.
 func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 	pc := startID
 	tableLen := int16(len(table))
 
-	// ExecutionState lives on stack (no GC pressure)
-	state := ExecutionState{}
+	// ExecutionState lives on this goroutine's stack (no GC pressure).
+	var state ExecutionState
 
 	for pc >= 0 && pc < tableLen {
-		state.PC = pc // Keep PC in sync for instructions that use it
+		state.PC = pc
 		current := table[pc]
-		shouldMeasure := ctx.Obs != nil && (ctx.Trace != nil || ctx.Obs.InstructionTimingEnabled())
+		shouldTrace := ctx.Obs != nil && ctx.Trace != nil
+		shouldMeasure := ctx.Obs != nil && (shouldTrace || ctx.Obs.InstructionTimingEnabled())
 		var started time.Time
 		if shouldMeasure {
 			started = time.Now()
 		}
 		pc = current.Action(ctx, &state)
-		var duration time.Duration
-		if shouldMeasure {
-			duration = time.Since(started)
-			// Extremely fast instructions can appear as 0ns on some platforms.
-			// Preserve attribution by recording a minimal non-zero duration.
-			if duration <= 0 {
-				duration = time.Nanosecond
-			}
-			ctx.Obs.RecordInstruction(current.Name, duration)
-		}
-		if shouldMeasure && ctx.Trace != nil && ctx.Obs != nil {
-			var outputKVs []observability.KV
-			if state.traceAttrCount > 0 {
-				outputKVs = make([]observability.KV, 0, int(state.traceAttrCount))
-				for i := int8(0); i < state.traceAttrCount; i++ {
-					outputKVs = append(outputKVs, observability.KV{K: state.TraceAttrs[i][0], V: state.TraceAttrs[i][1]})
+
+		// Accumulate PC and timing into ctx (not state) so Execute can return
+		// void — avoids copying the ~1200-byte ExecutionState on every request.
+		if ctx.InstrCount < 64 {
+			ctx.InstrPC[ctx.InstrCount] = state.PC
+			if shouldMeasure {
+				ns := time.Since(started).Nanoseconds()
+				if ns <= 0 {
+					ns = 1
 				}
+				ctx.InstrDurNs[ctx.InstrCount] = int32(ns)
+				if shouldTrace {
+					var outputKVs []observability.KV
+					if state.traceAttrCount > 0 {
+						outputKVs = make([]observability.KV, 0, int(state.traceAttrCount))
+						for i := int8(0); i < state.traceAttrCount; i++ {
+							outputKVs = append(outputKVs, observability.KV{K: state.TraceAttrs[i][0], V: state.TraceAttrs[i][1]})
+						}
+					}
+					state.traceAttrCount = 0
+					ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
+						PC:         state.PC,
+						StepIdx:    current.StepIdx,
+						DurationNs: ns,
+						Output:     outputKVs,
+					})
+				}
+			} else {
+				ctx.InstrDurNs[ctx.InstrCount] = 0
 			}
-			state.traceAttrCount = 0
-			ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
-				Name:       current.Name,
-				PC:         state.PC,
-				StepIdx:    current.StepIdx,
-				DurationNs: duration.Nanoseconds(),
-				Output:     outputKVs,
-			})
+			ctx.InstrCount++
 		}
 
 		if pc == StopPlan {

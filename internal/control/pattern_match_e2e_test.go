@@ -679,7 +679,7 @@ func BenchmarkPatternMatchE2ECompileAndExecute(b *testing.B) {
 		if apiID == 0 {
 			b.Fatal("route not found")
 		}
-		ctx := fm.Pool.Get().(*rctx.Context)
+		ctx := fm.GetContext()
 		ctx.Reset(httptest.NewRecorder())
 		ctx.ApiId = apiID
 		ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
@@ -739,7 +739,7 @@ func TestPatternMatchE2EQueryParamSource(t *testing.T) {
 			if apiID == 0 {
 				t.Fatalf("route /e2e/export not found")
 			}
-			ctx := fm.Pool.Get().(*rctx.Context)
+			ctx := fm.GetContext()
 			ctx.Reset(httptest.NewRecorder())
 			ctx.ApiId = apiID
 			ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
