@@ -353,6 +353,7 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/rate-limit-configs/", s.rateLimitConfigsMgmtProxy)
 	apiMux.HandleFunc("/api/rate-limit-configs-v2", s.rateLimitConfigsV2MgmtProxy)
 	apiMux.HandleFunc("/api/rate-limit-configs-v2/", s.rateLimitConfigsV2MgmtProxy)
+	apiMux.HandleFunc("/api/concurrency", s.concurrencyMgmtProxy)
 	apiMux.HandleFunc("/api/tiers", s.tiersMgmtProxy)
 	apiMux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
 	apiMux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
@@ -1460,6 +1461,11 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 // rateLimitConfigsV2MgmtProxy forwards /api/rate-limit-configs-v2[/...] → /rate-limit-configs-v2[/...].
 func (s *Server) rateLimitConfigsV2MgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// concurrencyMgmtProxy forwards /api/concurrency → /admin/concurrency on the management server.
+func (s *Server) concurrencyMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/admin/concurrency")
 }
 
 // tiersMgmtProxy forwards /api/tiers[/...] → /tiers[/...] on the management server.

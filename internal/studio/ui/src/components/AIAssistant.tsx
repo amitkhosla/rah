@@ -15,6 +15,24 @@ type ChatAction = {
   target?: string
 }
 
+type APICallLog = {
+  label: string
+  url: string
+  status_code?: number
+  duration_ms: number
+  error?: string
+}
+
+type ChatDebugInfo = {
+  model_alias: string
+  system_prompt: string
+  messages_sent: { role: string; content: string }[]
+  raw_llm_response: string
+  api_calls: APICallLog[]
+  dropped_actions?: string[]   // actions rejected by server-side validation
+  duration_ms: number
+}
+
 type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
@@ -23,6 +41,7 @@ type ChatMessage = {
     actions: ChatAction[]
     questions: string[]
     dsl_preview?: string
+    debug?: ChatDebugInfo
   }
   appliedActions: Set<number>
   failedActions: Record<number, string>
@@ -49,6 +68,166 @@ function opColor(op: string): string {
   if (o.includes('delete') || o.includes('remove')) return '#ef4444'
   if (o.includes('update')) return '#f59e0b'
   return 'var(--accent)'
+}
+
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+// ── Debug Panel ───────────────────────────────────────────────────────────────
+
+function DebugPanel({ debug }: { debug: ChatDebugInfo }) {
+  const [showPrompt, setShowPrompt] = useState(false)
+  const [showMessages, setShowMessages] = useState(false)
+  const [showRaw, setShowRaw] = useState(false)
+
+  const sectionStyle: React.CSSProperties = {
+    marginTop: 6,
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    overflow: 'hidden',
+  }
+  const headerStyle: React.CSSProperties = {
+    padding: '4px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer',
+    background: 'var(--panel)',
+    color: 'var(--muted)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    userSelect: 'none',
+  }
+  const bodyStyle: React.CSSProperties = {
+    padding: '8px 10px',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+    overflowX: 'auto',
+    maxHeight: 280,
+    overflowY: 'auto',
+    color: 'var(--text)',
+    background: 'var(--block-bg)',
+  }
+
+  return (
+    <div style={{
+      marginTop: 10,
+      border: '1px solid #7c3aed44',
+      borderRadius: 8,
+      padding: '10px 12px',
+      background: 'rgba(124,58,237,0.04)',
+      fontSize: 12,
+    }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 4, background: '#7c3aed', color: '#fff', letterSpacing: 0.5 }}>
+          DEBUG
+        </span>
+        <span style={{ color: 'var(--muted)', fontWeight: 600 }}>
+          model: <span style={{ color: 'var(--text)' }}>{debug.model_alias}</span>
+        </span>
+        <span style={{ color: 'var(--muted)', fontWeight: 600 }}>
+          total: <span style={{ color: 'var(--text)' }}>{fmtMs(debug.duration_ms)}</span>
+        </span>
+      </div>
+
+      {/* Dropped actions — show prominently as a security signal */}
+      {debug.dropped_actions && debug.dropped_actions.length > 0 && (
+        <div style={{
+          marginBottom: 8,
+          padding: '6px 10px',
+          background: 'rgba(239,68,68,0.08)',
+          border: '1px solid #ef444444',
+          borderRadius: 6,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: '#ef4444', marginBottom: 4, letterSpacing: 0.5 }}>
+            BLOCKED BY SERVER ({debug.dropped_actions.length})
+          </div>
+          {debug.dropped_actions.map((d, i) => (
+            <div key={i} style={{ fontSize: 11, color: '#ef4444', fontFamily: 'monospace' }}>{d}</div>
+          ))}
+        </div>
+      )}
+
+      {/* API calls table */}
+      {debug.api_calls && debug.api_calls.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', marginBottom: 4, letterSpacing: 0.5 }}>
+            API CALLS
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                {(['label', 'url', 'status', 'duration', 'error'] as const).map(col => (
+                  <th key={col} style={{ textAlign: 'left', padding: '2px 6px', color: 'var(--muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {debug.api_calls.map((c, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '3px 6px', fontFamily: 'monospace', color: 'var(--text)', whiteSpace: 'nowrap' }}>{c.label}</td>
+                  <td style={{ padding: '3px 6px', fontFamily: 'monospace', color: 'var(--muted)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.url}>{c.url}</td>
+                  <td style={{ padding: '3px 6px', fontFamily: 'monospace', color: c.status_code && c.status_code >= 400 ? '#ef4444' : c.status_code ? '#22c55e' : 'var(--muted)', whiteSpace: 'nowrap' }}>
+                    {c.status_code ?? '—'}
+                  </td>
+                  <td style={{ padding: '3px 6px', fontFamily: 'monospace', color: 'var(--text)', whiteSpace: 'nowrap' }}>{fmtMs(c.duration_ms)}</td>
+                  <td style={{ padding: '3px 6px', color: '#ef4444', fontFamily: 'monospace', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.error}>{c.error ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* System prompt collapsible */}
+      <div style={sectionStyle}>
+        <div style={headerStyle} onClick={() => setShowPrompt(o => !o)}>
+          <span>{showPrompt ? '▾' : '▸'}</span> System Prompt
+          <span style={{ marginLeft: 'auto', fontWeight: 400 }}>{debug.system_prompt.length} chars</span>
+        </div>
+        {showPrompt && (
+          <div style={bodyStyle}>{debug.system_prompt}</div>
+        )}
+      </div>
+
+      {/* Messages sent collapsible */}
+      <div style={sectionStyle}>
+        <div style={headerStyle} onClick={() => setShowMessages(o => !o)}>
+          <span>{showMessages ? '▾' : '▸'}</span> Messages Sent
+          <span style={{ marginLeft: 'auto', fontWeight: 400 }}>{debug.messages_sent?.length ?? 0} messages</span>
+        </div>
+        {showMessages && (
+          <div style={bodyStyle}>
+            {(debug.messages_sent ?? []).map((m, i) => (
+              <div key={i} style={{ marginBottom: 8 }}>
+                <span style={{ fontWeight: 700, color: m.role === 'user' ? '#0ea5e9' : '#a78bfa' }}>[{m.role}] </span>
+                {m.content}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Raw LLM response collapsible */}
+      {debug.raw_llm_response && (
+        <div style={sectionStyle}>
+          <div style={headerStyle} onClick={() => setShowRaw(o => !o)}>
+            <span>{showRaw ? '▾' : '▸'}</span> Raw LLM Response
+            <span style={{ marginLeft: 'auto', fontWeight: 400 }}>{debug.raw_llm_response.length} chars</span>
+          </div>
+          {showRaw && (
+            <div style={bodyStyle}>{debug.raw_llm_response}</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── Action Block ──────────────────────────────────────────────────────────────
@@ -172,7 +351,6 @@ function ActionBlock({
                 fontWeight: 600,
                 background: 'var(--step-bg)',
                 color: 'var(--muted)',
-                border2: '1px solid var(--border)',
               } as React.CSSProperties}
             >
               Discard
@@ -201,6 +379,7 @@ export default function AIAssistant() {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [includeAPIs, setIncludeAPIs] = useState(true)
   const [includeFlows, setIncludeFlows] = useState(true)
+  const [showDebug, setShowDebug] = useState(true)   // verbose by default; will be opt-in later
   const [capabilities, setCapabilities] = useState<CapabilitiesInfo>({ apis: [], flows: [] })
   const [capLoading, setCapLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -309,17 +488,17 @@ export default function AIAssistant() {
           const text = await res.text().catch(() => `HTTP ${res.status}`)
           throw new Error(text || `HTTP ${res.status}`)
         }
-        setMessages(prev =>
-          prev.map((m, i) => {
-            if (i !== msgIndex) return m
-            const next = new Set(m.appliedActions)
-            next.add(actionIndex)
-            return { ...m, appliedActions: next }
-          })
-        )
       } else {
         throw new Error(`Not yet implemented for op: ${action.op}`)
       }
+      setMessages(prev =>
+        prev.map((m, i) => {
+          if (i !== msgIndex) return m
+          const next = new Set(m.appliedActions)
+          next.add(actionIndex)
+          return { ...m, appliedActions: next }
+        })
+      )
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       setMessages(prev =>
@@ -370,16 +549,32 @@ export default function AIAssistant() {
           session_history: history,
         }),
       })
-      const data = await res.json()
+
+      // Always try JSON first; fall back to text if content-type is wrong
+      const contentType = res.headers.get('content-type') ?? ''
+      let data: Record<string, unknown> = {}
+      if (contentType.includes('application/json')) {
+        data = await res.json()
+      } else {
+        const text = await res.text()
+        data = { error: text || `HTTP ${res.status}` }
+      }
+
       if (!res.ok) {
         setMessages(prev => [
           ...prev,
-          { role: 'assistant', content: data.error || 'Error from server', appliedActions: new Set(), failedActions: {} },
+          { role: 'assistant', content: (data.error as string) || 'Error from server', appliedActions: new Set(), failedActions: {} },
         ])
       } else {
         setMessages(prev => [
           ...prev,
-          { role: 'assistant', content: data.confirm_message, response: data, appliedActions: new Set(), failedActions: {} },
+          {
+            role: 'assistant',
+            content: (data.confirm_message as string) ?? '',
+            response: data as ChatMessage['response'],
+            appliedActions: new Set(),
+            failedActions: {},
+          },
         ])
       }
     } catch (e: unknown) {
@@ -507,6 +702,27 @@ export default function AIAssistant() {
               />
               Include flow names
             </label>
+          </div>
+
+          {/* Verbose toggle */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600, display: 'block', marginBottom: 6 }}>
+              OBSERVABILITY
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={showDebug}
+                onChange={e => setShowDebug(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              Show debug info
+            </label>
+            {showDebug && (
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, lineHeight: 1.4 }}>
+                Prompts, API calls, model, timing visible per message.
+              </div>
+            )}
           </div>
 
           {/* Refresh button */}
@@ -756,6 +972,11 @@ export default function AIAssistant() {
                         )
                       })}
                     </div>
+                  )}
+
+                  {/* Debug panel */}
+                  {showDebug && msg.response?.debug && (
+                    <DebugPanel debug={msg.response.debug} />
                   )}
                 </div>
               )}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema } from './api'
-import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup, TabId } from './types'
+import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'tenants' | 'apps' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'settings'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
 import FlowDesigner   from './components/FlowDesigner'
@@ -18,6 +19,7 @@ import RateLimitConfigsScreen from './components/RateLimitConfigsScreen'
 import TenantTiersScreen      from './components/TenantTiersScreen'
 import UpstreamServicesScreen from './components/UpstreamServicesScreen'
 import CachePanel             from './components/CachePanel'
+import Concurrency            from './components/Concurrency'
 import Apps                  from './components/Apps'
 import Egress                from './components/Egress'
 import Releases              from './components/Releases'
@@ -125,6 +127,7 @@ const NAV_ICONS: Record<string, string> = {
   egress:             '⇄',
   schemas:            '⊞',
   grpc:               '⬡',
+  concurrency:        '⟿',
   settings:           '⚙',
 }
 
@@ -151,6 +154,7 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'schemas',             label: 'Schemas' },
   { kind: 'item',    id: 'grpc',                label: 'gRPC' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
+  { kind: 'item',    id: 'concurrency',        label: 'Concurrency' },
   { kind: 'section', label: '' },
   { kind: 'item',    id: 'settings',  label: 'Settings' },
 ]
@@ -689,6 +693,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'schemas'           && <SchemaLibrary />}
         {tab === 'grpc'              && <GrpcDescriptors />}
         {tab === 'cache'             && <CachePanel />}
+        {tab === 'concurrency'       && <Concurrency />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
     </div>

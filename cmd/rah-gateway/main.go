@@ -225,7 +225,8 @@ func main() {
 	// registry.GetNameByID with no hot-path cost.
 	fm := engine.NewFlowManager(12000, cfg)
 	fm.StartController(gatewayCtx, cfgMgr.Gateway().Concurrency)
-	log.Printf("[concurrency] limit=%d adaptive=%v",
+	log.Printf("[concurrency] enabled=%v limit=%d adaptive=%v",
+		cfgMgr.Gateway().Concurrency.Enabled,
 		fm.Limiter.Limit(), !cfgMgr.Gateway().Concurrency.Disabled)
 	obs := observability.NewFromEnv()
 	// Prefer explicit gateway config for observability trace controls.
@@ -759,13 +760,16 @@ func main() {
 				return
 			}
 
-			// B0. Concurrency gate — fast reject before touching pool or arena.
-			// ~5 ns on the reject path; zero allocation, zero pool interaction.
-			if !fm.Limiter.TryAcquire() {
-				w.WriteHeader(http.StatusTooManyRequests)
-				return
+			// B0. Concurrency gate — active only when enabled in config or via PATCH /admin/concurrency.
+			// When disabled: one atomic load (~1 ns), branch not taken, zero overhead.
+			// IMPORTANT: defer Release() is inside the if-block — only registered when TryAcquire succeeds.
+			if fm.LimiterEnabled() {
+				if !fm.Limiter.TryAcquire() {
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				defer fm.Limiter.Release()
 			}
-			defer fm.Limiter.Release()
 
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
@@ -789,24 +793,34 @@ func main() {
 			ctx.SnapshotMetadata(req.Method, req.URL.Path, req.URL.RawQuery)
 
 			// C. Delegate Execution to FlowManager
-			processStarted := time.Now()
+			var processStarted time.Time
+			if ctx.Trace != nil {
+				processStarted = time.Now()
+			}
 			fm.ProcessRequest(ctx, req)
-			processDuration := time.Since(processStarted)
+			var processDuration time.Duration
+			if ctx.Trace != nil {
+				processDuration = time.Since(processStarted)
+			}
 
 			// D. Finalize: flush buffered response — client receives data here.
 			// If the client disconnected during flow execution, respond with 499
 			// (nginx convention: client closed request) and skip normal finalization.
-			finalizeStarted := time.Now()
+			var finalizeStarted time.Time
+			if ctx.Trace != nil {
+				finalizeStarted = time.Now()
+			}
 			if atomic.LoadInt32(&ctx.Cancelled) != 0 {
 				ctx.ResponseStatus = 499
 				ctx.Finalize()
 				// Skip AfterResponse hooks — client is gone.
-				finalizeDuration := time.Since(finalizeStarted)
-				_ = finalizeDuration
 				return
 			}
 			ctx.Finalize()
-			finalizeDuration := time.Since(finalizeStarted)
+			var finalizeDuration time.Duration
+			if ctx.Trace != nil {
+				finalizeDuration = time.Since(finalizeStarted)
+			}
 
 			// clientTotal: captured immediately after the last byte is written —
 			// before any post-response work — so it correctly spans:
@@ -827,11 +841,17 @@ func main() {
 			// D2. After-response hooks: run deferred ingest events now that
 			// the response is committed. These are non-blocking channel sends
 			// so they complete in nanoseconds; no latency impact on the caller.
-			afterHooksStarted := time.Now()
+			var afterHooksStarted time.Time
+			if ctx.Trace != nil {
+				afterHooksStarted = time.Now()
+			}
 			for _, fn := range ctx.AfterResponse {
 				fn()
 			}
-			afterHooksDuration := time.Since(afterHooksStarted)
+			var afterHooksDuration time.Duration
+			if ctx.Trace != nil {
+				afterHooksDuration = time.Since(afterHooksStarted)
+			}
 
 			// E. Post-response: snapshot for async access log and observability.
 			// Client has already received the response — none of this adds latency.
@@ -842,10 +862,7 @@ func main() {
 
 			// Feed gateway overhead (client total minus upstream wait) to the
 			// adaptive concurrency controller. Zero upstream = pure gateway work.
-			overheadMs := (clientTotal.Nanoseconds() - upstreamNs) / 1_000_000
-			if overheadMs < 0 {
-				overheadMs = 0
-			}
+			overheadMs := max((clientTotal.Nanoseconds()-upstreamNs)/1_000_000, 0)
 			fm.LatencyRing.Record(overheadMs)
 
 			ttfbNs := max(ctx.Timing.FirstByteSentNs-ctx.Timing.StartNs, 0)
@@ -874,7 +891,10 @@ func main() {
 					observability.KV{K: "caller_id", V: strconv.FormatUint(uint64(ctx.CallerID), 10)},
 				)
 			}
-			accessLogSnapshotStarted := time.Now()
+			var accessLogSnapshotStarted time.Time
+			if ctx.Trace != nil {
+				accessLogSnapshotStarted = time.Now()
+			}
 			accessLog.Snapshot(
 				apiName,
 				ctx.ApiId,
@@ -889,7 +909,10 @@ func main() {
 				req,
 				runtimeLogFields...,
 			)
-			accessLogSnapshotDuration := time.Since(accessLogSnapshotStarted)
+			var accessLogSnapshotDuration time.Duration
+			if ctx.Trace != nil {
+				accessLogSnapshotDuration = time.Since(accessLogSnapshotStarted)
+			}
 
 			shouldPersistTrace := ctx.Trace != nil && (isSampledTrace || (alwaysTrace5xx && ctx.ResponseStatus >= 500))
 			var traceForTelemetry *observability.RequestTrace
@@ -897,14 +920,20 @@ func main() {
 				traceForTelemetry = ctx.Trace
 			}
 
-			obsFinishStarted := time.Now()
+			var obsFinishStarted time.Time
+			if ctx.Trace != nil {
+				obsFinishStarted = time.Now()
+			}
 			obs.FinishRequest(traceForTelemetry, ctx.ResponseStatus, total, gateway, upstream,
 				int(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
 				ctx.Timing.ClientBytesSent,
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesTx),
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesRx),
 			)
-			obsFinishDuration := time.Since(obsFinishStarted)
+			var obsFinishDuration time.Duration
+			if ctx.Trace != nil {
+				obsFinishDuration = time.Since(obsFinishStarted)
+			}
 
 			// Record per-API stats for the in-memory API Performance fallback.
 			// Post-response: client already has the response, not on the critical path.
@@ -918,7 +947,10 @@ func main() {
 			}
 
 			// Write to persistent observability store (async, non-blocking via ObsWriter buffer).
-			accessLogEnqueueStarted := time.Now()
+			var accessLogEnqueueStarted time.Time
+			if ctx.Trace != nil {
+				accessLogEnqueueStarted = time.Now()
+			}
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
 				TimestampNs: time.Now().UnixNano(),
 				ApiName:     apiName,
@@ -936,7 +968,10 @@ func main() {
 				ReqBytes:    req.ContentLength,
 				ResBytes:    ctx.Timing.ClientBytesSent,
 			})
-			accessLogEnqueueDuration := time.Since(accessLogEnqueueStarted)
+			var accessLogEnqueueDuration time.Duration
+			if ctx.Trace != nil {
+				accessLogEnqueueDuration = time.Since(accessLogEnqueueStarted)
+			}
 
 			if shouldPersistTrace {
 				appendGatewayPhase := func(name string, d time.Duration, note string) {

@@ -87,6 +87,16 @@ type FlowManager struct {
 	// response is sent. The adaptive controller adjusts Limiter.limit each tick.
 	Limiter ConcurrencyLimiter
 
+	// limiterEnabled is true when the concurrency gate is active.
+	// Set by StartController; updated atomically at runtime via PATCH /admin/concurrency.
+	// Read on every request — must be a single atomic load (~1 ns).
+	limiterEnabled atomic.Bool
+
+	// liveConfig holds the current ConcurrencyConfig read by the AIMD goroutine
+	// each tick and written by the PATCH handler. Always stores a
+	// config.ConcurrencyConfig value (never nil) after StartController is called.
+	liveConfig atomic.Value
+
 	// LatencyRing is the two-generation rolling latency histogram that feeds
 	// the adaptive controller. Record() is called post-response with
 	// (clientTotal − upstreamTime) in milliseconds.
@@ -441,6 +451,10 @@ func (fm *FlowManager) flushOps(ctx *rctx.Context) {
 		<-registryDone
 	}
 }
+
+// LimiterEnabled reports whether the concurrency gate is currently active.
+// Called on every request — single atomic load, ~1 ns, no allocation.
+func (fm *FlowManager) LimiterEnabled() bool { return fm.limiterEnabled.Load() }
 
 // RunInBackground detaches a context from the request lifecycle and executes
 // task in a background goroutine. The context is returned to the pool only

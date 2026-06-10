@@ -38,6 +38,8 @@ import type {
   ReleaseListResponse,
   CreateReleaseResponse,
   ReleaseDiff,
+  ConcurrencyStatus,
+  ConcurrencyPatch,
 } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -828,4 +830,16 @@ export async function promoteRelease(
 
 export function diffReleases(id: string, otherId: string): Promise<ReleaseDiff> {
   return request<ReleaseDiff>(`/api/releases/${encodeURIComponent(id)}/diff/${encodeURIComponent(otherId)}`)
+}
+
+export function getConcurrencyStatus(): Promise<ConcurrencyStatus> {
+  return request<ConcurrencyStatus>('/api/concurrency')
+}
+
+export function patchConcurrencyConfig(body: ConcurrencyPatch): Promise<ConcurrencyStatus> {
+  return request<ConcurrencyStatus>('/api/concurrency', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }

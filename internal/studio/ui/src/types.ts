@@ -797,3 +797,28 @@ export interface GrpcDescriptorSummary {
   services: GrpcServiceInfo[]
   uploaded_at: string
 }
+
+// ── Concurrency Limiter ──────────────────────────────────────────────
+export interface ConcurrencyStatus {
+  enabled: boolean
+  limit: number
+  active: number
+  rejected: number
+  adaptive: boolean
+  target_overhead_ms: number
+  min_limit: number
+  max_limit: number
+  add_step: number
+  cut_factor: number
+}
+
+export interface ConcurrencyPatch {
+  enabled?: boolean
+  disabled?: boolean
+  limit?: number
+  target_overhead_ms?: number
+  min_limit?: number
+  max_limit?: number
+  add_step?: number
+  cut_factor?: number
+}

@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime"
 	"sync/atomic"
@@ -160,12 +162,22 @@ func (l *ConcurrencyLimiter) Limit() int64 { return l.limit.Load() }
 // Rejected returns the cumulative number of requests rejected since startup.
 func (l *ConcurrencyLimiter) Rejected() int64 { return l.rejected.Load() }
 
-// StartController initialises the limiter and, unless cfg.Disabled is true,
+// StartController initialises the limiter and, if cfg.Enabled is true,
 // starts the AIMD adaptive loop as a background goroutine.
 // Call once from main after NewFlowManager; pass the gateway context so the
 // controller stops cleanly on shutdown.
 func (fm *FlowManager) StartController(ctx context.Context, cfg config.ConcurrencyConfig) {
-	// Fill in zero-value fields with GOMAXPROCS-derived defaults.
+	// Always store a typed zero so liveConfig.Load() is always type-safe,
+	// even if the feature is disabled and the AIMD goroutine never starts.
+	fm.liveConfig.Store(cfg)
+
+	if !cfg.Enabled {
+		fm.limiterEnabled.Store(false)
+		log.Printf("[concurrency] disabled — gate inactive, no 429s")
+		return
+	}
+
+	// Fill zero-value fields with GOMAXPROCS-derived defaults.
 	procs := int64(runtime.GOMAXPROCS(0))
 	if cfg.TargetOverheadMs <= 0 {
 		cfg.TargetOverheadMs = 50
@@ -174,9 +186,6 @@ func (fm *FlowManager) StartController(ctx context.Context, cfg config.Concurren
 		cfg.InitialLimit = procs * 1000
 	}
 	if cfg.MinLimit <= 0 {
-		// Floor is set high enough that the controller never causes 429s under
-		// normal load. At 1s upstream delay, 1000 concurrent = 1000 RPS — well
-		// above what most gateways see as "low traffic."
 		cfg.MinLimit = procs * 500
 	}
 	if cfg.MaxLimit <= 0 {
@@ -198,36 +207,54 @@ func (fm *FlowManager) StartController(ctx context.Context, cfg config.Concurren
 		cfg.CooldownTicks = 3
 	}
 
+	// Store filled config before enabling the gate — goroutine reads liveConfig.
+	fm.liveConfig.Store(cfg)
 	fm.Limiter.SetLimit(cfg.InitialLimit)
+	fm.limiterEnabled.Store(true) // gate is now live; must be last
 
-	if !cfg.Disabled {
-		go fm.runConcurrencyController(ctx, cfg)
-	}
+	go fm.runConcurrencyController(ctx)
+	log.Printf("[concurrency] enabled limit=%d adaptive=%v target_ms=%d",
+		cfg.InitialLimit, !cfg.Disabled, cfg.TargetOverheadMs)
 }
 
 // runConcurrencyController is the AIMD adaptive loop.
 // Runs as a background goroutine; exits when ctx is cancelled.
 //
-// Each tick it:
-//  1. Rotates the LatencyRing to get a frozen generation.
-//  2. Computes p99 gateway overhead from that generation.
-//  3. Adjusts the concurrency limit using AIMD rules.
+// Each tick it reads liveConfig (enabling runtime PATCH updates) and checks
+// limiterEnabled to idle when disabled at runtime.
 //
 // AIMD rules:
 //   - Cut  (×CutFactor) when p99 > target AND utilisation > 60%.
 //   - Grow (+AddStep)   when p99 ≤ target AND utilisation > 80%.
 //   - Hold             in all other cases (low traffic, low samples, cooldown).
-func (fm *FlowManager) runConcurrencyController(ctx context.Context, cfg config.ConcurrencyConfig) {
-	ticker := time.NewTicker(time.Duration(cfg.TickSec) * time.Second)
+func (fm *FlowManager) runConcurrencyController(ctx context.Context) {
+	initCfg := fm.liveConfig.Load().(config.ConcurrencyConfig)
+	ticker := time.NewTicker(time.Duration(initCfg.TickSec) * time.Second)
 	defer ticker.Stop()
 
-	cooldown := 0 // ticks remaining in cut cooldown
+	cooldown := 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			cfg := fm.liveConfig.Load().(config.ConcurrencyConfig)
+
+			// Gate disabled at runtime — drain ring to prevent stale samples,
+			// then idle. No limit adjustment.
+			if !fm.limiterEnabled.Load() {
+				fm.LatencyRing.Rotate()
+				cooldown = 0
+				continue
+			}
+
+			// Fixed-limit mode — gate is active but AIMD is off.
+			if cfg.Disabled {
+				fm.LatencyRing.Rotate()
+				continue
+			}
+
 			frozen := fm.LatencyRing.Rotate()
 			samples := frozen.count.Load()
 
@@ -235,7 +262,6 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context, cfg config.
 				cooldown--
 			}
 
-			// Don't act on statistically meaningless windows.
 			if samples < cfg.MinSamples {
 				continue
 			}
@@ -247,19 +273,17 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context, cfg config.
 
 			switch {
 			case p99 > cfg.TargetOverheadMs && utilization > 0.6 && cooldown == 0:
-				// Distressed and the limit is the likely cause — cut multiplicatively.
 				next := int64(float64(cur) * cfg.CutFactor)
 				if next < cfg.MinLimit {
 					next = cfg.MinLimit
 				}
 				if next < active {
-					next = active // never cut below currently in-flight requests
+					next = active
 				}
 				fm.Limiter.SetLimit(next)
 				cooldown = cfg.CooldownTicks
 
 			case p99 <= cfg.TargetOverheadMs && utilization > 0.8:
-				// Healthy and we're actually using the capacity — probe higher.
 				next := cur + cfg.AddStep
 				if next > cfg.MaxLimit {
 					next = cfg.MaxLimit
@@ -272,12 +296,59 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context, cfg config.
 
 // ConcurrencyHandler handles the /admin/concurrency management endpoint.
 //
-//	GET  — returns current limit, active count, and cumulative rejections.
-//	POST ?limit=N — overrides the limit; the adaptive controller continues
-//	               running and will adjust from the new value on the next tick.
+//	GET         — returns extended JSON: enabled, limit, active, rejected, adaptive params.
+//	POST ?limit=N — legacy manual limit override.
+//	PATCH       — JSON body runtime update of any concurrency config fields.
 func (fm *FlowManager) ConcurrencyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if r.Method == http.MethodPost {
+
+	switch r.Method {
+	case http.MethodPatch:
+		var patch struct {
+			Enabled          *bool    `json:"enabled"`
+			Disabled         *bool    `json:"disabled"`
+			Limit            *int64   `json:"limit"`
+			TargetOverheadMs *int64   `json:"target_overhead_ms"`
+			MinLimit         *int64   `json:"min_limit"`
+			MaxLimit         *int64   `json:"max_limit"`
+			AddStep          *int64   `json:"add_step"`
+			CutFactor        *float64 `json:"cut_factor"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+			return
+		}
+		cur := fm.liveConfig.Load().(config.ConcurrencyConfig)
+		if patch.Enabled != nil {
+			cur.Enabled = *patch.Enabled
+		}
+		if patch.Disabled != nil {
+			cur.Disabled = *patch.Disabled
+		}
+		if patch.TargetOverheadMs != nil {
+			cur.TargetOverheadMs = *patch.TargetOverheadMs
+		}
+		if patch.MinLimit != nil {
+			cur.MinLimit = *patch.MinLimit
+		}
+		if patch.MaxLimit != nil {
+			cur.MaxLimit = *patch.MaxLimit
+		}
+		if patch.AddStep != nil {
+			cur.AddStep = *patch.AddStep
+		}
+		if patch.CutFactor != nil {
+			cur.CutFactor = *patch.CutFactor
+		}
+		// Store updated config before toggling the gate.
+		fm.liveConfig.Store(cur)
+		fm.limiterEnabled.Store(cur.Enabled)
+		if patch.Limit != nil && *patch.Limit > 0 {
+			fm.Limiter.SetLimit(*patch.Limit)
+		}
+
+	case http.MethodPost:
+		// Legacy: POST ?limit=N manual override.
 		var n int64
 		if _, err := fmt.Sscan(r.URL.Query().Get("limit"), &n); err != nil || n <= 0 {
 			http.Error(w, `{"error":"limit must be a positive integer"}`, http.StatusBadRequest)
@@ -285,7 +356,15 @@ func (fm *FlowManager) ConcurrencyHandler(w http.ResponseWriter, r *http.Request
 		}
 		fm.Limiter.SetLimit(n)
 	}
-	fmt.Fprintf(w, `{"limit":%d,"active":%d,"rejected":%d}`,
-		fm.Limiter.Limit(), fm.Limiter.Active(), fm.Limiter.Rejected())
+
+	cfg := fm.liveConfig.Load().(config.ConcurrencyConfig)
+	fmt.Fprintf(w,
+		`{"enabled":%v,"limit":%d,"active":%d,"rejected":%d,"adaptive":%v,`+
+			`"target_overhead_ms":%d,"min_limit":%d,"max_limit":%d,"add_step":%d,"cut_factor":%.3f}`,
+		fm.limiterEnabled.Load(),
+		fm.Limiter.Limit(), fm.Limiter.Active(), fm.Limiter.Rejected(),
+		!cfg.Disabled,
+		cfg.TargetOverheadMs, cfg.MinLimit, cfg.MaxLimit, cfg.AddStep, cfg.CutFactor,
+	)
 }
 

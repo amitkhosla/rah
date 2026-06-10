@@ -14,6 +14,7 @@ import (
 	"rah/internal/gatewaylog"
 	"rah/internal/observability"
 	"rah/internal/rctx"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -187,6 +188,11 @@ type cachedClient struct {
 	Cfg    httpClientConfig
 }
 
+type cachedPool struct {
+	Pool *upstreamTransportPool
+	Cfg  httpClientConfig
+}
+
 // transportShard owns one http.Client/Transport and its connection pool.
 // Padded to a full cache line to prevent false sharing between adjacent shards.
 type transportShard struct {
@@ -316,9 +322,41 @@ func buildClientForProfile(profile *egress.EgressProfile, cfg httpClientConfig) 
 	}
 }
 
+func nextPow2(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	n--
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n++
+	return n
+}
+
+func buildTransportPool(profile *egress.EgressProfile, cfg httpClientConfig) *upstreamTransportPool {
+	n := nextPow2(runtime.NumCPU() * globalShardsPerCPU)
+	n = max(n, 2)
+	// Divide per-host limits across shards so total stays bounded.
+	shardCfg := cfg
+	if shardCfg.MaxIdleConnsPerHost > 0 {
+		shardCfg.MaxIdleConnsPerHost = max(shardCfg.MaxIdleConnsPerHost/n, 4)
+	}
+	if shardCfg.MaxConnsPerHost > 0 {
+		shardCfg.MaxConnsPerHost = max(shardCfg.MaxConnsPerHost/n, 1)
+	}
+	shards := make([]transportShard, n)
+	for i := range shards {
+		shards[i].client = buildClientForProfile(profile, shardCfg)
+	}
+	return &upstreamTransportPool{shards: shards, mask: uint64(n - 1)}
+}
+
 // getClientForProfile is the profile-aware replacement for getClientForTarget.
 // When profile is nil, behavior is identical to getClientForTarget (Auto).
-func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flowInput map[string]string) cachedClient {
+func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flowInput map[string]string) cachedPool {
 	getDefaultHTTPConfig()
 	cfg := resolveHTTPConfigForTarget(upstreamHost, flowInput)
 	var et egress.EgressType
@@ -327,17 +365,17 @@ func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flo
 	}
 	key := clientCacheKey{Upstream: upstreamHost, ConfigKey: configFingerprint(cfg), EgressType: et}
 	if existing, ok := perTargetClientCache.Load(key); ok {
-		return existing.(cachedClient)
+		return existing.(cachedPool)
 	}
 
-	created := cachedClient{Client: buildClientForProfile(profile, cfg), Cfg: cfg}
+	created := cachedPool{Pool: buildTransportPool(profile, cfg), Cfg: cfg}
 	if flowInt(flowInput, "http.max_client_cache_entries", 2048) <= int(perTargetClientCacheSize.Load()) {
-		return cachedClient{Client: defaultHTTPClient, Cfg: getDefaultHTTPConfig()}
+		return cachedPool{Pool: buildTransportPool(nil, getDefaultHTTPConfig()), Cfg: getDefaultHTTPConfig()}
 	}
 
 	actual, loaded := perTargetClientCache.LoadOrStore(key, created)
 	if loaded {
-		return actual.(cachedClient)
+		return actual.(cachedPool)
 	}
 	perTargetClientCacheSize.Add(1)
 	return created
@@ -346,22 +384,22 @@ func getClientForProfile(profile *egress.EgressProfile, upstreamHost string, flo
 // getClientForBakedConfig is the per-request client resolver for dynamic-URL flows.
 // bakedCfg and bakedFingerprint are computed once at bake time; the hot path here
 // is a single sync.Map.Load (cache hit). Cache misses build and store a new client.
-func getClientForBakedConfig(profile *egress.EgressProfile, upstreamHost string, bakedCfg httpClientConfig, bakedFingerprint string, maxEntries int) cachedClient {
+func getClientForBakedConfig(profile *egress.EgressProfile, upstreamHost string, bakedCfg httpClientConfig, bakedFingerprint string, maxEntries int) cachedPool {
 	var et egress.EgressType
 	if profile != nil {
 		et = profile.Type
 	}
 	key := clientCacheKey{Upstream: upstreamHost, ConfigKey: bakedFingerprint, EgressType: et}
 	if existing, ok := perTargetClientCache.Load(key); ok {
-		return existing.(cachedClient)
+		return existing.(cachedPool)
 	}
-	created := cachedClient{Client: buildClientForProfile(profile, bakedCfg), Cfg: bakedCfg}
+	created := cachedPool{Pool: buildTransportPool(profile, bakedCfg), Cfg: bakedCfg}
 	if int(perTargetClientCacheSize.Load()) >= maxEntries {
-		return cachedClient{Client: defaultHTTPClient, Cfg: getDefaultHTTPConfig()}
+		return cachedPool{Pool: buildTransportPool(nil, getDefaultHTTPConfig()), Cfg: getDefaultHTTPConfig()}
 	}
 	actual, loaded := perTargetClientCache.LoadOrStore(key, created)
 	if loaded {
-		return actual.(cachedClient)
+		return actual.(cachedPool)
 	}
 	perTargetClientCacheSize.Add(1)
 	return created
@@ -488,22 +526,22 @@ func extractUpstreamHost(rawURL string) string {
 	return strings.ToLower(hostPort)
 }
 
-func getClientForTarget(upstreamHost string, flowInput map[string]string) cachedClient {
+func getClientForTarget(upstreamHost string, flowInput map[string]string) cachedPool {
 	getDefaultHTTPConfig()
 	cfg := resolveHTTPConfigForTarget(upstreamHost, flowInput)
 	key := clientCacheKey{Upstream: upstreamHost, ConfigKey: configFingerprint(cfg)}
 	if existing, ok := perTargetClientCache.Load(key); ok {
-		return existing.(cachedClient)
+		return existing.(cachedPool)
 	}
 
-	created := cachedClient{Client: buildHTTPClient(cfg), Cfg: cfg}
+	created := cachedPool{Pool: buildTransportPool(nil, cfg), Cfg: cfg}
 	if flowInt(flowInput, "http.max_client_cache_entries", 2048) <= int(perTargetClientCacheSize.Load()) {
-		return cachedClient{Client: defaultHTTPClient, Cfg: getDefaultHTTPConfig()}
+		return cachedPool{Pool: buildTransportPool(nil, getDefaultHTTPConfig()), Cfg: getDefaultHTTPConfig()}
 	}
 
 	actual, loaded := perTargetClientCache.LoadOrStore(key, created)
 	if loaded {
-		return actual.(cachedClient)
+		return actual.(cachedPool)
 	}
 	perTargetClientCacheSize.Add(1)
 	return created
@@ -573,6 +611,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 			}
 			upstreamHost := extractUpstreamHost(url)
 			bundle := getClientForTarget(upstreamHost, flowInput)
+			httpClient := bundle.Pool.get()
 
 			attempts := bundle.Cfg.RetryMaxAttempts + 1
 			if maxRetries >= 0 {
@@ -630,37 +669,39 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					return engine.StopPlan
 				}
 
-				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-					DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
-					DNSDone: func(httptrace.DNSDoneInfo) {
-						if !dnsStart.IsZero() {
-							event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
-						}
-					},
-					ConnectStart: func(_, _ string) { connectStart = time.Now() },
-					ConnectDone: func(_, _ string, _ error) {
-						if !connectStart.IsZero() {
-							event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
-						}
-					},
-					TLSHandshakeStart: func() { tlsStart = time.Now() },
-					TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
-						if !tlsStart.IsZero() {
-							event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
-						}
-					},
-					GotConn: func(info httptrace.GotConnInfo) {
-						event.ConnReused = info.Reused
-						event.ConnIdle = info.WasIdle
-					},
-					WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
-					GotFirstResponseByte: func() {
-						firstByteStart = time.Now()
-						if !wroteReqStart.IsZero() {
-							event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
-						}
-					},
-				}))
+				if ctx.Trace != nil {
+					req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+						DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+						DNSDone: func(httptrace.DNSDoneInfo) {
+							if !dnsStart.IsZero() {
+								event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
+							}
+						},
+						ConnectStart: func(_, _ string) { connectStart = time.Now() },
+						ConnectDone: func(_, _ string, _ error) {
+							if !connectStart.IsZero() {
+								event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
+							}
+						},
+						TLSHandshakeStart: func() { tlsStart = time.Now() },
+						TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+							if !tlsStart.IsZero() {
+								event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
+							}
+						},
+						GotConn: func(info httptrace.GotConnInfo) {
+							event.ConnReused = info.Reused
+							event.ConnIdle = info.WasIdle
+						},
+						WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
+						GotFirstResponseByte: func() {
+							firstByteStart = time.Now()
+							if !wroteReqStart.IsZero() {
+								event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
+							}
+						},
+					}))
+				}
 
 				reqBytesSent := int64(0)
 				if req.ContentLength > 0 {
@@ -685,7 +726,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					}
 				}
 
-				resp, err := bundle.Client.Do(req)
+				resp, err := httpClient.Do(req)
 				// Stop timer — if it already fired, Cancel was already called (fine;
 				// the request was aborted). If it hasn't fired yet, stop it from firing
 				// after ctx is returned to the pool. Unlike context.WithTimeout.cancel(),
@@ -846,9 +887,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		bakedAttempts = 1
 	}
 
-	// For static URLs the upstream host is known — build and cache the *http.Client
-	// once here. Per-request cost becomes a single pointer read from the closure.
-	var staticHTTPClient *http.Client
+	// For static URLs the upstream host is known — build and cache the *upstreamTransportPool
+	// once here. Per-request cost becomes a single pool.get() call from the closure.
+	var staticPool *upstreamTransportPool
 	hasStaticURL := cfg.StaticURL != "" && cfg.URLSlot < 0
 	if hasStaticURL {
 		effectiveProfile := cfg.EgressProfile
@@ -859,7 +900,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				effectiveProfile = &egress.EgressProfile{Type: egress.EgressTypeH2C}
 			}
 		}
-		staticHTTPClient = getClientForBakedConfig(effectiveProfile, extractUpstreamHost(effectiveURL), bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Client
+		staticPool = getClientForBakedConfig(effectiveProfile, extractUpstreamHost(effectiveURL), bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool
 	}
 
 	// ── Parse mTLS client certificate at bake time ─────────────────────────────
@@ -955,15 +996,15 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			upstreamHost := extractUpstreamHost(url)
 
 			// ── Select HTTP client ────────────────────────────────────────────
-			// mTLS: dedicated client (lazy sync.Once). Static URL: pointer baked at
+			// mTLS: dedicated client (lazy sync.Once). Static URL: pool baked at
 			// instruction creation. Dynamic URL: sync.Map.Load with baked fingerprint.
 			var httpClient *http.Client
 			if mtlsCert != nil {
 				httpClient = getMTLSClient()
 			} else if hasStaticURL {
-				httpClient = staticHTTPClient
+				httpClient = staticPool.get()
 			} else {
-				httpClient = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Client
+				httpClient = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool.get()
 			}
 
 			// ── Retry budget (baked at instruction creation time) ─────────────
@@ -999,7 +1040,6 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 
 				upstreamStart := time.Now()
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
-				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
 				// ── Set deadline on ctx — ctx implements context.Context ─────────
 				// Passed directly to NewRequestWithContext; no timerCtx allocation.
@@ -1105,42 +1145,43 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				// ── Tracing ───────────────────────────────────────────────────────
-				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
-					DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
-					DNSDone: func(httptrace.DNSDoneInfo) {
-						if !dnsStart.IsZero() {
-							event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
-						}
-					},
-					ConnectStart: func(_, _ string) { connectStart = time.Now() },
-					ConnectDone: func(_, _ string, _ error) {
-						if !connectStart.IsZero() {
-							event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
-						}
-					},
-					TLSHandshakeStart: func() { tlsStart = time.Now() },
-					TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
-						if !tlsStart.IsZero() {
-							event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
-						}
-					},
-					GotConn: func(info httptrace.GotConnInfo) {
-						event.ConnReused = info.Reused
-						event.ConnIdle = info.WasIdle
-					},
-					WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
-					GotFirstResponseByte: func() {
-						firstByteStart = time.Now()
-						if !wroteReqStart.IsZero() {
-							event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
-						}
-					},
-				}))
+				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
+				if ctx.Trace != nil {
+					req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+						DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+						DNSDone: func(httptrace.DNSDoneInfo) {
+							if !dnsStart.IsZero() {
+								event.DNSDurationNs += time.Since(dnsStart).Nanoseconds()
+							}
+						},
+						ConnectStart: func(_, _ string) { connectStart = time.Now() },
+						ConnectDone: func(_, _ string, _ error) {
+							if !connectStart.IsZero() {
+								event.ConnectDurationNs += time.Since(connectStart).Nanoseconds()
+							}
+						},
+						TLSHandshakeStart: func() { tlsStart = time.Now() },
+						TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+							if !tlsStart.IsZero() {
+								event.TLSDurationNs += time.Since(tlsStart).Nanoseconds()
+							}
+						},
+						GotConn: func(info httptrace.GotConnInfo) {
+							event.ConnReused = info.Reused
+							event.ConnIdle = info.WasIdle
+						},
+						WroteRequest: func(httptrace.WroteRequestInfo) { wroteReqStart = time.Now() },
+						GotFirstResponseByte: func() {
+							firstByteStart = time.Now()
+							if !wroteReqStart.IsZero() {
+								event.TTFBNs = time.Since(wroteReqStart).Nanoseconds()
+							}
+						},
+					}))
+				}
 
 				reqBytesSent := req.ContentLength
-				if reqBytesSent < 0 {
-					reqBytesSent = 0
-				}
+				reqBytesSent = max(reqBytesSent, 0)
 
 				// ── Capture outgoing request headers for tracing ──────────────────
 				if ctx.Trace != nil && len(req.Header) > 0 {

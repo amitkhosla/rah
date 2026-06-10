@@ -444,6 +444,14 @@ type TLSConfig struct {
 // All fields are optional; zero values are replaced with GOMAXPROCS-derived defaults
 // by engine.FlowManager.StartController.
 type ConcurrencyConfig struct {
+	// Enabled activates the concurrency gate and AIMD controller.
+	// Default false = feature completely off; no 429s, no background goroutine.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// Disabled turns off the adaptive AIMD controller while keeping the gate active.
+	// Only meaningful when Enabled is true. Use for fixed-limit mode.
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
+
 	// TargetOverheadMs is the gateway-overhead p99 target in milliseconds.
 	// Gateway overhead = total client latency − upstream wait time.
 	// Default: 50 ms.
@@ -481,10 +489,6 @@ type ConcurrencyConfig struct {
 	// CooldownTicks is how many ticks the controller waits after a cut before
 	// cutting again. Prevents oscillation. Default: 3.
 	CooldownTicks int `json:"cooldown_ticks,omitempty" yaml:"cooldown_ticks,omitempty"`
-
-	// Disabled turns off the adaptive controller. The limit stays fixed at
-	// InitialLimit unless changed via POST /admin/concurrency?limit=N.
-	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
 }
 
 type GatewayConfig struct {
