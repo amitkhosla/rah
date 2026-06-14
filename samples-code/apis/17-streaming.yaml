@@ -1,0 +1,14 @@
+# ─── LLM Streaming (SSE) APIs ─────────────────────────────────────────────────
+#
+# API definitions for the LLM streaming sample.
+# Flows referenced here are defined in instructions/17-streaming.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-streaming-chat
+    path: /samples/ai/stream
+    method: POST
+    flow_name: api_streaming_chat
+    action: upsert
+    skip_rate_limit: true

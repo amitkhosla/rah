@@ -1,0 +1,51 @@
+# ─── LLM Streaming (SSE) Flows ────────────────────────────────────────────────
+#
+# Problem: Users stare at a spinner while waiting for the full LLM response.
+#          At 2-4 seconds, they think the app is broken.
+# Solution: Gateway streams LLM tokens directly to the client as they arrive
+#           using Server-Sent Events (SSE). First token lands in <200 ms.
+#           The client receives Content-Type: text/event-stream and processes
+#           incremental chunks immediately — no buffering in the gateway.
+#
+# Design note:
+#   Both steps are in one flat instructions: block. DSL "call" creates isolated
+#   fragments — user_prompt set in a sub-flow uses a different slot index than
+#   the llm_call would expect. Flat layout keeps both in the same slot map.
+#
+# Flow map:
+#
+#   api_streaming_chat:
+#     bind_body → user_prompt
+#     llm_call(user_prompt, stream_to_client: true) → SSE stream
+#
+# Notes:
+#   - When stream_to_client is "true" the gateway pipes each provider token
+#     directly to the HTTP response without buffering.
+#   - The result slot (streaming_response) is NOT populated in streaming mode;
+#     do not reference it in downstream steps.
+#   - No explicit return() is needed — the streaming LLM call ends the response.
+#   - The client must consume an SSE stream (EventSource or fetch + ReadableStream).
+#
+# Prerequisites:
+#   - Register model alias "my-llm" in Studio → AI → Models.
+#   - The model's provider must support streaming (OpenAI, Anthropic, Gemini all do).
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  - name: api_streaming_chat
+    action: upsert
+    instructions:
+      - action: bind_body
+        key_identifier: message
+        as: user_prompt
+      # stream_to_client: "true" pipes each provider token to the HTTP client
+      # as an SSE frame the moment it arrives — no buffering in the gateway.
+      - action: llm_call
+        key_identifier: user_prompt
+        as: streaming_response
+        input:
+          model: my-llm
+          max_tokens: "2000"
+          temperature: "0.7"
+          stream_to_client: "true"

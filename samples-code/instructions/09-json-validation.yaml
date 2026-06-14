@@ -1,0 +1,102 @@
+# ─── Structured JSON Output & Repair Flows ───────────────────────────────────
+#
+# Problem: LLMs sometimes return incomplete JSON. Your app breaks.
+# Solution: Gateway validates the LLM response schema. If required fields are
+#           missing, a repair flow retries automatically.
+#
+# Flow map:
+#
+#   api_structured_output:
+#     call build_structured_prompt     # body("task") → full_prompt with schema hint
+#     call call_structured_llm         # llm(full_prompt) → llm_response
+#     call validate_llm_json           # pattern_match "intent" field → repair or return
+#
+#   validate_llm_json:
+#     pattern_match llm_response for "intent" field
+#       hit  → call return_structured_response
+#       miss → call repair_structured_response
+#
+#   repair_structured_response:
+#     build repair prompt → call LLM again → return repaired response
+#
+# Prerequisites: register a model alias "my-llm" in Studio → AI → Models.
+#
+# Expected LLM output shape:
+#   {"intent":"...", "confidence": 0.9, "action":"..."}
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PROMPT BUILDER
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Read the task from the request body and attach a strict JSON schema
+  # instruction so the model knows exactly what shape to return.
+  - name: build_structured_prompt
+    action: upsert
+    code: |
+      user_task    = body("task")
+      schema_hint  = 'Return ONLY valid JSON with these exact fields: {"intent":"<string>","confidence":<0-1>,"action":"<string>"}. No prose, no markdown. Task: '
+      full_prompt  = concat(schema_hint, user_task)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LLM CALL
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Low temperature to discourage creative formatting deviations.
+  - name: call_structured_llm
+    action: upsert
+    code: |
+      llm_response = llm(full_prompt, model: "my-llm", max_tokens: 500, temperature: 0.1)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # VALIDATION — pattern_match checks that "intent" key is present
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Regex matches the "intent" JSON key in the raw response string.
+  # On hit  → return the response as-is.
+  # On miss → run the repair flow before returning.
+  - name: validate_llm_json
+    action: upsert
+    instructions:
+      - action: pattern_match
+        source: llm_response
+        input:
+          pattern: '"intent"\s*:'
+        then: return_structured_response
+        else: repair_structured_response
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # REPAIR FLOW
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Build a repair instruction that includes the broken output so the model
+  # can see what it produced and fix the exact fields that are missing.
+  - name: repair_structured_response
+    action: upsert
+    code: |
+      repair_prefix  = 'Your previous response was not valid JSON or was missing required fields (intent, confidence, action). Fix it and return ONLY the corrected JSON object. Previous response: '
+      repair_prompt  = concat(repair_prefix, llm_response)
+      llm_response   = llm(repair_prompt, model: "my-llm", max_tokens: 500, temperature: 0.0)
+      return(200, llm_response)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RESPONSE
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: return_structured_response
+    action: upsert
+    code: |
+      return(200, llm_response)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINT — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_structured_output
+    action: upsert
+    code: |
+      call build_structured_prompt
+      call call_structured_llm
+      call validate_llm_json

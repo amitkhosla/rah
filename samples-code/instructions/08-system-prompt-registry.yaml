@@ -1,0 +1,155 @@
+# ─── System Prompt Registry Flows ────────────────────────────────────────────
+#
+# Problem: System prompts are config, not code. Change AI behavior without
+#          redeploying.
+# Solution: Store named system prompts in the gateway cache. LLM flows load
+#           them at request time.
+#
+# Design note:
+#   api_chat_with_prompt uses a single flat instructions: block with an
+#   if/then/else for the system-prompt branch. DSL "call" creates isolated
+#   fragments with different slot maps — data set in one fragment is not
+#   visible to another. The "if" step inlines both branches into the same
+#   compilation unit, keeping user_message, system_prompt, and llm_response
+#   in one shared slot map.
+#
+# Flow map:
+#
+#   api_register_prompt:
+#     body(name + version + content) → shared_cache.set → 200
+#
+#   api_get_prompt:
+#     header(X-Prompt-Name + X-Prompt-Version) → shared_cache.get → 200/404
+#
+#   api_chat_with_prompt:
+#     header(X-Prompt-Name) → prompt_name
+#     body(message)         → user_message
+#     shared_cache.get(prompt:name:v1) → system_prompt
+#     if system_prompt != "":
+#       [then] llm_call(user_message, system=system_prompt) → llm_response
+#       [else] llm_call(user_message) → llm_response
+#     return(200, llm_response)
+#
+# Prerequisites: register a model alias "my-llm" in Studio → AI → Models.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PROMPT REGISTRATION — standalone, self-contained
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: register_system_prompt
+    action: upsert
+    code: |
+      prompt_name    = body("name")
+      prompt_version = body("version")
+      prompt_content = body("content")
+      cache_key      = "prompt:{prompt_name}:{prompt_version}"
+      shared_cache.set(cache_key, prompt_content, ttl: 86400)
+      return(200, '{"registered":true}')
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PROMPT RETRIEVAL — standalone, self-contained
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: load_system_prompt
+    action: upsert
+    code: |
+      prompt_name    = header("X-Prompt-Name")
+      prompt_version = header("X-Prompt-Version")
+      if (prompt_version == "") {
+        prompt_version = "v1"
+      }
+      cache_key     = "prompt:{prompt_name}:{prompt_version}"
+      system_prompt = shared_cache.get(cache_key)
+      if (system_prompt == "") {
+        return(404, '{"error":"prompt not found"}')
+      }
+      return(200, system_prompt)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CHAT — BRANCH HELPERS (inlined by if/then/else, not jumped to)
+  # These flows are never called via "call"; the "if" step in
+  # api_chat_with_prompt inlines them directly so they share its slot map.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Cache miss path: plain LLM call, no system prompt.
+  - name: __chat_no_system
+    action: upsert
+    instructions:
+      - action: llm_call
+        key_identifier: user_message
+        as: llm_response
+        input:
+          model: my-llm
+          max_tokens: "2000"
+      - action: return
+        status: 200
+        as: llm_response
+
+  # Cache hit path: LLM call with system prompt from cache.
+  - name: __chat_with_system
+    action: upsert
+    instructions:
+      - action: llm_call
+        key_identifier: user_message
+        as: llm_response
+        input:
+          model: my-llm
+          system_var: system_prompt
+          max_tokens: "2000"
+      - action: return
+        status: 200
+        as: llm_response
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CHAT ENTRY POINT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_chat_with_prompt
+    action: upsert
+    instructions:
+      - action: bind_header
+        key_identifier: X-Prompt-Name
+        as: prompt_name
+      - action: bind_body
+        key_identifier: message
+        as: user_message
+      # Build cache key: "prompt:" + prompt_name + ":v1"
+      - action: set_const
+        as: key_prefix
+        value: "prompt:"
+      - action: concat
+        key_identifier: key_prefix
+        source: prompt_name
+        as: key_no_ver
+      - action: set_const
+        as: ver_suffix
+        value: ":v1"
+      - action: concat
+        key_identifier: key_no_ver
+        source: ver_suffix
+        as: cache_key
+      - action: cache_get_global
+        key_identifier: cache_key
+        as: system_prompt
+      # if branches are inlined into this compilation unit (shared slot map)
+      - action: if
+        condition: 'system_prompt != ""'
+        then: __chat_with_system
+        else: __chat_no_system
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS — one-liner wrappers for the API routing table
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_register_prompt
+    action: upsert
+    code: |
+      call register_system_prompt
+
+  - name: api_get_prompt
+    action: upsert
+    code: |
+      call load_system_prompt

@@ -1,0 +1,54 @@
+# ─── LLM Cost Budget & Fallback Flows ────────────────────────────────────────
+#
+# Problem: Your most powerful models cost 50× more than cheap ones. You need
+#          automatic fallback on errors and budget thresholds.
+# Solution: Gateway tries the primary model, automatically falls back to the
+#           fast model on error. Per-tenant cost budgets halt excess spend
+#           at 429.
+#
+# Design note:
+#   All steps are in one flat instructions: block. DSL "call" creates isolated
+#   fragments — data set in one sub-flow uses different slot indices than the
+#   caller expects. Flat layout keeps user_message and llm_response in the
+#   same slot map.
+#
+# Flow map:
+#
+#   api_budgeted_llm:
+#     bind_body → user_message
+#     llm_call(user_message, my-llm, fallback: my-fast-llm) → llm_response
+#     return(200, llm_response)
+#
+# Fallback behaviour:
+#   - If my-llm returns an error (rate limit, quota, timeout) the gateway
+#     automatically retries the same request on my-fast-llm before failing.
+#   - No application code change needed; add more aliases to fallback_chain
+#     for deeper chains.
+#
+# Prerequisites:
+#   - Register model alias "my-llm" in Studio → AI → Models (primary).
+#   - Register model alias "my-fast-llm" in Studio → AI → Models (fallback).
+#   - Optionally set a cost budget on the tenant in Studio → Tenants.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  - name: api_budgeted_llm
+    action: upsert
+    instructions:
+      - action: bind_body
+        key_identifier: message
+        as: user_message
+      # Gateway tries my-llm first; if it errors, transparently retries on
+      # my-fast-llm without the caller ever seeing the failure.
+      - action: llm_call
+        key_identifier: user_message
+        as: llm_response
+        input:
+          model: my-llm
+          fallback_chain: my-fast-llm
+          max_tokens: "2000"
+          temperature: "0.7"
+      - action: return
+        status: 200
+        as: llm_response

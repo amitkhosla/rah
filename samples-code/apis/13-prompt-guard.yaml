@@ -1,0 +1,14 @@
+# ─── Prompt Guard APIs ───────────────────────────────────────────────────────
+#
+# API definitions for the prompt guard samples.
+# Flows referenced here are defined in instructions/13-prompt-guard.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-guarded-chat
+    path: /samples/ai/guarded
+    method: POST
+    flow_name: api_guarded_chat
+    action: upsert
+    skip_rate_limit: true

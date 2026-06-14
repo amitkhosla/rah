@@ -104,8 +104,7 @@ func (s *Server) appsSub(w http.ResponseWriter, r *http.Request) {
 	subPath := "/" + seg[1]
 
 	// Check for /apps/{id}/keys...
-	if strings.HasPrefix(subPath, "/keys") {
-		keyPart := strings.TrimPrefix(subPath, "/keys")
+	if keyPart, ok := strings.CutPrefix(subPath, "/keys"); ok {
 		if keyPart == "" || keyPart == "/" {
 			// /apps/{id}/keys or /apps/{id}/keys/ (no key ID)
 			switch r.Method {
@@ -122,6 +121,13 @@ func (s *Server) appsSub(w http.ResponseWriter, r *http.Request) {
 		// /apps/{id}/keys/{kid}[/rotate]
 		keyPath := strings.TrimPrefix(keyPart, "/")
 		segs := strings.SplitN(keyPath, "/", 2)
+
+		// Check for named sub-commands before attempting uint32 parse.
+		if segs[0] == "import" && r.Method == http.MethodPost {
+			s.importKey(w, r, appID)
+			return
+		}
+
 		keyID, ok := parseID(segs[0])
 		if !ok {
 			http.Error(w, "invalid key ID", http.StatusBadRequest)
@@ -318,6 +324,63 @@ func (s *Server) generateKey(w http.ResponseWriter, r *http.Request, appID uint3
 		APIKeyView: rec.ToView(),
 		RawKey:     rawKey,
 	})
+}
+
+// importKey handles POST /apps/{id}/keys/import.
+// Accepts a caller-supplied raw key (already resolved from a secret ref),
+// hashes it via HashKey, and stores the record. The raw key is never persisted.
+func (s *Server) importKey(w http.ResponseWriter, r *http.Request, appID uint32) {
+	if GetApp(appID) == nil {
+		http.Error(w, "app not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Alias          string   `json:"alias"`
+		RawKey         string   `json:"raw_key"`
+		AllowedTenants []uint16 `json:"allowed_tenants,omitempty"`
+		ExpiresAt      int64    `json:"expires_at,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Alias == "" {
+		http.Error(w, "alias must not be empty", http.StatusBadRequest)
+		return
+	}
+	if req.RawKey == "" {
+		http.Error(w, "raw_key must not be empty", http.StatusBadRequest)
+		return
+	}
+	if len(req.RawKey) < PrefixLen {
+		http.Error(w, "raw_key too short", http.StatusBadRequest)
+		return
+	}
+
+	now := s.now()
+	rec := APIKeyRecord{
+		KeyID:          NextKeyID(),
+		AppID:          appID,
+		Alias:          req.Alias,
+		Prefix:         req.RawKey[:PrefixLen],
+		Hash:           HashKey(req.RawKey),
+		AllowedTenants: req.AllowedTenants,
+		ExpiresAt:      req.ExpiresAt,
+		Enabled:        true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	UpsertKey(rec)
+
+	if s.Store != nil {
+		if raw, err := json.Marshal(rec); err == nil {
+			_ = s.Store.PutKey(r.Context(), rec.KeyID, raw)
+		}
+	}
+
+	jsonOK(w, rec.ToView())
 }
 
 // listKeys handles GET /apps/{id}/keys

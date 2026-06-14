@@ -1,0 +1,69 @@
+# ─── Multi-Agent Pipeline Flows ───────────────────────────────────────────────
+#
+# Problem: Complex tasks need multiple AI passes — research first, then write.
+#          A single LLM call cannot do both well simultaneously.
+# Solution: Two specialist agents run sequentially in the gateway. Agent 1
+#           (Researcher) gathers and summarises factual context. Agent 2
+#           (Writer) receives that context as its system prompt and produces a
+#           polished, grounded response — without the application ever
+#           managing the handoff.
+#
+# Design note:
+#   All steps are in one flat instructions: block so that research_result
+#   (slot N from Agent 1) is visible to Agent 2 in the same compilation unit.
+#   DSL "call" creates isolated fragments — data set in one fragment is not
+#   visible to another (different slot maps). Keeping everything flat avoids
+#   that pitfall entirely.
+#
+# Flow map:
+#
+#   api_multi_agent:
+#     bind_body → user_task
+#     concat(research_prefix, user_task) → research_prompt
+#     llm_call(research_prompt, my-fast-llm) → research_result   ← Agent 1
+#     llm_call(user_task, my-llm, system=research_result) → final_response  ← Agent 2
+#     return(200, final_response)
+#
+# Prerequisites:
+#   - Register model alias "my-llm" in Studio → AI → Models (both agents).
+#   - Optionally register "my-fast-llm" for the researcher agent to reduce cost.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  - name: api_multi_agent
+    action: upsert
+    instructions:
+      # ── Input ────────────────────────────────────────────────────────────
+      - action: bind_body
+        key_identifier: task
+        as: user_task
+      # ── Agent 1: Researcher ───────────────────────────────────────────────
+      - action: set_const
+        as: research_prefix
+        value: "Research and summarise the key factual information relevant to the following topic. Be concise and accurate. Topic: "
+      - action: concat
+        key_identifier: research_prefix
+        source: user_task
+        as: research_prompt
+      - action: llm_call
+        key_identifier: research_prompt
+        as: research_result
+        input:
+          model: my-fast-llm
+          max_tokens: "800"
+      # ── Agent 2: Writer ───────────────────────────────────────────────────
+      # research_result is passed as the system prompt so the writer has
+      # full context without the user prompt growing unboundedly.
+      - action: llm_call
+        key_identifier: user_task
+        as: final_response
+        input:
+          model: my-llm
+          system_var: research_result
+          max_tokens: "1000"
+          temperature: "0.7"
+      # ── Response ──────────────────────────────────────────────────────────
+      - action: return
+        status: 200
+        as: final_response

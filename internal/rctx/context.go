@@ -306,6 +306,12 @@ func (ctx *Context) Finalize() {
 		ctx.Timing.FirstByteSentNs = nanotime()
 	}
 	ctx.flushResponseHeaders()
+	// Pre-set Content-Type when there is a buffered body and the flow did not set one.
+	// Without this net/http calls DetectContentType on every Write(), scanning up to
+	// 512 bytes per response — measurable overhead at high RPS on the static path.
+	if ctx.IsBuffered && len(ctx.ResponseBuffer) > 0 && ctx.Writer.Header().Get("Content-Type") == "" {
+		ctx.Writer.Header().Set("Content-Type", http.DetectContentType(ctx.ResponseBuffer))
+	}
 	ctx.Writer.WriteHeader(ctx.ResponseStatus)
 	if ctx.IsBuffered && len(ctx.ResponseBuffer) > 0 {
 		n, _ := ctx.Writer.Write(ctx.ResponseBuffer)

@@ -231,10 +231,11 @@ type Telemetry struct {
 	droppedExports atomic.Uint64
 	metricDropped  atomic.Uint64
 
-	mu        sync.Mutex
-	tenant5xx map[uint16]uint64
-	traces    []RequestTrace
-	custom    map[string]*metricCounter
+	mu           sync.Mutex
+	tenant5xx    map[uint16]uint64
+	traces       []RequestTrace
+	custom       map[string]*metricCounter
+	instrTimings map[string]*counter // per-name aggregation, updated by drain goroutine
 
 	captureHeaders []string // immutable after New(); no sync needed
 	captureAll     bool     // true when RAH_TRACE_CAPTURE_HEADERS=*
@@ -322,7 +323,7 @@ func New(cfg Config) *Telemetry {
 	if cfg.MetricQueueSize <= 0 {
 		cfg.MetricQueueSize = 4096
 	}
-	t := &Telemetry{cfg: cfg, tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	t := &Telemetry{cfg: cfg, tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), instrTimings: make(map[string]*counter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
 	if len(cfg.TraceHeaderNames) == 1 && cfg.TraceHeaderNames[0] == "*" {
 		t.captureAll = true
 	} else {
@@ -566,6 +567,25 @@ func (t *Telemetry) RecordCacheOp(_ string, _ bool, _ int64) {}
 // RecordInstruction is a no-op. Per-instruction aggregation is now handled
 // lock-free via instrSlabRing (see internal/observability/instr_slab.go).
 func (t *Telemetry) RecordInstruction(_ string, _ time.Duration) {}
+
+// RecordInstrTiming accumulates per-instruction-name timing for InstructionTopSlow.
+// Called from the instrSlabRing drain goroutine after PC→name resolution.
+// Safe to call concurrently; protected by t.mu (drain is single-threaded, but
+// Snapshot reads concurrently).
+func (t *Telemetry) RecordInstrTiming(name string, durationNs int64) {
+	if !t.Enabled() || durationNs <= 0 {
+		return
+	}
+	t.mu.Lock()
+	c := t.instrTimings[name]
+	if c == nil {
+		c = &counter{}
+		t.instrTimings[name] = c
+	}
+	c.count++
+	c.totalNs += uint64(durationNs)
+	t.mu.Unlock()
+}
 
 // RecordUpstream is a no-op. Upstream stats are aggregated via the ingest pipeline.
 func (t *Telemetry) RecordUpstream(_ string, _ time.Duration, _, _ int64) {}
@@ -838,6 +858,7 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	t.mu.Lock()
 	m.TenantTop5xx = topNTenants(t.tenant5xx, topN)
 	m.CustomMetricTop = topNMetrics(t.custom, topN)
+	m.InstructionTopSlow = topNFromMap(t.instrTimings, topN)
 	traces := append([]RequestTrace(nil), t.traces...)
 	t.mu.Unlock()
 	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.reqSummaryLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}

@@ -1,0 +1,14 @@
+# ─── Multi-Agent Pipeline APIs ────────────────────────────────────────────────
+#
+# API definitions for the multi-agent pipeline sample.
+# Flows referenced here are defined in instructions/18-multi-agent.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-multi-agent-pipeline
+    path: /samples/ai/agents/pipeline
+    method: POST
+    flow_name: api_multi_agent
+    action: upsert
+    skip_rate_limit: true

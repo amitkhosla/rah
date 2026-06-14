@@ -4,9 +4,8 @@ import MCPServers     from './MCPServers'
 import AIRoutes       from './AIRoutes'
 import AgentBuilder   from './AgentBuilder'
 import PromptsLibrary from './PromptsLibrary'
-import AIAssistant    from './AIAssistant'
 
-type AITab = 'models' | 'mcp' | 'routes' | 'agents' | 'prompts' | 'assistant'
+type AITab = 'models' | 'mcp' | 'routes' | 'agents' | 'prompts'
 
 const AI_TABS: { id: AITab; label: string; desc: string }[] = [
   { id: 'models',    label: 'Models',      desc: 'LLM catalog — providers, adapters, context limits' },
@@ -14,7 +13,6 @@ const AI_TABS: { id: AITab; label: string; desc: string }[] = [
   { id: 'routes',    label: 'AI Routes',   desc: 'High-level LLM endpoint builder — no raw instructions needed' },
   { id: 'agents',    label: 'Agents',      desc: 'Visual agent builder — model + tools + execution config' },
   { id: 'prompts',   label: 'Prompts',     desc: 'Saved system prompts library' },
-  { id: 'assistant', label: 'Assistant',   desc: 'Generate flows and APIs with AI' },
 ]
 
 export default function AISection() {
@@ -63,7 +61,6 @@ export default function AISection() {
       {tab === 'routes'     && <AIRoutes />}
       {tab === 'agents'     && <AgentBuilder />}
       {tab === 'prompts'    && <PromptsLibrary />}
-      {tab === 'assistant'  && <AIAssistant />}
     </div>
   )
 }

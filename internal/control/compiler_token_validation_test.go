@@ -18,13 +18,16 @@ func TestCompileExecutableAddsTokenValidationInstruction(t *testing.T) {
 		t.Fatalf("unexpected compile error: %v", err)
 	}
 
-	if len(plan) != 2 {
-		t.Fatalf("expected 2 instructions (bind + validation), got %d", len(plan))
+	// [0] SET_STREAM_RESPONSE_BODY — always first; flow has no http_call so streaming=true
+	// [1] BIND_HEADER — auto-bind preamble for header.Authorization
+	// [2] TOKEN_VALIDATE
+	if len(plan) != 3 {
+		t.Fatalf("expected 3 instructions (stream-flag + bind + validation), got %d", len(plan))
 	}
-	if got := plan[0].Name; got != "BIND_HEADER" {
-		t.Fatalf("expected first instruction BIND_HEADER, got %s", got)
+	if got := plan[1].Name; got != "BIND_HEADER" {
+		t.Fatalf("expected instruction[1] BIND_HEADER, got %s", got)
 	}
-	if got := plan[1].Name; got != "TOKEN_VALIDATE" {
-		t.Fatalf("expected second instruction TOKEN_VALIDATE, got %s", got)
+	if got := plan[2].Name; got != "TOKEN_VALIDATE" {
+		t.Fatalf("expected instruction[2] TOKEN_VALIDATE, got %s", got)
 	}
 }

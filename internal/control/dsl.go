@@ -191,6 +191,12 @@ func dslParseParams(raw string) map[string]string {
 			i++
 		}
 		key := strings.TrimSpace(raw[ks:i])
+		// Mixed positional+named params produce keys like "user_message, model".
+		// Strip everything up to and including the last comma so only the
+		// identifier after the comma is used as the key.
+		if idx := strings.LastIndex(key, ","); idx >= 0 {
+			key = strings.TrimSpace(key[idx+1:])
+		}
 		if key == "" || i >= n {
 			break
 		}

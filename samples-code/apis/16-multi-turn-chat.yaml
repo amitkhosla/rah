@@ -1,0 +1,14 @@
+# ─── Multi-Turn Chat APIs ─────────────────────────────────────────────────────
+#
+# API definitions for the multi-turn chat session sample.
+# Flows referenced here are defined in instructions/16-multi-turn-chat.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-multi-turn-chat
+    path: /samples/ai/chat/session
+    method: POST
+    flow_name: api_multi_turn_chat
+    action: upsert
+    skip_rate_limit: true

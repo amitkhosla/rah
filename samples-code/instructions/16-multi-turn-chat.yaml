@@ -1,0 +1,58 @@
+# ─── Multi-Turn Chat (Session Memory) Flows ───────────────────────────────────
+#
+# Problem: Chat apps need conversation history. Without it the LLM forgets
+#          everything after one turn.
+# Solution: Session ID from the X-Session-ID header is used as a cache key.
+#           The full conversation transcript (User/Assistant turns) is loaded
+#           from cache, appended to the new message, and sent to the LLM as
+#           the prompt. The updated transcript is stored back into cache with
+#           a 2-hour TTL, so idle sessions expire automatically.
+#
+# Design note:
+#   All steps are in one flat DSL code block. DSL "call" creates isolated
+#   fragments — data set in one sub-flow (e.g. llm_response) uses a
+#   different slot index than the caller expects. Keeping everything flat
+#   ensures full_context, llm_response, and cache_key share one slot map.
+#
+# Flow map:
+#
+#   api_multi_turn_chat:
+#     session_id   = header("X-Session-ID")
+#     user_message = body("message")
+#     cache_key    = concat("hist:", session_id)
+#     history      = cache.get(cache_key)        # empty string on first turn
+#     new_turn     = concat("\nUser: ", user_message)
+#     full_context = concat(history, new_turn)   # prior turns + this turn
+#     llm_response = llm(full_context, model: "my-llm", max_tokens: 1000)
+#     assistant_turn  = concat("\nAssistant: ", llm_response)
+#     updated_history = concat(full_context, assistant_turn)
+#     cache.set(cache_key, updated_history, ttl: 7200)
+#     return(200, llm_response)
+#
+# Notes:
+#   - On the very first message history is "" so full_context = "\nUser: <msg>".
+#   - The cache TTL is 7200 s (2 h); each request resets the clock.
+#   - Transcript grows unboundedly within the TTL — for production use, trim
+#     history to the last N turns before calling the LLM.
+#
+# Prerequisites:
+#   - Register model alias "my-llm" in Studio → AI → Models.
+#   - The default gateway cache is used; no extra datastore is required.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  - name: api_multi_turn_chat
+    action: upsert
+    code: |
+      session_id      = header("X-Session-ID")
+      user_message    = body("message")
+      cache_key       = concat("hist:", session_id)
+      history         = cache.get(cache_key)
+      new_turn        = concat("\nUser: ", user_message)
+      full_context    = concat(history, new_turn)
+      llm_response    = llm(full_context, model: "my-llm", max_tokens: 1000)
+      assistant_turn  = concat("\nAssistant: ", llm_response)
+      updated_history = concat(full_context, assistant_turn)
+      cache.set(cache_key, updated_history, ttl: 7200)
+      return(200, llm_response)

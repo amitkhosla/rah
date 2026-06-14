@@ -38,12 +38,13 @@ function StatCard({ label, value, sub, accent }: StatCardProps) {
 
 // ── Quick AI widget ───────────────────────────────────────────────────────────
 
-type QuickAction = { op: string; name?: string; dsl?: string }
+type QuickAction = { op: string; name?: string; dsl?: string; description?: string; api?: string; path?: string; method?: string; flow?: string }
 type QuickMsg = {
   role: 'user' | 'assistant'
   content: string
   isError?: boolean
   actions?: QuickAction[]
+  questions?: string[]
   appliedActions: Set<number>
   failedActions: Record<number, string>
 }
@@ -98,6 +99,7 @@ function QuickAI() {
           role: 'assistant',
           content: (data.confirm_message as string) || 'Done.',
           actions: (data.actions ?? []) as QuickAction[],
+          questions: (data.questions ?? []) as string[],
           appliedActions: new Set(),
           failedActions: {},
         }])
@@ -109,15 +111,26 @@ function QuickAI() {
     }
   }
 
+  async function postSync(flows: unknown[], apis: unknown[]) {
+    const res = await fetch('/api/sync', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sync_uuid: `ai-${Date.now()}`, flows, apis }),
+    })
+    if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`))
+  }
+
   async function applyAction(msgIdx: number, actIdx: number, action: QuickAction) {
     try {
       if (action.op === 'upsert_flow') {
-        const res = await fetch(`/api/flows/${encodeURIComponent(action.name ?? '')}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dsl: action.dsl }),
-        })
-        if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`))
+        let instructions: unknown[]
+        try { instructions = JSON.parse(action.dsl ?? '[]') } catch { throw new Error('Invalid flow DSL') }
+        await postSync([{ name: action.name ?? '', instructions, action: 'upsert' }], [])
+      } else if (action.op === 'add_endpoint') {
+        await postSync([], [{ name: action.api ?? '', path: action.path ?? '/', method: action.method ?? 'ANY', flow_name: action.flow ?? '', action: 'upsert' }])
+      } else if (action.op === 'upsert_api') {
+        // no-op: API created implicitly when endpoints are added
       } else {
         throw new Error(`Not yet implemented: ${action.op}`)
       }
@@ -271,22 +284,32 @@ function QuickAI() {
                     <div style={{ fontSize: 13, color: msg.isError ? '#ef4444' : 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                       {msg.content}
                     </div>
+                    {/* Questions / planning response */}
+                    {msg.questions && msg.questions.length > 0 && (
+                      <div style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid #ca8a04', background: 'rgba(202,138,4,0.08)' }}>
+                        <ul style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {msg.questions.map((q, qi) => (
+                            <li key={qi} style={{ fontSize: 12, color: 'var(--text)' }}>{q}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {/* Action blocks */}
                     {msg.actions && msg.actions.map((action, ai) => {
                       const isApplied = msg.appliedActions.has(ai)
                       const failMsg = msg.failedActions[ai]
+                      const label = action.name || action.api || action.path || ''
                       return (
                         <div key={ai} style={{ border: '1px solid var(--border)', borderRadius: 8, marginTop: 8, overflow: 'hidden', background: 'var(--step-bg)' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', borderBottom: '1px solid var(--border)' }}>
                             <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 7px', borderRadius: 4, background: opColor(action.op), color: '#fff', letterSpacing: 0.5 }}>
                               {action.op.toUpperCase()}
                             </span>
-                            {action.name && <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{action.name}</span>}
+                            {label && <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{label}</span>}
                           </div>
-                          {action.dsl && (
-                            <pre style={{ margin: 0, padding: '8px 12px', fontFamily: 'monospace', fontSize: 11, overflowX: 'auto', maxHeight: 160, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)', background: 'transparent' }}>
-                              {action.dsl}
-                            </pre>
+                          {/* Description (plain English) */}
+                          {action.description && (
+                            <div style={{ padding: '7px 12px', fontSize: 12, color: 'var(--text)', lineHeight: 1.5 }}>{action.description}</div>
                           )}
                           <div style={{ padding: '7px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
                             {!isApplied && failMsg === undefined && (

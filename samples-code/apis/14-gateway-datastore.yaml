@@ -1,0 +1,28 @@
+# ─── Gateway Datastore APIs ───────────────────────────────────────────────────
+#
+# API definitions for the gateway datastore samples.
+# Flows referenced here are defined in instructions/14-gateway-datastore.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-datastore-seed
+    path: /samples/ai/datastore/seed
+    method: POST
+    flow_name: api_seed_app
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-ai-datastore-html
+    path: /samples/ai/datastore
+    method: GET
+    flow_name: api_serve_html
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-ai-datastore-data
+    path: /samples/ai/datastore/data
+    method: GET
+    flow_name: api_serve_data
+    action: upsert
+    skip_rate_limit: true

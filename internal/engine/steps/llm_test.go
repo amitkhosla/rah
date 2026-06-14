@@ -652,15 +652,17 @@ func TestLLMCall_TokenSlotsNegative_NoWrite(t *testing.T) {
 	ctx.IntSlots[1] = 88
 
 	cfg := LLMCallConfig{
-		ModelConfig:      modelConfig(config.AdapterAnthropic, srv.URL),
-		APIKey:           "test-key",
-		PromptSlot:       0,
-		ResultSlot:       1,
-		SystemSlot:       -1,
-		APIKeySlot:       -1,
-		InputTokensSlot:  -1, // disabled
-		OutputTokensSlot: -1, // disabled
-		MaxTokens:        50,
+		ModelConfig:        modelConfig(config.AdapterAnthropic, srv.URL),
+		APIKey:             "test-key",
+		PromptSlot:         0,
+		ResultSlot:         1,
+		SystemSlot:         -1,
+		APIKeySlot:         -1,
+		InputTokensSlot:    -1, // disabled
+		OutputTokensSlot:   -1, // disabled
+		CacheReadSlot:      -1, // disabled
+		CacheCreationSlot:  -1, // disabled
+		MaxTokens:          50,
 	}
 	instr := LLMCall(cfg)
 	next := runInstruction(instr, ctx)

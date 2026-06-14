@@ -1,0 +1,99 @@
+# ─── Semantic Cache Flows ──────────────────────────────────────────────────────
+#
+# Problem: Identical and similar LLM prompts should cost one API call, not N.
+# Solution: Gateway embeds the query, searches a vector store, and serves
+#           cached responses for semantically similar prompts. A 0.92 cosine
+#           threshold means "same question, different words" still hits the
+#           cache. Only genuine novel queries reach the LLM.
+#
+# Design note:
+#   This flow uses a single flat instructions: block with an if/then/else for
+#   branching. DSL "call" creates independent fragments with isolated slot maps,
+#   so data set in one called flow is not visible to another. The "if" step
+#   inlines its branches into the same compilation unit, keeping all slots
+#   (user_query, cached_response, llm_result) in one shared map.
+#
+# Flow map:
+#
+#   api_semantic_cache:
+#     bind_body → user_query
+#     semantic_cache_get(user_query) → cached_response
+#     if cached_response != "":
+#       [then] return(200, cached_response)      ← cache hit
+#       [else] llm_call(user_query) → llm_result
+#              semantic_cache_put(user_query, llm_result)
+#              return(200, llm_result)            ← miss; store + return
+#
+# Prerequisites:
+#   - Register model alias "my-llm" in Studio → AI → Models (generation).
+#   - Register model alias "my-embed-model" in Studio → AI → Models (embeddings).
+#   - Create a vector store named "my-vector-store" in Studio → Vector Stores.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BRANCH: cache hit — return immediately
+  # (inlined by api_semantic_cache's "if" step — shares its slot map)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: __sc_return_cached
+    action: upsert
+    instructions:
+      - action: return
+        status: 200
+        as: cached_response
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BRANCH: cache miss — call LLM, store result, return response
+  # (inlined by api_semantic_cache's "if" step — shares its slot map)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: __sc_call_and_store
+    action: upsert
+    instructions:
+      - action: llm_call
+        key_identifier: user_query
+        as: llm_result
+        input:
+          model: my-llm
+          max_tokens: "1000"
+          temperature: "0.7"
+      - action: semantic_cache_put
+        key_identifier: user_query
+        input:
+          response: llm_result
+          store: my-vector-store
+          collection: semantic_cache
+          provider: openai
+          model: my-embed-model
+          timeout_ms: "10000"
+      - action: return
+        status: 200
+        as: llm_result
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINT
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_semantic_cache
+    action: upsert
+    instructions:
+      - action: bind_body
+        key_identifier: message
+        as: user_query
+      - action: semantic_cache_get
+        key_identifier: user_query
+        as: cached_response
+        input:
+          hit_var: cache_hit_flag
+          store: my-vector-store
+          collection: semantic_cache
+          min_score: "0.92"
+          provider: openai
+          model: my-embed-model
+          timeout_ms: "10000"
+      - action: if
+        condition: 'cached_response != ""'
+        then: __sc_return_cached
+        else: __sc_call_and_store

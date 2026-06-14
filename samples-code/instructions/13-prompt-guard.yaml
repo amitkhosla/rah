@@ -1,0 +1,54 @@
+# ─── Prompt Guard Flows ───────────────────────────────────────────────────────
+#
+# Problem: Users send PII, injection attacks, and off-topic requests to your
+#          LLM. Each bad request costs money and creates liability.
+# Solution: Gateway sanitizes every prompt before it reaches the LLM. PII is
+#           stripped, injections are blocked, off-topic requests are rejected.
+#
+# Design note:
+#   All steps are in one flat instructions: block. DSL "call" creates isolated
+#   fragments — data set in one sub-flow uses different slot indices than the
+#   caller expects. Flat layout keeps user_prompt and llm_response in the
+#   same slot map so the return can reference the LLM result.
+#
+# Flow map:
+#
+#   api_guarded_chat:
+#     bind_body → user_prompt
+#     sanitize_prompt(user_prompt, rules: pii+injection, on_violation: reject)
+#     llm_call(user_prompt, my-llm) → llm_response    ← only if sanitization passes
+#     return(200, llm_response)
+#
+# Sanitize rules:
+#   pii       — strips emails, phone numbers, SSNs, credit card numbers.
+#   injection — blocks "ignore previous instructions" and similar patterns.
+#   on_violation: reject — gateway returns 400 immediately; LLM never called.
+#
+# Prerequisites: register a model alias "my-llm" in Studio → AI → Models.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  - name: api_guarded_chat
+    action: upsert
+    instructions:
+      - action: bind_body
+        key_identifier: message
+        as: user_prompt
+      # Scans for PII and injection patterns.
+      # on_violation: reject halts the request with 400 before the LLM is called.
+      - action: sanitize_prompt
+        key_identifier: user_prompt
+        input:
+          rules: "pii,injection"
+          on_violation: reject
+      - action: llm_call
+        key_identifier: user_prompt
+        as: llm_response
+        input:
+          model: my-llm
+          max_tokens: "1000"
+          temperature: "0.7"
+      - action: return
+        status: 200
+        as: llm_response

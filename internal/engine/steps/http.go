@@ -173,6 +173,11 @@ type httpClientConfig struct {
 	ResponseHeaderTimeout time.Duration
 	ExpectContinueTimeout time.Duration
 	RequestTimeout        time.Duration
+	// ResponseBodyTimeout caps the body-read phase only (after headers arrive).
+	// 0 = no separate body deadline (total RequestTimeout covers everything).
+	// On expiry: resp.Body.Close() is called — HTTP/1 drops the TCP connection
+	// (partial read, not returned to pool); HTTP/2 sends RST_STREAM.
+	ResponseBodyTimeout   time.Duration
 	RetryMaxAttempts      int
 	RetryBaseBackoff      time.Duration
 	RetryMaxBackoff       time.Duration
@@ -288,7 +293,10 @@ func buildHTTPClient(cfg httpClientConfig) *http.Client {
 			ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
 			ExpectContinueTimeout: cfg.ExpectContinueTimeout,
 		},
-		Timeout: cfg.RequestTimeout,
+		// Timeout intentionally 0: per-request timeout is managed via ctx.SetUpstreamTimeout
+		// + time.AfterFunc in the executor. Keeping it zero avoids http.Client creating a
+		// cancel goroutine (prepareTransportCancel) per upstream call, which would add a heap
+		// allocation and mutex overhead at high RPS.
 	}
 }
 
@@ -305,7 +313,7 @@ func buildClientForProfile(profile *egress.EgressProfile, cfg httpClientConfig) 
 			cfg.TLSHandshakeTimeout, cfg.ResponseHeaderTimeout, cfg.ExpectContinueTimeout,
 			cfg.MaxIdleConns, cfg.MaxIdleConnsPerHost, cfg.MaxConnsPerHost,
 		)
-		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+		return &http.Client{Transport: t}
 	case egress.EgressTypeHTTPS:
 		t := egress.BuildHTTPSTransport(
 			profile,
@@ -313,10 +321,10 @@ func buildClientForProfile(profile *egress.EgressProfile, cfg httpClientConfig) 
 			cfg.TLSHandshakeTimeout, cfg.ResponseHeaderTimeout, cfg.ExpectContinueTimeout,
 			cfg.MaxIdleConns, cfg.MaxIdleConnsPerHost, cfg.MaxConnsPerHost,
 		)
-		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+		return &http.Client{Transport: t}
 	case egress.EgressTypeH2C:
 		t := egress.BuildH2CTransport(profile, cfg.DialTimeout, cfg.KeepAlive)
-		return &http.Client{Transport: t, Timeout: cfg.RequestTimeout}
+		return &http.Client{Transport: t}
 	default:
 		return buildHTTPClient(cfg)
 	}
@@ -463,6 +471,7 @@ func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string
 	cfg.ResponseHeaderTimeout = flowDurationMs(flowInput, "http.response_header_timeout_ms", cfg.ResponseHeaderTimeout)
 	cfg.ExpectContinueTimeout = flowDurationMs(flowInput, "http.expect_continue_timeout_ms", cfg.ExpectContinueTimeout)
 	cfg.RequestTimeout = flowDurationMs(flowInput, "http.request_timeout_ms", cfg.RequestTimeout)
+	cfg.ResponseBodyTimeout = flowDurationMs(flowInput, "http.response_body_timeout_ms", cfg.ResponseBodyTimeout)
 	cfg.RetryMaxAttempts = flowInt(flowInput, "http.retry_max_attempts", cfg.RetryMaxAttempts)
 	cfg.RetryBaseBackoff = flowDurationMs(flowInput, "http.retry_base_backoff_ms", cfg.RetryBaseBackoff)
 	cfg.RetryMaxBackoff = flowDurationMs(flowInput, "http.retry_max_backoff_ms", cfg.RetryMaxBackoff)
@@ -491,6 +500,7 @@ func configFingerprint(cfg httpClientConfig) string {
 		strconv.FormatInt(int64(cfg.ResponseHeaderTimeout/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.ExpectContinueTimeout/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.RequestTimeout/time.Millisecond), 10),
+		strconv.FormatInt(int64(cfg.ResponseBodyTimeout/time.Millisecond), 10),
 		strconv.Itoa(cfg.RetryMaxAttempts),
 		strconv.FormatInt(int64(cfg.RetryBaseBackoff/time.Millisecond), 10),
 		strconv.FormatInt(int64(cfg.RetryMaxBackoff/time.Millisecond), 10),
@@ -592,6 +602,29 @@ func GetClientFromPool() *http.Client {
 }
 
 func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition string, maxRetries int, flowInput map[string]string) engine.Instruction {
+	// Pre-compute at bake time — flowInput is fixed, so cfg and fingerprint never change.
+	bakedCfg := resolveHTTPConfigForTarget("", flowInput)
+	bakedFingerprint := configFingerprint(bakedCfg)
+	bakedMaxCacheEntries := flowInt(flowInput, "http.max_client_cache_entries", 2048)
+
+	// For static URLs: build the transport pool once here, same as HttpActionFromConfig.
+	var staticPool *upstreamTransportPool
+	if urlSlot < 0 && staticURL != "" {
+		host := extractUpstreamHost(staticURL)
+		p := getClientForBakedConfig(nil, host, bakedCfg, bakedFingerprint, bakedMaxCacheEntries)
+		staticPool = p.Pool
+	}
+
+	// Bake-time timeout flags — see HttpActionFromConfig for full design notes.
+	haActionTotalMs := timeout
+	if haActionTotalMs == 0 && bakedCfg.RequestTimeout > 0 {
+		haActionTotalMs = uint32(bakedCfg.RequestTimeout / time.Millisecond)
+	}
+	haActionHasTotal := haActionTotalMs > 0
+	haActionTotalDur := time.Duration(haActionTotalMs) * time.Millisecond
+	haActionBodyDur := bakedCfg.ResponseBodyTimeout
+	haActionHasBody := haActionBodyDur > 0
+
 	return engine.Instruction{
 		Name: "HTTP_CALL",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
@@ -610,7 +643,13 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				return engine.StopPlan
 			}
 			upstreamHost := extractUpstreamHost(url)
-			bundle := getClientForTarget(upstreamHost, flowInput)
+
+			var bundle cachedPool
+			if staticPool != nil {
+				bundle = cachedPool{Pool: staticPool, Cfg: bakedCfg}
+			} else {
+				bundle = getClientForBakedConfig(nil, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries)
+			}
 			httpClient := bundle.Pool.get()
 
 			attempts := bundle.Cfg.RetryMaxAttempts + 1
@@ -644,23 +683,24 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					return pc
 				}
 
-				// Set deadline on ctx — ctx implements context.Context so it is passed
-				// directly to NewRequestWithContext. No timerCtx allocation needed.
-				var deadlineTimer *time.Timer
-				if timeout > 0 {
-					dur := time.Duration(timeout) * time.Millisecond
-					capturedGen := ctx.SetUpstreamTimeout(dur)
-					deadlineTimer = time.AfterFunc(dur, func() {
-						ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
-					})
+				// Total timeout (bake-time flag: haActionHasTotal) — single bool check.
+				var deadlineTimer wheelHandle
+				if haActionHasTotal {
+					capturedGen := ctx.SetUpstreamTimeout(haActionTotalDur)
+					deadlineTimer = scheduleCtx(ctx, capturedGen, haActionTotalDur)
+					if deadlineTimer.idx == 0 {
+						t := time.AfterFunc(haActionTotalDur, func() {
+							ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
+						})
+						defer t.Stop()
+					}
 				}
 
 				req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 				if err != nil {
-					if deadlineTimer != nil {
-						deadlineTimer.Stop()
-						ctx.ClearUpstreamTimeout()
-					}
+					deadlineTimer.cancel()
+					deadlineTimer = wheelHandle{}
+					ctx.ClearUpstreamTimeout()
 					ctx.ResponseStatus = 500
 					ctx.Failed = true
 					ctx.ErrorCode = 500
@@ -731,11 +771,9 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				// the request was aborted). If it hasn't fired yet, stop it from firing
 				// after ctx is returned to the pool. Unlike context.WithTimeout.cancel(),
 				// stopping our timer never marks the connection as broken.
-				if deadlineTimer != nil {
-					deadlineTimer.Stop()
-					deadlineTimer = nil
-					ctx.ClearUpstreamTimeout()
-				}
+				deadlineTimer.cancel()
+				deadlineTimer = wheelHandle{}
+				ctx.ClearUpstreamTimeout()
 				totalUpstream := time.Since(upstreamStart)
 				event.TotalNs = totalUpstream.Nanoseconds()
 				if !firstByteStart.IsZero() && event.TTFBNs == 0 {
@@ -791,8 +829,19 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 						event.ResponseBody = string(bodyPreview)
 					}
 				}
+				// Body timeout (bake-time flag: haActionHasBody).
+				var bodyTimer wheelHandle
+				if haActionHasBody {
+					bodyTimer = scheduleBody(resp.Body, haActionBodyDur)
+					if bodyTimer.idx == 0 {
+						t := time.AfterFunc(haActionBodyDur, func() { resp.Body.Close() })
+						defer t.Stop()
+					}
+				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+				bodyTimer.cancel()
+				bodyTimer = wheelHandle{}
 				if ctx.Trace != nil {
 					respBytes += int64(len(event.ResponseBody))
 				}
@@ -903,6 +952,28 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		staticPool = getClientForBakedConfig(effectiveProfile, extractUpstreamHost(effectiveURL), bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool
 	}
 
+	// ── Bake-time timeout flags ───────────────────────────────────────────────
+	// Pre-computed once here so the per-request hot path is a single bool check,
+	// matching the hadUpstreamTimeout gate pattern in context.go.
+	//
+	// Total timeout: step-level cfg.Timeout takes priority; falls back to
+	// bakedCfg.RequestTimeout (default 10s). Covers headers + body as one budget.
+	bakedTotalTimeoutMs := cfg.Timeout
+	if bakedTotalTimeoutMs == 0 && bakedCfg.RequestTimeout > 0 {
+		bakedTotalTimeoutMs = uint32(bakedCfg.RequestTimeout / time.Millisecond)
+	}
+	hasTotalTimeout := bakedTotalTimeoutMs > 0
+	bakedTotalDur := time.Duration(bakedTotalTimeoutMs) * time.Millisecond
+
+	// Body timeout: separate deadline that covers only the body-read phase.
+	// When it fires, resp.Body.Close() is called:
+	//   HTTP/1  → partial read → connection NOT returned to pool → TCP closed.
+	//   HTTP/2  → RST_STREAM sent; underlying TCP connection stays alive.
+	//   gRPC    → same as HTTP/2 (RST_STREAM), server stops processing.
+	// 0 = disabled; total timeout is the only protection in that case.
+	bakedBodyDur := bakedCfg.ResponseBodyTimeout
+	hasBodyTimeout := bakedBodyDur > 0
+
 	// ── Parse mTLS client certificate at bake time ─────────────────────────────
 	// tls.X509KeyPair is called once here, not per request. If parsing fails we
 	// return an instruction that always fails with a clear 500 error so the
@@ -958,7 +1029,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ResponseHeaderTimeout: bakedCfg.ResponseHeaderTimeout,
 					ExpectContinueTimeout: bakedCfg.ExpectContinueTimeout,
 				},
-				Timeout: bakedCfg.RequestTimeout,
+				// Timeout: 0 — per-request timeout managed via ctx.SetUpstreamTimeout.
 			}
 		})
 		return mtlsClient
@@ -1041,15 +1112,21 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				upstreamStart := time.Now()
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 
-				// ── Set deadline on ctx — ctx implements context.Context ─────────
-				// Passed directly to NewRequestWithContext; no timerCtx allocation.
-				var deadlineTimer *time.Timer
-				if cfg.Timeout > 0 {
-					dur := time.Duration(cfg.Timeout) * time.Millisecond
-					capturedGen := ctx.SetUpstreamTimeout(dur)
-					deadlineTimer = time.AfterFunc(dur, func() {
-						ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
-					})
+				// ── Total timeout (bake-time flag: hasTotalTimeout) ──────────────
+				// Single bool check — no per-request conditional evaluation.
+				// Covers the full request: dial + TLS + headers + body.
+				// Replaces http.Client.Timeout (now 0): avoids the cancelCtx alloc
+				// + prepareTransportCancel goroutine that http.Client creates per call.
+				var deadlineTimer wheelHandle
+				if hasTotalTimeout {
+					capturedGen := ctx.SetUpstreamTimeout(bakedTotalDur)
+					deadlineTimer = scheduleCtx(ctx, capturedGen, bakedTotalDur)
+					if deadlineTimer.idx == 0 {
+						t := time.AfterFunc(bakedTotalDur, func() {
+							ctx.CancelIfGeneration(capturedGen, context.DeadlineExceeded)
+						})
+						defer t.Stop()
+					}
 				}
 
 				// ── Resolve body ──────────────────────────────────────────────────
@@ -1079,10 +1156,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					if err != nil {
 						bytesReaderPool.Put(pooledReader)
 						pooledReader = nil
-						if deadlineTimer != nil {
-							deadlineTimer.Stop()
-							ctx.ClearUpstreamTimeout()
-						}
+						deadlineTimer.cancel()
+						deadlineTimer = wheelHandle{}
+						ctx.ClearUpstreamTimeout()
 						ctx.ResponseStatus = 500
 						ctx.Failed = true
 						ctx.ErrorCode = 500
@@ -1094,10 +1170,8 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				} else {
 					req, err = http.NewRequestWithContext(ctx, method, url, nil)
 					if err != nil {
-						if deadlineTimer != nil {
-							deadlineTimer.Stop()
-							ctx.ClearUpstreamTimeout()
-						}
+						deadlineTimer.cancel()
+						deadlineTimer = wheelHandle{}
 						ctx.ResponseStatus = 500
 						ctx.Failed = true
 						ctx.ErrorCode = 500
@@ -1204,11 +1278,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				resp, doErr := httpClient.Do(req)
 				// Stop timer immediately — unlike context.WithTimeout.cancel(), stopping
 				// our timer never marks the connection as broken, preserving connection reuse.
-				if deadlineTimer != nil {
-					deadlineTimer.Stop()
-					deadlineTimer = nil
-					ctx.ClearUpstreamTimeout()
-				}
+				deadlineTimer.cancel()
+				deadlineTimer = wheelHandle{}
+				ctx.ClearUpstreamTimeout()
 
 				// Return the bytes.Reader to pool now that Do() has consumed it.
 				if pooledReader != nil {
@@ -1301,6 +1373,23 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
+				// ── Body timeout (bake-time flag: hasBodyTimeout) ────────────────
+				// Fires if the upstream stalls after sending headers.
+				// Closes resp.Body to unblock the read:
+				//   HTTP/1  → partial read → connection NOT returned to pool → TCP closed.
+				//   HTTP/2  → RST_STREAM sent; TCP connection stays alive for other streams.
+				//   gRPC    → RST_STREAM; server-side handler receives cancellation.
+				// The total timer (above) was stopped after Do() returned — this is the
+				// only timeout protecting the body-read phase when hasBodyTimeout is true.
+				var bodyTimer wheelHandle
+				if hasBodyTimeout {
+					bodyTimer = scheduleBody(resp.Body, bakedBodyDur)
+					if bodyTimer.idx == 0 {
+						t := time.AfterFunc(bakedBodyDur, func() { resp.Body.Close() })
+						defer t.Stop()
+					}
+				}
+
 				// ── Read response body ────────────────────────────────────────────
 				// Compiler sets StreamResponseBody=true when the body needs no slot
 				// capture (no response_body_var, or only used in respond/return).
@@ -1375,6 +1464,11 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					respBytes, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 				}
+
+				// Stop body timer — if it already fired, resp.Body is already closed
+				// (idempotent); the body read returned an error and we're on the error path.
+				bodyTimer.cancel()
+				bodyTimer = wheelHandle{}
 
 				event.BytesSent = reqBytesSent
 				event.BytesReceived = respBytes

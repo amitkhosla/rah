@@ -8,6 +8,7 @@ type ChatAction = {
   op: string
   name?: string
   dsl?: string
+  description?: string
   api?: string
   path?: string
   method?: string
@@ -33,11 +34,37 @@ type ChatDebugInfo = {
   duration_ms: number
 }
 
+type PlanFlow = {
+  name: string
+  description: string
+  subflows?: PlanFlow[]
+}
+
+type PlanEndpoint = {
+  method: string
+  path: string
+  description: string
+}
+
+type PlanAPI = {
+  name: string
+  endpoints: PlanEndpoint[]
+}
+
+type Plan = {
+  summary: string
+  flows: PlanFlow[]
+  apis: PlanAPI[]
+  policies?: string[]
+}
+
 type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   response?: {
+    phase?: 'discovery' | 'plan' | 'execute' | string
     confirm_message: string
+    plan?: Plan
     actions: ChatAction[]
     questions: string[]
     dsl_preview?: string
@@ -230,6 +257,103 @@ function DebugPanel({ debug }: { debug: ChatDebugInfo }) {
   )
 }
 
+// ── Plan Preview ─────────────────────────────────────────────────────────────
+
+function FlowNode({ flow, depth = 0 }: { flow: PlanFlow; depth?: number }) {
+  const [open, setOpen] = useState(true)
+  const hasChildren = (flow.subflows?.length ?? 0) > 0
+  return (
+    <div style={{ marginLeft: depth * 16 }}>
+      <div
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '5px 0', cursor: hasChildren ? 'pointer' : 'default' }}
+        onClick={() => hasChildren && setOpen(o => !o)}
+      >
+        <span style={{ color: 'var(--accent)', fontSize: 13, flexShrink: 0, marginTop: 1 }}>
+          {hasChildren ? (open ? '▾' : '▸') : '◆'}
+        </span>
+        <div>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>{flow.name}</span>
+          {flow.description && (
+            <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>— {flow.description}</span>
+          )}
+        </div>
+      </div>
+      {open && hasChildren && flow.subflows?.map((sf, i) => (
+        <FlowNode key={i} flow={sf} depth={depth + 1} />
+      ))}
+    </div>
+  )
+}
+
+function PlanPreview({ plan }: { plan: Plan }) {
+  return (
+    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Summary */}
+      {plan.summary && (
+        <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, padding: '10px 14px', background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.2)', borderRadius: 8 }}>
+          {plan.summary}
+        </div>
+      )}
+
+      {/* Flows tree */}
+      {plan.flows?.length > 0 && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '8px 14px', background: 'var(--panel)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.5 }}>
+            FLOWS & SUB-FLOWS ({plan.flows.length})
+          </div>
+          <div style={{ padding: '8px 14px' }}>
+            {plan.flows.map((f, i) => <FlowNode key={i} flow={f} />)}
+          </div>
+        </div>
+      )}
+
+      {/* APIs */}
+      {plan.apis?.length > 0 && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '8px 14px', background: 'var(--panel)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.5 }}>
+            APIs & ENDPOINTS
+          </div>
+          <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {plan.apis.map((api, ai) => (
+              <div key={ai}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 4, fontFamily: 'monospace' }}>
+                  ◆ {api.name}
+                </div>
+                {api.endpoints?.map((ep, ei) => (
+                  <div key={ei} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginLeft: 16, padding: '3px 0' }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 800, padding: '1px 6px', borderRadius: 4,
+                      background: ep.method === 'GET' ? '#0ea5e930' : ep.method === 'POST' ? '#22c55e30' : ep.method === 'DELETE' ? '#ef444430' : '#f59e0b30',
+                      color: ep.method === 'GET' ? '#0ea5e9' : ep.method === 'POST' ? '#22c55e' : ep.method === 'DELETE' ? '#ef4444' : '#f59e0b',
+                      flexShrink: 0, marginTop: 2, letterSpacing: 0.5
+                    }}>{ep.method}</span>
+                    <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text)', marginRight: 6, flexShrink: 0 }}>{ep.path}</span>
+                    {ep.description && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{ep.description}</span>}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Policies */}
+      {plan.policies && plan.policies.length > 0 && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '8px 14px', background: 'var(--panel)', borderBottom: '1px solid var(--border)', fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.5 }}>
+            SECURITY & POLICIES
+          </div>
+          <ul style={{ margin: 0, padding: '8px 14px 8px 30px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {plan.policies.map((p, i) => (
+              <li key={i} style={{ fontSize: 13, color: 'var(--text)' }}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Action Block ──────────────────────────────────────────────────────────────
 
 function ActionBlock({
@@ -249,6 +373,7 @@ function ActionBlock({
   onApply: (msgIndex: number, actionIndex: number, action: ChatAction) => void
   onDiscard: (msgIndex: number, actionIndex: number) => void
 }) {
+  const [showDSL, setShowDSL] = useState(false)
   const kvFields: [string, string][] = (
     [
       ['api', action.api],
@@ -258,6 +383,8 @@ function ActionBlock({
       ['target', action.target],
     ] as [string, string | undefined][]
   ).filter((e): e is [string, string] => !!e[1])
+
+  const label = action.name || action.api || action.path || ''
 
   return (
     <div style={{
@@ -273,7 +400,7 @@ function ActionBlock({
         alignItems: 'center',
         gap: 8,
         padding: '8px 12px',
-        borderBottom: '1px solid var(--border)',
+        borderBottom: action.description || kvFields.length > 0 || (showDSL && action.dsl) ? '1px solid var(--border)' : 'none',
       }}>
         <span style={{
           fontSize: 10,
@@ -287,28 +414,20 @@ function ActionBlock({
         }}>
           {action.op.toUpperCase()}
         </span>
-        {action.name && (
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{action.name}</span>
+        {label && (
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</span>
         )}
       </div>
 
-      {/* DSL or key fields */}
-      {action.dsl ? (
-        <pre style={{
-          margin: 0,
-          padding: '10px 12px',
-          fontFamily: 'monospace',
-          fontSize: 12,
-          overflowX: 'auto',
-          maxHeight: 200,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          color: 'var(--text)',
-          background: 'transparent',
-        }}>
-          {action.dsl}
-        </pre>
-      ) : kvFields.length > 0 ? (
+      {/* Description (plain English — shown by default) */}
+      {action.description && (
+        <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
+          {action.description}
+        </div>
+      )}
+
+      {/* Key fields (for add_endpoint etc. when no description) */}
+      {!action.description && kvFields.length > 0 && (
         <table style={{ margin: '8px 12px', borderSpacing: '8px 2px', fontSize: 12 }}>
           <tbody>
             {kvFields.map(([k, v]) => (
@@ -319,7 +438,37 @@ function ActionBlock({
             ))}
           </tbody>
         </table>
-      ) : null}
+      )}
+
+      {/* DSL toggle (hidden by default) */}
+      {action.dsl && (
+        <div style={{ padding: '0 12px 4px' }}>
+          <button
+            onClick={() => setShowDSL(v => !v)}
+            style={{ fontSize: 11, color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0' }}
+          >
+            {showDSL ? '▾ Hide DSL' : '▸ Show DSL'}
+          </button>
+          {showDSL && (
+            <pre style={{
+              margin: '4px 0 0',
+              padding: '8px 10px',
+              fontFamily: 'monospace',
+              fontSize: 11,
+              overflowX: 'auto',
+              maxHeight: 200,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              color: 'var(--text)',
+              background: 'var(--block-bg)',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+            }}>
+              {action.dsl}
+            </pre>
+          )}
+        </div>
+      )}
 
       {/* buttons / status */}
       <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -473,23 +622,64 @@ export default function AIAssistant() {
     }
   }
 
-  // ── Apply action ──────────────────────────────────────────────────────────
+  // ── Send sync payload to gateway ─────────────────────────────────────────
+  async function postSync(flows: unknown[], apis: unknown[]) {
+    const res = await fetch('/api/sync', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sync_uuid: `ai-${Date.now()}`, flows, apis }),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => `HTTP ${res.status}`)
+      throw new Error(text || `HTTP ${res.status}`)
+    }
+  }
+
+  // ── Apply single action ────────────────────────────────────────────────────
   async function applyAction(msgIndex: number, actionIndex: number, action: ChatAction) {
     try {
       if (action.op === 'upsert_flow') {
-        const name = action.name ?? ''
-        const res = await fetch(`/api/flows/${encodeURIComponent(name)}`, {
-          method: 'PUT',
+        let instructions: unknown[]
+        try { instructions = JSON.parse(action.dsl ?? '[]') } catch { throw new Error('Invalid flow DSL') }
+        await postSync([{ name: action.name ?? '', instructions, action: 'upsert' }], [])
+      } else if (action.op === 'add_endpoint') {
+        await postSync([], [{
+          name: action.api ?? '',
+          path: action.path ?? '/',
+          method: action.method ?? 'ANY',
+          flow_name: action.flow ?? '',
+          action: 'upsert',
+        }])
+      } else if (action.op === 'upsert_api') {
+        // API container is created implicitly when its endpoints are added via sync.
+        // Mark applied immediately — nothing to send standalone.
+      } else if (action.op === 'upsert_tenant') {
+        const res = await fetch('/api/tenants', {
+          method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dsl: action.dsl }),
+          body: JSON.stringify({ alias: action.name ?? '' }),
         })
-        if (!res.ok) {
-          const text = await res.text().catch(() => `HTTP ${res.status}`)
-          throw new Error(text || `HTTP ${res.status}`)
-        }
+        if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`))
+      } else if (action.op === 'upsert_rate_limit') {
+        const res = await fetch('/api/rate-limit-configs', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: action.name ?? '' }),
+        })
+        if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`))
+      } else if (action.op === 'publish') {
+        const res = await fetch('/api/deploy', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target: action.target ?? '' }),
+        })
+        if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`))
       } else {
-        throw new Error(`Not yet implemented for op: ${action.op}`)
+        throw new Error(`Unknown op: ${action.op}`)
       }
       setMessages(prev =>
         prev.map((m, i) => {
@@ -507,6 +697,51 @@ export default function AIAssistant() {
           return { ...m, failedActions: { ...m.failedActions, [actionIndex]: msg } }
         })
       )
+    }
+  }
+
+  // ── Apply all pending actions as one batch sync ───────────────────────────
+  async function applyAllActions(msgIndex: number) {
+    const msg = messages[msgIndex]
+    if (!msg?.response) return
+    const pending = msg.response.actions
+      .map((a, i) => ({ a, i }))
+      .filter(({ i }) => !msg.appliedActions.has(i) && !discardedActions.has(`${msgIndex}:${i}`))
+    if (pending.length === 0) return
+
+    const flows: unknown[] = []
+    const apis: unknown[] = []
+    const noOpIndices: number[] = []
+
+    for (const { a, i } of pending) {
+      if (a.op === 'upsert_flow') {
+        let instructions: unknown[]
+        try { instructions = JSON.parse(a.dsl ?? '[]') } catch { instructions = [] }
+        flows.push({ name: a.name ?? '', instructions, action: 'upsert' })
+      } else if (a.op === 'add_endpoint') {
+        apis.push({ name: a.api ?? '', path: a.path ?? '/', method: a.method ?? 'ANY', flow_name: a.flow ?? '', action: 'upsert' })
+      } else if (a.op === 'upsert_api') {
+        noOpIndices.push(i)
+      }
+    }
+
+    try {
+      if (flows.length > 0 || apis.length > 0) await postSync(flows, apis)
+      setMessages(prev => prev.map((m, idx) => {
+        if (idx !== msgIndex) return m
+        const next = new Set(m.appliedActions)
+        pending.forEach(({ i }) => next.add(i))
+        noOpIndices.forEach(i => next.add(i))
+        return { ...m, appliedActions: next }
+      }))
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      setMessages(prev => prev.map((m, idx) => {
+        if (idx !== msgIndex) return m
+        const failed = { ...m.failedActions }
+        pending.forEach(({ i }) => { failed[i] = errMsg })
+        return { ...m, failedActions: failed }
+      }))
     }
   }
 
@@ -923,56 +1158,128 @@ export default function AIAssistant() {
                   {msg.content}
                 </div>
               ) : (
-                <div style={{ maxWidth: '88%', minWidth: 0 }}>
+                <div style={{ maxWidth: '90%', minWidth: 0 }}>
+                  {/* Phase badge */}
+                  {msg.response?.phase && msg.response.phase !== 'execute' && (
+                    <div style={{ marginBottom: 6 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 4, letterSpacing: 0.5,
+                        background: msg.response.phase === 'discovery' ? '#f59e0b' : msg.response.phase === 'plan' ? '#0ea5e9' : 'var(--accent)',
+                        color: '#fff',
+                      }}>
+                        {msg.response.phase === 'discovery' ? '● QUESTIONS' : msg.response.phase === 'plan' ? '● PLAN' : msg.response.phase.toUpperCase()}
+                      </span>
+                    </div>
+                  )}
+
                   {/* confirm_message or plain content */}
                   <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {msg.response?.confirm_message ?? msg.content}
                   </div>
 
+                  {/* Plan preview (phase = "plan") */}
+                  {msg.response?.plan && (
+                    <PlanPreview plan={msg.response.plan} />
+                  )}
+
                   {/* Questions box */}
                   {msg.response && msg.response.questions.length > 0 && (
                     <div style={{
                       marginTop: 10,
-                      border: '1px solid #ca8a04',
+                      border: `1px solid ${msg.response.phase === 'plan' ? '#0ea5e9' : '#ca8a04'}`,
                       borderRadius: 8,
                       padding: '10px 14px',
-                      background: 'rgba(202,138,4,0.08)',
+                      background: msg.response.phase === 'plan' ? 'rgba(14,165,233,0.06)' : 'rgba(202,138,4,0.08)',
                     }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: '#ca8a04', marginBottom: 6, letterSpacing: 0.5 }}>
-                        CLARIFYING QUESTIONS
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {msg.response.phase === 'discovery' && (
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#ca8a04', marginBottom: 6, letterSpacing: 0.5 }}>
+                          A FEW QUESTIONS BEFORE I BUILD
+                        </div>
+                      )}
+                      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {msg.response.questions.map((q, qi) => (
                           <li key={qi} style={{ fontSize: 13, color: 'var(--text)' }}>{q}</li>
                         ))}
                       </ul>
+                      {msg.response.actions.length === 0 && mi === messages.length - 1 && (
+                        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                          {msg.response.phase === 'plan' ? (
+                            <>
+                              <button
+                                onClick={() => { setInput('Yes, looks good. Please proceed.'); textareaRef.current?.focus() }}
+                                style={{ padding: '5px 18px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: '#22c55e', color: '#fff' }}
+                              >
+                                ✓ Looks good, proceed
+                              </button>
+                              <button
+                                onClick={() => { setInput('I want to change: '); textareaRef.current?.focus() }}
+                                style={{ padding: '5px 16px', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12, fontWeight: 600, background: 'var(--step-bg)', color: 'var(--muted)' }}
+                              >
+                                ✎ Adjust the plan
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => { setInput('Here are my answers: '); textareaRef.current?.focus() }}
+                                style={{ padding: '5px 18px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: 'var(--accent)', color: '#031427' }}
+                              >
+                                Answer & continue
+                              </button>
+                              <button
+                                onClick={() => { setInput('Skip the questions and use sensible defaults.'); textareaRef.current?.focus() }}
+                                style={{ padding: '5px 16px', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12, fontWeight: 600, background: 'var(--step-bg)', color: 'var(--muted)' }}
+                              >
+                                Use defaults
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {/* Action blocks */}
-                  {msg.response && msg.response.actions.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-                      {msg.response.actions.map((action, ai) => {
-                        const discardKey = `${mi}:${ai}`
-                        const isDiscarded = discardedActions.has(discardKey)
-                        const isApplied = msg.appliedActions.has(ai)
-                        const failMsg = msg.failedActions[ai]
-                        if (isDiscarded) return null
-                        return (
-                          <ActionBlock
-                            key={ai}
-                            action={action}
-                            index={ai}
-                            msgIndex={mi}
-                            applied={isApplied}
-                            failed={failMsg}
-                            onApply={applyAction}
-                            onDiscard={discardAction}
-                          />
-                        )
-                      })}
-                    </div>
-                  )}
+                  {msg.response && msg.response.actions.length > 0 && (() => {
+                    const pendingCount = msg.response.actions.filter((_, ai) => {
+                      return !msg.appliedActions.has(ai) && !discardedActions.has(`${mi}:${ai}`)
+                    }).length
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                        {/* Apply All header */}
+                        {pendingCount >= 2 && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, padding: '8px 12px', background: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{pendingCount} item{pendingCount !== 1 ? 's' : ''} ready to apply</span>
+                            <button
+                              onClick={() => applyAllActions(mi)}
+                              style={{ padding: '4px 16px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: 'var(--accent)', color: '#031427' }}
+                            >
+                              Apply All
+                            </button>
+                          </div>
+                        )}
+                        {msg.response.actions.map((action, ai) => {
+                          const discardKey = `${mi}:${ai}`
+                          const isDiscarded = discardedActions.has(discardKey)
+                          const isApplied = msg.appliedActions.has(ai)
+                          const failMsg = msg.failedActions[ai]
+                          if (isDiscarded) return null
+                          return (
+                            <ActionBlock
+                              key={ai}
+                              action={action}
+                              index={ai}
+                              msgIndex={mi}
+                              applied={isApplied}
+                              failed={failMsg}
+                              onApply={applyAction}
+                              onDiscard={discardAction}
+                            />
+                          )
+                        })}
+                      </div>
+                    )
+                  })()}
 
                   {/* Debug panel */}
                   {showDebug && msg.response?.debug && (

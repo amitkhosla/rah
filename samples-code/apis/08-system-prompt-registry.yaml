@@ -1,0 +1,28 @@
+# ─── System Prompt Registry APIs ─────────────────────────────────────────────
+#
+# API definitions for the system prompt registry samples.
+# Flows referenced here are defined in instructions/08-system-prompt-registry.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-register-prompt
+    path: /samples/ai/prompts/register
+    method: POST
+    flow_name: api_register_prompt
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-ai-get-prompt
+    path: /samples/ai/prompts/get
+    method: GET
+    flow_name: api_get_prompt
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-ai-chat-prompt
+    path: /samples/ai/prompts/chat
+    method: POST
+    flow_name: api_chat_with_prompt
+    action: upsert
+    skip_rate_limit: true

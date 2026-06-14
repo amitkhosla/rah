@@ -1,0 +1,109 @@
+# ─── Gateway Datastore Flows ──────────────────────────────────────────────────
+#
+# Problem: Your frontend needs a backend. You want to serve static assets and
+#          dynamic data without standing up a separate server.
+# Solution: Store HTML, JS, and JSON directly in the gateway cache. Zero
+#           infrastructure beyond the gateway itself.
+#
+# Flow map:
+#
+#   api_seed_app:
+#     call seed_sample_app             # POST body(html+data) → shared cache
+#
+#   api_serve_html:
+#     call serve_html_app              # cache lookup → Content-Type + 200/404
+#
+#   api_serve_data:
+#     call serve_json_data             # cache lookup → Content-Type + 200/404
+#
+# Usage:
+#   1. POST /samples/ai/datastore/seed with JSON body:
+#        { "html": "<html>...</html>", "data": "{\"key\":\"value\"}" }
+#   2. GET  /samples/ai/datastore/      → served HTML page
+#   3. GET  /samples/ai/datastore/data  → served JSON data
+#
+# Content-type strings are stored alongside content so the serve flows can
+# forward the correct header without any hardcoding.
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SEED — write HTML + JSON into the shared cache
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # Reads two fields from the POST body and stores them under fixed keys.
+  # Content-type strings are stored in separate keys so serve flows can set
+  # the correct response header without hardcoding the MIME type here.
+  # TTL: 1 year (31 536 000 s). Re-seed at any time to update live content.
+  - name: seed_sample_app
+    action: upsert
+    code: |
+      html_content = body("html")
+      json_data    = body("data")
+      html_key     = "sample-app:index.html"
+      data_key     = "sample-app:data.json"
+      ct_html_key  = "sample-app:ct:html"
+      ct_json_key  = "sample-app:ct:json"
+      ct_html      = "text/html; charset=utf-8"
+      ct_json      = "application/json"
+      shared_cache.set(html_key,    html_content, ttl: 31536000)
+      shared_cache.set(data_key,    json_data,    ttl: 31536000)
+      shared_cache.set(ct_html_key, ct_html,      ttl: 31536000)
+      shared_cache.set(ct_json_key, ct_json,      ttl: 31536000)
+      return(200, '{"seeded":true}')
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVE HTML — read HTML from cache and forward with correct Content-Type
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: serve_html_app
+    action: upsert
+    code: |
+      html_key  = "sample-app:index.html"
+      ct_key    = "sample-app:ct:html"
+      page_html = shared_cache.get(html_key)
+      page_ct   = shared_cache.get(ct_key)
+      if (page_html != "") {
+        output.header("Content-Type") = page_ct
+        return(200, page_html)
+      } else {
+        return(404, '{"error":"App not seeded. POST to /samples/ai/datastore/seed first."}')
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SERVE JSON — read data from cache and forward with correct Content-Type
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: serve_json_data
+    action: upsert
+    code: |
+      data_key    = "sample-app:data.json"
+      ct_key      = "sample-app:ct:json"
+      json_result = shared_cache.get(data_key)
+      json_ct     = shared_cache.get(ct_key)
+      if (json_result != "") {
+        output.header("Content-Type") = json_ct
+        return(200, json_result)
+      } else {
+        return(404, '{"error":"No data seeded yet. POST to /samples/ai/datastore/seed first."}')
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINTS — reads like pseudocode
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: api_seed_app
+    action: upsert
+    code: |
+      call seed_sample_app
+
+  - name: api_serve_html
+    action: upsert
+    code: |
+      call serve_html_app
+
+  - name: api_serve_data
+    action: upsert
+    code: |
+      call serve_json_data

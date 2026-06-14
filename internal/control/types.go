@@ -298,6 +298,37 @@ type ApiUpdate struct {
 	SkipRateLimit     bool                `json:"skip_rate_limit,omitempty"`
 }
 
+// TenantSyncDef declares a tenant to register at deploy time.
+// Properties maps prop-store name (e.g. "urls", "ids", "meta") to key→value pairs.
+// This keeps the schema open-ended — any prop-store the gateway supports can be populated.
+type TenantSyncDef struct {
+	Aliases    []string                     `json:"aliases"`
+	Properties map[string]map[string]string `json:"properties,omitempty"` // store → {key: value}
+	Action     string                       `json:"action"`               // "upsert" | "delete"
+}
+
+// CacheSeedDef pre-populates a cache key at deploy time.
+// Tenants is a list of tenant aliases; use ["*"] for the global namespace (tenantID=0).
+type CacheSeedDef struct {
+	Key     string   `json:"key"`
+	Value   string   `json:"value"`
+	TTL     uint32   `json:"ttl,omitempty"`
+	Tenants []string `json:"tenants"` // aliases or ["*"] for global (tenantID=0)
+	Action  string   `json:"action"`  // "upsert" | "delete"
+}
+
+// APIKeySyncDef imports an API key via a secret reference at deploy time.
+// KeyRef follows the same env:/file:///literal scheme used for LLM api_key_ref.
+// AllowedTenants lists tenant aliases resolved to IDs by Studio at deploy time.
+type APIKeySyncDef struct {
+	App            string   `json:"app"`                       // App name; created if missing
+	Alias          string   `json:"alias"`
+	KeyRef         string   `json:"key_ref,omitempty"`         // secret ref resolved by Studio
+	AllowedTenants []string `json:"allowed_tenants,omitempty"` // tenant aliases
+	ExpiresAt      int64    `json:"expires_at,omitempty"`
+	Action         string   `json:"action"` // "upsert" | "delete"
+}
+
 type UnifiedSyncRequest struct {
 	SyncUUID string       `json:"sync_uuid"`
 	Flows    []FlowUpdate `json:"flows"`
@@ -307,6 +338,12 @@ type UnifiedSyncRequest struct {
 	RateLimitConfigsV2 []registrypkg.RateLimitConfigV2    `json:"rate_limit_configs_v2,omitempty"`
 	Tiers              []registrypkg.TierDef              `json:"tiers,omitempty"`
 	UpstreamServices   []registrypkg.UpstreamServiceDef   `json:"upstream_services,omitempty"`
+	// Tenants declared in this bundle — registered before flows/APIs at deploy time.
+	Tenants []TenantSyncDef `json:"tenants,omitempty"`
+	// CacheSeeds pre-populates cache entries at deploy time.
+	CacheSeeds []CacheSeedDef `json:"cache_seeds,omitempty"`
+	// APIKeys imports API keys via secret refs at deploy time.
+	APIKeys []APIKeySyncDef `json:"api_keys,omitempty"`
 }
 
 type Step struct {

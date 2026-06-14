@@ -11,7 +11,7 @@ func TestTelemetryRecordsInstructionAndRequest(t *testing.T) {
 		t.Fatalf("expected ShouldTrace true")
 	}
 	trace := tel.StartRequest(7, 11, "GET", "/v1/test")
-	tel.RecordInstruction("HTTP_CALL", 3*time.Millisecond)
+	tel.RecordInstrTiming("HTTP_CALL", int64(3*time.Millisecond))
 	tel.RecordUpstream("api.acme.com", 2*time.Millisecond, 10, 20)
 	tel.AppendInstructionEvent(&trace, InstructionEvent{Name: "HTTP_CALL", DurationNs: int64(time.Millisecond)})
 	tel.AppendInstructionEvent(&trace, InstructionEvent{Name: "HTTP_CALL", DurationNs: int64(time.Millisecond)})

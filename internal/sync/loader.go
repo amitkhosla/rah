@@ -30,11 +30,14 @@ func Load(dir string) (LoadResult, error) {
 	result.SourceMap = make(SourceMap)
 	result.Issues = []LintIssue{}
 	result.Bundle = control.UnifiedSyncRequest{
-		Flows:                  []control.FlowUpdate{},
-		Apis:                   []control.ApiUpdate{},
-		RateLimitConfigsV2:     []registrypkg.RateLimitConfigV2{},
-		Tiers:                  []registrypkg.TierDef{},
-		UpstreamServices:       []registrypkg.UpstreamServiceDef{},
+		Flows:              []control.FlowUpdate{},
+		Apis:               []control.ApiUpdate{},
+		RateLimitConfigsV2: []registrypkg.RateLimitConfigV2{},
+		Tiers:              []registrypkg.TierDef{},
+		UpstreamServices:   []registrypkg.UpstreamServiceDef{},
+		Tenants:            []control.TenantSyncDef{},
+		CacheSeeds:         []control.CacheSeedDef{},
+		APIKeys:            []control.APIKeySyncDef{},
 	}
 
 	// Collect all .yaml and .json files from the directory tree
@@ -303,6 +306,63 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
 	}
 
+	// Track tenant sources and detect duplicates
+	for _, t := range partial.Tenants {
+		if len(t.Aliases) == 0 {
+			continue
+		}
+		key := "tenant:" + t.Aliases[0]
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_tenant",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("tenant %q already defined in %s — last definition wins", t.Aliases[0], existing.File),
+				Suggestion: "Remove the duplicate definition or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track cache seed sources and detect duplicates
+	for _, seed := range partial.CacheSeeds {
+		if seed.Key == "" {
+			continue
+		}
+		key := "cacheseed:" + seed.Key
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_cache_seed",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("cache seed %q already defined in %s — last definition wins", seed.Key, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track API key sources and detect duplicates
+	for _, k := range partial.APIKeys {
+		if k.Alias == "" {
+			continue
+		}
+		key := "apikey:" + k.Alias
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_api_key",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("api_key %q already defined in %s — last definition wins", k.Alias, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
 	// Merge bundles (concatenate and deduplicate)
 	result.Bundle = mergeBundles(result.Bundle, partial)
 }
@@ -390,6 +450,51 @@ func mergeBundles(existing, newBundle control.UnifiedSyncRequest) control.Unifie
 	result.UpstreamServices = make([]registrypkg.UpstreamServiceDef, 0, len(existingUpstream))
 	for _, svc := range existingUpstream {
 		result.UpstreamServices = append(result.UpstreamServices, svc)
+	}
+
+	// Merge tenants: keep last occurrence by primary alias
+	existingTenants := make(map[string]control.TenantSyncDef)
+	for _, t := range existing.Tenants {
+		if len(t.Aliases) > 0 {
+			existingTenants[t.Aliases[0]] = t
+		}
+	}
+	for _, t := range newBundle.Tenants {
+		if len(t.Aliases) > 0 {
+			existingTenants[t.Aliases[0]] = t
+		}
+	}
+	result.Tenants = make([]control.TenantSyncDef, 0, len(existingTenants))
+	for _, t := range existingTenants {
+		result.Tenants = append(result.Tenants, t)
+	}
+
+	// Merge cache seeds: keep last occurrence by key+tenants composite
+	existingSeeds := make(map[string]control.CacheSeedDef)
+	for _, seed := range existing.CacheSeeds {
+		k := seed.Key + "|" + strings.Join(seed.Tenants, ",")
+		existingSeeds[k] = seed
+	}
+	for _, seed := range newBundle.CacheSeeds {
+		k := seed.Key + "|" + strings.Join(seed.Tenants, ",")
+		existingSeeds[k] = seed
+	}
+	result.CacheSeeds = make([]control.CacheSeedDef, 0, len(existingSeeds))
+	for _, seed := range existingSeeds {
+		result.CacheSeeds = append(result.CacheSeeds, seed)
+	}
+
+	// Merge API keys: keep last occurrence by alias
+	existingAPIKeys := make(map[string]control.APIKeySyncDef)
+	for _, k := range existing.APIKeys {
+		existingAPIKeys[k.Alias] = k
+	}
+	for _, k := range newBundle.APIKeys {
+		existingAPIKeys[k.Alias] = k
+	}
+	result.APIKeys = make([]control.APIKeySyncDef, 0, len(existingAPIKeys))
+	for _, k := range existingAPIKeys {
+		result.APIKeys = append(result.APIKeys, k)
 	}
 
 	return result

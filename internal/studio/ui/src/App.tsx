@@ -25,6 +25,7 @@ import Egress                from './components/Egress'
 import Releases              from './components/Releases'
 import SchemaLibrary         from './components/SchemaLibrary'
 import GrpcDescriptors       from './components/GrpcDescriptors'
+import GlobalAIAssistant     from './components/GlobalAIAssistant'
 
 // ── Action name normalization (internal engine → display names) ──────
 
@@ -696,6 +697,9 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'concurrency'       && <Concurrency />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
+
+      {/* ── Global AI Assistant — floating on every screen ── */}
+      <GlobalAIAssistant currentTab={tab} />
     </div>
   )
 }

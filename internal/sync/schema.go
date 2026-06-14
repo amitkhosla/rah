@@ -27,6 +27,14 @@ var namedVarToSlotKey = map[string]string{
 	"input.payload_var": "input.payload_slot",
 	"input.model_var":   "input.model_slot",
 	"input.session_var": "input.session_slot",
+
+	// llm_call: optional slots for system prompt, messages array, and runtime API key
+	"input.system_var":    "input.system_slot",
+	"input.messages_var":  "input.messages_slot",
+	"input.api_key_var":   "input.api_key_slot",
+
+	// semantic_cache_get: boolean slot that records whether the lookup was a cache hit
+	"input.hit_var": "input.hit_slot",
 }
 
 // ForbiddenSlotKeys is the set of internal _slot-suffixed input keys that

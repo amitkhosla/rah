@@ -23,11 +23,12 @@ func TestPutOverwriteEvictedUpdatesTenantUsage(t *testing.T) {
 		[]uint32{0},   // 1 TTL tier: expires immediately
 		1,
 		0,
-		nil, // nil → default disk backend
+		NoopBackend, // avoid disk I/O; no eviction-to-backend needed for this test
 	)
 	if err != nil {
 		t.Fatalf("NewCacheManager() error = %v", err)
 	}
+	t.Cleanup(func() { cm.Stop() })
 
 	smallVal := []byte("12345") // 5 B → entry size = 16+5 = 21 B
 	entrySize := entryBytes(len(smallVal))

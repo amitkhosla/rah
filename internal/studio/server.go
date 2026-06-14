@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -1332,6 +1333,7 @@ func (s *Server) deployHandler(w http.ResponseWriter, r *http.Request) {
 	results := make([]DeployResult, 0)
 	for _, t := range selected {
 		for _, raw := range t.URLs {
+			s.preSyncDeploy(r.Context(), raw, rec.Payload)
 			targetURL, err := buildTargetURL(raw, "/sync", "")
 			if err != nil {
 				results = append(results, DeployResult{Target: t.Name, URL: raw, ReleaseID: rec.ReleaseID, Error: err.Error()})
@@ -1431,6 +1433,90 @@ func joinURLPath(basePath, endpointPath string) string {
 	b := strings.TrimRight(basePath, "/")
 	e := strings.TrimLeft(endpointPath, "/")
 	return b + "/" + e
+}
+
+// resolveKeyRef resolves a secret reference to a plaintext string.
+// Supports "env:VAR_NAME", "file:///path", or a literal value.
+func resolveKeyRef(ref string) (string, error) {
+	if after, ok := strings.CutPrefix(ref, "env:"); ok {
+		val := os.Getenv(after)
+		if val == "" {
+			return "", fmt.Errorf("env var %q is not set", after)
+		}
+		return val, nil
+	}
+	if after, ok := strings.CutPrefix(ref, "file://"); ok {
+		data, err := os.ReadFile(after)
+		if err != nil {
+			return "", fmt.Errorf("read key file: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return ref, nil
+}
+
+// findOrCreateApp returns the AppID for the named app, creating it if absent.
+// Returns 0 on failure.
+func (s *Server) findOrCreateApp(ctx context.Context, targetBase, appName string) uint32 {
+	listURL, err := buildTargetURL(targetBase, "/apps", "")
+	if err != nil {
+		return 0
+	}
+	data, status, err := s.gatewayCall(ctx, http.MethodGet, listURL, nil)
+	if err != nil || status != http.StatusOK {
+		return 0
+	}
+	var resp struct {
+		Items []struct {
+			AppID uint32 `json:"app_id"`
+			Name  string `json:"name"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(data, &resp) == nil {
+		for _, app := range resp.Items {
+			if app.Name == appName {
+				return app.AppID
+			}
+		}
+	}
+	body, _ := json.Marshal(map[string]string{"name": appName})
+	createURL, err := buildTargetURL(targetBase, "/apps", "")
+	if err != nil {
+		return 0
+	}
+	data, status, err = s.gatewayCall(ctx, http.MethodPost, createURL, body)
+	if err != nil || status != http.StatusOK {
+		return 0
+	}
+	var created struct {
+		AppID uint32 `json:"app_id"`
+	}
+	if json.Unmarshal(data, &created) == nil {
+		return created.AppID
+	}
+	return 0
+}
+
+// resolveTenantIDs resolves tenant aliases to numeric IDs via the gateway.
+func (s *Server) resolveTenantIDs(ctx context.Context, targetBase string, aliases []string) []uint16 {
+	var ids []uint16
+	for _, alias := range aliases {
+		u, err := buildTargetURL(targetBase, "/tenants/"+alias, "")
+		if err != nil {
+			continue
+		}
+		data, status, err := s.gatewayCall(ctx, http.MethodGet, u, nil)
+		if err != nil || status != http.StatusOK {
+			continue
+		}
+		var rec struct {
+			TenantID uint16 `json:"tenant_id"`
+		}
+		if json.Unmarshal(data, &rec) == nil && rec.TenantID != 0 {
+			ids = append(ids, rec.TenantID)
+		}
+	}
+	return ids
 }
 
 func (s *Server) getAllApisProxy(w http.ResponseWriter, r *http.Request) {
@@ -1542,6 +1628,115 @@ func (s *Server) proxyPassThrough(w http.ResponseWriter, r *http.Request, target
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
+// gatewayCall makes an authenticated HTTP request to a gateway management endpoint.
+func (s *Server) gatewayCall(ctx context.Context, method, targetURL string, body []byte) ([]byte, int, error) {
+	var reqBody io.Reader
+	if body != nil {
+		reqBody = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, reqBody)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.gatewayBasicCred != "" {
+		req.Header.Set("Authorization", "Basic "+s.gatewayBasicCred)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return data, resp.StatusCode, nil
+}
+
+// preSyncDeploy applies tenants and cache seeds from the bundle to one gateway target
+// before the main /sync call. Errors are logged but non-fatal — /sync always runs.
+func (s *Server) preSyncDeploy(ctx context.Context, targetBase string, payload []byte) {
+	var bundle control.UnifiedSyncRequest
+	if err := json.Unmarshal(payload, &bundle); err != nil {
+		return // unparseable — let /sync handle it
+	}
+
+	// 1. Tenants
+	for _, t := range bundle.Tenants {
+		if t.Action == "delete" && len(t.Aliases) > 0 {
+			u, err := buildTargetURL(targetBase, "/tenants/"+t.Aliases[0], "")
+			if err != nil {
+				continue
+			}
+			if _, status, err := s.gatewayCall(ctx, http.MethodDelete, u, nil); err != nil || status >= 300 {
+				log.Printf("[Studio] preSyncDeploy: delete tenant %q: status=%d err=%v", t.Aliases[0], status, err)
+			}
+		} else if t.Action != "delete" {
+			body, _ := json.Marshal(t)
+			u, err := buildTargetURL(targetBase, "/tenants", "")
+			if err != nil {
+				continue
+			}
+			if _, status, err := s.gatewayCall(ctx, http.MethodPost, u, body); err != nil || status >= 300 {
+				log.Printf("[Studio] preSyncDeploy: upsert tenant %v: status=%d err=%v", t.Aliases, status, err)
+			}
+		}
+	}
+
+	// 2. Cache seeds
+	for _, seed := range bundle.CacheSeeds {
+		for _, alias := range seed.Tenants {
+			if seed.Action == "delete" {
+				u, err := buildTargetURL(targetBase, "/cache/"+alias+"/"+seed.Key, "")
+				if err != nil {
+					continue
+				}
+				if _, status, err := s.gatewayCall(ctx, http.MethodDelete, u, nil); err != nil || status >= 300 {
+					log.Printf("[Studio] preSyncDeploy: delete cache %q/%q: status=%d err=%v", alias, seed.Key, status, err)
+				}
+			} else {
+				body, _ := json.Marshal(map[string]any{"value": seed.Value, "ttl": seed.TTL})
+				u, err := buildTargetURL(targetBase, "/cache/"+alias+"/"+seed.Key, "")
+				if err != nil {
+					continue
+				}
+				if _, status, err := s.gatewayCall(ctx, http.MethodPut, u, body); err != nil || status >= 300 {
+					log.Printf("[Studio] preSyncDeploy: seed cache %q/%q: status=%d err=%v", alias, seed.Key, status, err)
+				}
+			}
+		}
+	}
+
+	// 3. API keys
+	for _, keyDef := range bundle.APIKeys {
+		if keyDef.Action == "delete" {
+			continue // key deletion not supported via bundle (use UI)
+		}
+		rawKey, err := resolveKeyRef(keyDef.KeyRef)
+		if err != nil {
+			log.Printf("[Studio] preSyncDeploy: api_key %q: resolve key_ref: %v", keyDef.Alias, err)
+			continue
+		}
+		appID := s.findOrCreateApp(ctx, targetBase, keyDef.App)
+		if appID == 0 {
+			log.Printf("[Studio] preSyncDeploy: api_key %q: could not find/create app %q", keyDef.Alias, keyDef.App)
+			continue
+		}
+		tenantIDs := s.resolveTenantIDs(ctx, targetBase, keyDef.AllowedTenants)
+		importBody, _ := json.Marshal(map[string]any{
+			"alias":           keyDef.Alias,
+			"raw_key":         rawKey,
+			"allowed_tenants": tenantIDs,
+			"expires_at":      keyDef.ExpiresAt,
+		})
+		u, err := buildTargetURL(targetBase, fmt.Sprintf("/apps/%d/keys/import", appID), "")
+		if err != nil {
+			continue
+		}
+		if _, status, err := s.gatewayCall(ctx, http.MethodPost, u, importBody); err != nil || status >= 300 {
+			log.Printf("[Studio] preSyncDeploy: import api_key %q: status=%d err=%v", keyDef.Alias, status, err)
+		}
+	}
+}
+
 // ─── Release Management (S9) ─────────────────────────────────────────────────
 
 // releasesHandler dispatches POST /api/releases (create) and GET /api/releases (list).
@@ -1645,6 +1840,7 @@ func (s *Server) releaseDeployHandler(w http.ResponseWriter, r *http.Request, id
 	results := make([]ReleaseDeployResult, 0)
 	for _, t := range selected {
 		for _, raw := range t.URLs {
+			s.preSyncDeploy(r.Context(), raw, rec.Payload)
 			targetURL, err := buildTargetURL(raw, "/sync", "")
 			if err != nil {
 				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
@@ -1783,16 +1979,14 @@ func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate: reject _slot-suffixed keys in Input maps.
+	// Validate: reject _slot-suffixed keys in Input maps before any translation.
 	if err := validateNoSlotKeys(bundle.Flows); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Translate user-facing variable keys (e.g. input.url_var → input.url_slot).
-	translateBundleVarKeys(bundle.Flows)
-
-	// Run linter on the parsed bundle.
+	// Run linter on the parsed bundle while user-facing keys are still intact
+	// (e.g. system_var, hit_var). Translation happens below after lint passes.
 	loadResult := rahsync.LoadResult{
 		Bundle:    bundle,
 		SourceMap: rahsync.SourceMap{},
@@ -1833,6 +2027,10 @@ func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(resp)
 		return
 	}
+
+	// Translate user-facing variable keys (e.g. system_var → system_slot) now
+	// that lint has passed. The compiler expects the internal _slot keys.
+	translateBundleVarKeys(bundle.Flows)
 
 	// Serialize the translated bundle as the stored payload.
 	payload, err := json.Marshal(bundle)

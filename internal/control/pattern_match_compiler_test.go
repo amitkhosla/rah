@@ -378,16 +378,12 @@ func TestPatternMatchInstructionCount(t *testing.T) {
 		t.Fatal("mainFlow not found in FlowLibrary after sync")
 	}
 
-	// When compiled via Compiler.Compile() (standalone, no fragment inlining),
-	// the then/else branches resolve to empty slices (nil fragments), so the
-	// instruction layout is:
-	//   [0] PATTERN_MATCH_REGEX   (gate — jumps to thenStart or elseStart)
-	//   [1] GOTO                  (skip-else; elseStart == postElseID when else is empty)
-	// Total = 2 instructions (sub-flows live in their own FlowLibrary entries).
-	//
-	// The full inlined layout (1 gate + then-instr + GOTO + else-instr = 4) is only
-	// produced by CompileExecutable() which is used at API dispatch time.
-	const wantCount = 2
+	// Compiler.Compile() layout for mainFlow (stored in FlowLibrary):
+	//   [0] SET_STREAM_RESPONSE_BODY — always first; no http_call so streaming=true
+	//   [1] PATTERN_MATCH_REGEX      (gate — jumps to thenStart or elseStart)
+	//   [2] GOTO                     (skip-else; sub-flows live in their own entries)
+	// Total = 3 instructions.
+	const wantCount = 3
 	if len(mainFlowInstrs) != wantCount {
 		t.Errorf("expected %d instructions in mainFlow FlowLibrary entry, got %d", wantCount, len(mainFlowInstrs))
 		for i, instr := range mainFlowInstrs {
@@ -395,9 +391,9 @@ func TestPatternMatchInstructionCount(t *testing.T) {
 		}
 	}
 
-	// Verify the gate instruction is at position 0.
-	if len(mainFlowInstrs) > 0 && mainFlowInstrs[0].Name != "PATTERN_MATCH_REGEX" {
-		t.Errorf("expected PATTERN_MATCH_REGEX at index 0, got %q", mainFlowInstrs[0].Name)
+	// Verify the gate instruction is at position 1 (after the stream-body flag).
+	if len(mainFlowInstrs) > 1 && mainFlowInstrs[1].Name != "PATTERN_MATCH_REGEX" {
+		t.Errorf("expected PATTERN_MATCH_REGEX at index 1, got %q", mainFlowInstrs[1].Name)
 	}
 }
 

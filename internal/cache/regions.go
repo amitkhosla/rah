@@ -67,6 +67,7 @@ type Region struct {
 	// Protected by mu.
 	writeSlot uint64
 	maxCount  uint64 // growth stops here; circular FIFO begins
+	minCount  uint64 // never shrink below this (= initialSlots at creation time)
 	clock     *cachedClock
 	mu        sync.Mutex
 }
@@ -92,6 +93,7 @@ func NewRegion(ttl, stride uint32, maxSlots uint64, clk *cachedClock) *Region {
 		stride:     stride,
 		ttlSeconds: ttl,
 		maxCount:   maxSlots,
+		minCount:   initialSlots,
 		clock:      clk,
 	}
 	r.buf.Store(&buf[0])
@@ -271,8 +273,10 @@ func (r *Region) TryShrink(shrinkPct uint32, nowSecs uint32) bool {
 
 	cnt := r.count.Load()
 
-	// Only shrink when in the circular FIFO phase and large enough to halve.
-	if cnt < r.maxCount || r.maxCount < 2 {
+	// Only shrink when in the circular FIFO phase, large enough to halve, and
+	// still above the initial-size floor (avoids shrinking a brand-new region
+	// that hasn't grown at all — that would corrupt the expected capacity).
+	if cnt < r.maxCount || r.maxCount < 2 || r.maxCount <= r.minCount {
 		return false
 	}
 

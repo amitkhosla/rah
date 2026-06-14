@@ -3848,6 +3848,15 @@ func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
 // Rule: streaming is safe when the response_body_var (if any) is ONLY referenced
 // as the `as` field of a top-level `return` or `respond` step, and by no other step.
 func canStreamResponseBody(steps []StepConfig) bool {
+	// If the flow contains set_response_body, it constructs the response body from
+	// a slot. SetResponseBodyStep only writes to ResponseBuffer when
+	// ctx.StreamResponseBody is false, so we must disable streaming in this case.
+	for _, s := range steps {
+		if s.Action == "set_response_body" {
+			return false
+		}
+	}
+
 	// Find the first http_call's response_body_var
 	bodyVar := ""
 	for _, s := range steps {

@@ -19,14 +19,44 @@ type ChatMessage struct {
 }
 
 type ChatAction struct {
-	Op     string `json:"op"`               // upsert_flow, add_endpoint, upsert_api, delete_flow, publish, upsert_rate_limit, upsert_tenant
-	Name   string `json:"name,omitempty"`
-	DSL    string `json:"dsl,omitempty"`
-	API    string `json:"api,omitempty"`
-	Path   string `json:"path,omitempty"`
-	Method string `json:"method,omitempty"`
-	Flow   string `json:"flow,omitempty"`
-	Target string `json:"target,omitempty"`
+	Op          string `json:"op"`                    // upsert_flow, add_endpoint, upsert_api, publish, upsert_rate_limit, upsert_tenant
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"` // plain-English explanation for the customer
+	DSL         string `json:"dsl,omitempty"`
+	API         string `json:"api,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Method      string `json:"method,omitempty"`
+	Flow        string `json:"flow,omitempty"`
+	Target      string `json:"target,omitempty"`
+}
+
+// PlanFlow is one flow node in a plan tree (may have child sub-flows).
+type PlanFlow struct {
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Subflows    []PlanFlow `json:"subflows,omitempty"`
+}
+
+// PlanEndpoint is one route within an API in the plan.
+type PlanEndpoint struct {
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Description string `json:"description"`
+}
+
+// PlanAPI groups endpoints under a named API.
+type PlanAPI struct {
+	Name      string         `json:"name"`
+	Endpoints []PlanEndpoint `json:"endpoints"`
+}
+
+// Plan is the structured confirmation preview shown to the customer before any
+// actions are applied. It is populated during the "plan" phase only.
+type Plan struct {
+	Summary  string     `json:"summary"`
+	Flows    []PlanFlow `json:"flows"`
+	APIs     []PlanAPI  `json:"apis"`
+	Policies []string   `json:"policies,omitempty"`
 }
 
 type ChatRequest struct {
@@ -59,11 +89,14 @@ type ChatDebugInfo struct {
 }
 
 type ChatResponse struct {
-	ConfirmMessage string         `json:"confirm_message"`
-	Actions        []ChatAction   `json:"actions"`
-	Questions      []string       `json:"questions,omitempty"`
-	DSLPreview     string         `json:"dsl_preview,omitempty"`
-	Debug          *ChatDebugInfo `json:"debug,omitempty"`
+	Phase            string         `json:"phase,omitempty"`             // "discovery" | "plan" | "execute" | ""
+	ConfirmMessage   string         `json:"confirm_message"`
+	Plan             *Plan          `json:"plan,omitempty"`
+	Actions          []ChatAction   `json:"actions"`
+	Questions        []string       `json:"questions,omitempty"`
+	SuggestedAnswers []string       `json:"suggested_answers,omitempty"` // parallel to Questions; pre-filled defaults
+	DSLPreview       string         `json:"dsl_preview,omitempty"`
+	Debug            *ChatDebugInfo `json:"debug,omitempty"`
 }
 
 // jsonError writes a JSON-encoded {"error":"..."} with the given status code.
@@ -279,6 +312,31 @@ func (s *Server) aiChatHandler(w http.ResponseWriter, r *http.Request) {
 			resp = &ChatResponse{
 				ConfirmMessage: "I had trouble formatting my response. Please try again.",
 				Questions:      []string{"Could you rephrase your request?"},
+			}
+		}
+	}
+
+	// ── Enforce plan phase: plan field must be populated ─────────────────────
+	// If the LLM responded with phase="plan" but left the plan object empty,
+	// retry once with an explicit correction prompt.
+	if resp.Phase == "plan" && (resp.Plan == nil || (len(resp.Plan.Flows) == 0 && len(resp.Plan.APIs) == 0)) {
+		retryPrompt := `Your last response had phase="plan" but the "plan" field was missing or empty. ` +
+			`You MUST include the "plan" object with "flows", "apis", and "policies" arrays fully populated. ` +
+			`Do NOT describe the plan in the confirm_message text — put it in the structured "plan" JSON field. ` +
+			`Respond ONLY with the corrected JSON.`
+		planRetryMessages := append(messages,
+			ChatMessage{Role: "assistant", Content: text},
+			ChatMessage{Role: "user", Content: retryPrompt},
+		)
+		planRetryCtx, planRetryCancel := context.WithTimeout(context.Background(), 130*time.Second)
+		defer planRetryCancel()
+		planRetryText, planRetryLog, planRetryErr := s.callGatewayChatLogged(planRetryCtx, managementBase, req.Model, systemPrompt, planRetryMessages)
+		planRetryLog.Label = "llm_plan_retry"
+		debug.APICalls = append(debug.APICalls, planRetryLog)
+		if planRetryErr == nil {
+			debug.RawLLMResponse = planRetryText
+			if retried, retryErr := parseAIResponse(planRetryText); retryErr == nil {
+				resp = retried
 			}
 		}
 	}
@@ -627,8 +685,118 @@ Cached-hit flow "lazy-call-upstream" instructions:
 	}
 
 	sb.WriteString(`
-Respond ONLY with valid JSON (no markdown, no explanation outside JSON):
-{"confirm_message":"one sentence summary","actions":[...],"questions":["if anything unclear"]}`)
+## Three-phase conversation workflow
+
+RULE: You get EXACTLY ONE response per phase. Never ask a second round of discovery questions. Never produce a partial plan. Never produce actions before the user confirms the plan.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1 — DISCOVERY  (phase = "discovery")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Trigger: user's first request (any request involving APIs, flows, tenants, auth, routing).
+Goal: ask ALL unclear questions in ONE response. You get only one shot. Cover every ambiguous area.
+
+Topics to address (only if NOT already stated by the user):
+- Tenant identification: which param/header/field? fallback order? what if not found?
+- Auth: token format? JWKS/auth URL per tenant or shared? cache TTL? what if token missing/invalid?
+- Upstream: URLs pre-configured per tenant, or fetched at runtime? what if unreachable?
+- Rate limiting: per tenant? per API? per user? specific TPS/RPM limits?
+- AI/agentic (only if mentioned): LLM model? MCP server integration? tool calling?
+
+For EVERY question in "questions", provide a matching entry in "suggested_answers" — the most sensible default answer given the user's context. The user sees these pre-filled and can edit before submitting.
+
+Format:
+{"phase":"discovery","confirm_message":"Before I design this, I have a few questions:","actions":[],"questions":["<question 1>","<question 2>"],"suggested_answers":["<default answer 1>","<default answer 2>"]}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2 — PLAN  (phase = "plan")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Trigger: after the user answers the discovery questions (or if original request was already complete).
+Goal: show the FULL structured plan so the user can review BEFORE any configuration is created.
+
+CRITICAL RULES:
+- The "plan" field is MANDATORY. Never set it to null. Never omit it.
+- List EVERY flow and sub-flow. List EVERY API endpoint.
+- "actions" MUST be an empty array []. Do NOT generate DSL yet.
+- Write everything in plain English. No technical jargon.
+
+COMPLETE EXAMPLE (use this structure exactly):
+{
+  "phase": "plan",
+  "confirm_message": "Here is everything I will create. Please review and confirm:",
+  "plan": {
+    "summary": "Multi-tenant school API gateway with JWT auth, JWKS caching, and routing to six upstream services.",
+    "flows": [
+      {
+        "name": "tenant-resolution",
+        "description": "Entry point — identifies the school from the request using three fallbacks in order",
+        "subflows": [
+          {"name": "check-query-param", "description": "Looks for 'schoolId' query parameter first", "subflows": []},
+          {"name": "check-header", "description": "Falls back to 'apivanityurl' header if no query param", "subflows": []},
+          {"name": "check-hostname", "description": "Falls back to the request hostname if header also absent", "subflows": []}
+        ]
+      },
+      {
+        "name": "auth-flow",
+        "description": "Validates the Bearer JWT token; returns 403 if missing or invalid",
+        "subflows": [
+          {"name": "fetch-jwks", "description": "Fetches the JWKS public keys from the tenant's auth URL and caches them for 24 hours", "subflows": []},
+          {"name": "access-denied", "description": "Returns HTTP 403 with message 'Access denied'", "subflows": []}
+        ]
+      },
+      {
+        "name": "route-to-upstream",
+        "description": "Loads the tenant's upstream service URL and forwards the request, returning 503 if unreachable",
+        "subflows": []
+      }
+    ],
+    "apis": [
+      {
+        "name": "school-api",
+        "endpoints": [
+          {"method": "GET",    "path": "/student",        "description": "List or search students"},
+          {"method": "POST",   "path": "/student",        "description": "Create a new student"},
+          {"method": "PUT",    "path": "/student/{id}",   "description": "Update student details"},
+          {"method": "DELETE", "path": "/student/{id}",   "description": "Remove a student"},
+          {"method": "GET",    "path": "/teacher",        "description": "List teachers"},
+          {"method": "POST",   "path": "/teacher",        "description": "Create a teacher"},
+          {"method": "GET",    "path": "/fee",            "description": "List student fees"},
+          {"method": "POST",   "path": "/fee/pay",        "description": "Record a fee payment"}
+        ]
+      }
+    ],
+    "policies": [
+      "Tenant rate limit: 1000 requests/second per tenant (across all APIs)",
+      "Per-API rate limit: 500 requests/second per tenant per API",
+      "JWT validation: local signature check using JWKS public keys cached for 24 hours per auth URL",
+      "On JWKS cache miss or key rotation: re-fetch from auth URL automatically",
+      "Upstream unreachable: return HTTP 503 immediately, no retry"
+    ]
+  },
+  "actions": [],
+  "questions": ["Does this plan look right? Shall I proceed to create all the flows and APIs?"]
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3 — EXECUTE  (phase = "execute")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Trigger: user explicitly confirms the plan (yes / proceed / looks good / go ahead / etc.).
+Goal: generate all action objects.
+
+Rules:
+- Every action MUST have "description": one plain-English sentence for a non-technical reader.
+- Never mention DSL, JSON, instructions, or technical field names in descriptions.
+
+Format:
+{
+  "phase": "execute",
+  "confirm_message": "All flows and APIs are ready. Click 'Apply All' to activate them.",
+  "actions": [
+    {"op":"upsert_flow","name":"tenant-resolution","description":"Identifies the school using query param, then header, then hostname.","dsl":"[...]"},
+    {"op":"add_endpoint","api":"school-api","path":"/student","method":"GET","flow":"tenant-resolution","description":"Routes GET /student to the upstream student service after auth."}
+  ],
+  "questions": []
+}
+`)
 	return sb.String()
 }
 

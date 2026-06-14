@@ -25,3 +25,36 @@ datastore:
 
 ingest:
   enabled: false   # no Redis stream, no cross-instance sync — single process only
+
+# ── AI / LLM model aliases ──────────────────────────────────────────────────
+# These placeholder aliases let the AI samples (08-18) compile and deploy
+# without requiring a live API key. Requests to any of these models will
+# fail at runtime until you add real credentials.
+#
+# To configure real keys: Studio → AI → Models → click the alias → set API Key.
+# Alternatively replace "api_key_ref: env:YOUR_KEY" with your actual key.
+llm:
+  models:
+    - alias: my-llm
+      provider: anthropic
+      model_id: claude-haiku-4-5-20251001
+      api_key_ref: "env:ANTHROPIC_API_KEY"
+
+    - alias: my-fast-llm
+      provider: anthropic
+      model_id: claude-haiku-4-5-20251001
+      api_key_ref: "env:ANTHROPIC_API_KEY"
+
+    - alias: my-embed-model
+      provider: openai
+      model_id: text-embedding-3-small
+      api_key_ref: "env:OPENAI_API_KEY"
+
+# ── Vector stores ────────────────────────────────────────────────────────────
+# Placeholder vector store for semantic cache sample (10).
+# Replace the URL with your actual Qdrant/Chroma/Weaviate instance.
+vector_stores:
+  - name: my-vector-store
+    kind: qdrant
+    url: "http://localhost:6333"
+    dimension: 1536

@@ -129,6 +129,8 @@ func main() {
 	gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
 	defer gatewayCancel()
 
+	enginesteps.StartTimerWheel(gatewayCtx)
+
 	// 1a. Secrets Manager — must be initialised before the datastore so that
 	// credential references in store configs are resolved at startup.
 	secretsMgr, err := secrets.New(gatewayCtx, cfgMgr.Secrets())
@@ -703,6 +705,9 @@ func main() {
 				ep.Counters[pc].Count.Add(1)
 				if slot.Durs[i] > 0 {
 					ep.Counters[pc].TotalNs.Add(uint64(slot.Durs[i]))
+					if pc < len(ep.Plan) {
+						obs.RecordInstrTiming(ep.Plan[pc].Name, int64(slot.Durs[i]))
+					}
 				}
 			}
 		}
@@ -855,7 +860,8 @@ func main() {
 
 			// E. Post-response: snapshot for async access log and observability.
 			// Client has already received the response — none of this adds latency.
-			total := time.Since(reqStart) // full wall time incl. post-response; for internal gateway accounting only
+			// Use clientTotal (captured right after Finalize) rather than a new time.Since here;
+			// the post-finalize overhead is nanoseconds and not worth a syscall per request.
 			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
 			upstream := time.Duration(upstreamNs)
 			gateway := max(clientTotal-upstream, 0)
@@ -924,7 +930,7 @@ func main() {
 			if ctx.Trace != nil {
 				obsFinishStarted = time.Now()
 			}
-			obs.FinishRequest(traceForTelemetry, ctx.ResponseStatus, total, gateway, upstream,
+			obs.FinishRequest(traceForTelemetry, ctx.ResponseStatus, clientTotal, gateway, upstream,
 				int(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
 				ctx.Timing.ClientBytesSent,
 				atomic.LoadInt64(&ctx.Timing.UpstreamBytesTx),
@@ -938,7 +944,7 @@ func main() {
 			// Record per-API stats for the in-memory API Performance fallback.
 			// Post-response: client already has the response, not on the critical path.
 			if ctx.ApiId != 0 {
-				obs.RecordRequest(ctx.ApiId, total.Nanoseconds(), req.ContentLength, ctx.Timing.ClientBytesSent)
+				obs.RecordRequest(ctx.ApiId, clientTotal.Nanoseconds(), req.ContentLength, ctx.Timing.ClientBytesSent)
 			}
 
 			// Record into window-based metrics aggregator (feeds KindMetric ingest events).
@@ -952,7 +958,7 @@ func main() {
 				accessLogEnqueueStarted = time.Now()
 			}
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
-				TimestampNs: time.Now().UnixNano(),
+				TimestampNs: ctx.Timing.StartNs,
 				ApiName:     apiName,
 				TenantID:    ctx.TenantID,
 				TenantKey:   ctx.TenantKey,

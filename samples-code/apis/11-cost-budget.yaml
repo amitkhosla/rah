@@ -1,0 +1,14 @@
+# ─── LLM Cost Budget & Fallback APIs ─────────────────────────────────────────
+#
+# API definitions for the LLM cost budget and fallback samples.
+# Flows referenced here are defined in instructions/11-cost-budget.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-budgeted-llm
+    path: /samples/ai/budgeted
+    method: POST
+    flow_name: api_budgeted_llm
+    action: upsert
+    skip_rate_limit: true

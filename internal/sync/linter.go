@@ -107,6 +107,88 @@ func lintLevel0(result LoadResult) []LintIssue {
 		}
 	}
 
+	// Tenant structural checks
+	for i, t := range b.Tenants {
+		primaryAlias := ""
+		if len(t.Aliases) > 0 {
+			primaryAlias = t.Aliases[0]
+		}
+		loc := result.SourceMap["tenant:"+primaryAlias]
+		if len(t.Aliases) == 0 {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "tenant_no_aliases",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("tenants[%d]: aliases must not be empty", i),
+			})
+		}
+		if t.Action != "upsert" && t.Action != "delete" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "tenant_invalid_action",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("tenants[%d] %v: action must be \"upsert\" or \"delete\", got %q", i, t.Aliases, t.Action),
+			})
+		}
+	}
+
+	// Cache seed structural checks
+	for i, seed := range b.CacheSeeds {
+		loc := result.SourceMap["cacheseed:"+seed.Key]
+		if seed.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "cacheseed_no_key",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("cache_seeds[%d]: key must not be empty", i),
+			})
+		}
+		if len(seed.Tenants) == 0 {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "cacheseed_no_tenants",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("cache_seeds[%d] %q: tenants must not be empty (use [\"*\"] for global)", i, seed.Key),
+			})
+		}
+		if seed.Action != "upsert" && seed.Action != "delete" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "cacheseed_invalid_action",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("cache_seeds[%d] %q: action must be \"upsert\" or \"delete\", got %q", i, seed.Key, seed.Action),
+			})
+		}
+	}
+
+	// API key structural checks
+	for i, k := range b.APIKeys {
+		loc := result.SourceMap["apikey:"+k.Alias]
+		if k.App == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "apikey_no_app",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("api_keys[%d]: app must not be empty", i),
+			})
+		}
+		if k.Alias == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "apikey_no_alias",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("api_keys[%d]: alias must not be empty", i),
+			})
+		}
+		if k.KeyRef == "" && k.Action != "delete" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "apikey_no_key_ref",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("api_keys[%d] %q: key_ref required for action %q", i, k.Alias, k.Action),
+			})
+		}
+		if k.Action != "upsert" && k.Action != "delete" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "apikey_invalid_action",
+				File: loc.File, Line: loc.Line,
+				Message: fmt.Sprintf("api_keys[%d] %q: action must be \"upsert\" or \"delete\", got %q", i, k.Alias, k.Action),
+			})
+		}
+	}
+
 	return issues
 }
 
@@ -439,6 +521,49 @@ func lintLevel2(result LoadResult) []LintIssue {
 				Message:    fmt.Sprintf("flow %q is defined but never reachable from any API or call step", name),
 				Suggestion: fmt.Sprintf("reference %q from an API flow_name or a call step, or remove the flow definition", name),
 			})
+		}
+	}
+
+	// Cross-reference: warn if cache seeds reference tenant aliases not in this bundle.
+	tenantAliasSet := make(map[string]bool)
+	for _, t := range b.Tenants {
+		for _, a := range t.Aliases {
+			tenantAliasSet[a] = true
+		}
+	}
+	for _, seed := range b.CacheSeeds {
+		for _, alias := range seed.Tenants {
+			if alias == "*" {
+				continue
+			}
+			if !tenantAliasSet[alias] {
+				loc := result.SourceMap["cacheseed:"+seed.Key]
+				issues = append(issues, LintIssue{
+					Severity:   SeverityWarning,
+					Rule:       "cacheseed_unknown_tenant",
+					File:       loc.File,
+					Line:       loc.Line,
+					Message:    fmt.Sprintf("cache_seeds %q: tenant alias %q not declared in this bundle (may be pre-existing on gateway)", seed.Key, alias),
+					Suggestion: "Add a tenants: section declaring this alias, or verify it already exists on the gateway.",
+				})
+			}
+		}
+	}
+
+	// Warn if API keys reference tenant aliases not declared in this bundle.
+	for _, k := range result.Bundle.APIKeys {
+		for _, alias := range k.AllowedTenants {
+			if !tenantAliasSet[alias] {
+				loc := result.SourceMap["apikey:"+k.Alias]
+				issues = append(issues, LintIssue{
+					Severity:   SeverityWarning,
+					Rule:       "apikey_unknown_tenant",
+					File:       loc.File,
+					Line:       loc.Line,
+					Message:    fmt.Sprintf("api_keys %q: allowed_tenant alias %q not declared in this bundle (may be pre-existing)", k.Alias, alias),
+					Suggestion: "Declare the tenant in a tenants: section or verify it already exists on the gateway.",
+				})
+			}
 		}
 	}
 

@@ -1,0 +1,14 @@
+# ─── Structured JSON Output APIs ─────────────────────────────────────────────
+#
+# API definitions for the structured JSON output and repair samples.
+# Flows referenced here are defined in instructions/09-json-validation.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-ai-structured-output
+    path: /samples/ai/structured
+    method: POST
+    flow_name: api_structured_output
+    action: upsert
+    skip_rate_limit: true
