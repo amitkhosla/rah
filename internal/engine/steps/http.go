@@ -201,8 +201,18 @@ type cachedPool struct {
 // transportShard owns one http.Client/Transport and its connection pool.
 // Padded to a full cache line to prevent false sharing between adjacent shards.
 type transportShard struct {
-	_      [64]byte
-	client *http.Client
+	_         [64]byte
+	client    *http.Client
+	available atomic.Int32 // shadow count of idle connections available in this shard
+	max       int32        // MaxIdleConnsPerHost ceiling; set once at pool build time
+}
+
+// release signals a connection was returned to this shard's pool.
+// Only call when the shard was obtained via acquire() — never on the MTLS path.
+func (s *transportShard) release() {
+	if s.available.Load() < s.max {
+		s.available.Add(1)
+	}
 }
 
 // upstreamTransportPool distributes requests across N independent transports
@@ -213,8 +223,31 @@ type upstreamTransportPool struct {
 	ctr    atomic.Uint64
 }
 
+// get returns a client via pure round-robin with no availability tracking.
 func (p *upstreamTransportPool) get() *http.Client {
 	return p.shards[p.ctr.Add(1)&p.mask].client
+}
+
+// acquire picks the best available shard (prefers shards with idle connections)
+// and returns its client plus the shard pointer for a deferred release() call.
+// Checks up to 4 candidates; falls back to base shard if all appear empty
+// (transport opens a new connection in that case).
+func (p *upstreamTransportPool) acquire() (*http.Client, *transportShard) {
+	base := p.ctr.Add(1)
+	n := uint64(len(p.shards))
+	limit := min(n, 4)
+	for i := uint64(0); i < limit; i++ {
+		s := &p.shards[(base+i)&p.mask]
+		if s.available.Load() > 0 {
+			s.available.Add(-1)
+			return s.client, s
+		}
+	}
+	// All candidates appear exhausted — use base shard; counter may go briefly
+	// negative and self-corrects as release() calls come in.
+	s := &p.shards[base&p.mask]
+	s.available.Add(-1)
+	return s.client, s
 }
 
 type clientCacheKey struct {
@@ -347,17 +380,26 @@ func nextPow2(n int) int {
 func buildTransportPool(profile *egress.EgressProfile, cfg httpClientConfig) *upstreamTransportPool {
 	n := nextPow2(runtime.NumCPU() * globalShardsPerCPU)
 	n = max(n, 2)
-	// Divide per-host limits across shards so total stays bounded.
 	shardCfg := cfg
-	if shardCfg.MaxIdleConnsPerHost > 0 {
-		shardCfg.MaxIdleConnsPerHost = max(shardCfg.MaxIdleConnsPerHost/n, 4)
+	// Divide global idle cap so total memory across all shards stays bounded.
+	// Per-host limit is NOT divided — each shard keeps the full value so connections
+	// are reused under burst load (dividing it was the root cause of the large-payload
+	// regression: burst completions evicted connections because the per-shard pool was tiny).
+	if shardCfg.MaxIdleConns > 0 {
+		shardCfg.MaxIdleConns = max(shardCfg.MaxIdleConns/n, 16)
 	}
 	if shardCfg.MaxConnsPerHost > 0 {
 		shardCfg.MaxConnsPerHost = max(shardCfg.MaxConnsPerHost/n, 1)
 	}
+	maxPerShard := int32(shardCfg.MaxIdleConnsPerHost)
+	if maxPerShard <= 0 {
+		maxPerShard = 200
+	}
 	shards := make([]transportShard, n)
 	for i := range shards {
 		shards[i].client = buildClientForProfile(profile, shardCfg)
+		shards[i].available.Store(maxPerShard)
+		shards[i].max = maxPerShard
 	}
 	return &upstreamTransportPool{shards: shards, mask: uint64(n - 1)}
 }
@@ -650,7 +692,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 			} else {
 				bundle = getClientForBakedConfig(nil, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries)
 			}
-			httpClient := bundle.Pool.get()
+			httpClient, activeShard := bundle.Pool.acquire()
 
 			attempts := bundle.Cfg.RetryMaxAttempts + 1
 			if maxRetries >= 0 {
@@ -840,6 +882,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+				activeShard.release()
 				bodyTimer.cancel()
 				bodyTimer = wheelHandle{}
 				if ctx.Trace != nil {
@@ -1070,12 +1113,13 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			// mTLS: dedicated client (lazy sync.Once). Static URL: pool baked at
 			// instruction creation. Dynamic URL: sync.Map.Load with baked fingerprint.
 			var httpClient *http.Client
+			var activeShard *transportShard // nil on MTLS path — no pool tracking there
 			if mtlsCert != nil {
 				httpClient = getMTLSClient()
 			} else if hasStaticURL {
-				httpClient = staticPool.get()
+				httpClient, activeShard = staticPool.acquire()
 			} else {
-				httpClient = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool.get()
+				httpClient, activeShard = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool.acquire()
 			}
 
 			// ── Retry budget (baked at instruction creation time) ─────────────
@@ -1411,6 +1455,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					streamCopyPool.Put(copyBuf)
 					respBytes += n
 					resp.Body.Close()
+					if activeShard != nil {
+						activeShard.release()
+					}
 				} else if cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots) {
 					cl := resp.ContentLength
 					if cl > 0 {
@@ -1419,6 +1466,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						n, readErr := io.ReadFull(resp.Body, bodyBuf)
 						respBytes = int64(n)
 						resp.Body.Close()
+						if activeShard != nil {
+							activeShard.release()
+						}
 						if readErr != nil && readErr != io.ErrUnexpectedEOF {
 							event.Err = readErr.Error()
 							if ctx.Trace != nil && ctx.Obs != nil {
@@ -1448,6 +1498,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 							_, _ = io.Copy(buf, resp.Body)
 						}
 						resp.Body.Close()
+						if activeShard != nil {
+							activeShard.release()
+						}
 						respBytes = int64(buf.Len())
 						// Copy captured body into arena.
 						arena := ctx.Alloc(buf.Len())
@@ -1463,6 +1516,9 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				} else {
 					respBytes, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
+					if activeShard != nil {
+						activeShard.release()
+					}
 				}
 
 				// Stop body timer — if it already fired, resp.Body is already closed

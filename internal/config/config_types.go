@@ -593,6 +593,14 @@ type ResourceLimit struct {
 	MaxHeaderSize  int   `json:"max_header_size,omitempty"  yaml:"max_header_size,omitempty"`  // e.g., 16KB
 	MaxHeaderCount int   `json:"max_header_count,omitempty" yaml:"max_header_count,omitempty"` // e.g., 50
 	MaxBodySize    int64 `json:"max_body_size,omitempty"    yaml:"max_body_size,omitempty"`    // e.g., 1MB (SME) vs 1GB (Enterprise)
+
+	// Inbound server timeouts.
+	// ReadHeaderTimeoutMs: how long the client has to send request headers.
+	// 0 (default) = disabled — no slowloris protection; use when behind a trusted LB/CDN.
+	ReadHeaderTimeoutMs int `json:"read_header_timeout_ms,omitempty" yaml:"read_header_timeout_ms,omitempty"`
+	// IdleTimeoutMs: max time a keepalive connection may sit idle between requests.
+	// 0 (default) = 30s built-in default.
+	IdleTimeoutMs int `json:"idle_timeout_ms,omitempty" yaml:"idle_timeout_ms,omitempty"`
 }
 
 // RateLimitPreset defines a named rate limit preset used as a system-wide default.

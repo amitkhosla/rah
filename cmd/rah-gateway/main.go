@@ -1068,12 +1068,20 @@ func main() {
 		// Use http.Server with ConnContext to capture TCP accept time for connection
 		// setup latency tracking. Zero overhead on the hot path — runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
+		limits := cfgMgr.Layout().DefaultLimits
+		// ReadHeaderTimeoutMs: 0 = disabled (no slowloris guard; safe behind a trusted LB/CDN).
+		readHeaderTimeout := time.Duration(limits.ReadHeaderTimeoutMs) * time.Millisecond
+		// IdleTimeoutMs: 0 = use 30s default; explicit value overrides.
+		idleTimeout := 30 * time.Second
+		if limits.IdleTimeoutMs > 0 {
+			idleTimeout = time.Duration(limits.IdleTimeoutMs) * time.Millisecond
+		}
 		srv := &http.Server{
 			Addr:              addr,
 			Handler:           gwHandler,
-			MaxHeaderBytes:    cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
-			ReadHeaderTimeout: 5 * time.Second,  // prevent slowloris
-			IdleTimeout:       30 * time.Second, // close idle keep-alive connections promptly
+			MaxHeaderBytes:    limits.MaxHeaderSize,
+			ReadHeaderTimeout: readHeaderTimeout,
+			IdleTimeout:       idleTimeout,
 			ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 				return context.WithValue(ctx, connAcceptKey{}, time.Now())
 			},
@@ -1096,9 +1104,9 @@ func main() {
 				tlsSrv := &http.Server{
 					Addr:              tlsAddr,
 					Handler:           tlsHandler,
-					MaxHeaderBytes:    cfgMgr.Layout().DefaultLimits.MaxHeaderSize,
-					ReadHeaderTimeout: 5 * time.Second,
-					IdleTimeout:       30 * time.Second,
+					MaxHeaderBytes:    limits.MaxHeaderSize,
+					ReadHeaderTimeout: readHeaderTimeout,
+					IdleTimeout:       idleTimeout,
 					ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 						return context.WithValue(ctx, connAcceptKey{}, time.Now())
 					},

@@ -361,7 +361,10 @@ func (t *Telemetry) exportWorker() {
 			}
 		}
 		if t.reqSummaryLog.Load() {
-			gatewaylog.Default.Info(t.formatSummary(trace.Summary))
+			bp := summaryBufPool.Get().(*[]byte)
+			*bp = appendSummaryFields((*bp)[:0], t.cfg.InfoLogFields, trace.Summary)
+			gatewaylog.Default.Info(string(*bp))
+			summaryBufPool.Put(bp)
 		}
 	}
 }
@@ -411,35 +414,57 @@ func (t *Telemetry) metricWorker() {
 	}
 }
 
-func (t *Telemetry) formatSummary(s RequestSummary) string {
-	vals := make([]string, 0, len(t.cfg.InfoLogFields))
-	for _, f := range t.cfg.InfoLogFields {
+// summaryBufPool holds reusable []byte buffers for zero-alloc summary formatting.
+var summaryBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 256); return &b }}
+
+// appendSummaryFields builds a logfmt-style key=value string into buf using
+// strconv.Append* — no fmt.Sprintf, no intermediate []string, no strings.Join.
+func appendSummaryFields(buf []byte, fields []string, s RequestSummary) []byte {
+	first := true
+	for _, f := range fields {
+		var key string
+		var val int64
+		var uval uint64
+		unsigned := false
 		switch f {
 		case "trace_id":
-			vals = append(vals, fmt.Sprintf("trace_id=%d", s.TraceID))
+			key, uval, unsigned = "trace_id", s.TraceID, true
 		case "api_id":
-			vals = append(vals, fmt.Sprintf("api_id=%d", s.ApiID))
+			key, val = "api_id", int64(s.ApiID)
 		case "tenant_id":
-			vals = append(vals, fmt.Sprintf("tenant_id=%d", s.TenantID))
+			key, val = "tenant_id", int64(s.TenantID)
 		case "status":
-			vals = append(vals, fmt.Sprintf("status=%d", s.Status))
+			key, val = "status", int64(s.Status)
 		case "duration_ns":
-			vals = append(vals, fmt.Sprintf("duration_ns=%d", s.DurationNs))
+			key, val = "duration_ns", s.DurationNs
 		case "gateway_duration_ns":
-			vals = append(vals, fmt.Sprintf("gateway_duration_ns=%d", s.GatewayDurationNs))
+			key, val = "gateway_duration_ns", s.GatewayDurationNs
 		case "upstream_duration_ns":
-			vals = append(vals, fmt.Sprintf("upstream_duration_ns=%d", s.UpstreamDurationNs))
+			key, val = "upstream_duration_ns", s.UpstreamDurationNs
 		case "upstream_calls":
-			vals = append(vals, fmt.Sprintf("upstream_calls=%d", s.UpstreamCalls))
+			key, val = "upstream_calls", int64(s.UpstreamCalls)
 		case "client_bytes_sent":
-			vals = append(vals, fmt.Sprintf("client_bytes_sent=%d", s.ClientBytesSent))
+			key, val = "client_bytes_sent", s.ClientBytesSent
 		case "upstream_bytes_tx":
-			vals = append(vals, fmt.Sprintf("upstream_bytes_tx=%d", s.UpstreamBytesTx))
+			key, val = "upstream_bytes_tx", s.UpstreamBytesTx
 		case "upstream_bytes_rx":
-			vals = append(vals, fmt.Sprintf("upstream_bytes_rx=%d", s.UpstreamBytesRx))
+			key, val = "upstream_bytes_rx", s.UpstreamBytesRx
+		default:
+			continue
+		}
+		if !first {
+			buf = append(buf, ' ')
+		}
+		first = false
+		buf = append(buf, key...)
+		buf = append(buf, '=')
+		if unsigned {
+			buf = strconv.AppendUint(buf, uval, 10)
+		} else {
+			buf = strconv.AppendInt(buf, val, 10)
 		}
 	}
-	return strings.Join(vals, " ")
+	return buf
 }
 
 func (t *Telemetry) Enabled() bool                    { return t != nil && t.cfg.Enabled }
