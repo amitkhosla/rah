@@ -185,17 +185,23 @@ type MetricPoint struct {
 }
 
 type ExportSink interface {
-	EmitSummary(summary RequestSummary)
+	EmitSummary(summary RequestSummary, tenantName string)
 	EmitTrace(trace RequestTrace)
 }
 
 type LogSink struct{}
 
-func (LogSink) EmitSummary(summary RequestSummary) {
+func (LogSink) EmitSummary(summary RequestSummary, tenantName string) {
+	var tenantField gatewaylog.Field
+	if tenantName != "" {
+		tenantField = gatewaylog.F("tenant", tenantName)
+	} else {
+		tenantField = gatewaylog.Fint("tenant_id", int64(summary.TenantID))
+	}
 	gatewaylog.Default.Info("obs summary",
 		gatewaylog.Fint("trace", int64(summary.TraceID)),
 		gatewaylog.Fint("api", int64(summary.ApiID)),
-		gatewaylog.Fint("tenant", int64(summary.TenantID)),
+		tenantField,
 		gatewaylog.Fint("status", int64(summary.Status)),
 		gatewaylog.Fint("total_ns", summary.DurationNs),
 		gatewaylog.Fint("upstream_ns", summary.UpstreamDurationNs),
@@ -257,6 +263,10 @@ type Telemetry struct {
 	// tenantTracer provides per-tenant trace sample rate overrides.
 	// Nil by default — call SetTenantTracer to wire in the registry manager.
 	tenantTracer TenantTracer
+
+	// tenantNamer resolves TenantID → human-readable name in async workers.
+	// Nil by default — call SetTenantNamer to wire in the registry manager.
+	tenantNamer TenantNamer
 }
 
 func NewFromEnv() *Telemetry {
@@ -353,16 +363,17 @@ func New(cfg Config) *Telemetry {
 
 func (t *Telemetry) exportWorker() {
 	for trace := range t.exportCh {
+		tenantName := t.resolveTenantName(trace.Summary.TenantID)
 		if t.sink != nil {
 			if trace.Summary.TraceID == 0 {
-				t.sink.EmitSummary(trace.Summary)
+				t.sink.EmitSummary(trace.Summary, tenantName)
 			} else {
 				t.sink.EmitTrace(trace)
 			}
 		}
 		if t.reqSummaryLog.Load() {
 			bp := summaryBufPool.Get().(*[]byte)
-			*bp = appendSummaryFields((*bp)[:0], t.cfg.InfoLogFields, trace.Summary)
+			*bp = appendSummaryFields((*bp)[:0], t.cfg.InfoLogFields, trace.Summary, tenantName)
 			gatewaylog.Default.Info(string(*bp))
 			summaryBufPool.Put(bp)
 		}
@@ -371,9 +382,16 @@ func (t *Telemetry) exportWorker() {
 
 func (t *Telemetry) upstreamWorker() {
 	for u := range t.upstreamCh {
+		tenantName := t.resolveTenantName(u.TenantID)
+		var tenantField gatewaylog.Field
+		if tenantName != "" {
+			tenantField = gatewaylog.F("tenant", tenantName)
+		} else {
+			tenantField = gatewaylog.Fint("tenant_id", int64(u.TenantID))
+		}
 		gatewaylog.Default.Info("upstream",
 			gatewaylog.Fint("api", int64(u.ApiID)),
-			gatewaylog.Fint("tenant", int64(u.TenantID)),
+			tenantField,
 			gatewaylog.Fint("call", int64(u.Event.Seq)),
 			gatewaylog.Fint("attempt", int64(u.Event.Attempt)),
 			gatewaylog.F("url", u.Event.URL),
@@ -419,18 +437,26 @@ var summaryBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 256); retu
 
 // appendSummaryFields builds a logfmt-style key=value string into buf using
 // strconv.Append* — no fmt.Sprintf, no intermediate []string, no strings.Join.
-func appendSummaryFields(buf []byte, fields []string, s RequestSummary) []byte {
+func appendSummaryFields(buf []byte, fields []string, s RequestSummary, tenantName string) []byte {
 	first := true
 	for _, f := range fields {
 		var key string
 		var val int64
 		var uval uint64
+		var sval string
 		unsigned := false
 		switch f {
 		case "trace_id":
 			key, uval, unsigned = "trace_id", s.TraceID, true
 		case "api_id":
 			key, val = "api_id", int64(s.ApiID)
+		case "tenant":
+			// Prefer human-readable name; fall back to numeric ID.
+			if tenantName != "" {
+				key, sval = "tenant", tenantName
+			} else {
+				key, val = "tenant_id", int64(s.TenantID)
+			}
 		case "tenant_id":
 			key, val = "tenant_id", int64(s.TenantID)
 		case "status":
@@ -452,13 +478,18 @@ func appendSummaryFields(buf []byte, fields []string, s RequestSummary) []byte {
 		default:
 			continue
 		}
+		if key == "" {
+			continue
+		}
 		if !first {
 			buf = append(buf, ' ')
 		}
 		first = false
 		buf = append(buf, key...)
 		buf = append(buf, '=')
-		if unsigned {
+		if sval != "" {
+			buf = append(buf, sval...)
+		} else if unsigned {
 			buf = strconv.AppendUint(buf, uval, 10)
 		} else {
 			buf = strconv.AppendInt(buf, val, 10)
@@ -485,6 +516,27 @@ type TenantTracer interface {
 // Pass nil to disable per-tenant overrides (falls back to global sampling).
 func (t *Telemetry) SetTenantTracer(tt TenantTracer) {
 	t.tenantTracer = tt
+}
+
+// TenantNamer resolves a numeric TenantID to a human-readable name.
+// *registry.RegistryManager satisfies this interface via structural typing.
+type TenantNamer interface {
+	TenantName(tenantID uint16) string
+}
+
+// SetTenantNamer wires a TenantID → name resolver into Telemetry.
+// Resolution happens in the async export/upstream workers, not the hot path.
+func (t *Telemetry) SetTenantNamer(tn TenantNamer) {
+	t.tenantNamer = tn
+}
+
+// resolveTenantName returns the human-readable name for tenantID, or an empty
+// string when tenantID is 0 or no namer is configured.
+func (t *Telemetry) resolveTenantName(tenantID uint16) string {
+	if tenantID == 0 || t.tenantNamer == nil {
+		return ""
+	}
+	return t.tenantNamer.TenantName(tenantID)
 }
 
 func (t *Telemetry) ShouldTrace() bool {

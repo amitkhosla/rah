@@ -60,6 +60,7 @@ type AccessLogEntry struct {
 	ResBytes int64 // bytes written to client
 
 	// Timings (all in nanoseconds)
+	Time       int64 // Unix nanoseconds at request completion (captured in Snapshot)
 	TotalNs    int64 // end-to-end (handler entry → last byte sent)
 	GatewayNs  int64 // TotalNs minus upstream time
 	UpstreamNs int64 // total time spent waiting on upstream calls
@@ -86,6 +87,7 @@ func (e *AccessLogEntry) reset() {
 	e.Status = 0
 	e.ResBytes = 0
 	e.TotalNs = 0
+	e.Time = 0
 	e.GatewayNs = 0
 	e.UpstreamNs = 0
 	e.TTFBNs = 0
@@ -228,6 +230,7 @@ func (l *AccessLogger) Snapshot(
 	entry := l.pool.Get().(*AccessLogEntry)
 	entry.reset()
 
+	entry.Time = time.Now().UnixNano()
 	entry.ApiName = apiName
 	entry.ApiID = apiID
 	entry.TenantKey = tenantKey
@@ -333,6 +336,7 @@ func (l *AccessLogger) drain() {
 			}
 			sb.Reset()
 			sb.WriteString("[access]")
+			writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
 
 			// API identity — prefer name over internal ID
 			if entry.ApiName != "" {

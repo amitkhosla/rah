@@ -190,6 +190,19 @@ func (m *RegistryManager) GetTenantRecord(tID uint16) *TenantRecord {
 	return m.tenantData[tID]
 }
 
+// TenantName returns the primary alias for the given TenantID.
+// Returns an empty string if the tenant is not found.
+// Satisfies observability.TenantNamer for use in async log workers.
+func (m *RegistryManager) TenantName(tID uint16) string {
+	m.mu.Lock()
+	rec := m.tenantData[tID]
+	m.mu.Unlock()
+	if rec == nil || len(rec.Aliases) == 0 {
+		return ""
+	}
+	return rec.Aliases[0]
+}
+
 // GetRateLimitConfigs returns all named rate limit configs with their IDs.
 func (m *RegistryManager) GetRateLimitConfigs() []RateLimitRecord {
 	m.mu.Lock()

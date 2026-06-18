@@ -682,6 +682,9 @@ func main() {
 	// observability.TenantTracer via TenantTraceSampleRate.
 	obs.SetTenantTracer(regMgr)
 
+	// Wire TenantID → name resolution for async log workers.
+	obs.SetTenantNamer(regMgr)
+
 	// Wire ingestion pipeline into compiler so emit_event steps capture it
 	// in their instruction closures at bake time.
 	compiler.IngestPipeline = ingestPipeline
