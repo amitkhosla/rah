@@ -4,6 +4,7 @@
  */
 import type { FlowStep, PatternCondition } from '../types'
 import { isPatternCondition } from '../types'
+import { normalizeCases } from './dsl'
 
 const q = (s: string) => /[,:{}"'\s()]/.test(s) ? `"${s.replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"` : s
 
@@ -420,7 +421,7 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       }
 
       case 'switch': {
-        const match = str(step['as']); const cases = str(step['cases'])
+        const match = str(step['as']); const cases = normalizeCases(step['cases'])
         lines.push(`${I}switch (${match}) {`)
         cases.split(',').forEach(c => {
           const eq = c.indexOf('=')

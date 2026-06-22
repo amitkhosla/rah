@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema } from './api'
+import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
 export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'tenants' | 'apps' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'settings'
 import Login          from './components/Login'
@@ -59,8 +60,8 @@ function collectFlowRefs(steps: FlowStep[]): string[] {
     if (step['else']) refs.push(step['else'] as string)
     if (step['flow_name']) refs.push(step['flow_name'] as string)
     if (step['cases']) {
-      // cases format: "val1=flowA,val2=flowB"
-      (step['cases'] as string).split(',').forEach(c => {
+      // cases format: "val1=flowA,val2=flowB" or {"val1":"flowA",...} from backend
+      normalizeCases(step['cases']).split(',').forEach(c => {
         const eq = c.indexOf('=')
         if (eq >= 0) refs.push(c.slice(eq + 1).trim())
       })
@@ -550,7 +551,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
 
       {/* ── Main content ── */}
       <main className="main-content">
-        {tab === 'dashboard' && <Dashboard conn={conn} />}
+        {tab === 'dashboard' && <Dashboard conn={conn} localFlowCount={savedFlows.length} localApiCount={apis.length} />}
         <div style={{ display: tab === 'flows' ? 'contents' : 'none' }}>
           <FlowDesigner
             blocks={blocks}

@@ -1,4 +1,5 @@
 import type { FlowStep, SavedFlow, ApiDef } from '../types'
+import { normalizeCases } from './dsl'
 
 export interface ValidationError {
   severity: 'error' | 'warn'
@@ -16,7 +17,7 @@ function collectRefs(steps: FlowStep[]): string[] {
     if (s['else'])      refs.push(s['else'] as string)
     if (s['flow_name']) refs.push(s['flow_name'] as string)
     if (s['cases']) {
-      String(s['cases']).split(',').forEach(c => {
+      normalizeCases(s['cases']).split(',').forEach(c => {
         const eq = c.indexOf('='); if (eq >= 0) refs.push(c.slice(eq + 1).trim())
       })
     }

@@ -3,6 +3,8 @@ package observability
 import (
 	"testing"
 	"time"
+
+	"rah/internal/gatewaylog"
 )
 
 func TestTelemetryRecordsInstructionAndRequest(t *testing.T) {
@@ -10,7 +12,7 @@ func TestTelemetryRecordsInstructionAndRequest(t *testing.T) {
 	if !tel.ShouldTrace() {
 		t.Fatalf("expected ShouldTrace true")
 	}
-	trace := tel.StartRequest(7, 11, "GET", "/v1/test")
+	trace := tel.StartRequest(7, 0, 11, "GET", "/v1/test")
 	tel.RecordInstrTiming("HTTP_CALL", int64(3*time.Millisecond))
 	tel.RecordUpstream("api.acme.com", 2*time.Millisecond, 10, 20)
 	tel.AppendInstructionEvent(&trace, InstructionEvent{Name: "HTTP_CALL", DurationNs: int64(time.Millisecond)})
@@ -47,5 +49,38 @@ func TestUpdateConfig(t *testing.T) {
 	}
 	if tel.alwaysExport.Load() {
 		t.Fatalf("alwaysExport should be false")
+	}
+}
+
+func TestLogUpstreamSuppressedAtErrorLevel(t *testing.T) {
+	tel := New(Config{Enabled: true, ExportQueueSize: 16})
+	original := gatewaylog.Default.Level()
+	gatewaylog.Default.SetLevel(gatewaylog.ERROR)
+	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
+	tel.LogUpstream(1, 1, UpstreamEvent{})
+	if len(tel.upstreamCh) != 0 {
+		t.Fatalf("expected upstreamCh len 0, got %d", len(tel.upstreamCh))
+	}
+}
+
+func TestLogUpstreamDeliveredAtInfoLevel(t *testing.T) {
+	tel := New(Config{Enabled: true, ExportQueueSize: 16})
+	original := gatewaylog.Default.Level()
+	gatewaylog.Default.SetLevel(gatewaylog.INFO)
+	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
+	tel.LogUpstream(1, 1, UpstreamEvent{})
+	if len(tel.upstreamCh) != 1 {
+		t.Fatalf("expected upstreamCh len 1, got %d", len(tel.upstreamCh))
+	}
+}
+
+func TestLogUpstreamSuppressedWhenTelemetryDisabled(t *testing.T) {
+	tel := New(Config{Enabled: false, ExportQueueSize: 16})
+	original := gatewaylog.Default.Level()
+	gatewaylog.Default.SetLevel(gatewaylog.INFO)
+	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
+	tel.LogUpstream(1, 1, UpstreamEvent{})
+	if len(tel.upstreamCh) != 0 {
+		t.Fatalf("expected upstreamCh len 0, got %d", len(tel.upstreamCh))
 	}
 }

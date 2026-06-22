@@ -216,6 +216,10 @@ func isStringPredicate(name string) bool {
 // string (for comparisons), plus a bool indicating whether it is a byte-slot
 // (as opposed to a special field like "status").
 func (p *parser) resolveStringReader(name string) func(ctx *rctx.Context) string {
+	// Allow "slot.name" prefix — strip it so slotMap lookup works.
+	if stripped, ok := strings.CutPrefix(name, "slot."); ok {
+		name = stripped
+	}
 	switch name {
 	case "status":
 		return func(ctx *rctx.Context) string { return strconv.Itoa(ctx.ResponseStatus) }
@@ -238,6 +242,9 @@ func (p *parser) resolveStringReader(name string) func(ctx *rctx.Context) string
 }
 
 func (p *parser) resolveIntReader(name string) func(ctx *rctx.Context) int64 {
+	if stripped, ok := strings.CutPrefix(name, "slot."); ok {
+		name = stripped
+	}
 	if name == "status" {
 		return func(ctx *rctx.Context) int64 { return int64(ctx.ResponseStatus) }
 	}
@@ -386,6 +393,10 @@ func (p *parser) parsePrimary() (ConditionFunc, error) {
 		}
 
 		// No comparison operator: bare identifier — truthiness check.
+		// Strip "slot." prefix so conditions like !slot.my_var work.
+		if stripped, ok := strings.CutPrefix(name, "slot."); ok {
+			name = stripped
+		}
 		// Special names first.
 		switch name {
 		case "status":

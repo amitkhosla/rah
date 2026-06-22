@@ -107,6 +107,13 @@ type StepConfig struct {
 	//   "status:<code>"  — set HTTP status <code> and stop cleanly (e.g. "status:503")
 	OnError string `json:"on_error,omitempty"`
 
+	// URLPolicy controls URL validation/correction before egress calls.
+	// Applied to both static and dynamic (url_var) upstream URLs.
+	//   ""              or "passthrough" — no check; let the transport fail (default)
+	//   "correct"                        — trim whitespace and normalise scheme; fail 502 if still invalid
+	//   "strict"                         — validate format without correction; fail 502 if invalid
+	URLPolicy string `json:"url_policy,omitempty"`
+
 	// Status is the HTTP response code for "return" and "fail" actions.
 	// Also used as the static status for on_error:"status:<code>" when the code
 	// is not parseable from OnError (fallback).

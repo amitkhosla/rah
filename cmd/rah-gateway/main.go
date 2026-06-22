@@ -792,7 +792,11 @@ func main() {
 			isSampledTrace := obs.ShouldTraceTenant(ctx.TenantID)
 			shouldStartTrace := isSampledTrace || alwaysTrace5xx
 			if shouldStartTrace {
-				trace := obs.StartRequest(apiId, ctx.TenantID, req.Method, req.URL.Path)
+				var apiVersionID uint32
+				if int(apiId) < len(currentState.Definitions) && currentState.Definitions[apiId] != nil {
+					apiVersionID = currentState.Definitions[apiId].VersionID
+				}
+				trace := obs.StartRequest(apiId, apiVersionID, ctx.TenantID, req.Method, req.URL.Path)
 				ctx.Trace = &trace
 				obs.CaptureRequestHeaders(ctx.Trace, req, req.URL.RawQuery)
 			}
@@ -1349,6 +1353,70 @@ func main() {
 			rctx.BaseByteSlots,
 			rctx.SlotValueThreshold,
 		)
+	})
+	mux.HandleFunc("/debug/registry", func(w http.ResponseWriter, _ *http.Request) {
+		// Dumps PropStore matrix state: keyIDs, stride, value pool, per-tenant values.
+		// Used to diagnose load_service_url returning empty (GetURLByKeyID returning nil).
+		reg := tenantregistry.State.Active.Load()
+		w.Header().Set("Content-Type", "application/json")
+		if reg == nil {
+			fmt.Fprint(w, `{"error":"no active registry"}`)
+			return
+		}
+		type propRow struct {
+			TenantID uint16 `json:"tenant_id"`
+			ValueID  uint32 `json:"value_id"`
+			Value    string `json:"value"`
+		}
+		type propDump struct {
+			Stride     uint32    `json:"stride"`
+			KeyCount   int       `json:"key_count"`
+			PoolSize   int       `json:"pool_size"`
+			MatrixLen  int       `json:"matrix_len"`
+			Rows       []propRow `json:"rows"`
+		}
+		dumpStore := func(store tenantregistry.PropStore) propDump {
+			d := propDump{
+				Stride:    store.Stride,
+				KeyCount:  len(store.Keys),
+				PoolSize:  len(reg.ValuePool),
+				MatrixLen: len(store.Matrix),
+			}
+			if store.Stride > 0 {
+				maxRows := len(store.Matrix) / int(store.Stride)
+				if maxRows > 256 {
+					maxRows = 256
+				}
+				for tID := uint32(0); tID < uint32(maxRows); tID++ {
+					for kID := uint32(0); kID < store.Stride; kID++ {
+						idx := tID*store.Stride + kID
+						if idx >= uint32(len(store.Matrix)) {
+							break
+						}
+						vID := store.Matrix[idx]
+						if vID == 0 {
+							continue
+						}
+						val := ""
+						if int(vID) < len(reg.ValuePool) && reg.ValuePool[vID] != nil {
+							val = string(reg.ValuePool[vID])
+						}
+						d.Rows = append(d.Rows, propRow{TenantID: uint16(tID), ValueID: vID, Value: val})
+					}
+				}
+			}
+			return d
+		}
+		out := map[string]any{
+			"max_tenants": reg.MaxTenants,
+			"value_pool":  len(reg.ValuePool),
+			"urls":        dumpStore(reg.URLs),
+			"ids":         dumpStore(reg.IDs),
+			"meta":        dumpStore(reg.Meta),
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
 	})
 	// ── Runtime / GC diagnostics ──────────────────────────────────────────────
 	// GET  /debug/runtime — lightweight JSON snapshot of goroutine count, heap,

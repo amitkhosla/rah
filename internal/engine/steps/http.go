@@ -69,6 +69,72 @@ type HttpActionConfig struct {
 	// Both must be non-nil to enable mTLS. nil = no client certificate (default behaviour unchanged).
 	TLSClientCert []byte
 	TLSClientKey  []byte
+	// URLPolicy controls pre-flight URL validation/correction before the upstream call.
+	// 0 = passthrough (default), 1 = correct (trim + normalise, fail if still invalid),
+	// 2 = strict (validate without correction, fail immediately if invalid).
+	URLPolicy URLPolicy
+}
+
+// URLPolicy controls how http_call validates upstream URLs before connecting.
+type URLPolicy uint8
+
+const (
+	// URLPolicyPassthrough skips all URL checks — transport errors surface as-is.
+	URLPolicyPassthrough URLPolicy = 0
+	// URLPolicyCorrect trims whitespace and lowercases the scheme before the call.
+	// If the URL is still invalid after correction, the call fails with 502.
+	URLPolicyCorrect URLPolicy = 1
+	// URLPolicyStrict validates the URL without any correction.
+	// Any deviation from a well-formed http/https/h2c URL returns 502 immediately.
+	URLPolicyStrict URLPolicy = 2
+)
+
+// nullLikeURL returns true for string values that look like placeholder/unset URLs.
+func nullLikeURL(s string) bool {
+	switch strings.ToLower(s) {
+	case "", "null", "nil", "none", "undefined", "unassigned", "n/a":
+		return true
+	}
+	return false
+}
+
+// validateURL checks whether rawURL is a usable upstream URL under the given policy.
+// Returns the (possibly corrected) URL and an error message to use in a 502 response.
+// On URLPolicyPassthrough it always returns rawURL, "".
+func validateURL(rawURL string, policy URLPolicy) (string, string) {
+	if policy == URLPolicyPassthrough {
+		return rawURL, ""
+	}
+	url := rawURL
+	if policy == URLPolicyCorrect {
+		url = strings.TrimSpace(url)
+		// Lowercase the scheme portion only (everything before "://").
+		if i := strings.Index(url, "://"); i > 0 {
+			url = strings.ToLower(url[:i]) + url[i:]
+		}
+	}
+	if nullLikeURL(url) {
+		return url, "upstream URL is empty or unset"
+	}
+	if !strings.HasPrefix(url, "http://") &&
+		!strings.HasPrefix(url, "https://") &&
+		!strings.HasPrefix(url, "h2c://") {
+		return url, "upstream URL missing valid scheme (http/https/h2c): " + url
+	}
+	// Must have something after the scheme.
+	scheme := url[:strings.Index(url, "://")+3]
+	rest := url[len(scheme):]
+	if rest == "" || strings.HasPrefix(rest, "/") {
+		return url, "upstream URL missing host: " + url
+	}
+	// Disallow embedded whitespace (including \r \n \t).
+	if strings.ContainsAny(url, " \t\r\n") {
+		if policy == URLPolicyCorrect {
+			// Already trimmed leading/trailing; internal whitespace is unrecoverable.
+		}
+		return url, "upstream URL contains whitespace: " + url
+	}
+	return url, ""
 }
 
 // HeaderSlotBinding maps one response header name to a ByteSlots index.
@@ -981,6 +1047,23 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 
 	// For static URLs the upstream host is known — build and cache the *upstreamTransportPool
 	// once here. Per-request cost becomes a single pool.get() call from the closure.
+	// Also validate static URLs at bake time so mis-configured flows surface immediately.
+	if cfg.StaticURL != "" && cfg.URLSlot < 0 && cfg.URLPolicy != URLPolicyPassthrough {
+		if _, errMsg := validateURL(cfg.StaticURL, cfg.URLPolicy); errMsg != "" {
+			return engine.Instruction{
+				Name: "HTTP_CALL",
+				Action: func(ctx *rctx.Context, _ *engine.ExecutionState) int16 {
+					msg := "http_call: invalid static URL: " + errMsg
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				},
+			}
+		}
+	}
 	var staticPool *upstreamTransportPool
 	hasStaticURL := cfg.StaticURL != "" && cfg.URLSlot < 0
 	if hasStaticURL {
@@ -1086,6 +1169,20 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			if cfg.URLSlot >= 0 && cfg.URLSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.URLSlot]) > 0 {
 				rawUpstream = string(ctx.ByteSlots[cfg.URLSlot])
 			}
+			// ── URL policy pre-flight (before resolution to catch null-like values) ─
+			if cfg.URLPolicy != URLPolicyPassthrough {
+				corrected, errMsg := validateURL(rawUpstream, cfg.URLPolicy)
+				if errMsg != "" {
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					ctx.ErrorMsg = ctx.Alloc(len(errMsg))
+					copy(ctx.ErrorMsg, errMsg)
+					return engine.StopPlan
+				}
+				rawUpstream = corrected
+			}
+
 			url, err := selectUpstreamURL(rawUpstream, flowInput)
 			if err != nil {
 				ctx.ResponseStatus = 500
@@ -1514,7 +1611,13 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						responseBodyPool.Put(buf)
 					}
 				} else {
-					respBytes, _ = io.Copy(io.Discard, resp.Body)
+					// No slot and StreamResponseBody is false (e.g. a capture call earlier
+					// in the same compiled flow forced the flag off). Stream to client anyway.
+					ctx.ResponseStatus = resp.StatusCode
+					copyBuf := streamCopyPool.Get().(*[]byte)
+					n, _ := io.CopyBuffer(ctx, resp.Body, *copyBuf)
+					streamCopyPool.Put(copyBuf)
+					respBytes = n
 					resp.Body.Close()
 					if activeShard != nil {
 						activeShard.release()
@@ -1535,8 +1638,10 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				// ── Set response status ───────────────────────────────────────────
-				// For streaming: status was already set before io.Copy (headers already sent).
-				if !ctx.StreamResponseBody {
+				// Streaming path and the slot-less fallback path both set status before
+				// the body copy (headers must go first). Only the slot-capture path waits
+				// until after the full body is read.
+				if !ctx.StreamResponseBody && cfg.ResponseBodySlot >= 0 {
 					ctx.ResponseStatus = resp.StatusCode
 				}
 				event.Status = resp.StatusCode

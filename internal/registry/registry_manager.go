@@ -1248,7 +1248,11 @@ func (m *RegistryManager) internValue(reg *TenantRegistry, value []byte) uint32 
 		}
 	}
 	newID := uint32(len(reg.ValuePool))
-	reg.ValuePool = append(reg.ValuePool, value)
+	// Copy the value before storing — the caller's slice may point into a
+	// pooled request-context arena that gets reused after the request ends.
+	owned := make([]byte, len(value))
+	copy(owned, value)
+	reg.ValuePool = append(reg.ValuePool, owned)
 	return newID
 }
 

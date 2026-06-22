@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"rah/internal/config"
 	"rah/internal/engine"
+	"rah/internal/engine/steps"
 	"rah/internal/gatewaylog"
 	"rah/internal/router"
 	registrypkg "rah/internal/registry"
@@ -531,6 +532,14 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	// Apply V2 rate limit configs — store config + assign stable integer ID +
 	// register counter arenas so the compiled CheckRateLimitV2 step can count.
 	for _, cfg := range req.RateLimitConfigsV2 {
+		// Auto-populate PeriodSecs from the human-readable Period string when absent.
+		for i := range cfg.Windows {
+			if cfg.Windows[i].PeriodSecs == 0 && cfg.Windows[i].Period != "" {
+				if secs, err := steps.ParseWindowDuration(cfg.Windows[i].Period); err == nil {
+					cfg.Windows[i].PeriodSecs = secs
+				}
+			}
+		}
 		registrypkg.UpsertRateLimitConfigV2(cfg)
 		id := s.RegMgr.EnsureRateLimitV2ID(cfg.Name)
 		numWindows := len(cfg.Windows)
@@ -548,6 +557,32 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	// Apply upstream service definitions.
 	for _, svc := range req.UpstreamServices {
 		registrypkg.UpsertUpstreamService(svc)
+	}
+
+	// Register tenants declared in this sync bundle.
+	// Processed before flows/APIs so that any flow compiled in this batch that
+	// calls set_service_url / set_identifier / set_meta can immediately resolve
+	// the tenant IDs for the aliases declared here.
+	for _, td := range req.Tenants {
+		if len(td.Aliases) == 0 {
+			continue
+		}
+		var urls, ids, meta map[string]string
+		if m := td.Properties["urls"]; len(m) > 0 {
+			urls = m
+		}
+		if m := td.Properties["ids"]; len(m) > 0 {
+			ids = m
+		}
+		if m := td.Properties["meta"]; len(m) > 0 {
+			meta = m
+		}
+		switch td.Action {
+		case "delete":
+			s.RegMgr.DeleteTenant(td.Aliases[0])
+		default: // "upsert" or empty
+			s.RegMgr.UpsertTenantState(td.Aliases, urls, ids, meta)
+		}
 	}
 
 	oldState := s.FlowManager.State.Load()

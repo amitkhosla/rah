@@ -123,6 +123,29 @@ func (s *TenantServer) DeleteTenantHandler(w http.ResponseWriter, r *http.Reques
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
+// DeleteServiceURLHandler handles DELETE /tenants/{alias}/urls/{key}
+//
+// Clears a single service URL entry from the registry for the given tenant
+// without touching its identity (aliases, identifiers, meta). Useful for
+// resetting cached URL state in tests or after a tenant re-provisioning event.
+func (s *TenantServer) DeleteServiceURLHandler(w http.ResponseWriter, r *http.Request) {
+	// Path: /tenants/{alias}/urls/{key}
+	rest := strings.TrimPrefix(r.URL.Path, "/tenants/")
+	idx := strings.Index(rest, "/urls/")
+	if idx < 0 {
+		http.Error(w, "path must be /tenants/{alias}/urls/{key}", http.StatusBadRequest)
+		return
+	}
+	alias := rest[:idx]
+	key := rest[idx+len("/urls/"):]
+	if alias == "" || key == "" {
+		http.Error(w, "alias and key are required", http.StatusBadRequest)
+		return
+	}
+	s.mgr.DeleteServiceURL(alias, key)
+	jsonOK(w, map[string]string{"status": "ok", "alias": alias, "key": key})
+}
+
 // AddAliasHandler handles POST /tenants/{alias}/aliases
 //
 // Links a new hostname / identifier to the same tenant identified by {alias}.
@@ -477,6 +500,7 @@ func (s *TenantServer) GetRateLimitConfigHandler(w http.ResponseWriter, r *http.
 //	GET    /tenants                                    — list tenants (cursor-paginated)
 //	GET    /tenants/{alias}                            — read tenant properties
 //	DELETE /tenants/{alias}                            — remove tenant
+//	DELETE /tenants/{alias}/urls/{key}                 — clear a single service URL (keeps identity)
 //	POST   /tenants/{alias}/aliases                    — add alias to existing tenant
 //	POST   /tenants/{alias}/modifier                   — set rate-limit scale / block flags
 //	POST   /tenants/{alias}/rate-limit-overrides       — upsert per-tenant rate limit override
@@ -701,6 +725,8 @@ func (s *TenantServer) rateLimitConfigsRootHandler(w http.ResponseWriter, r *htt
 func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path // e.g. /tenants/pepsi.api.com/modifier
 	switch {
+	case strings.Contains(path, "/urls/") && r.Method == http.MethodDelete:
+		s.DeleteServiceURLHandler(w, r)
 	case strings.HasSuffix(path, "/aliases") && r.Method == http.MethodPost:
 		s.AddAliasHandler(w, r)
 	case strings.HasSuffix(path, "/modifier") && r.Method == http.MethodPost:

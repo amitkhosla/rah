@@ -22,7 +22,12 @@ function findFlow(name: string, savedFlows: SavedFlow[]): SavedFlow | undefined 
   return savedFlows.find(f => f.name === name)
 }
 
-function parseCases(casesStr: string): Array<{ value: string; flowName: string }> {
+function parseCases(raw: unknown): Array<{ value: string; flowName: string }> {
+  if (!raw) return []
+  // backend may return an object {"val":"flow"} instead of the string "val=flow,..."
+  const casesStr = (typeof raw === 'object' && !Array.isArray(raw))
+    ? Object.entries(raw as Record<string, string>).map(([k, v]) => `${k}=${v}`).join(',')
+    : String(raw)
   if (!casesStr) return []
   return casesStr.split(',').map(part => {
     const eqIdx = part.indexOf('=')
@@ -239,7 +244,7 @@ export default function SubFlowPreview({ steps, savedFlows, depth = 0 }: Props) 
             {/* Expanded switch cases */}
             {isSwitch && isExpanded && depth < 4 && (
               <>
-                {parseCases(step['cases'] || '').map((c, cIdx) => {
+                {parseCases(step['cases']).map((c, cIdx) => {
                   const caseFlow = findFlow(c.flowName, savedFlows)
                   return (
                     <div key={cIdx}>

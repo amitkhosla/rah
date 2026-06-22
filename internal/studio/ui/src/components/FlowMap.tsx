@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { FlowStep, SavedFlow } from '../types'
+import { normalizeCases } from '../utils/dsl'
 
 // ── Step icon map ─────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ export function collectFlowRefs(steps: FlowStep[]): string[] {
     if (step['else'])      refs.push(step['else'] as string)
     if (step['flow_name']) refs.push(step['flow_name'] as string)
     if (step['cases']) {
-      ;(step['cases'] as string).split(',').forEach(c => {
+      ;normalizeCases(step['cases']).split(',').forEach(c => {
         const eq = c.indexOf('=')
         if (eq >= 0) refs.push(c.slice(eq + 1).trim())
       })

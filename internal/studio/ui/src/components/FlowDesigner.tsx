@@ -3,7 +3,7 @@ import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, PatternCondition, Sa
 import FlowMap   from './FlowMap'
 import FlowGraph from './FlowGraph'
 import { expandSteps, findSourceRefs, smartCondition } from '../utils/expressions'
-import { parseDSL, serializeDSL } from '../utils/dsl'
+import { parseDSL, serializeDSL, normalizeCases } from '../utils/dsl'
 import PatternConditionBuilder from './PatternConditionBuilder'
 import TemplatePatternBuilder from './TemplatePatternBuilder'
 import ValidateRouteBuilder from './ValidateRouteBuilder'
@@ -952,7 +952,7 @@ export default function FlowDesigner({
   }
 
   function renderSwitchBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
-    const cases = parseCases((step['cases'] as string) ?? '')
+    const cases = parseCases(normalizeCases(step['cases']))
     return (
       <div className="step-body">
         {/* Match slot — smart: accepts header.X-TID or bare "X-TID" */}

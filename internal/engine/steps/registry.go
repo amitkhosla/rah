@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"unsafe"
 
 	"rah/internal/engine"
@@ -21,14 +22,19 @@ type RegistryMutator interface {
 
 // RegistryLookup resolves the alias stored in keySlot to a TenantID.
 //
-// On success: sets ctx.TenantID and ctx.TenantKey, advances PC.
-// On miss:    sets ctx.ResponseStatus = 401, halts execution.
-// On no registry: sets 503, halts.
+// onHitJumpPC controls behaviour when a miss-handler block is inlined immediately
+// after this instruction:
+//   - onHitJumpPC < 0  → no miss block; miss halts with 401 (default behaviour).
+//   - onHitJumpPC >= 0 → miss block follows inline; on HIT jump to onHitJumpPC
+//     (skipping the block), on MISS fall through to s.PC+1 (entering the block).
 //
-// This is the typical first step in a tenant-aware flow:
+// On no registry: always sets 503 and halts.
+//
+// Flow config:
 //
 //	{"action": "registry_lookup", "key_identifier": "header.X-Tenant"}
-func RegistryLookup(keySlot int) engine.Instruction {
+//	{"action": "registry_lookup", "key_identifier": "header.X-Tenant", "on_miss": "hydrate-flow"}
+func RegistryLookup(keySlot int, onHitJumpPC int16) engine.Instruction {
 	return engine.Instruction{
 		Name: "REG_LOOKUP",
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -45,11 +51,19 @@ func RegistryLookup(keySlot int) engine.Instruction {
 			}
 			tID, found := reg.Aliases.Lookup(alias)
 			if !found {
+				if onHitJumpPC >= 0 {
+					// Fall through into the inlined miss block.
+					return s.PC + 1
+				}
 				ctx.ResponseStatus = 401
 				return -1
 			}
 			ctx.TenantID = tID
 			ctx.TenantKey = alias
+			s.AddTraceAttr("tenant_id", fmt.Sprintf("%d", tID))
+			if onHitJumpPC >= 0 {
+				return onHitJumpPC // skip the inlined miss block
+			}
 			return s.PC + 1
 		},
 	}
@@ -67,6 +81,10 @@ func LoadServiceURL(keyID uint16, destSlot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			if val, ok := registry.GetURLByKeyID(ctx.TenantID, keyID); ok {
 				ctx.ByteSlots[destSlot] = val
+				s.AddTraceAttr("url", string(val))
+			} else {
+				s.AddTraceAttr("url", "")
+				s.AddTraceAttr("key_id", fmt.Sprintf("%d", keyID))
 			}
 			return s.PC + 1
 		},

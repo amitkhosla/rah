@@ -367,9 +367,11 @@ function QuickAI() {
 
 interface DashboardProps {
   conn: ConnStatus
+  localFlowCount?: number
+  localApiCount?: number
 }
 
-export default function Dashboard({ conn }: DashboardProps) {
+export default function Dashboard({ conn, localFlowCount = 0, localApiCount = 0 }: DashboardProps) {
   const [gatewayState, setGatewayState] = useState<GatewayState | null>(null)
   const [recentDeploys, setRecentDeploys] = useState<DeployRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -422,8 +424,8 @@ export default function Dashboard({ conn }: DashboardProps) {
 
       {/* Stat cards */}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 28 }}>
-        <StatCard label="Flows" value={flowCount} sub="active gateway flows" />
-        <StatCard label="APIs" value={apiCount} sub="registered endpoints" />
+        <StatCard label="Flows" value={localFlowCount} sub={flowCount > 0 ? `${flowCount} deployed to gateway` : 'not yet deployed'} />
+        <StatCard label="APIs" value={localApiCount} sub={apiCount > 0 ? `${apiCount} deployed to gateway` : 'not yet deployed'} />
         <StatCard
           label="Connection"
           value={connText}

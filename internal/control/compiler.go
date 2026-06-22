@@ -328,6 +328,14 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				}
 			}
 		}
+		// ── URL policy (opt-in, bake-time) ────────────────────────────────────
+		switch strings.ToLower(strings.TrimSpace(step.URLPolicy)) {
+		case "correct":
+			cfg.URLPolicy = steps.URLPolicyCorrect
+		case "strict":
+			cfg.URLPolicy = steps.URLPolicyStrict
+		// "" / "passthrough" → default 0 (URLPolicyPassthrough), no action needed
+		}
 		// ── mTLS client certificate (opt-in, bake-time) ────────────────────────
 		if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
 			if c.SecretsMgr == nil {
@@ -470,11 +478,29 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "registry_lookup":
 		// Resolves the alias in keySlot → ctx.TenantID.
 		// key_identifier names the slot holding the alias (e.g. "header.X-Tenant").
+		// on_miss: optional flow name to execute inline when the alias is not found.
+		//   On hit  → jump past the miss block.
+		//   On miss → fall through into the miss block (then continue after it).
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
 			return err
 		}
-		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot))
+		if step.OnMiss == "" {
+			c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot, -1))
+			return nil
+		}
+		if _, ok := fragments[step.OnMiss]; !ok {
+			return fmt.Errorf("registry_lookup: on_miss flow %q not found", step.OnMiss)
+		}
+		// Emit placeholder; patch onHitJumpPC after the miss block is baked.
+		lookupIdx := len(c.GlobalTable)
+		c.GlobalTable = append(c.GlobalTable, steps.RegistryLookup(keySlot, -1))
+		// Inline the miss subflow immediately after.
+		if err := c.bakeFlowRaw(fragments[step.OnMiss], fragments); err != nil {
+			return fmt.Errorf("registry_lookup on_miss %q: %w", step.OnMiss, err)
+		}
+		afterMiss := int16(len(c.GlobalTable))
+		c.GlobalTable[lookupIdx] = steps.RegistryLookup(keySlot, afterMiss)
 
 	case "load_service_url":
 		// Loads the named URL for the current tenant into the slot named by "as".
@@ -839,7 +865,11 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			rlv2RemoteRL = c.fm.RemoteRL
 		}
 		rlv2NextPC := len(c.GlobalTable) + 1
-		rlv2DeniedPC := len(c.GlobalTable) + 2
+		// DeniedPC = -1 (StopPlan): halt flow immediately on denial so the 429
+		// ResponseStatus set by CheckRateLimitV2 is preserved. A positive DeniedPC
+		// would jump to the next instruction, allowing subsequent steps (e.g. proxy)
+		// to override the status with 200.
+		const rlv2DeniedPC = -1
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "CHECK_RATE_LIMIT_V2",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -1055,6 +1085,29 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("bind_body: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindBody(jsonPath, destSlot))
+
+	case "bind_json":
+		// Extracts a gjson path from a slot holding JSON bytes (e.g. an http_call
+		// response_body_var) into another slot. The response-body analogue of bind_body.
+		// variable: slot name holding the JSON source bytes
+		// path / key: gjson path, e.g. "globalId" or "products.#[product==\"Commerce\"].tenantIdentifier"
+		// as: slot name to store the extracted string value
+		srcSlot, err := c.getSlot(step.Variable)
+		if err != nil {
+			return fmt.Errorf("bind_json: variable: %w", err)
+		}
+		jPath := step.Path
+		if jPath == "" {
+			jPath = step.Key
+		}
+		if jPath == "" {
+			return fmt.Errorf("bind_json: path or key required")
+		}
+		destSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("bind_json: as: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindJSON(srcSlot, jPath, destSlot))
 
 	case "bind_header":
 		// Explicit header binding — equivalent to the auto-discovered header dependency
@@ -2805,6 +2858,17 @@ func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig
 			for _, fragName := range step.Cases {
 				count += len(c.simulateBake(frags[fragName], frags)) + 1
 			}
+		case "call":
+			// In CompileExecutable mode, call inlines the sub-flow (not a pre-compiled fragment).
+			// If the flow is in FragmentMap it will be a single CallFragment instruction;
+			// otherwise its steps are inlined so we must count them recursively.
+			if _, ok := c.FragmentMap[step.FlowName]; ok {
+				count += 1
+			} else if frags != nil {
+				count += len(c.simulateBake(frags[step.FlowName], frags))
+			} else {
+				count += 1
+			}
 		case "foreach":
 			count += 2 + len(c.simulateBake(step.Do, frags))
 		case "while":
@@ -2879,7 +2943,7 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 	c.resetSlots()
 
 	// Emit stream-response-body flag as first instruction — set once at flow start.
-	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBody(flow)))
+	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBodyWithFragments(flow, fragments)))
 
 	// Auto-bind preamble: discover and bind header/query dependencies.
 	deps := c.discoverDependenciesWithFragments(flow, fragments)
@@ -3662,12 +3726,19 @@ func (c *Compiler) varRefsInStep(step StepConfig) []string {
 			if tok == "&&" || tok == "||" || tok == "" {
 				continue
 			}
-			// Skip comparison operators and their operands (literals / numeric values).
-			// We only want bare slot names or header.X / query.Y style refs.
-			if strings.ContainsAny(tok, "=<>!\"'") {
+			// Strip leading ! and handle "!slot.name" or "!name" patterns.
+			tok = strings.TrimLeft(tok, "!")
+			// Skip remaining comparison operators and literals.
+			if strings.ContainsAny(tok, "=<>\"'") {
 				continue
 			}
-			refs = append(refs, tok)
+			// Strip "slot." prefix to get the bare slot name.
+			if stripped, ok := strings.CutPrefix(tok, "slot."); ok {
+				tok = stripped
+			}
+			if tok != "" {
+				refs = append(refs, tok)
+			}
 		}
 	}
 	// Scan step.Input values for slot names (e.g. model_slot: 'var.model',
@@ -3700,6 +3771,26 @@ func (c *Compiler) varRefsInStep(step StepConfig) []string {
 		}
 		if n := p["value_slot"]; n != "" {
 			refs = append(refs, n)
+		}
+	}
+	// Extract ${varname} references from render_template value strings so liveness
+	// analysis keeps those slots alive until after the render_template step.
+	if step.Value != "" {
+		rest := step.Value
+		for {
+			s := strings.Index(rest, "${")
+			if s < 0 {
+				break
+			}
+			rest = rest[s+2:]
+			e := strings.IndexByte(rest, '}')
+			if e < 0 {
+				break
+			}
+			if name := rest[:e]; name != "" {
+				refs = append(refs, name)
+			}
+			rest = rest[e+1:]
 		}
 	}
 	return refs
@@ -3786,7 +3877,8 @@ func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
 	c.resetSlots()
 
 	// Emit stream-response-body flag as first instruction — set once at flow start.
-	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBody(flow)))
+	// fragments=nil: standalone compilation, no sub-flow recursion available.
+	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBodyWithFragments(flow, nil)))
 
 	if err := c.bakeFlow(flow, nil); err != nil {
 		return nil, err
@@ -3845,39 +3937,65 @@ func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
 // When true, the runtime will pipe the upstream response body directly to the client
 // socket instead of buffering it — transparent to the customer's flow definition.
 //
-// Rule: streaming is safe when the response_body_var (if any) is ONLY referenced
-// as the `as` field of a top-level `return` or `respond` step, and by no other step.
+// Rule: streaming is safe when no http_call anywhere in the flow tree (including
+// if/then/else and call sub-flows) captures its response into a slot for downstream
+// processing. Recursion ensures that a hydration http_call nested in an if-branch
+// correctly disables streaming for the outer proxy http_call.
 func canStreamResponseBody(steps []StepConfig) bool {
-	// If the flow contains set_response_body, it constructs the response body from
-	// a slot. SetResponseBodyStep only writes to ResponseBuffer when
-	// ctx.StreamResponseBody is false, so we must disable streaming in this case.
+	return canStreamResponseBodyWithFragments(steps, nil)
+}
+
+func canStreamResponseBodyWithFragments(steps []StepConfig, fragments map[string][]StepConfig) bool {
+	// If the flow contains set_response_body, streaming must be off.
 	for _, s := range steps {
 		if s.Action == "set_response_body" {
 			return false
 		}
 	}
 
-	// Find the first http_call's response_body_var
-	bodyVar := ""
-	for _, s := range steps {
-		if s.Action == "http_call" && s.ResponseBodyVar != "" {
-			bodyVar = s.ResponseBodyVar
-			break
+	var walkCanStream func(ss []StepConfig) bool
+	visited := map[string]bool{}
+	walkCanStream = func(ss []StepConfig) bool {
+		for _, s := range ss {
+			if s.Action == "set_response_body" {
+				return false
+			}
+			if s.Action == "http_call" && s.ResponseBodyVar != "" {
+				return false
+			}
+			// Recurse into if/then/else and switch branches.
+			if fragments != nil {
+				for _, ref := range []string{s.Then, s.Else, s.FlowName} {
+					if ref == "" || visited[ref] {
+						continue
+					}
+					if sub, ok := fragments[ref]; ok {
+						visited[ref] = true
+						if !walkCanStream(sub) {
+							return false
+						}
+					}
+				}
+				for _, ref := range s.Cases {
+					if ref == "" || visited[ref] {
+						continue
+					}
+					if sub, ok := fragments[ref]; ok {
+						visited[ref] = true
+						if !walkCanStream(sub) {
+							return false
+						}
+					}
+				}
+			}
+			// Recurse into inline Do blocks (foreach/while).
+			if len(s.Do) > 0 {
+				if !walkCanStream(s.Do) {
+					return false
+				}
+			}
 		}
+		return true
 	}
-	if bodyVar == "" {
-		return true // no body captured at all — always stream
-	}
-	// Check every step: if any non-return/respond step references bodyVar → cannot stream
-	for _, s := range steps {
-		switch s.Action {
-		case "http_call", "return", "respond":
-			continue // http_call produces it; return/respond are pass-through consumers
-		}
-		if s.As == bodyVar || s.Key == bodyVar || s.Source == bodyVar ||
-			s.SourceVar == bodyVar || s.KeyIdentifier == bodyVar || s.Variable == bodyVar {
-			return false
-		}
-	}
-	return true
+	return walkCanStream(steps)
 }

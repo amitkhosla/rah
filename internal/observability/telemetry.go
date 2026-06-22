@@ -72,6 +72,7 @@ type MetricAgg struct {
 type RequestSummary struct {
 	TraceID               uint64 `json:"trace_id"`
 	ApiID                 uint32 `json:"api_id"`
+	ApiVersionID          uint32 `json:"api_version_id"`
 	TenantID              uint16 `json:"tenant_id"`
 	Method                string `json:"method"`
 	Path                  string `json:"path"`
@@ -575,10 +576,10 @@ func (t *Telemetry) shouldSampleAt(rate float64) bool {
 	return uint32(time.Now().UnixNano()%10000) < threshold
 }
 
-func (t *Telemetry) StartRequest(apiID uint32, tenantID uint16, method, path string) RequestTrace {
+func (t *Telemetry) StartRequest(apiID uint32, apiVersionID uint32, tenantID uint16, method, path string) RequestTrace {
 	id := t.traceID.Add(1)
 	now := time.Now().UnixNano()
-	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
+	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, ApiVersionID: apiVersionID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
 }
 
 // CaptureRequestHeaders records the incoming request headers (and query string)
@@ -668,7 +669,7 @@ func (t *Telemetry) RecordInstrTiming(name string, durationNs int64) {
 func (t *Telemetry) RecordUpstream(_ string, _ time.Duration, _, _ int64) {}
 
 func (t *Telemetry) LogUpstream(apiID uint32, tenantID uint16, event UpstreamEvent) {
-	if !t.Enabled() {
+	if !t.Enabled() || !gatewaylog.Default.ShouldLog(gatewaylog.INFO) {
 		return
 	}
 	select {

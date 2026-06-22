@@ -94,6 +94,38 @@ func BindQuery(key string, slot int) engine.Instruction {
 // to a non-empty string wins. This lets a single step handle both Anthropic
 // wire format (messages array) and simple {"message":"..."} bodies without
 // requiring callers to know which format is incoming.
+// BindJSON extracts a gjson path from a ByteSlot holding JSON bytes (e.g. an
+// http_call response_body_var) into destSlot. Analogous to BindBody but reads
+// from a slot rather than the incoming request body.
+// srcSlot: slot index holding the JSON bytes.
+// jsonPath: gjson path; supports "||"-separated alternatives.
+// destSlot: slot index to write the extracted string value into.
+func BindJSON(srcSlot int, jsonPath string, destSlot int) engine.Instruction {
+	paths := strings.Split(jsonPath, "||")
+	return engine.Instruction{
+		Name: "BIND_JSON",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if srcSlot >= len(ctx.ByteSlots) || len(ctx.ByteSlots[srcSlot]) == 0 {
+				ctx.ByteSlots[destSlot] = nil
+				return state.PC + 1
+			}
+			body := ctx.ByteSlots[srcSlot]
+			for _, p := range paths {
+				res := gjson.GetBytes(body, strings.TrimSpace(p))
+				if res.Exists() && res.String() != "" {
+					str := res.String()
+					out := ctx.Alloc(len(str))
+					copy(out, str)
+					ctx.ByteSlots[destSlot] = out
+					return state.PC + 1
+				}
+			}
+			ctx.ByteSlots[destSlot] = nil
+			return state.PC + 1
+		},
+	}
+}
+
 func BindBody(jsonPath string, slot int) engine.Instruction {
 	paths := strings.Split(jsonPath, "||")
 	return engine.Instruction{
