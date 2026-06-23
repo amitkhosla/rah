@@ -102,10 +102,10 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 		}
 	}
 
-	// Extract services for each product
-	processAllServices("Commerce", "products.0.serviceCategories")
-	processAllServices("Analytics", "products.1.serviceCategories")
-	processAllServices("Notifications", "products.2.serviceCategories")
+	// Extract services for each product (using # to iterate through all categories and services)
+	processAllServices("Commerce", "products.0.serviceCategories.#.services")
+	processAllServices("Analytics", "products.1.serviceCategories.#.services")
+	processAllServices("Notifications", "products.2.serviceCategories.#.services")
 
 	// Step 2: Extract tenant identifiers for cross-validation
 	ctx.Ops = ctx.Ops[:0]
