@@ -24,20 +24,23 @@ type KV struct {
 }
 
 type GatewayMetrics struct {
-	RequestsTotal          uint64        `json:"requests_total"`
-	Requests5xx            uint64        `json:"requests_5xx"`
-	GatewayLatencyTotalNs  uint64        `json:"gateway_latency_total_ns"`
-	UpstreamLatencyTotalNs uint64        `json:"upstream_latency_total_ns"`
-	ClientBytesSentTotal   uint64        `json:"client_bytes_sent_total"`
-	UpstreamBytesTxTotal   uint64        `json:"upstream_bytes_tx_total"`
-	UpstreamBytesRxTotal   uint64        `json:"upstream_bytes_rx_total"`
-	LastRequestUnixNano    int64         `json:"last_request_unix_nano"`
-	DroppedExports         uint64        `json:"dropped_exports"`
-	InstructionTopSlow     []NameLatency `json:"instruction_top_slow"`
-	UpstreamTopSlow        []NameLatency `json:"upstream_top_slow"`
-	TenantTop5xx           []TenantError `json:"tenant_top_5xx"`
-	CustomMetricTop        []MetricAgg   `json:"custom_metric_top"`
-	CacheStats             []CacheStat   `json:"cache_stats"`
+	RequestsTotal          uint64               `json:"requests_total"`
+	Requests2xx            uint64               `json:"requests_2xx"`
+	Requests3xx            uint64               `json:"requests_3xx"`
+	Requests4xx            uint64               `json:"requests_4xx"`
+	Requests5xx            uint64               `json:"requests_5xx"`
+	GatewayLatencyTotalNs  uint64               `json:"gateway_latency_total_ns"`
+	UpstreamLatencyTotalNs uint64               `json:"upstream_latency_total_ns"`
+	ClientBytesSentTotal   uint64               `json:"client_bytes_sent_total"`
+	UpstreamBytesTxTotal   uint64               `json:"upstream_bytes_tx_total"`
+	UpstreamBytesRxTotal   uint64               `json:"upstream_bytes_rx_total"`
+	LastRequestUnixNano    int64                `json:"last_request_unix_nano"`
+	DroppedExports         uint64               `json:"dropped_exports"`
+	InstructionTopSlow     []NameLatency        `json:"instruction_top_slow"`
+	UpstreamTopSlow        []NameLatency        `json:"upstream_top_slow"`
+	TenantTopErrors        []TenantStatusCounts `json:"tenant_top_errors"`
+	CustomMetricTop        []MetricAgg          `json:"custom_metric_top"`
+	CacheStats             []CacheStat          `json:"cache_stats"`
 }
 
 type NameLatency struct {
@@ -58,9 +61,12 @@ type CacheStat struct {
 	AvgMissNs uint64  `json:"avg_miss_ns"`// mean store latency on a miss
 }
 
-type TenantError struct {
-	TenantID  uint16 `json:"tenant_id"`
-	Errors5xx uint64 `json:"errors_5xx"`
+type TenantStatusCounts struct {
+	TenantID    uint16 `json:"tenant_id"`
+	Requests2xx uint64 `json:"requests_2xx"`
+	Requests3xx uint64 `json:"requests_3xx"`
+	Requests4xx uint64 `json:"requests_4xx"`
+	Requests5xx uint64 `json:"requests_5xx"`
 }
 
 type MetricAgg struct {
@@ -238,10 +244,10 @@ type Telemetry struct {
 	droppedExports atomic.Uint64
 	metricDropped  atomic.Uint64
 
-	mu           sync.Mutex
-	tenant5xx    map[uint16]uint64
-	traces       []RequestTrace
-	custom       map[string]*metricCounter
+	traceRing *TraceSlabRing // lock-free per-request trace writer
+
+	mu        sync.Mutex
+	custom    map[string]*metricCounter
 	instrTimings map[string]*counter // per-name aggregation, updated by drain goroutine
 
 	captureHeaders []string // immutable after New(); no sync needed
@@ -257,8 +263,7 @@ type Telemetry struct {
 	apiStats   atomic.Pointer[[]apiStat]
 	apiStatsMu sync.Mutex
 
-	// Metrics is the window-based per-API metrics aggregator. May be nil when
-	// the metrics aggregator is not configured (metrics.enabled=false).
+	// Metrics is the window-based per-API metrics aggregator. Always non-nil.
 	Metrics *MetricsAggregator
 
 	// tenantTracer provides per-tenant trace sample rate overrides.
@@ -334,7 +339,11 @@ func New(cfg Config) *Telemetry {
 	if cfg.MetricQueueSize <= 0 {
 		cfg.MetricQueueSize = 4096
 	}
-	t := &Telemetry{cfg: cfg, tenant5xx: make(map[uint16]uint64), traces: make([]RequestTrace, 0, cfg.MaxTraces), custom: make(map[string]*metricCounter), instrTimings: make(map[string]*counter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	slabCap := ComputeSlabCap()
+	ring := NewTraceSlabRing(slabCap)
+	ring.Start()
+	agg := NewMetricsAggregator(nil)
+	t := &Telemetry{cfg: cfg, Metrics: agg, traceRing: ring, custom: make(map[string]*metricCounter), instrTimings: make(map[string]*counter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
 	if len(cfg.TraceHeaderNames) == 1 && cfg.TraceHeaderNames[0] == "*" {
 		t.captureAll = true
 	} else {
@@ -684,7 +693,14 @@ func (t *Telemetry) FinishRequest(trace *RequestTrace, status int, total, gatewa
 		return
 	}
 	atomic.AddUint64(&t.metrics.RequestsTotal, 1)
-	if status >= 500 {
+	switch status / 100 {
+	case 2:
+		atomic.AddUint64(&t.metrics.Requests2xx, 1)
+	case 3:
+		atomic.AddUint64(&t.metrics.Requests3xx, 1)
+	case 4:
+		atomic.AddUint64(&t.metrics.Requests4xx, 1)
+	case 5:
 		atomic.AddUint64(&t.metrics.Requests5xx, 1)
 	}
 	atomic.AddUint64(&t.metrics.GatewayLatencyTotalNs, uint64(gateway))
@@ -717,20 +733,11 @@ func (t *Telemetry) FinishRequest(trace *RequestTrace, status int, total, gatewa
 	trace.Summary.UpstreamBytesRx = summary.UpstreamBytesRx
 	trace.Summary.InstructionEventCount = len(trace.Instructions)
 
-	t.mu.Lock()
-	if status >= 500 {
-		t.tenant5xx[trace.Summary.TenantID]++
-	}
-	if t.cfg.MaxTraces <= 0 {
-		t.cfg.MaxTraces = 128
-	}
-	if len(t.traces) >= t.cfg.MaxTraces {
-		copy(t.traces, t.traces[1:])
-		t.traces[len(t.traces)-1] = *trace
-	} else {
-		t.traces = append(t.traces, *trace)
-	}
-	t.mu.Unlock()
+	// Per-tenant/API status + latency — lock-free via MetricsAggregator COW map.
+	t.Metrics.Record(trace.Summary.TenantID, trace.Summary.ApiID, status, total.Nanoseconds())
+
+	// Lock-free write: claims (len(Instructions)+1) slots atomically.
+	t.traceRing.Write(trace)
 
 	t.QueueMetric(MetricPoint{Name: "requests", Value: 1, Dims: []KV{{K: "api", V: strconv.FormatUint(uint64(trace.Summary.ApiID), 10)}, {K: "tenant", V: strconv.FormatUint(uint64(trace.Summary.TenantID), 10)}, {K: "status", V: strconv.Itoa(status)}}})
 	t.enqueueExport(*trace)
@@ -916,12 +923,35 @@ func topNMetrics(m map[string]*metricCounter, n int) []MetricAgg {
 	return out
 }
 
-func topNTenants(m map[uint16]uint64, n int) []TenantError {
-	out := make([]TenantError, 0, len(m))
-	for k, v := range m {
-		out = append(out, TenantError{TenantID: k, Errors5xx: v})
+// tenantTopFromAgg builds per-tenant status counts from MetricsAggregator's COW map.
+// Groups by TenantID (aggregating across all APIs for that tenant), sorts by total
+// requests descending, returns top-n. No lock held — reads atomic pointer snapshot.
+func tenantTopFromAgg(agg *MetricsAggregator, n int) []TenantStatusCounts {
+	mp := agg.metrics.Load()
+	if mp == nil || len(*mp) == 0 {
+		return nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Errors5xx > out[j].Errors5xx })
+	byTenant := make(map[uint16]*TenantStatusCounts, len(*mp))
+	for _, m := range *mp {
+		tc := byTenant[m.TenantID]
+		if tc == nil {
+			tc = &TenantStatusCounts{TenantID: m.TenantID}
+			byTenant[m.TenantID] = tc
+		}
+		tc.Requests2xx += uint64(m.Count2xx.Load())
+		tc.Requests3xx += uint64(m.CountOther.Load()) // 1xx/3xx lumped in CountOther
+		tc.Requests4xx += uint64(m.Count4xx.Load())
+		tc.Requests5xx += uint64(m.Count5xx.Load())
+	}
+	out := make([]TenantStatusCounts, 0, len(byTenant))
+	for _, v := range byTenant {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti := out[i].Requests2xx + out[i].Requests3xx + out[i].Requests4xx + out[i].Requests5xx
+		tj := out[j].Requests2xx + out[j].Requests3xx + out[j].Requests4xx + out[j].Requests5xx
+		return ti > tj
+	})
 	if len(out) > n {
 		out = out[:n]
 	}
@@ -932,13 +962,26 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	if topN <= 0 {
 		topN = 10
 	}
-	m := GatewayMetrics{RequestsTotal: atomic.LoadUint64(&t.metrics.RequestsTotal), Requests5xx: atomic.LoadUint64(&t.metrics.Requests5xx), GatewayLatencyTotalNs: atomic.LoadUint64(&t.metrics.GatewayLatencyTotalNs), UpstreamLatencyTotalNs: atomic.LoadUint64(&t.metrics.UpstreamLatencyTotalNs), ClientBytesSentTotal: atomic.LoadUint64(&t.metrics.ClientBytesSentTotal), UpstreamBytesTxTotal: atomic.LoadUint64(&t.metrics.UpstreamBytesTxTotal), UpstreamBytesRxTotal: atomic.LoadUint64(&t.metrics.UpstreamBytesRxTotal), LastRequestUnixNano: atomic.LoadInt64(&t.metrics.LastRequestUnixNano), DroppedExports: t.droppedExports.Load()}
+	m := GatewayMetrics{
+		RequestsTotal:          atomic.LoadUint64(&t.metrics.RequestsTotal),
+		Requests2xx:            atomic.LoadUint64(&t.metrics.Requests2xx),
+		Requests3xx:            atomic.LoadUint64(&t.metrics.Requests3xx),
+		Requests4xx:            atomic.LoadUint64(&t.metrics.Requests4xx),
+		Requests5xx:            atomic.LoadUint64(&t.metrics.Requests5xx),
+		GatewayLatencyTotalNs:  atomic.LoadUint64(&t.metrics.GatewayLatencyTotalNs),
+		UpstreamLatencyTotalNs: atomic.LoadUint64(&t.metrics.UpstreamLatencyTotalNs),
+		ClientBytesSentTotal:   atomic.LoadUint64(&t.metrics.ClientBytesSentTotal),
+		UpstreamBytesTxTotal:   atomic.LoadUint64(&t.metrics.UpstreamBytesTxTotal),
+		UpstreamBytesRxTotal:   atomic.LoadUint64(&t.metrics.UpstreamBytesRxTotal),
+		LastRequestUnixNano:    atomic.LoadInt64(&t.metrics.LastRequestUnixNano),
+		DroppedExports:         t.droppedExports.Load(),
+	}
+	m.TenantTopErrors = tenantTopFromAgg(t.Metrics, topN)
 	t.mu.Lock()
-	m.TenantTop5xx = topNTenants(t.tenant5xx, topN)
 	m.CustomMetricTop = topNMetrics(t.custom, topN)
 	m.InstructionTopSlow = topNFromMap(t.instrTimings, topN)
-	traces := append([]RequestTrace(nil), t.traces...)
 	t.mu.Unlock()
+	traces := t.traceRing.Snapshot() // lock-free atomic pointer load
 	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.reqSummaryLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}
 	return map[string]any{"metrics": m, "recent_traces": traces, "config": cfg, "export": map[string]any{"otel": "use sink implementation", "bigquery": "use sink implementation"}, "api_key_stats": apikey.Global.Snapshot()}
 }
