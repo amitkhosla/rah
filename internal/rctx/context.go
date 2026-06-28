@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"rah/internal/mqtt"
 	"rah/internal/observability"
 	"sync"
 	"sync/atomic"
@@ -154,6 +155,10 @@ type Context struct {
 	Timing RequestTiming
 	Obs    *observability.Telemetry
 	Trace *observability.RequestTrace
+
+	// MQTTPool is the global MQTT broker pool (set by FlowManager at startup).
+	// Shared across all requests; read-only after initialization.
+	MQTTPool *mqtt.BrokerPool
 
 	// detachedFromPool prevents the request goroutine from returning this
 	// context to the pool when work is moved to a background goroutine.

@@ -1453,6 +1453,13 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, OWASPStepDescriptors()...)
 	base = append(base, BodyLimitStepDescriptors()...)
 	base = append(base, GeoBlockStepDescriptors()...)
+	base = append(base, MQTTStepDescriptors()...)
+	base = append(base, ProtoCodecStepDescriptors()...)
+	base = append(base, SOAPStepDescriptors()...)
+	base = append(base, AvroStepDescriptors()...)
+	base = append(base, GraphQLStepDescriptors()...)
+	base = append(base, XMLStepDescriptors()...)
+	base = append(base, ConvertStepDescriptors()...)
 	return base
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"rah/internal/avro"
 	"rah/internal/config"
 	"rah/internal/datastore"
 	"rah/internal/egress"
@@ -61,6 +62,7 @@ type Compiler struct {
 	EgressMgr      *egress.EgressManager               // optional; enables bake-time egress profile resolution
 	GrpcRegistry   *grpcutil.DescriptorRegistry        // optional; enables bake-time gRPC method resolution
 	GeoMgr         *geo.Manager                        // optional; enables geo_block steps
+	AvroRegistry   *avro.SchemaRegistry                // optional; enables avro_* steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -353,6 +355,15 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			cfg.TLSClientKey = keyPEM
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.HttpActionFromConfig(cfg))
+
+	case "graphql_call":
+		return c.compileGraphQLCall(step)
+
+	case "graphql_get":
+		return c.compileGraphQLGet(step)
+
+	case "parse_graphql_error":
+		return c.compileParseGraphQLError(step)
 
 	case "llm_call":
 		return c.compileLLMCall(step)
@@ -2611,6 +2622,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "grpc_call":
 		return c.compileGrpcCall(step)
 
+	case "proto_to_json":
+		return c.compileProtoToJSON(step)
+
+	case "json_to_proto":
+		return c.compileJSONToProto(step)
+
+	case "proto_get":
+		return c.compileProtoGet(step)
+
+	case "xml_to_proto":
+		return c.compileXMLToProto(step)
+
+	case "proto_to_xml":
+		return c.compileProtoToXML(step)
+
 	case "validate_route":
 		return c.compileValidateRoute(step)
 
@@ -2772,6 +2798,71 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, engine.RecordCircuitOutcomeStep(c.fm.CircuitBreakerArena, cbIdx, successFn))
 
+	case "mqtt_publish":
+		return c.compileMQTTPublish(step)
+
+	case "mqtt_call":
+		return c.compileMQTTCall(step)
+
+	case "soap_call":
+		instr, err := c.compileSOAPCall(step)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, instr)
+
+	case "parse_soap_fault":
+		instr, err := c.compileSOAPParseFault(step)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, instr)
+
+	// Avro conversion steps (S7)
+	case "avro_to_json":
+		return c.compileAvroToJSON(step)
+
+	case "json_to_avro":
+		return c.compileJSONToAvro(step)
+
+	case "avro_get":
+		return c.compileAvroGet(step)
+
+	case "avro_to_xml":
+		return c.compileAvroToXML(step)
+
+	case "xml_to_avro":
+		return c.compileXMLToAvro(step)
+
+	// Avro multi-hop steps (S8)
+	case "avro_to_proto":
+		return c.compileAvroToProto(step)
+
+	case "proto_to_avro":
+		return c.compileProtoToAvro(step)
+
+	// XML steps (S3)
+	case "xml_to_json":
+		return c.compileXMLToJSON(step)
+
+	case "json_to_xml":
+		return c.compileJSONToXML(step)
+
+	case "parse_xml":
+		return c.compileParseXML(step)
+
+	case "xml_get":
+		return c.compileXMLGet(step)
+
+	case "set_xml_response":
+		return c.compileSetXMLResponse(step)
+
+	case "build_xml":
+		return c.compileBuildXML(step)
+
+	case "xml_set":
+		return c.compileXMLSet(step)
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -2845,41 +2936,26 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 // simulateBake calculates the number of instructions a flow would generate
 func (c *Compiler) simulateBake(flow []StepConfig, frags map[string][]StepConfig) []bool {
-	count := 0
-	for _, step := range flow {
-		switch step.Action {
-		case "if":
-			count += 2 + len(c.simulateBake(frags[step.Then], frags)) + len(c.simulateBake(frags[step.Else], frags))
-		case "pattern_match":
-			// Same layout as "if": 1 gate + len(then) + 1 GOTO + len(else)
-			count += 2 + len(c.simulateBake(frags[step.Then], frags)) + len(c.simulateBake(frags[step.Else], frags))
-		case "switch":
-			count += 1
-			for _, fragName := range step.Cases {
-				count += len(c.simulateBake(frags[fragName], frags)) + 1
-			}
-		case "call":
-			// In CompileExecutable mode, call inlines the sub-flow (not a pre-compiled fragment).
-			// If the flow is in FragmentMap it will be a single CallFragment instruction;
-			// otherwise its steps are inlined so we must count them recursively.
-			if _, ok := c.FragmentMap[step.FlowName]; ok {
-				count += 1
-			} else if frags != nil {
-				count += len(c.simulateBake(frags[step.FlowName], frags))
-			} else {
-				count += 1
-			}
-		case "foreach":
-			count += 2 + len(c.simulateBake(step.Do, frags))
-		case "while":
-			count += 2 + len(c.simulateBake(step.Do, frags))
-		case "http_call":
-			count += 1
-		default:
-			count += 1
-		}
+	if len(flow) == 0 {
+		return nil
 	}
-	return make([]bool, count)
+	// Run actual compilation on a throw-away copy so the instruction count
+	// exactly matches what bakeFlowRaw will emit. Manual counting is fragile:
+	// any step that emits >1 instruction (e.g. set_response_header/body with
+	// a literal source emits SetConst + the real step) will cause wrong jump
+	// targets and create infinite loops in the executor.
+	sim := *c
+	sim.GlobalTable = make([]engine.Instruction, 0, len(flow)*2)
+	sim.slotMap = make(map[string]int, len(c.slotMap))
+	for k, v := range c.slotMap {
+		sim.slotMap[k] = v
+	}
+	sim.freeSlots = append([]int(nil), c.freeSlots...)
+	sim.pendingJumps = nil
+	sim.pendingValidateJumps = nil
+	sim.validateRouteInstrs = nil
+	_ = sim.bakeFlowRaw(flow, frags)
+	return make([]bool, len(sim.GlobalTable))
 }
 
 func (c *Compiler) discoverDependencies(flow []StepConfig) []Dependency {

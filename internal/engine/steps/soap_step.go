@@ -277,7 +277,7 @@ func SOAPCallFromConfig(cfg SOAPCallConfig) engine.Instruction {
 
 			// Capture response status
 			if cfg.ResponseStatusSlot >= 0 && cfg.ResponseStatusSlot < len(ctx.IntSlots) {
-				ctx.IntSlots[cfg.ResponseStatusSlot] = resp.StatusCode
+				ctx.IntSlots[cfg.ResponseStatusSlot] = int64(resp.StatusCode)
 			}
 
 			// Read response body
@@ -316,7 +316,7 @@ func SOAPCallFromConfig(cfg SOAPCallConfig) engine.Instruction {
 				if len(code) > 0 || len(msg) > 0 {
 					ctx.Failed = true
 					ctx.ResponseStatus = resp.StatusCode
-					ctx.ErrorCode = resp.StatusCode
+					ctx.ErrorCode = int16(resp.StatusCode)
 					if len(msg) > 0 {
 						ctx.ErrorMsg = ctx.Alloc(len(msg))
 						copy(ctx.ErrorMsg, msg)

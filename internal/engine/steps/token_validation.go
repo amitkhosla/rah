@@ -26,7 +26,7 @@ import (
 
 const (
 	defaultJWTLeeway    = 30 * time.Second
-	defaultJWKSCacheTTL = 5 * time.Minute
+	defaultJWKSCacheTTL = 12 * time.Hour
 )
 
 // TokenReadSource controls where token bytes are pulled from at runtime.
@@ -94,6 +94,7 @@ type TokenValidationConfig struct {
 	Validate      ValidationSet
 	PrefetchJWKS         bool
 	JWKSTimeout          time.Duration // timeout for JWKS endpoint fetch (default 10s)
+	JWKSCacheTTL         time.Duration // how long to cache the JWKS public keys (default 12h)
 	JWKSRetryMaxAttempts int           // total attempts for JWKS fetch (default 2)
 	JWKSRetryBackoff     time.Duration // base backoff between JWKS retries (default 200ms)
 
@@ -239,6 +240,14 @@ func ParseTokenValidationConfig(keyIdentifier string, input map[string]string) T
 			cfg.JWKSRetryBackoff = time.Duration(n) * time.Millisecond
 		}
 	}
+	if v := strings.TrimSpace(input["jwt.jwks_cache_ttl_seconds"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.JWKSCacheTTL = time.Duration(n) * time.Second
+		}
+	}
+	if cfg.JWKSCacheTTL <= 0 {
+		cfg.JWKSCacheTTL = defaultJWKSCacheTTL
+	}
 
 	if k := strings.TrimSpace(input["token.key"]); k != "" {
 		cfg.TokenRefKey = k
@@ -361,7 +370,7 @@ func parseValidationSet(raw string) ValidationSet {
 // TokenValidation builds the runtime JWT validation instruction.
 func TokenValidation(slots TokenValidationSlots, cfg TokenValidationConfig) engine.Instruction {
 	if cfg.PrefetchJWKS && cfg.JWKSURI != "" {
-		_, _ = publicKeyFromJWKS(cfg.JWKSURI, "", cfg.JWKSTimeout, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
+		_, _ = publicKeyFromJWKS(cfg.JWKSURI, "", cfg.JWKSTimeout, cfg.JWKSCacheTTL, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
 	}
 
 	return engine.Instruction{
@@ -709,7 +718,7 @@ func validateJWTWithClaims(token string, cfg TokenValidationConfig) (*jwtClaims,
 		if header.Kid == "" {
 			return nil, errors.New("missing kid in jwt header")
 		}
-		pub, err := publicKeyFromJWKS(cfg.JWKSURI, header.Kid, cfg.JWKSTimeout, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
+		pub, err := publicKeyFromJWKS(cfg.JWKSURI, header.Kid, cfg.JWKSTimeout, cfg.JWKSCacheTTL, cfg.JWKSRetryMaxAttempts, cfg.JWKSRetryBackoff)
 		if err != nil {
 			return nil, err
 		}
@@ -773,7 +782,7 @@ func audienceMatches(tokenAud any, expected string) bool {
 	return false
 }
 
-func publicKeyFromJWKS(jwksURI, kid string, timeout time.Duration, retryMaxAttempts int, retryBackoff time.Duration) (crypto.PublicKey, error) {
+func publicKeyFromJWKS(jwksURI, kid string, timeout time.Duration, cacheTTL time.Duration, retryMaxAttempts int, retryBackoff time.Duration) (crypto.PublicKey, error) {
 	if cachedAny, ok := jwksCache.Load(jwksURI); ok {
 		cached := cachedAny.(cachedJWKS)
 		if time.Now().Before(cached.expiresAt) {
@@ -829,7 +838,7 @@ func publicKeyFromJWKS(jwksURI, kid string, timeout time.Duration, retryMaxAttem
 		}
 	}
 
-	jwksCache.Store(jwksURI, cachedJWKS{keysByKid: keys, expiresAt: time.Now().Add(defaultJWKSCacheTTL)})
+	jwksCache.Store(jwksURI, cachedJWKS{keysByKid: keys, expiresAt: time.Now().Add(cacheTTL)})
 	if kid == "" {
 		return nil, nil
 	}

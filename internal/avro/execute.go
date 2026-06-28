@@ -18,7 +18,9 @@ func AppendAvroToJSON(dst, src []byte, prog *AvroProgram) ([]byte, error) {
 	stackDepth := 0
 	var extStack *loopStack
 
-	out, _, err := decodeRecord(dst, src, prog, prog.Ops, &inlineStack, &stackDepth, &extStack)
+	// prog.Ops[0] is always the root record wrapper; its children are the top-level fields.
+	rootFieldIndices := prog.childOpsFor(0)
+	out, _, err := decodeRecord(dst, src, prog, rootFieldIndices, &inlineStack, &stackDepth, &extStack)
 	if extStack != nil {
 		extStack.frames = extStack.frames[:0]
 		loopStackPool.Put(extStack)
@@ -27,13 +29,15 @@ func AppendAvroToJSON(dst, src []byte, prog *AvroProgram) ([]byte, error) {
 }
 
 // decodeRecord decodes a sequence of ops (record fields) into a JSON object.
+// opIndices holds the ABSOLUTE indices into prog.Ops for each field to decode.
 // Returns (appended dst, remaining src, error).
-func decodeRecord(dst, src []byte, prog *AvroProgram, ops []AvroOp,
+func decodeRecord(dst, src []byte, prog *AvroProgram, opIndices []int,
 	inlineStack *[8]loopState, stackDepth *int, extStack **loopStack) ([]byte, []byte, error) {
 
 	dst = append(dst, '{')
 	first := true
-	for i, op := range ops {
+	for _, absIdx := range opIndices {
+		op := prog.Ops[absIdx]
 		skip := op.Flags&AvroFlagSkip != 0
 
 		if !skip {
@@ -45,7 +49,7 @@ func decodeRecord(dst, src []byte, prog *AvroProgram, ops []AvroOp,
 		}
 
 		var err error
-		dst, src, err = decodeValue(dst, src, prog, i, op, skip, inlineStack, stackDepth, extStack)
+		dst, src, err = decodeValue(dst, src, prog, absIdx, op, skip, inlineStack, stackDepth, extStack)
 		if err != nil {
 			return dst, src, err
 		}
@@ -178,14 +182,13 @@ func decodeValue(dst, src []byte, prog *AvroProgram, opIdx int, op AvroOp, skip 
 
 	case AvroKindRecord:
 		children := prog.childOpsFor(opIdx)
-		childOps := opsFromIndices(prog, children)
 		if skip {
 			tmp := make([]byte, 0, 32)
 			var err error
-			_, src, err = decodeRecord(tmp, src, prog, childOps, inlineStack, stackDepth, extStack)
+			_, src, err = decodeRecord(tmp, src, prog, children, inlineStack, stackDepth, extStack)
 			return dst, src, err
 		}
-		return decodeRecord(dst, src, prog, childOps, inlineStack, stackDepth, extStack)
+		return decodeRecord(dst, src, prog, children, inlineStack, stackDepth, extStack)
 
 	case AvroKindArray:
 		return decodeArray(dst, src, prog, opIdx, skip, inlineStack, stackDepth, extStack)
@@ -365,19 +368,20 @@ func (p *AvroProgram) childOpsFor(opIdx int) []int {
 // prog must be compiled for the target schema.
 // Uses gjson for field lookup — no encoding/json at runtime.
 func AppendJSONToAvro(dst, src []byte, prog *AvroProgram) ([]byte, error) {
-	return encodeRecord(dst, src, prog, prog.Ops)
+	// prog.Ops[0] is the root record wrapper; encode only its children (the actual fields).
+	rootFieldIndices := prog.childOpsFor(0)
+	return encodeRecord(dst, src, prog, rootFieldIndices)
 }
 
 // encodeRecord encodes a JSON object (src) into Avro binary for a sequence of ops.
-func encodeRecord(dst, src []byte, prog *AvroProgram, ops []AvroOp) ([]byte, error) {
-	for i, op := range ops {
+// opIndices holds ABSOLUTE indices into prog.Ops for each field to encode.
+func encodeRecord(dst, src []byte, prog *AvroProgram, opIndices []int) ([]byte, error) {
+	for _, absIdx := range opIndices {
+		op := prog.Ops[absIdx]
 		name := string(prog.fieldName(op))
-		// For top-level ops we look up by field name; the opIdx here is relative
-		// to the ops slice — we need the absolute opIdx for ChildOps.
-		// encodeRecord is called with prog.Ops directly so index matches.
 		result := gjson.GetBytes(src, name)
 		var err error
-		dst, err = encodeValue(dst, src, prog, i, op, result)
+		dst, err = encodeValue(dst, src, prog, absIdx, op, result)
 		if err != nil {
 			return dst, err
 		}
@@ -449,12 +453,11 @@ func encodeValue(dst, src []byte, prog *AvroProgram, opIdx int, op AvroOp, resul
 
 	case AvroKindRecord:
 		children := prog.childOpsFor(opIdx)
-		childOps := opsFromIndices(prog, children)
 		raw := []byte(result.Raw)
 		if len(raw) == 0 {
 			raw = []byte("{}")
 		}
-		return encodeRecord(dst, raw, prog, childOps)
+		return encodeRecord(dst, raw, prog, children)
 
 	case AvroKindArray:
 		children := prog.childOpsFor(opIdx)

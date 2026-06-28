@@ -3,14 +3,14 @@ package config
 // EgressProfileConfig defines a named connection profile for upstream calls.
 // Type controls the transport protocol; TLS fields apply to https type only.
 type EgressProfileConfig struct {
-	Name          string   `json:"name"                       yaml:"name"`
+	Name string `json:"name"                       yaml:"name"`
 	// Type values: "auto" (default), "http1", "https", "h2c"
 	// auto: https URLs get HTTP/2 via ALPN, http URLs get HTTP/1.1
 	// http1: force HTTP/1.1 regardless of scheme
 	// https: HTTPS with HTTP/2 via ALPN + optional custom TLS config
 	// h2c: cleartext HTTP/2 (upstream must support it)
-	Type          string   `json:"type"                       yaml:"type"`
-	TLSSkipVerify bool     `json:"tls_skip_verify,omitempty"  yaml:"tls_skip_verify,omitempty"`
+	Type          string `json:"type"                       yaml:"type"`
+	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"  yaml:"tls_skip_verify,omitempty"`
 	// TLSCACerts: list of secrets manager refs, e.g. "ref:secrets/certs/internal-ca"
 	// Multiple entries → all trusted simultaneously (supports cert rotation)
 	TLSCACerts    []string `json:"tls_ca_certs,omitempty"     yaml:"tls_ca_certs,omitempty"`

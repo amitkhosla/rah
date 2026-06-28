@@ -45,22 +45,22 @@ const (
 	DomainApps    DataDomain = "apps"     // App records (stable consumer identities)
 	DomainAPIKeys DataDomain = "api_keys" // API key records (hashed credentials)
 
-	DomainTenantRegistry    DataDomain = "tenant_data"        // aliases, service URLs, identifiers, metadata
-	DomainRateLimit         DataDomain = "rate_limit"         // named rate limit configs + counters
-	DomainRateLimitConfigsV2 DataDomain = "rl_configs_v2"    // V2 multi-window rate limit configs
-	DomainTiers             DataDomain = "tiers"              // tier definitions (rate limit groupings)
-	DomainUpstreamServices  DataDomain = "upstream_services"  // upstream service URL-pattern RL definitions
-	DomainCustomerData      DataDomain = "customer_data"      // arbitrary per-tenant custom data
+	DomainTenantRegistry     DataDomain = "tenant_data"       // aliases, service URLs, identifiers, metadata
+	DomainRateLimit          DataDomain = "rate_limit"        // named rate limit configs + counters
+	DomainRateLimitConfigsV2 DataDomain = "rl_configs_v2"     // V2 multi-window rate limit configs
+	DomainTiers              DataDomain = "tiers"             // tier definitions (rate limit groupings)
+	DomainUpstreamServices   DataDomain = "upstream_services" // upstream service URL-pattern RL definitions
+	DomainCustomerData       DataDomain = "customer_data"     // arbitrary per-tenant custom data
 
 	// Hot-path / ephemeral — typically in-memory or Redis
 	DomainCache DataDomain = "cache" // request-level response cache
 
 	// Infrastructure / operational
-	DomainInstances    DataDomain = "instances"    // live gateway instance registry
-	DomainCredentials  DataDomain = "credentials"  // named credential mappings (CredentialRegistry)
-	DomainAsyncJobs    DataDomain = "async_jobs"   // async job state (status + results)
-	DomainAIConfig     DataDomain = "ai_config"    // runtime LLM model catalog + MCP server registry
-	DomainMCPTools     DataDomain = "mcp_tools"   // virtual MCP server definitions + API tool catalog
+	DomainInstances   DataDomain = "instances"   // live gateway instance registry
+	DomainCredentials DataDomain = "credentials" // named credential mappings (CredentialRegistry)
+	DomainAsyncJobs   DataDomain = "async_jobs"  // async job state (status + results)
+	DomainAIConfig    DataDomain = "ai_config"   // runtime LLM model catalog + MCP server registry
+	DomainMCPTools    DataDomain = "mcp_tools"   // virtual MCP server definitions + API tool catalog
 
 	// Deployment infrastructure domains
 	DomainEnvironments     DataDomain = "environments"      // environment definitions (dev/qa/prod)
@@ -75,8 +75,8 @@ const (
 
 	// Observability domains — optional; skip gracefully if not bound
 	DomainObsAccessLog DataDomain = "obs_access_log" // per-request access log entries
-	DomainObsMetrics   DataDomain = "obs_metrics"     // pre-aggregated metric snapshots
-	DomainObsTraces    DataDomain = "obs_traces"       // sampled/error request traces
+	DomainObsMetrics   DataDomain = "obs_metrics"    // pre-aggregated metric snapshots
+	DomainObsTraces    DataDomain = "obs_traces"     // sampled/error request traces
 
 	// Distributed rate limiting — optional; skip gracefully if not bound
 	DomainRateLimitSync DataDomain = "rate_limit_sync" // Redis-backed cross-pod rate limit counters
@@ -125,13 +125,13 @@ var requiredDomains = []DataDomain{
 //  1. Address — full DSN (postgres://…), host:port, or URI — used as-is.
 //  2. Host + Port — if Address is empty, these are combined into host:port.
 type StoreConnection struct {
-	Address  string            `json:"address,omitempty"  yaml:"address,omitempty"`  // full DSN, host:port, or URI
-	Host     string            `json:"host,omitempty"     yaml:"host,omitempty"`     // explicit host (used when Address is empty)
-	Port     int               `json:"port,omitempty"     yaml:"port,omitempty"`     // explicit port (used when Address is empty)
-	Path     string            `json:"path,omitempty"     yaml:"path,omitempty"`     // local path for disk-based stores
-	Database string            `json:"database,omitempty" yaml:"database,omitempty"` // logical DB/keyspace name or index
-	Username string            `json:"username,omitempty" yaml:"username,omitempty"` // inline plaintext username
-	Password string            `json:"password,omitempty" yaml:"password,omitempty"` // inline plaintext password
+	Address  string `json:"address,omitempty"  yaml:"address,omitempty"`  // full DSN, host:port, or URI
+	Host     string `json:"host,omitempty"     yaml:"host,omitempty"`     // explicit host (used when Address is empty)
+	Port     int    `json:"port,omitempty"     yaml:"port,omitempty"`     // explicit port (used when Address is empty)
+	Path     string `json:"path,omitempty"     yaml:"path,omitempty"`     // local path for disk-based stores
+	Database string `json:"database,omitempty" yaml:"database,omitempty"` // logical DB/keyspace name or index
+	Username string `json:"username,omitempty" yaml:"username,omitempty"` // inline plaintext username
+	Password string `json:"password,omitempty" yaml:"password,omitempty"` // inline plaintext password
 
 	// UsernameRef and PasswordRef accept any reference supported by the secrets
 	// manager: "env:MY_VAR", "$MY_VAR", "enc:base64...", "vault://...", etc.
@@ -143,10 +143,10 @@ type StoreConnection struct {
 	Params map[string]string `json:"params,omitempty" yaml:"params,omitempty"` // backend-specific overflow options
 
 	// Redis / Dragonfly topology
-	Topology       string   `json:"topology,omitempty"        yaml:"topology,omitempty"`         // single (default) | sentinel | cluster
-	SentinelMaster string   `json:"sentinel_master,omitempty" yaml:"sentinel_master,omitempty"`  // required for sentinel topology
+	Topology       string   `json:"topology,omitempty"        yaml:"topology,omitempty"`        // single (default) | sentinel | cluster
+	SentinelMaster string   `json:"sentinel_master,omitempty" yaml:"sentinel_master,omitempty"` // required for sentinel topology
 	ClusterAddrs   []string `json:"cluster_addrs,omitempty"   yaml:"cluster_addrs,omitempty"`   // seed nodes for cluster/sentinel
-	PoolSize       int      `json:"pool_size,omitempty"       yaml:"pool_size,omitempty"`        // connection pool size (default 32)
+	PoolSize       int      `json:"pool_size,omitempty"       yaml:"pool_size,omitempty"`       // connection pool size (default 32)
 
 	// MaxCmdsPerPipeline caps the number of Redis commands batched in one pipeline exec.
 	// 0 = use executor default (256).

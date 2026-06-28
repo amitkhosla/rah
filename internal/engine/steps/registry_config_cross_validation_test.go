@@ -83,12 +83,13 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 		// Adjust keyPrefix based on tenant
 		tenantOps := []ExtractOp{
 			{
-				Path:       "serviceCode",
-				KeyPrefix:  tenant + ":",
-				OpType:     rctx.OpPut,
-				Target:     rctx.TargetRegistryURL,
-				ValueSlot:  -1,
-				DestSlot:   -1,
+				Path:      "serviceCode", // key suffix = serviceCode
+				ValuePath: "serviceUrl",  // value = serviceUrl from same element
+				KeyPrefix: tenant + ":",
+				OpType:    rctx.OpPut,
+				Target:    rctx.TargetRegistryURL,
+				ValueSlot: -1,
+				DestSlot:  -1,
 			},
 		}
 
@@ -102,10 +103,14 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 		}
 	}
 
-	// Extract services for each product (using # to iterate through all categories and services)
-	processAllServices("Commerce", "products.0.serviceCategories.#.services")
-	processAllServices("Analytics", "products.1.serviceCategories.#.services")
-	processAllServices("Notifications", "products.2.serviceCategories.#.services")
+	// JSONForeachEmit iterates one flat array level. serviceCategories contains nested
+	// service arrays, so we call once per product+category with the explicit index path.
+	for pIdx, product := range config.Products {
+		for cIdx := range product.ServiceCategories {
+			path := fmt.Sprintf("products.%d.serviceCategories.%d.services", pIdx, cIdx)
+			processAllServices(product.Product, path)
+		}
+	}
 
 	// Step 2: Extract tenant identifiers for cross-validation
 	ctx.Ops = ctx.Ops[:0]
@@ -364,10 +369,13 @@ func TestVerifyServiceCodeConsistency(t *testing.T) {
 		}
 	}
 
-	// Extract services for each product
-	extractServices("Commerce", "products.0.serviceCategories")
-	extractServices("Analytics", "products.1.serviceCategories")
-	extractServices("Notifications", "products.2.serviceCategories")
+	// Call once per product+category so JSONForeachEmit iterates a flat service array.
+	for pIdx, product := range config.Products {
+		for cIdx := range product.ServiceCategories {
+			path := fmt.Sprintf("products.%d.serviceCategories.%d.services", pIdx, cIdx)
+			extractServices(product.Product, path)
+		}
+	}
 
 	t.Log("\n=== SERVICE CODE CONSISTENCY VERIFICATION ===\n")
 

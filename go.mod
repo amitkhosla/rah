@@ -8,8 +8,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.14
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5
+	github.com/eclipse/paho.mqtt.golang v1.5.1
+	github.com/hamba/avro/v2 v2.31.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/tidwall/gjson v1.18.0
@@ -18,6 +21,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.36.0
 	go.opentelemetry.io/otel/sdk v1.36.0
 	go.opentelemetry.io/otel/sdk/metric v1.36.0
+	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.45.0
 	golang.org/x/net v0.47.0
 	golang.org/x/oauth2 v0.30.0
@@ -57,8 +61,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3 // indirect
-	github.com/hamba/avro/v2 v2.31.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -76,6 +80,7 @@ require (
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/rs/xid v1.4.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect

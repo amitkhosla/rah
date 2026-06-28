@@ -1,92 +1,66 @@
 package control
 
-import (
-	"encoding/json"
-)
-
-// SOAPStepDescriptors returns the SOAP-related step descriptors.
+// SOAPStepDescriptors returns the step descriptors for SOAP-related steps.
 func SOAPStepDescriptors() []StepDescriptor {
 	return []StepDescriptor{
 		{
-			Name:      "soap_call",
-			Docs:      "Wrap request XML in SOAP envelope and POST to upstream service",
-			Compiler:  (*Compiler).compileSOAPCall,
-			JSONSchema: mustSchema(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"url": map[string]interface{}{
-						"type":        "string",
-						"description": "Static upstream SOAP service URL (http/https)",
-					},
-					"url_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Slot containing dynamic URL (-1 to use static url)",
-					},
-					"body_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Required: slot containing XML request body",
-					},
-					"response_body_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Slot to store unwrapped SOAP response body (-1 to discard)",
-					},
-					"response_status_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Slot to store HTTP response status (-1 to discard)",
-					},
-					"content_type": map[string]interface{}{
-						"type":        "string",
-						"description": "HTTP Content-Type header (default: text/xml for SOAP 1.1)",
-					},
-					"timeout_ms": map[string]interface{}{
-						"type":        "integer",
-						"description": "Request timeout in milliseconds",
-					},
-					"max_retries": map[string]interface{}{
-						"type":        "integer",
-						"description": "Maximum number of retries (-1 for default)",
-					},
-					"soap_version": map[string]interface{}{
-						"type":        "integer",
-						"enum":        []int{1, 2},
-						"description": "SOAP version (1 or 2, default: 1)",
-					},
-					"egress_profile": map[string]interface{}{
-						"type":        "string",
-						"description": "Named egress profile for protocol selection",
-					},
-				},
-				"required": []string{"body_slot"},
-			}),
+			Type:           "soap_call",
+			Title:          "SOAP Call",
+			Category:       "protocol",
+			Capability:     "soap",
+			Description:    "Wraps an XML body in a SOAP envelope (1.1 or 1.2), calls the upstream HTTP endpoint, and unwraps the response body. On a SOAP fault response the step sets ctx.Failed and parses fault details.",
+			SupportsNested: false,
+			Defaults: map[string]string{
+				"url":                  "",
+				"content_type":         "text/xml",
+				"soap_version":         "1",
+				"timeout_ms":           "5000",
+				"max_retries":          "0",
+				"response_body_slot":   "",
+				"response_status_slot": "",
+			},
+			Fields: []StepField{
+				sf("url", "Endpoint URL", "Static SOAP endpoint URL (leave empty to use a slot via url_slot)", "http://soap-service/endpoint"),
+				sf("url_slot", "URL Slot", "Variable name whose slot holds the endpoint URL (use instead of url for dynamic values)", "soap_url_var"),
+				sf("content_type", "Content-Type", "HTTP Content-Type header value. Defaults to text/xml for SOAP 1.1 and application/soap+xml for SOAP 1.2.", "text/xml"),
+				sf("soap_version", "SOAP Version", "SOAP envelope version to use: 1 (SOAP 1.1, default) or 2 (SOAP 1.2).", "1"),
+				sf("timeout_ms", "Timeout (ms)", "Request timeout in milliseconds (default: 5000).", "5000"),
+				sf("max_retries", "Max Retries", "Number of retry attempts on transport error (default: 0 = no retry).", "0"),
+				sf("response_body_slot", "Response Body Slot", "Variable name whose slot will store the unwrapped SOAP body from the response.", "soap_response_var"),
+				sf("response_status_slot", "Response Status Slot", "Variable name whose int-slot will store the HTTP response status code.", "soap_status_var"),
+			},
 		},
 		{
-			Name:      "soap_parse_fault",
-			Docs:      "Extract SOAP fault details (code + message) from response",
-			Compiler:  (*Compiler).compileSOAPParseFault,
-			JSONSchema: mustSchema(map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"response_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Slot containing SOAP envelope with fault",
-					},
-					"fault_slot": map[string]interface{}{
-						"type":        "integer",
-						"description": "Slot to store combined fault code:message",
-					},
-					"soap_version": map[string]interface{}{
-						"type":        "integer",
-						"enum":        []int{1, 2},
-						"description": "SOAP version (1 or 2, default: 1)",
-					},
-				},
-				"required": []string{"response_slot", "fault_slot"},
-			}),
+			Type:           "parse_soap_fault",
+			Title:          "Parse SOAP Fault",
+			Category:       "protocol",
+			Capability:     "soap",
+			Description:    "Extracts the fault code and fault message from a SOAP fault envelope and stores them (combined as code:message) in a slot. Supports both SOAP 1.1 (faultcode/faultstring) and SOAP 1.2 (Code/Reason).",
+			SupportsNested: false,
+			Defaults: map[string]string{
+				"soap_version": "1",
+			},
+			Fields: []StepField{
+				sf("response_slot", "Response Slot", "Variable name whose slot holds the raw SOAP fault envelope bytes (required).", "soap_fault_body_var"),
+				sf("fault_slot", "Fault Slot", "Variable name whose slot will store the extracted fault as code:message (required).", "soap_fault_var"),
+				sf("soap_version", "SOAP Version", "SOAP fault format: 1 for SOAP 1.1 faultcode/faultstring, 2 for SOAP 1.2 Code/Reason (default: 1).", "1"),
+			},
+		},
+		{
+			Type:           "build_soap_envelope",
+			Title:          "Build SOAP Envelope",
+			Category:       "protocol",
+			Capability:     "soap",
+			Description:    "Wraps an XML body in a SOAP 1.1 or 1.2 envelope at flow time. Useful when you need to construct the envelope separately before sending it via an http_call or soap_call step.",
+			SupportsNested: false,
+			Defaults: map[string]string{
+				"soap_version": "1",
+			},
+			Fields: []StepField{
+				sf("body_slot", "Body Slot", "Variable name whose slot holds the XML body to wrap (required).", "xml_body_var"),
+				sf("output_slot", "Output Slot", "Variable name whose slot will store the resulting SOAP envelope bytes (required).", "soap_envelope_var"),
+				sf("soap_version", "SOAP Version", "Envelope format: 1 for SOAP 1.1 (default) or 2 for SOAP 1.2.", "1"),
+			},
 		},
 	}
-}
-
-func mustSchema(v map[string]interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }

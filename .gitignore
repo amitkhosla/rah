@@ -1,6 +1,8 @@
 /.idea
 .env
 *.exe
+!binaries/
+!binaries/**
 gateway.log
 /internal/cache/cache/1/a8/*.bin
 /bin

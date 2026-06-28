@@ -20,6 +20,13 @@ type RateLimitV2Datastore interface {
 	DeleteUpstreamService(ctx context.Context, name string) error
 }
 
+// RLCounterRegistrar wires a newly created rate-limit-v2 config into the
+// engine's in-process counter arenas. Implemented by the gateway main package
+// to avoid a circular import between registry and engine.
+type RLCounterRegistrar interface {
+	RegisterRateLimitV2(id uint16, numWindows int)
+}
+
 // TenantServer exposes the RegistryManager over HTTP for management-plane
 // operations. All mutating endpoints hold the RegistryManager mutex for the
 // duration of the write; reads are answered from the atomic snapshot and
@@ -37,6 +44,11 @@ type TenantServer struct {
 	// service mutations are written through to the backing datastore for durability.
 	// Leave nil in test environments or when an external orchestrator owns persistence.
 	RLV2Store RateLimitV2Datastore
+
+	// RLCounterRegistrar is optional. When set, POST /rate-limit-configs-v2
+	// wires the new config into the engine's counter arenas immediately, so the
+	// limit is enforced without requiring a subsequent /sync call.
+	RLRegistrar RLCounterRegistrar
 }
 
 // NewTenantServer creates a TenantServer backed by the given RegistryManager.
@@ -555,6 +567,14 @@ func (s *TenantServer) rateLimitConfigsV2RootHandler(w http.ResponseWriter, r *h
 			return
 		}
 		UpsertRateLimitConfigV2(cfg)
+		if s.RLRegistrar != nil {
+			id := s.mgr.EnsureRateLimitV2ID(cfg.Name)
+			numWindows := len(cfg.Windows)
+			if numWindows == 0 {
+				numWindows = 1
+			}
+			s.RLRegistrar.RegisterRateLimitV2(id, numWindows)
+		}
 		if s.RLV2Store != nil {
 			if raw, merr := json.Marshal(cfg); merr == nil {
 				if perr := s.RLV2Store.PutRateLimitConfigV2(r.Context(), cfg.Name, raw); perr != nil {

@@ -8,12 +8,12 @@ package config
 // path) must themselves use only "env:" or "file://" references — not another
 // secrets manager, to avoid circular resolution.
 type SecretsConfig struct {
-	GSM          GSMConfig                 `json:"gsm,omitempty"          yaml:"gsm,omitempty"`
-	Vault        VaultConfig               `json:"vault,omitempty"        yaml:"vault,omitempty"`
-	AWSSM        AWSSMConfig               `json:"aws_sm,omitempty"       yaml:"aws_sm,omitempty"`
-	Encrypted    EncryptedConfig           `json:"encrypted,omitempty"    yaml:"encrypted,omitempty"`
-	OAuth2       OAuth2Config              `json:"oauth2,omitempty"       yaml:"oauth2,omitempty"`
-	GoogleToken  GoogleTokenConfig         `json:"google_token,omitempty" yaml:"google_token,omitempty"`
+	GSM         GSMConfig         `json:"gsm,omitempty"          yaml:"gsm,omitempty"`
+	Vault       VaultConfig       `json:"vault,omitempty"        yaml:"vault,omitempty"`
+	AWSSM       AWSSMConfig       `json:"aws_sm,omitempty"       yaml:"aws_sm,omitempty"`
+	Encrypted   EncryptedConfig   `json:"encrypted,omitempty"    yaml:"encrypted,omitempty"`
+	OAuth2      OAuth2Config      `json:"oauth2,omitempty"       yaml:"oauth2,omitempty"`
+	GoogleToken GoogleTokenConfig `json:"google_token,omitempty" yaml:"google_token,omitempty"`
 }
 
 // GSMConfig configures the Google Secret Manager provider.

@@ -33,6 +33,13 @@ type ExtractOp struct {
 	// Use -1 to store the extracted value itself as the value.
 	ValueSlot int
 
+	// ValuePath is an optional gjson path (relative to each array element) whose
+	// value is used as the stored value instead of the Path-extracted value.
+	// Useful when the key is derived from one field (e.g. "serviceCode") but the
+	// value to store comes from another (e.g. "serviceUrl").
+	// Only used by JSONForeachEmit. Ignored when empty or when ValueSlot >= 0.
+	ValuePath string
+
 	// Async applies to OpPut only: true = fire-and-forget.
 	Async bool
 
@@ -145,6 +152,9 @@ func JSONForeachEmit(bodySlot int, arrayPath string, ops []ExtractOp) engine.Ins
 						var val []byte
 						if op.ValueSlot >= 0 {
 							val = ctx.ByteSlots[op.ValueSlot]
+						} else if op.ValuePath != "" {
+							vr := gjson.GetBytes(elemBytes, op.ValuePath)
+							val = []byte(vr.String())
 						} else {
 							val = []byte(extracted)
 						}

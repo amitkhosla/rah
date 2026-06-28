@@ -59,7 +59,7 @@ func Default() *Manager {
 				MaxIntsSlots:  16,
 				DefaultLimits: ResourceLimit{
 					MaxBodySize:   1024 * 1024, // 1MB
-					MaxHeaderSize: 65536,        // 64KB
+					MaxHeaderSize: 65536,       // 64KB
 				},
 			},
 			DataStore: DataStoreConfig{

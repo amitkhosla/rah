@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -46,7 +45,7 @@ func TestSOAPCall_BuildsEnvelope(t *testing.T) {
 	// Create context and execute
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<user><name>Alice</name></user>`)
@@ -100,12 +99,12 @@ func TestSOAPCall_ParsesFault(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<request/>`)
 
-	pc := instr.Action(ctx, nil)
+	_ = instr.Action(ctx, nil)
 	if !ctx.Failed {
 		t.Errorf("expected ctx.Failed to be true for fault response")
 	}
@@ -130,7 +129,7 @@ func TestSOAPCall_MissingBody(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	// Don't set ByteSlots[0] — leave it nil/empty
@@ -164,7 +163,7 @@ func TestSOAPCall_EmptyURL(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<request/>`)
@@ -203,7 +202,7 @@ func TestSOAPCall_TimeoutContext(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<request/>`)
@@ -248,14 +247,15 @@ func TestSOAPCall_Concurrent(t *testing.T) {
 
 			ctx := &rctx.Context{
 				ByteSlots: make([][]byte, 4),
-				IntSlots:  make([]int, 4),
+				IntSlots:  make([]int64, 4),
 				BoolSlots: make([]bool, 4),
 			}
 			ctx.ByteSlots[0] = []byte(`<user><name>Test</name></user>`)
 
-			pc := instr.Action(ctx, nil)
-			if pc != engine.NextPC {
-				t.Errorf("expected NextPC, got %d", pc)
+			state := &engine.ExecutionState{PC: 0}
+			pc := instr.Action(ctx, state)
+			if pc == engine.StopPlan {
+				t.Errorf("unexpected StopPlan, got %d", pc)
 			}
 			if len(ctx.ByteSlots[1]) == 0 {
 				t.Errorf("expected response body")
@@ -282,7 +282,7 @@ func TestSOAPCallFromConfig_StaticURLValidation(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<request/>`)
@@ -315,7 +315,7 @@ func TestSOAPCall_ConnectError(t *testing.T) {
 
 	ctx := &rctx.Context{
 		ByteSlots: make([][]byte, 4),
-		IntSlots:  make([]int, 4),
+		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
 	ctx.ByteSlots[0] = []byte(`<request/>`)

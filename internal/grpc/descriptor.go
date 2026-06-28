@@ -135,6 +135,83 @@ func (r *DescriptorRegistry) FindMethod(setName, service, method string) (protor
 	return md, nil
 }
 
+// FindMessage looks up a message descriptor by descriptor set name and fully-qualified message name.
+// The message name should be the full path (e.g., "package.MessageName").
+func (r *DescriptorRegistry) FindMessage(setName, msgName string) (protoreflect.MessageDescriptor, error) {
+	r.mu.RLock()
+	entry, ok := r.sets[setName]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("grpc: descriptor set %q not found", setName)
+	}
+
+	// Reconstruct a protoregistry from the stored raw descriptor bytes.
+	// To properly look up messages, we rebuild the Files registry from fds.
+	filesReg := new(protoregistry.Files)
+
+	// Re-deserialize the descriptor set to get access to all types.
+	fds := &descriptorpb.FileDescriptorSet{}
+	if err := proto.Unmarshal(entry.raw, fds); err != nil {
+		return nil, fmt.Errorf("grpc: re-parse descriptor set %q: %w", setName, err)
+	}
+
+	// Rebuild filesReg from fds.
+	remaining := make([]*descriptorpb.FileDescriptorProto, len(fds.File))
+	copy(remaining, fds.File)
+
+	for pass := 0; len(remaining) > 0; pass++ {
+		if pass > len(fds.File) {
+			return nil, fmt.Errorf("grpc: circular dependency while rebuilding descriptor set %q", setName)
+		}
+
+		var deferred []*descriptorpb.FileDescriptorProto
+		for _, fdp := range remaining {
+			allReady := true
+			for _, dep := range fdp.Dependency {
+				if _, err := filesReg.FindFileByPath(dep); err != nil {
+					allReady = false
+					break
+				}
+			}
+			if !allReady {
+				deferred = append(deferred, fdp)
+				continue
+			}
+
+			fd, err := protodesc.NewFile(fdp, filesReg)
+			if err != nil {
+				return nil, fmt.Errorf("grpc: build file %q: %w", fdp.GetName(), err)
+			}
+			if err := filesReg.RegisterFile(fd); err != nil {
+				if _, lookupErr := filesReg.FindFileByPath(fdp.GetName()); lookupErr != nil {
+					return nil, fmt.Errorf("grpc: register file %q: %w", fdp.GetName(), err)
+				}
+			}
+		}
+		remaining = deferred
+	}
+
+	// Now search for the message by name.
+	var found protoreflect.MessageDescriptor
+	filesReg.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		msgs := fd.Messages()
+		for i := 0; i < msgs.Len(); i++ {
+			msg := msgs.Get(i)
+			if string(msg.FullName()) == msgName {
+				found = msg
+				return false
+			}
+		}
+		return true
+	})
+
+	if found == nil {
+		return nil, fmt.Errorf("grpc: message %q not found in descriptor set %q", msgName, setName)
+	}
+	return found, nil
+}
+
 // ListServices returns metadata about all services in the named descriptor set.
 // Returns nil if the set is not found.
 func (r *DescriptorRegistry) ListServices(setName string) []ServiceInfo {

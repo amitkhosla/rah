@@ -21,6 +21,7 @@ import (
 	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
+	mqttpool "rah/internal/mqtt"
 	"rah/internal/observability"
 	"rah/internal/pricing"
 	"rah/internal/quota"
@@ -35,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	paho "github.com/eclipse/paho.mqtt.golang"
 	goredis "github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -72,6 +74,17 @@ func (d *domainScopedKV) Delete(ctx context.Context, key string) error {
 }
 func (d *domainScopedKV) ListKeys(ctx context.Context, prefix string) ([]string, error) {
 	return d.mgr.ListGlobalKeys(ctx, d.domain, prefix)
+}
+
+// rlCounterRegistrar implements tenantregistry.RLCounterRegistrar.
+// It wires a newly created rate-limit-v2 config into the engine's counter arenas
+// so that POST /rate-limit-configs-v2 enforces limits without a subsequent /sync.
+type rlCounterRegistrar struct{}
+
+func (rlCounterRegistrar) RegisterRateLimitV2(id uint16, numWindows int) {
+	reg := engine.ActiveCounterRegistry()
+	reg.RegisterSlotConfig(id, numWindows, 65536)
+	reg.RegisterTenantConfig(id, numWindows, 1024)
 }
 
 // connAcceptKey is used to store the TCP connection accept time in the request context
@@ -486,6 +499,54 @@ func main() {
 	enginesteps.GlobalGrpcConnPool = grpcPool
 	defer grpcPool.Close()
 	log.Printf("[grpc] registry and connection pool initialized")
+
+	// MQTT broker pool — optional; controlled by [mqtt] section in config.
+	// Each broker entry creates a persistent paho.Client connected at startup.
+	// Connections are stored in BrokerPool and distributed to request contexts
+	// via fm.MQTTPool, making mqtt_publish and mqtt_call steps available in flows.
+	mqttCfg := cfgMgr.Gateway().MQTT
+	if len(mqttCfg.Brokers) > 0 {
+		pool := mqttpool.NewBrokerPool()
+		for _, b := range mqttCfg.Brokers {
+			if b.Name == "" || b.BrokerURL == "" {
+				log.Fatalf("[mqtt] broker entry missing name or broker_url")
+			}
+			keepAlive := b.KeepAlive
+			if keepAlive == 0 {
+				keepAlive = 30
+			}
+			connectTimeoutMs := 5000
+			opts := paho.NewClientOptions().
+				AddBroker(b.BrokerURL).
+				SetClientID(b.ClientID).
+				SetKeepAlive(time.Duration(keepAlive) * time.Second).
+				SetConnectTimeout(time.Duration(connectTimeoutMs) * time.Millisecond).
+				SetAutoReconnect(true)
+			if b.CredRef != "" {
+				resolved, err := secretsMgr.ResolveString(gatewayCtx, b.CredRef)
+				if err != nil {
+					log.Fatalf("[mqtt] broker %q: failed to resolve cred_ref %q: %v", b.Name, b.CredRef, err)
+				}
+				opts.SetPassword(resolved)
+			}
+			client := paho.NewClient(opts)
+			token := client.Connect()
+			if !token.WaitTimeout(time.Duration(connectTimeoutMs) * time.Millisecond) {
+				log.Fatalf("[mqtt] broker %q: connection timeout to %s", b.Name, b.BrokerURL)
+			}
+			if token.Error() != nil {
+				log.Fatalf("[mqtt] broker %q: failed to connect to %s: %v", b.Name, b.BrokerURL, token.Error())
+			}
+			pool.Add(b.Name, client)
+			log.Printf("[mqtt] broker %q connected: %s", b.Name, b.BrokerURL)
+		}
+		fm.MQTTPool = pool
+		mqttpool.GlobalMQTTPool = pool
+		defer pool.DisconnectAll(250)
+		log.Printf("[mqtt] pool initialized: %d broker(s)", len(mqttCfg.Brokers))
+	} else {
+		log.Printf("[mqtt] no brokers configured — mqtt_publish/mqtt_call steps require runtime pool")
+	}
 
 	// Pricing manager — bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
@@ -1126,6 +1187,7 @@ func main() {
 	}()
 
 	ts := tenantregistry.NewTenantServer(regMgr)
+	ts.RLRegistrar = rlCounterRegistrar{}
 	aks := apikey.NewServer(dataStoreMgr)
 
 	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping

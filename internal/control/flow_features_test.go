@@ -873,6 +873,58 @@ func findSlotForStep(plan []engine.Instruction, name string) int {
 
 // findNamedSlot locates the destination slot of an instruction by inspecting
 // what the instruction loaded into ByteSlots after execution.
+// TestIfElseLiteralHeadersNoInfiniteLoop is a regression test for the
+// simulateBake undercount bug. set_response_header with a literal source emits
+// 2 instructions (SetConst + SetHeader), but the old simulateBake counted 1.
+// This caused postElseID to land inside the else block → GOTO → same spot →
+// infinite loop. The test hangs if the bug is present; it completes if fixed.
+func TestIfElseLiteralHeadersNoInfiniteLoop(t *testing.T) {
+	fm, _, server, _ := newTestStack(t)
+
+	// hit branch: set two literal headers + 200 status
+	// miss branch: set two different literal headers + 404 status
+	// Both branches have set_response_header with literal source → 2 instructions each.
+	// The if step's postElseID must point past the end of the else block.
+	mustSync(t, server, UnifiedSyncRequest{
+		SyncUUID: "literal-header-ifelse",
+		Flows: []FlowUpdate{
+			{Name: "cacheHitFlow", Instructions: []StepConfig{
+				{Action: "set_response_header", Key: "Content-Type", Source: "application/json"},
+				{Action: "set_response_header", Key: "X-Cache", Source: "HIT"},
+				{Action: "set_response_status", Value: "200"},
+			}, Action: "upsert"},
+			{Name: "cacheMissFlow", Instructions: []StepConfig{
+				{Action: "set_response_header", Key: "Content-Type", Source: "application/json"},
+				{Action: "set_response_header", Key: "X-Cache", Source: "MISS"},
+				{Action: "set_response_status", Value: "404"},
+			}, Action: "upsert"},
+			{Name: "cacheCheckFlow", Instructions: []StepConfig{
+				{
+					Action:    "if",
+					Condition: "header.X-Cache-Hit",
+					Then:      "cacheHitFlow",
+					Else:      "cacheMissFlow",
+				},
+			}, Action: "upsert"},
+		},
+		Apis: []ApiUpdate{
+			{Name: "cache-check-api", Path: "/v1/cache-test", FlowName: "cacheCheckFlow", Action: "upsert"},
+		},
+	})
+
+	// Hit branch: header present → cacheHitFlow → 200
+	ctxHit := runRequest(t, fm, http.MethodGet, "/v1/cache-test", map[string]string{"X-Cache-Hit": "1"})
+	if ctxHit.ResponseStatus != http.StatusOK {
+		t.Errorf("hit branch: expected 200, got %d", ctxHit.ResponseStatus)
+	}
+
+	// Miss branch: no header → cacheMissFlow → 404
+	ctxMiss := runRequest(t, fm, http.MethodGet, "/v1/cache-test", nil)
+	if ctxMiss.ResponseStatus != http.StatusNotFound {
+		t.Errorf("miss branch: expected 404, got %d", ctxMiss.ResponseStatus)
+	}
+}
+
 // For use in assertions only — returns the first slot modified by the named instr.
 func findNamedSlot(plan []engine.Instruction, name string) int {
 	for i, instr := range plan {

@@ -7,6 +7,7 @@ import (
 	"rah/internal/cache"
 	"rah/internal/config"
 	"rah/internal/gatewaylog"
+	mqttpool "rah/internal/mqtt"
 	"rah/internal/observability"
 	"rah/internal/quota"
 	"rah/internal/rctx"
@@ -135,6 +136,10 @@ type FlowManager struct {
 	// InstrRing is the lock-free slab ring for per-instruction timing aggregation.
 	// Nil when the feature is disabled. Set from main.go before serving traffic.
 	InstrRing *observability.InstrSlabRing
+	// MQTTPool holds MQTT broker connections keyed by broker name.
+	// Populated at startup from gateway config; nil when MQTT is not configured.
+	// Set on each request context via Pool.New so mqtt_publish/mqtt_call steps can access it.
+	MQTTPool *mqttpool.BrokerPool
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
@@ -178,6 +183,8 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 			ctx.MaxOps = rctx.DefaultMaxOps
 			ctx.OnFlush = fm.flushOps
 		}
+		// Wire MQTT pool — nil when MQTT is not configured.
+		ctx.MQTTPool = fm.MQTTPool
 		return ctx
 	}
 	return fm

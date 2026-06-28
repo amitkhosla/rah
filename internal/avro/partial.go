@@ -28,8 +28,14 @@ func CompilePartial(fullProg *AvroProgram, dotPath string, slotIdx int) (*AvroPr
 	// Deep-clone the program
 	partial := cloneProgram(fullProg)
 
-	// Walk the ops tree marking off-path fields as skip
-	err := markSkips(partial, partial.Ops, segments, slotIdx)
+	// Walk the root record's children (not partial.Ops, which includes the root wrapper at [0]).
+	rootChildren := partial.childOpsFor(0)
+	rootOps := make([]AvroOp, len(rootChildren))
+	for i, idx := range rootChildren {
+		rootOps[i] = partial.Ops[idx]
+	}
+
+	err := markSkips(partial, rootOps, segments, slotIdx)
 	if err != nil {
 		return nil, err
 	}
