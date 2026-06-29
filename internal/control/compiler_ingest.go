@@ -15,16 +15,20 @@ import (
 //
 // Step input keys:
 //
-//	kind           — event kind string (required; e.g. "llm_request", "prompt_in")
-//	payload_slot   — var name whose slot holds the event payload bytes
-//	model_slot     — var name whose slot holds the model name string (optional)
-//	session_slot   — var name whose slot holds the session ID string (optional)
-//	deferred       — "true" to emit after HTTP response is committed (default false)
+//	kind               — event kind string (required; e.g. "llm_request", "prompt_in")
+//	payload_slot       — var name whose slot holds the event payload bytes
+//	model_slot         — var name whose slot holds the model name string (optional)
+//	session_slot       — var name whose slot holds the session ID string (optional)
+//	input_tokens_slot  — var name whose IntSlot holds input token count (optional)
+//	output_tokens_slot — var name whose IntSlot holds output token count (optional)
+//	deferred           — "true" to emit after HTTP response is committed (default false)
 func (c *Compiler) compileEmitEvent(step StepConfig) error {
 	if c.IngestPipeline == nil {
 		// Pipeline disabled — compile a no-op instruction so flow structure is preserved.
 		c.GlobalTable = append(c.GlobalTable, steps.EmitEvent(steps.EmitEventConfig{
-			Pipeline: nil,
+			Pipeline:         nil,
+			InputTokensSlot:  -1,
+			OutputTokensSlot: -1,
 		}))
 		return nil
 	}
@@ -61,15 +65,35 @@ func (c *Compiler) compileEmitEvent(step StepConfig) error {
 		sessionSlot = s
 	}
 
+	inputTokensSlot := -1
+	if v, ok := step.Input["input_tokens_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("emit_event input_tokens_slot: %w", err)
+		}
+		inputTokensSlot = s
+	}
+
+	outputTokensSlot := -1
+	if v, ok := step.Input["output_tokens_slot"]; ok && v != "" {
+		s, err := c.getSlot(v)
+		if err != nil {
+			return fmt.Errorf("emit_event output_tokens_slot: %w", err)
+		}
+		outputTokensSlot = s
+	}
+
 	deferred := step.Input["deferred"] == "true"
 
 	c.GlobalTable = append(c.GlobalTable, steps.EmitEvent(steps.EmitEventConfig{
-		Pipeline:    c.IngestPipeline,
-		Kind:        kind,
-		PayloadSlot: payloadSlot,
-		ModelSlot:   modelSlot,
-		SessionSlot: sessionSlot,
-		Deferred:    deferred,
+		Pipeline:         c.IngestPipeline,
+		Kind:             kind,
+		PayloadSlot:      payloadSlot,
+		ModelSlot:        modelSlot,
+		SessionSlot:      sessionSlot,
+		InputTokensSlot:  inputTokensSlot,
+		OutputTokensSlot: outputTokensSlot,
+		Deferred:         deferred,
 	}))
 	return nil
 }

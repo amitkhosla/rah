@@ -109,6 +109,8 @@ type Event struct {
 	DurationNs   int64
 	InputTokens  int32
 	OutputTokens int32
+	CallerID     uint32 // API key app ID (0 when no key auth was used)
+	CallerKey    string // API key alias  (empty when no key auth was used)
 
 	// Small payloads (≤128B) — stored inline, zero allocation, no pointer chase.
 	payloadInline [inlinePayloadMax]byte
@@ -178,6 +180,8 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		DurationNs   int64           `json:"duration_ns,omitempty"`
 		InputTokens  int32           `json:"input_tokens,omitempty"`
 		OutputTokens int32           `json:"output_tokens,omitempty"`
+		CallerID     uint32          `json:"caller_id,omitempty"`
+		CallerKey    string          `json:"caller_key,omitempty"`
 		Payload      json.RawMessage `json:"payload,omitempty"`
 	}
 	var w wire
@@ -195,6 +199,8 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	e.DurationNs = w.DurationNs
 	e.InputTokens = w.InputTokens
 	e.OutputTokens = w.OutputTokens
+	e.CallerID = w.CallerID
+	e.CallerKey = w.CallerKey
 	if len(w.Payload) > 0 {
 		// Payload is stored as a JSON string (escaped bytes) or raw JSON.
 		// Re-materialise as raw bytes for the consumer.
@@ -223,6 +229,8 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 		DurationNs   int64           `json:"duration_ns,omitempty"`
 		InputTokens  int32           `json:"input_tokens,omitempty"`
 		OutputTokens int32           `json:"output_tokens,omitempty"`
+		CallerID     uint32          `json:"caller_id,omitempty"`
+		CallerKey    string          `json:"caller_key,omitempty"`
 		Payload      json.RawMessage `json:"payload,omitempty"`
 	}
 	w := wire{
@@ -237,6 +245,8 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 		DurationNs:   e.DurationNs,
 		InputTokens:  e.InputTokens,
 		OutputTokens: e.OutputTokens,
+		CallerID:     e.CallerID,
+		CallerKey:    e.CallerKey,
 	}
 	if p := e.Payload(); len(p) > 0 {
 		if json.Valid(p) {

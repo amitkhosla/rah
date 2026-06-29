@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RateLimitV2Datastore is the minimal interface the TenantServer needs to
@@ -25,6 +26,13 @@ type RateLimitV2Datastore interface {
 // to avoid a circular import between registry and engine.
 type RLCounterRegistrar interface {
 	RegisterRateLimitV2(id uint16, numWindows int)
+}
+
+// CounterStatusProvider reads live window usage from the engine's counter arenas.
+// Implemented by gateway main to avoid a circular registry→engine import.
+type CounterStatusProvider interface {
+	ReadTenantCurrent(configID uint16, tenantID uint16, windowIdx int, epoch uint32) uint32
+	ReadSlotCurrent(configID uint16, keyBytes []byte, windowIdx int, epoch uint32) uint32
 }
 
 // TenantServer exposes the RegistryManager over HTTP for management-plane
@@ -49,6 +57,11 @@ type TenantServer struct {
 	// wires the new config into the engine's counter arenas immediately, so the
 	// limit is enforced without requiring a subsequent /sync call.
 	RLRegistrar RLCounterRegistrar
+
+	// CounterStatus is optional. When set, GET /tenants/{alias}/rate-limit-status
+	// returns live counter values from the engine's counter arenas.
+	// When nil, used=0 and remaining=limit for all windows (graceful degradation).
+	CounterStatus CounterStatusProvider
 }
 
 // NewTenantServer creates a TenantServer backed by the given RegistryManager.
@@ -551,11 +564,15 @@ func (s *TenantServer) rateLimitConfigsV2RootHandler(w http.ResponseWriter, r *h
 		if items == nil {
 			items = []RateLimitConfigV2{}
 		}
-		type listResponse struct {
-			Items []RateLimitConfigV2 `json:"items"`
-			Count int                 `json:"count"`
+		records := make([]RateLimitConfigV2Record, len(items))
+		for i, cfg := range items {
+			records[i] = RateLimitConfigV2Record{Name: cfg.Name, Config: cfg}
 		}
-		jsonOK(w, listResponse{Items: items, Count: len(items)})
+		type listResponse struct {
+			Items []RateLimitConfigV2Record `json:"items"`
+			Count int                       `json:"count"`
+		}
+		jsonOK(w, listResponse{Items: records, Count: len(records)})
 	case http.MethodPost:
 		var cfg RateLimitConfigV2
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
@@ -757,6 +774,8 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 		s.SetTenantDebugHandler(w, r)
 	case strings.HasSuffix(path, "/log-level") && r.Method == http.MethodPatch:
 		s.SetTenantLogLevelHandler(w, r)
+	case strings.HasSuffix(path, "/rate-limit-status") && r.Method == http.MethodGet:
+		s.rateLimitStatusHandler(w, r)
 	case isCredentialsSubPath(path) && (r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodDelete):
 		if s.ExtraSubHandler != nil {
 			s.ExtraSubHandler.ServeHTTP(w, r)
@@ -772,11 +791,91 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// rateLimitStatusHandler handles GET /tenants/{alias}/rate-limit-status.
+// Returns live counter values per V2 rate limit policy for the given tenant.
+// If CounterStatus is nil, used=0 and remaining=limit (graceful degradation).
+func (s *TenantServer) rateLimitStatusHandler(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/tenants/")
+	alias := strings.TrimSuffix(rest, "/rate-limit-status")
+	if alias == "" || alias == rest {
+		http.Error(w, "alias required in path", http.StatusBadRequest)
+		return
+	}
+
+	reg := State.Active.Load()
+	if reg == nil {
+		http.Error(w, "registry not initialised", http.StatusServiceUnavailable)
+		return
+	}
+	tenantID, found := reg.Aliases.Lookup(alias)
+	if !found {
+		jsonError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	cfgs := ListRateLimitConfigsV2()
+
+	type windowStatus struct {
+		EpochSec  uint32 `json:"epoch_sec"`
+		Limit     uint32 `json:"limit"`
+		Used      uint32 `json:"used"`
+		Remaining uint32 `json:"remaining"`
+		ResetsAt  int64  `json:"resets_at_unix"`
+	}
+	type policyStatus struct {
+		ConfigName string         `json:"config_name"`
+		Windows    []windowStatus `json:"windows"`
+	}
+	type statusResponse struct {
+		Tenant   string         `json:"tenant"`
+		TenantID uint16         `json:"tenant_id"`
+		Policies []policyStatus `json:"policies"`
+	}
+
+	now := uint32(time.Now().Unix())
+	policies := make([]policyStatus, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		configID := s.mgr.EnsureRateLimitV2ID(cfg.Name)
+		windows := make([]windowStatus, 0, len(cfg.Windows))
+		for windowIdx, win := range cfg.Windows {
+			epochSec := win.PeriodSecs
+			if epochSec == 0 {
+				epochSec = 1
+			}
+			epoch := now / epochSec
+			var used uint32
+			if s.CounterStatus != nil {
+				used = s.CounterStatus.ReadTenantCurrent(configID, tenantID, windowIdx, epoch)
+			}
+			remaining := uint32(0)
+			if used < win.Limit {
+				remaining = win.Limit - used
+			}
+			windows = append(windows, windowStatus{
+				EpochSec:  epochSec,
+				Limit:     win.Limit,
+				Used:      used,
+				Remaining: remaining,
+				ResetsAt:  int64((epoch + 1) * epochSec),
+			})
+		}
+		policies = append(policies, policyStatus{ConfigName: cfg.Name, Windows: windows})
+	}
+
+	jsonOK(w, statusResponse{Tenant: alias, TenantID: tenantID, Policies: policies})
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // isCredentialsSubPath reports whether path is a /tenants/{alias}/credentials[/...]

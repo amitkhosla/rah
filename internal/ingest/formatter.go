@@ -90,6 +90,8 @@ type textEvent struct {
 	DurationNs   int64
 	InputTokens  int32
 	OutputTokens int32
+	CallerID     uint32
+	CallerKey    string
 }
 
 func (f *TextFormatter) ContentType() string { return "text/plain; charset=utf-8" }
@@ -109,6 +111,8 @@ func (f *TextFormatter) Format(events []Event) ([]byte, error) {
 			DurationNs:   e.DurationNs,
 			InputTokens:  e.InputTokens,
 			OutputTokens: e.OutputTokens,
+			CallerID:     e.CallerID,
+			CallerKey:    e.CallerKey,
 		}
 		if err := f.tmpl.Execute(&buf, td); err != nil {
 			return nil, fmt.Errorf("text format event %d: %w", i, err)

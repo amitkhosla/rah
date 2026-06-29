@@ -185,6 +185,20 @@ func (a *TenantCounterArena) IncrementBy(tenantID uint16, windowIdx int, epoch, 
 	return counterEpochCASBy(&a.slots[idx], epoch, limit, delta)
 }
 
+// ReadCurrent returns the counter value for (tenantID, windowIdx) in the given
+// epoch without modifying any state. Returns 0 if the window has reset or the
+// indices are out of range. Safe to call concurrently with Increment/IncrementBy.
+func (a *TenantCounterArena) ReadCurrent(tenantID uint16, windowIdx int, epoch uint32) uint32 {
+	if int(tenantID) >= a.maxTenants || windowIdx < 0 || windowIdx >= a.numWindows {
+		return 0
+	}
+	packed := atomic.LoadUint64(&a.slots[int(tenantID)*a.numWindows+windowIdx])
+	if uint32(packed>>32) != epoch {
+		return 0 // window has reset — counter is 0 for this epoch
+	}
+	return uint32(packed)
+}
+
 // ---------------------------------------------------------------------------
 // Part B — SlotCounterArena
 // ---------------------------------------------------------------------------
@@ -236,6 +250,19 @@ func (a *SlotCounterArena) IncrementBy(keyBytes []byte, windowIdx int, epoch, li
 	h ^= uint32(windowIdx) * 2654435761
 	idx := h & a.mask
 	return counterEpochCASBy(&a.slots[idx], epoch, limit, delta)
+}
+
+// ReadCurrent returns the counter value for keyBytes+windowIdx in the given
+// epoch without modifying any state. Returns 0 if the window has reset.
+// Uses the same hash as Increment/IncrementBy so results are consistent.
+func (a *SlotCounterArena) ReadCurrent(keyBytes []byte, windowIdx int, epoch uint32) uint32 {
+	h := arenaFNV32a(keyBytes)
+	h ^= uint32(windowIdx) * 2654435761
+	packed := atomic.LoadUint64(&a.slots[h&a.mask])
+	if uint32(packed>>32) != epoch {
+		return 0
+	}
+	return uint32(packed)
 }
 
 // CollisionRate returns an estimate of hash-table occupancy: activeKeys / arenaSize.

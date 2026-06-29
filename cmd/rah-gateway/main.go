@@ -87,6 +87,26 @@ func (rlCounterRegistrar) RegisterRateLimitV2(id uint16, numWindows int) {
 	reg.RegisterTenantConfig(id, numWindows, 1024)
 }
 
+// counterStatusProvider implements tenantregistry.CounterStatusProvider.
+// Reads live window usage from the engine's counter arenas without side effects.
+type counterStatusProvider struct{}
+
+func (counterStatusProvider) ReadTenantCurrent(configID uint16, tenantID uint16, windowIdx int, epoch uint32) uint32 {
+	a := engine.ActiveCounterRegistry().TenantArena(configID)
+	if a == nil {
+		return 0
+	}
+	return a.ReadCurrent(tenantID, windowIdx, epoch)
+}
+
+func (counterStatusProvider) ReadSlotCurrent(configID uint16, keyBytes []byte, windowIdx int, epoch uint32) uint32 {
+	a := engine.ActiveCounterRegistry().SlotArena(configID)
+	if a == nil {
+		return 0
+	}
+	return a.ReadCurrent(keyBytes, windowIdx, epoch)
+}
+
 // connAcceptKey is used to store the TCP connection accept time in the request context
 // via http.Server.ConnContext. This enables per-request connection setup timing.
 type connAcceptKey struct{}
@@ -1188,6 +1208,7 @@ func main() {
 
 	ts := tenantregistry.NewTenantServer(regMgr)
 	ts.RLRegistrar = rlCounterRegistrar{}
+	ts.CounterStatus = counterStatusProvider{}
 	aks := apikey.NewServer(dataStoreMgr)
 
 	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping

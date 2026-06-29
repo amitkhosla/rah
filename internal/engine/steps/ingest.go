@@ -13,8 +13,10 @@ type EmitEventConfig struct {
 	Pipeline    *ingest.Pipeline  // nil = no-op (pipeline disabled)
 	Kind        ingest.EventKind  // event kind label
 	PayloadSlot int               // ByteSlots index for event payload; -1 = no payload
-	ModelSlot   int               // ByteSlots index for model name annotation; -1 = skip
-	SessionSlot int               // ByteSlots index for session ID string; -1 = skip
+	ModelSlot        int // ByteSlots index for model name annotation; -1 = skip
+	SessionSlot      int // ByteSlots index for session ID string; -1 = skip
+	InputTokensSlot  int // IntSlots index for input token count;  -1 = skip
+	OutputTokensSlot int // IntSlots index for output token count; -1 = skip
 	// Deferred=true emits after the HTTP response is committed (AfterResponse hook).
 	// Deferred=false emits immediately (non-blocking channel write).
 	Deferred bool
@@ -54,6 +56,22 @@ func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 			if cfg.ModelSlot >= 0 && cfg.ModelSlot < len(ctx.ByteSlots) {
 				if raw := ctx.ByteSlots[cfg.ModelSlot]; len(raw) > 0 {
 					e.Model = string(raw)
+				}
+			}
+
+			// Caller identity — always copy directly from context.
+			e.CallerID = ctx.CallerID
+			e.CallerKey = ctx.CallerKey
+
+			// Token counts written to IntSlots by the llm_call step.
+			if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
+				if v := ctx.IntSlots[cfg.InputTokensSlot]; v > 0 {
+					e.InputTokens = int32(v)
+				}
+			}
+			if cfg.OutputTokensSlot >= 0 && cfg.OutputTokensSlot < len(ctx.IntSlots) {
+				if v := ctx.IntSlots[cfg.OutputTokensSlot]; v > 0 {
+					e.OutputTokens = int32(v)
 				}
 			}
 
