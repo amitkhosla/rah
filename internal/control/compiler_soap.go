@@ -91,6 +91,55 @@ func (c *Compiler) compileSOAPCall(input StepConfig) (engine.Instruction, error)
 	return steps.SOAPCallFromConfig(cfg), nil
 }
 
+// compileBuildSOAPEnvelope compiles a build_soap_envelope step.
+// Config:
+//
+//	build_soap_envelope:
+//	  body_slot: xml_body_var    # required — slot holding XML body to wrap
+//	  output_slot: envelope_var  # required — slot to receive resulting SOAP envelope
+//	  soap_version: 1            # optional, 1 = SOAP 1.1 (default), 2 = SOAP 1.2
+func (c *Compiler) compileBuildSOAPEnvelope(input StepConfig) (engine.Instruction, error) {
+	if input.Input == nil {
+		input.Input = make(map[string]string)
+	}
+
+	cfg := steps.BuildSOAPEnvelopeStepConfig{
+		SoapVersion: 1,
+	}
+
+	// Body slot (required)
+	if bodySlot := input.Input["body_slot"]; bodySlot != "" {
+		var err error
+		cfg.BodySlot, err = c.getSlot(bodySlot)
+		if err != nil {
+			return engine.Instruction{}, fmt.Errorf("build_soap_envelope: %w", err)
+		}
+	} else {
+		return engine.Instruction{}, fmt.Errorf("build_soap_envelope: body_slot is required")
+	}
+
+	// Output slot (required)
+	if outputSlot := input.Input["output_slot"]; outputSlot != "" {
+		var err error
+		cfg.OutputSlot, err = c.getSlot(outputSlot)
+		if err != nil {
+			return engine.Instruction{}, fmt.Errorf("build_soap_envelope: %w", err)
+		}
+	} else {
+		return engine.Instruction{}, fmt.Errorf("build_soap_envelope: output_slot is required")
+	}
+
+	// SOAP version
+	if versionStr := input.Input["soap_version"]; versionStr != "" {
+		var version int
+		if _, err := fmt.Sscanf(versionStr, "%d", &version); err == nil && (version == 1 || version == 2) {
+			cfg.SoapVersion = uint8(version)
+		}
+	}
+
+	return steps.BuildSOAPEnvelopeFromConfig(cfg), nil
+}
+
 // compileSOAPParseFault compiles a soap_parse_fault step.
 // Extracts fault code and message from SOAP fault response.
 // Config:

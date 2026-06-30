@@ -2818,6 +2818,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, instr)
 
+	case "build_soap_envelope":
+		instr, err := c.compileBuildSOAPEnvelope(step)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, instr)
+
 	// Avro conversion steps (S7)
 	case "avro_to_json":
 		return c.compileAvroToJSON(step)

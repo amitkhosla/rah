@@ -510,6 +510,8 @@ type GatewayConfig struct {
 	Grpc          *GrpcConfig         `json:"grpc,omitempty"           yaml:"grpc,omitempty"`
 	TLS           *TLSConfig          `json:"tls,omitempty"            yaml:"tls,omitempty"`
 	MQTT          MQTTConfig          `json:"mqtt,omitempty"           yaml:"mqtt,omitempty"`
+	XML           *XMLConfig          `json:"xml,omitempty"            yaml:"xml,omitempty"`
+	Avro          *AvroConfig         `json:"avro,omitempty"           yaml:"avro,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

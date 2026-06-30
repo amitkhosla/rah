@@ -44,11 +44,47 @@ type SOAPCallConfig struct {
 	soapVersion uint8                 // 1 or 2 for envelope builder selection
 }
 
-// BuildSOAPEnvelopeConfig creates a soap_call instruction factory.
-// Computes envSizeHint at bake time as len(envelope) + 256 to account for typical body overhead.
-func BuildSOAPEnvelopeConfig(cfg SOAPCallConfig) SOAPCallConfig {
-	// Compute envelope size hint: assume average SOAP envelope wrapper is ~150 bytes
-	// plus typical XML body of ~200 bytes = ~350 total. Add 256 as padding.
+// BuildSOAPEnvelopeStepConfig holds bake-time config for a standalone build_soap_envelope step.
+type BuildSOAPEnvelopeStepConfig struct {
+	BodySlot    int   // slot holding XML body to wrap (required)
+	OutputSlot  int   // slot to store resulting SOAP envelope (required)
+	SoapVersion uint8 // 1 = SOAP 1.1 (default), 2 = SOAP 1.2
+}
+
+// BuildSOAPEnvelopeFromConfig creates an instruction that wraps an XML body in a SOAP envelope
+// and writes it to OutputSlot. The envelope bytes are arena-allocated.
+func BuildSOAPEnvelopeFromConfig(cfg BuildSOAPEnvelopeStepConfig) engine.Instruction {
+	const envSizeHint = 150 + 256 // typical SOAP overhead + padding
+	return engine.Instruction{
+		Name: "BUILD_SOAP_ENVELOPE",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if cfg.BodySlot < 0 || cfg.BodySlot >= len(ctx.ByteSlots) {
+				return state.PC + 1
+			}
+			bodyXML := ctx.ByteSlots[cfg.BodySlot]
+			if len(bodyXML) == 0 {
+				return state.PC + 1
+			}
+
+			envelopeBuf := ctx.Alloc(envSizeHint + len(bodyXML))
+			var envelope []byte
+			if cfg.SoapVersion == 2 {
+				envelope = soap.AppendSOAP12Envelope(envelopeBuf[:0], bodyXML)
+			} else {
+				envelope = soap.AppendSOAP11Envelope(envelopeBuf[:0], bodyXML)
+			}
+
+			if cfg.OutputSlot >= 0 && cfg.OutputSlot < len(ctx.ByteSlots) {
+				ctx.ByteSlots[cfg.OutputSlot] = envelope
+			}
+			return state.PC + 1
+		},
+	}
+}
+
+// buildSOAPEnvelopeConfig is an internal helper kept for bake-time envSizeHint computation
+// on SOAPCallConfig (not a step — used only within compileSOAPCall).
+func buildSOAPEnvelopeHint(cfg SOAPCallConfig) SOAPCallConfig {
 	cfg.envSizeHint = 150 + 256
 	return cfg
 }

@@ -57,17 +57,5 @@ func AvroStepDescriptors() []StepDescriptor {
 				sf("dst_slot", "Destination slot", "ByteSlot to store Avro binary", "avro_output"),
 			},
 		},
-		{
-			Type: "avro_to_proto", Title: "Avro to Proto", Category: "conversion", Capability: "transcode",
-			Description: "Convert Avro binary to Protobuf message (S8 — not yet implemented).",
-			Defaults:    map[string]string{},
-			Fields:      []StepField{},
-		},
-		{
-			Type: "proto_to_avro", Title: "Proto to Avro", Category: "conversion", Capability: "transcode",
-			Description: "Convert Protobuf message to Avro binary (S8 — not yet implemented).",
-			Defaults:    map[string]string{},
-			Fields:      []StepField{},
-		},
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"rah/internal/engine"
 	enginesteps "rah/internal/engine/steps"
 	"rah/internal/gatewaylog"
+	"rah/internal/avro"
 	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
@@ -567,6 +568,10 @@ func main() {
 	} else {
 		log.Printf("[mqtt] no brokers configured — mqtt_publish/mqtt_call steps require runtime pool")
 	}
+
+	// Avro fingerprint registry — always initialised so avro steps can cache compiled
+	// AvroPrograms by schema fingerprint across hot-reload cycles (bake-time only).
+	compiler.AvroRegistry = &avro.SchemaRegistry{}
 
 	// Pricing manager — bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
