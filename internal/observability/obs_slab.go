@@ -79,7 +79,7 @@ type obsSlot struct {
 	MethodLen    uint8
 	PathLen      uint8
 	ExtraCount   uint8
-	_pad0        [7]byte
+	_pad0        [7]byte //nolint:unused // cache-line alignment padding
 
 	// --- inline strings (192 bytes) ---
 	APIName   [obsAPINameMax]byte
@@ -98,7 +98,7 @@ type obsSlot struct {
 	// Kept as a raw field so its size is always exactly 4 bytes regardless
 	// of Go version changes to sync/atomic wrapper types.
 	ready uint32
-	_pad1 [60]byte
+	_pad1 [60]byte //nolint:unused // pads obsSlot to 512 bytes; enforced by init()
 }
 
 // obsSlotSizeCheck panics at startup if the struct layout drifts from the
@@ -119,7 +119,7 @@ type obsSlab struct {
 	// First cache line: hot writer state.
 	cursor int64    // claimed slot count; writers use atomic.AddInt64
 	sealed uint32   // 1 when drain is processing; writers must not claim
-	_pad   [52]byte // pad cursor + sealed to exactly 64 bytes
+	_pad   [52]byte //nolint:unused // pads cursor+sealed to 64 bytes (one cache line)
 
 	// Slot backing array; length = slabCap, allocated once at init.
 	slots []obsSlot

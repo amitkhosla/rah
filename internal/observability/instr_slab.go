@@ -25,7 +25,7 @@ type InstrBatch struct {
 	Traced uint8
 	// Count is the number of valid entries in PCs / DurNs (max 64).
 	Count uint8
-	_pad  [3]byte
+	_pad  [3]byte //nolint:unused // cache-line alignment padding
 	PCs   [64]int16
 	DurNs [64]int32
 }
@@ -50,7 +50,7 @@ type InstrSlot struct {
 	EndpointID  uint8
 	Traced      uint8
 	Count       uint8
-	_pad0       [7]byte
+	_pad0       [7]byte //nolint:unused // cache-line alignment padding
 
 	// per-instruction data (384 bytes)
 	PCs  [64]int16
@@ -58,7 +58,7 @@ type InstrSlot struct {
 
 	// ready flag + padding to 512 bytes
 	ready uint32
-	_pad1 [96]byte
+	_pad1 [96]byte //nolint:unused // pads InstrSlot to 512 bytes; enforced by init()
 }
 
 // InstrSlotSizeCheck panics at startup if the struct drifts from 512 bytes.
@@ -74,7 +74,7 @@ func init() {
 type instrSlab struct {
 	cursor int64    // claimed slot count; writers use atomic.AddInt64
 	sealed uint32   // 1 when drain is processing; writers must not claim
-	_pad   [52]byte // pad to 64 bytes (one cache line)
+	_pad   [52]byte //nolint:unused // pads cursor+sealed to 64 bytes (one cache line)
 
 	slots []InstrSlot
 }

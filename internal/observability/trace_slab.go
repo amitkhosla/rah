@@ -29,7 +29,7 @@ import (
 type TraceSlot struct {
 	// --- common (8 bytes) ---
 	isHeader uint8
-	_pad0    [3]byte
+	_pad0    [3]byte //nolint:unused // cache-line alignment padding
 	ready    uint32 // atomic: StoreUint32(1) by writer after all fields written
 
 	// --- header fields (isHeader=1) ---
@@ -38,13 +38,13 @@ type TraceSlot struct {
 	ApiID             uint32
 	TraceID           uint64
 	TenantID          uint16
-	_pad1             [6]byte
+	_pad1             [6]byte //nolint:unused // cache-line alignment padding
 	DurationNs        int64
 	GatewayDurationNs int64
 	StartedAtUnixNano int64
 	PathLen           uint8
 	MethodLen         uint8
-	_pad2             [6]byte
+	_pad2             [6]byte //nolint:unused // cache-line alignment padding
 	Path              [128]byte
 	Method            [8]byte
 
@@ -53,11 +53,11 @@ type TraceSlot struct {
 	StepIdx int16
 	DurNs   int32
 	NameLen uint8
-	_pad3   [7]byte
+	_pad3   [7]byte  //nolint:unused // cache-line alignment padding
 	Name    [32]byte
 
 	// --- padding to 512 bytes ---
-	_pad4 [264]byte
+	_pad4 [264]byte //nolint:unused // pads TraceSlot to 512 bytes; enforced by init()
 }
 
 func init() {
