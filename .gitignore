@@ -1,25 +1,90 @@
+# IDE
 /.idea
+.vscode/
+
+# Environment / secrets
 .env
+*.env
+deploy/docker/gateway-local.yaml
+deploy/docker/gateway-bench.yaml
+
+# Binaries
 *.exe
 !binaries/
 !binaries/**
-gateway.log
-/internal/cache/cache/1/a8/*.bin
 /bin
-/internal/cache/cache/1/b8/*.bin
-/internal/cache/cache/2/33/*.bin
-/internal/cache/cache/2/8c/*.bin
-/internal/cache/cache/3/1b/*.bin
-/internal/cache/cache/3/27/*.bin
-/internal/cache/icache2/1/4a/*.bin
-/internal/cache/icache2/1/71/*.bin
-/internal/cache/icache2/1/80/*.bin
-/internal/cache/icache2/1/d6/*.bin
-/internal/cache/icache2/2/02/*.bin
-/internal/cache/icache2/2/9a/*.bin
-/internal/cache/icache2/2/cd/*.bin
-/internal/cache/icache2/2/eb/*.bin
-/internal/cache/icache2/3/07/*.bin
-/internal/cache/icache2/3/6a/*.bin
-/internal/cache/icache2/3/75/*.bin
-/internal/cache/icache2/3/ec/*.bin
+
+# Logs
+*.log
+gateway.log
+gw-out.log
+gw-err.log
+gateway-test.log
+gateway-test-err.log
+start-local.log
+studio.log
+debug-*.log
+logs/
+
+# Benchmark / profiling artifacts
+bench/
+bench-results/
+bechResults*.txt
+benchResults*.txt
+benchResultsErrorLogs
+obs_raw.json
+*.prof
+tmpcpu.prof
+
+# Lint output
+lint
+lint-errors*.txt
+lint-local*.txt
+LINT_ERRORS_SUMMARY.md
+UNUSED_CODE_ANALYSIS.md
+
+# Local runtime data
+local-data/
+icache2/
+internal/cache/icache2/
+internal/cache/cache/
+
+# Cache shard files
+/internal/cache/cache/**/*.bin
+/internal/cache/icache2/**/*.bin
+
+# Planning / session notes (internal)
+.claude/
+plan/
+CIcdPlan.md
+docs/archive/
+docs/SESSION_PLAN_MCP_AI_CHAT.md
+docs/PRODUCTION_READINESS_AUDIT_2026_05_30.md
+docs/GAP_ANALYSIS.md
+
+# Build artifacts
+rah-gateway-v2.tar
+*.tar
+internal/studio/ui/dist/
+
+# Tyk comparison infra (not part of project)
+deploy/docker/tyk/
+docker-compose.tyk.yml
+deploy/docker/Dockerfile.upstream
+
+# Local scripts (dev convenience, not for contributors)
+start-local.bat
+start-local.log
+setup.bat
+
+# Test output
+test-output.log
+
+# Windows shell expansion artifact
+%APPDATA%/
+
+# Temporary files
+samples-code/sample-sync.json.bak
+internal/engine/steps/JSON_ARRAY_HANDLING_DESIGN.md
+internal/engine/steps/JSON_EDGE_CASES_ANALYSIS.md
+internal/engine/steps/test-failures-analysis.md
