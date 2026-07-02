@@ -973,6 +973,11 @@ func (m *RegistryManager) SetStore(s RegistryDatastore) {
 
 // RestoreFromSnapshot replays a persisted snapshot through the normal write
 // path. Called at startup before SetStore so no redundant writes occur.
+//
+// When a TenantRecord carries a PersistedID (recovered from the datastore by
+// TenantRegistryStore.loadTenantRecord), forceAssignTenantID is called first so
+// that resolveOrCreateTenant re-uses the same numeric ID across restarts and
+// gateway instances.
 func (m *RegistryManager) RestoreFromSnapshot(snap RegistrySnapshot) {
 	for _, rl := range snap.RateLimits {
 		m.UpsertNamedRateLimitConfig(rl.Name, rl.Config)
@@ -980,6 +985,20 @@ func (m *RegistryManager) RestoreFromSnapshot(snap RegistrySnapshot) {
 	for _, t := range snap.Tenants {
 		if len(t.Aliases) == 0 {
 			continue
+		}
+		if t.PersistedID != 0 {
+			// Advance the counter and clear the slot from FreeSlots before
+			// UpsertTenantState allocates an ID, so the same ID is reused.
+			forceAssignTenantID(t.PersistedID)
+			// Pre-seed aliasMap so resolveOrCreateTenant finds the ID instead
+			// of allocating a fresh one.
+			m.mu.Lock()
+			m.ensureInit()
+			if _, exists := m.aliasMap[t.Aliases[0]]; !exists {
+				m.aliasMap[t.Aliases[0]] = t.PersistedID
+				m.insertSortedTenantID(t.PersistedID)
+			}
+			m.mu.Unlock()
 		}
 		m.UpsertTenantState(t.Aliases, t.ServiceURLs, t.Identifiers, t.Metadata)
 	}
@@ -1090,6 +1109,44 @@ func (m *RegistryManager) persistRateLimitConfig(name string, cfg RateLimitConfi
 	go func() { _ = s.PutRateLimitConfig(context.Background(), name, cfg) }()
 }
 
+// persistTenantID asynchronously writes the stable TenantID for a primary alias.
+// Only writes when the store is a *TenantRegistryStore (the concrete type that
+// exposes PutTenantID). The RegistryDatastore interface intentionally omits this
+// method because TenantIDs are opaque to generic backends.
+func (m *RegistryManager) persistTenantID(primary string, id uint16) {
+	if m.store == nil {
+		return
+	}
+	s, ok := m.store.(*TenantRegistryStore)
+	if !ok {
+		return
+	}
+	go func() { _ = s.PutTenantID(context.Background(), primary, id) }()
+}
+
+// forceAssignTenantID ensures nextAvailableTenantID is at least id+1 so that
+// subsequent allocations never reuse this ID, and removes id from FreeSlots if
+// it was previously recycled. Called during startup restore only.
+func forceAssignTenantID(id uint16) {
+	need := uint32(id) + 1
+	for {
+		cur := atomic.LoadUint32(&nextAvailableTenantID)
+		if cur >= need {
+			break
+		}
+		if atomic.CompareAndSwapUint32(&nextAvailableTenantID, cur, need) {
+			break
+		}
+	}
+	// Remove id from FreeSlots if it was previously recycled.
+	for i, slot := range State.FreeSlots {
+		if slot == id {
+			State.FreeSlots = append(State.FreeSlots[:i], State.FreeSlots[i+1:]...)
+			break
+		}
+	}
+}
+
 // copyStrMap returns a shallow copy of a string map (safe to use after mutex release).
 func copyStrMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
@@ -1120,6 +1177,7 @@ func (m *RegistryManager) resolveOrCreateTenant(reg *TenantRegistry, alias strin
 	}
 	m.aliasMap[alias] = tID
 	m.insertSortedTenantID(tID)
+	m.persistTenantID(alias, tID)
 
 	// Grow per-tenant slices if this TenantID exceeds current capacity.
 	needed := int(tID) + 1

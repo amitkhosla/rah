@@ -25,6 +25,9 @@ type MemObsStore struct {
 
 	// Metric snapshots: key = window+"|"+dimension+"|"+bucketStr
 	snapshots map[string]MetricSnapshot
+
+	// Instruction schema: key = ApiName
+	instrSchema map[string][]InstrSchemaRow
 }
 
 // NewMemObsStore creates a MemObsStore.
@@ -38,9 +41,10 @@ func NewMemObsStore(maxAccessLog, maxTraces int) *MemObsStore {
 		maxTraces = 500
 	}
 	return &MemObsStore{
-		accessRing: make([]AccessLogRecord, maxAccessLog),
-		traceRing:  make([]TraceRecord, maxTraces),
-		snapshots:  make(map[string]MetricSnapshot),
+		accessRing:  make([]AccessLogRecord, maxAccessLog),
+		traceRing:   make([]TraceRecord, maxTraces),
+		snapshots:   make(map[string]MetricSnapshot),
+		instrSchema: make(map[string][]InstrSchemaRow),
 	}
 }
 
@@ -78,15 +82,17 @@ func (m *MemObsStore) WriteMetricSnapshot(_ context.Context, snap MetricSnapshot
 	return nil
 }
 
-// WriteTrace persists a sampled or error trace into the ring buffer.
-func (m *MemObsStore) WriteTrace(_ context.Context, trace TraceRecord) error {
+// WriteTraceBatch persists a batch of trace records into the ring buffer.
+func (m *MemObsStore) WriteTraceBatch(_ context.Context, records []TraceRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cap := len(m.traceRing)
-	m.traceRing[m.traceHead] = trace
-	m.traceHead = (m.traceHead + 1) % cap
-	if m.traceHead == 0 {
-		m.traceFull = true
+	for _, trace := range records {
+		m.traceRing[m.traceHead] = trace
+		m.traceHead = (m.traceHead + 1) % cap
+		if m.traceHead == 0 {
+			m.traceFull = true
+		}
 	}
 	return nil
 }
@@ -204,6 +210,31 @@ func (m *MemObsStore) QueryTraces(_ context.Context, f TraceFilter) ([]TraceReco
 		results = append(results, entry)
 	}
 	return results, nil
+}
+
+// UpsertInstrSchema writes or updates instruction schema rows for an API endpoint.
+func (m *MemObsStore) UpsertInstrSchema(_ context.Context, rows []InstrSchemaRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(rows) > 0 {
+		apiName := rows[0].ApiName
+		m.instrSchema[apiName] = make([]InstrSchemaRow, len(rows))
+		copy(m.instrSchema[apiName], rows)
+	}
+	return nil
+}
+
+// QueryInstrSchema returns instruction schema rows for the given API name.
+func (m *MemObsStore) QueryInstrSchema(_ context.Context, apiName string) ([]InstrSchemaRow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rows := m.instrSchema[apiName]
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	result := make([]InstrSchemaRow, len(rows))
+	copy(result, rows)
+	return result, nil
 }
 
 // Close is a no-op for the in-memory store.

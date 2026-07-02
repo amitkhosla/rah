@@ -1125,20 +1125,29 @@ func main() {
 					})
 				}
 
-				payload, err := json.Marshal(ctx.Trace)
-				if err != nil {
-					log.Printf("[obs] marshal trace payload failed trace_id=%d: %v", ctx.Trace.Summary.TraceID, err)
-				} else {
-					obsWriter.WriteTrace(gatewayCtx, observability.TraceRecord{
-						TraceID:   ctx.Trace.Summary.TraceID,
-						Timestamp: time.Now().Unix(),
-						ApiName:   apiName,
-						TenantID:  ctx.TenantID,
-						Status:    ctx.ResponseStatus,
-						TotalMs:   float64(clientTotal.Nanoseconds()) / 1e6,
-						Payload:   payload,
-					})
+				// Build typed V2 TraceRecord — no json.Marshal, no heap alloc for payload.
+				traceRec := observability.TraceRecord{
+					TraceID:       ctx.Trace.Summary.TraceID,
+					Timestamp:     time.Now().Unix(),
+					ApiName:       apiName,
+					TenantID:      ctx.TenantID,
+					Status:        ctx.ResponseStatus,
+					TotalMs:       float64(clientTotal.Nanoseconds()) / 1e6,
+					ApiVersionID:  ctx.Trace.Summary.ApiVersionID,
+					DurationNs:    clientTotal.Nanoseconds(),
+					GatewayNs:     gateway.Nanoseconds(),
+					UpstreamNs:    upstreamNs,
+					ReqBytes:      req.ContentLength,
+					ResBytes:      ctx.Timing.ClientBytesSent,
+					UpstreamCalls: uint16(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
 				}
+				if n := int(ctx.InstrCount); n > 0 {
+					traceRec.InstrPCs = make([]int16, n)
+					traceRec.InstrDursNs = make([]int32, n)
+					copy(traceRec.InstrPCs, ctx.InstrPC[:n])
+					copy(traceRec.InstrDursNs, ctx.InstrDurNs[:n])
+				}
+				obsWriter.EnqueueTrace(traceRec)
 			}
 
 			if ctx.ShouldReturnToPool() {

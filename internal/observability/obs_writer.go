@@ -15,20 +15,25 @@ const (
 )
 
 // ObsWriter batches access log records and flushes them to an ObsStore
-// asynchronously. Traces and metric snapshots are written immediately.
+// asynchronously. Traces are enqueued to a background drain goroutine.
+// Metric snapshots are written immediately.
 //
 // WriteAccessLog is the hot path: it stamps a record into a pre-allocated slab
 // slot via a single atomic.Add, with no mutex and no per-call allocation.
 // A background drain goroutine rotates slabs every 10 ms and writes batches to
 // the store when batchSize is reached or flushEvery elapses.
 //
+// EnqueueTrace is also a hot path: it enqueues a trace record to a ring buffer
+// backed by a separate drain goroutine that flushes batches to WriteTraceBatch.
+//
 // ObsWriter is safe for concurrent use. Call Start() once before use and
 // Close() (or cancel the context passed to Start()) to shut down cleanly.
 type ObsWriter struct {
-	store   ObsStore
-	ring    *obsSlabRing
-	stop    chan struct{}
-	enabled atomic.Bool
+	store      ObsStore
+	ring       *obsSlabRing
+	traceRing  *traceWriteRing
+	stop       chan struct{}
+	enabled    atomic.Bool
 }
 
 // NewObsWriter creates an ObsWriter backed by store.
@@ -46,18 +51,20 @@ func NewObsWriter(store ObsStore, batchSize int, flushEvery time.Duration) *ObsW
 		flushEvery = defaultFlushEvery
 	}
 	w := &ObsWriter{
-		store: store,
-		ring:  newObsSlabRing(store, obsComputeSlabCap(), batchSize, flushEvery),
-		stop:  make(chan struct{}),
+		store:     store,
+		ring:      newObsSlabRing(store, obsComputeSlabCap(), batchSize, flushEvery),
+		traceRing: newTraceWriteRing(store, 4, 64, 16),
+		stop:      make(chan struct{}),
 	}
 	w.enabled.Store(true)
 	return w
 }
 
-// Start launches the background drain goroutine. Call once before the first
-// WriteAccessLog. Stops when ctx is cancelled or Close() is called.
+// Start launches the background drain goroutines. Call once before the first
+// WriteAccessLog or EnqueueTrace. Stops when ctx is cancelled or Close() is called.
 func (w *ObsWriter) Start(ctx context.Context) {
 	w.ring.start()
+	w.traceRing.start()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -87,18 +94,20 @@ func (w *ObsWriter) WriteAccessLog(r AccessLogRecord) {
 	w.ring.write(r)
 }
 
-// DroppedCount returns the total number of records dropped due to slab-full or
-// rotation-race conditions since the writer was created.
+// DroppedCount returns the total number of records dropped (access logs + traces)
+// due to slab-full, rotation-race, or ring-full conditions since the writer was created.
 func (w *ObsWriter) DroppedCount() uint64 {
-	return w.ring.dropped
+	return w.ring.dropped + w.traceRing.droppedCount()
 }
 
-// WriteTrace persists a trace record immediately (not batched).
-func (w *ObsWriter) WriteTrace(ctx context.Context, trace TraceRecord) {
-	if err := w.store.WriteTrace(ctx, trace); err != nil {
-		gatewaylog.Default.Warn("obs.writer write trace error",
-			gatewaylog.F("err", fmt.Sprintf("%v", err)))
+// EnqueueTrace enqueues a trace record to be written asynchronously.
+// Returns false if the trace ring has hit its hard limit; true otherwise.
+// Hot path cost: one atomic operation to claim space in the ring.
+func (w *ObsWriter) EnqueueTrace(rec TraceRecord) bool {
+	if !w.enabled.Load() {
+		return true
 	}
+	return w.traceRing.enqueue(rec)
 }
 
 // WriteMetricSnapshot persists a metric snapshot immediately (not batched).
@@ -112,7 +121,7 @@ func (w *ObsWriter) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot
 // Store returns the underlying ObsStore for direct queries.
 func (w *ObsWriter) Store() ObsStore { return w.store }
 
-// Close stops the background drain goroutine, performs a final flush, and
+// Close stops the background drain goroutines, performs a final flush, and
 // waits for all in-flight store writes to complete. Safe to call more than once.
 func (w *ObsWriter) Close() {
 	select {
@@ -121,5 +130,6 @@ func (w *ObsWriter) Close() {
 	default:
 		close(w.stop)
 		w.ring.stopAndWait()
+		w.traceRing.stopAndWait()
 	}
 }

@@ -121,16 +121,21 @@ func (s *redisObsStore) WriteMetricSnapshot(ctx context.Context, snap MetricSnap
 
 // ── WriteTrace ────────────────────────────────────────────────────────────────
 
-// WriteTrace pushes the trace as JSON to "obs:traces" and trims to 10 000.
-func (s *redisObsStore) WriteTrace(ctx context.Context, trace TraceRecord) error {
-	b, err := json.Marshal(trace)
-	if err != nil {
-		return fmt.Errorf("obs redis: marshal trace: %w", err)
+// WriteTraceBatch pushes each trace record as JSON to "obs:traces" and trims to 10 000.
+func (s *redisObsStore) WriteTraceBatch(ctx context.Context, records []TraceRecord) error {
+	if len(records) == 0 {
+		return nil
 	}
 	pipe := s.client.Pipeline()
-	pipe.LPush(ctx, "obs:traces", string(b))
+	for _, trace := range records {
+		b, err := json.Marshal(trace)
+		if err != nil {
+			continue
+		}
+		pipe.LPush(ctx, "obs:traces", string(b))
+	}
 	pipe.LTrim(ctx, "obs:traces", 0, redisMaxTraceEntries-1)
-	_, err = pipe.Exec(ctx)
+	_, err := pipe.Exec(ctx)
 	return err
 }
 
@@ -282,6 +287,20 @@ func (s *redisObsStore) QueryTraces(ctx context.Context, f TraceFilter) ([]Trace
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// ── UpsertInstrSchema ─────────────────────────────────────────────────────────
+
+// UpsertInstrSchema is a no-op for Redis (V1 store).
+func (s *redisObsStore) UpsertInstrSchema(_ context.Context, _ []InstrSchemaRow) error {
+	return nil
+}
+
+// ── QueryInstrSchema ──────────────────────────────────────────────────────────
+
+// QueryInstrSchema returns nil for Redis (V1 store).
+func (s *redisObsStore) QueryInstrSchema(_ context.Context, _ string) ([]InstrSchemaRow, error) {
+	return nil, nil
 }
 
 // ── Close ─────────────────────────────────────────────────────────────────────

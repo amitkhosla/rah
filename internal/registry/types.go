@@ -178,10 +178,14 @@ type ResolvedLimit struct {
 
 // TenantRecord is the management-plane record for one tenant.
 // Maintained in RegistryManager.tenantData and serialised for persistence.
-// TenantID is intentionally absent — IDs are ephemeral and instance-local;
-// aliases[0] is the stable storage key used by RegistryDatastore.
+// PersistedID, when non-zero, carries the TenantID recovered from the datastore
+// at startup so the same numeric ID can be re-assigned on restore.
+// It is zero in all other contexts (live mutations, test tenants, etc.).
 type TenantRecord struct {
 	Aliases     []string          `json:"aliases"`
+	// PersistedID is populated only during startup restore from the datastore.
+	// It is not serialised; it is read separately via GetTenantID.
+	PersistedID uint16            `json:"-"`
 	ServiceURLs map[string]string `json:"service_urls,omitempty"`
 	Identifiers map[string]string `json:"identifiers,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`

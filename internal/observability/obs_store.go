@@ -7,9 +7,9 @@ import (
 
 // MetricSnapshot is a pre-aggregated metric record for one time window + dimension.
 type MetricSnapshot struct {
-	Timestamp int64   // unix seconds, start of bucket
-	Window    string  // "1m" | "5m" | "1h"
-	Dimension string  // "api:payment-api" | "tenant:acme" | "gateway"
+	Timestamp int64
+	Window    string
+	Dimension string
 	ReqTotal  int64
 	Req5xx    int64
 	LatP50Ms  float64
@@ -32,38 +32,84 @@ type AccessLogRecord struct {
 	GatewayMs   float64           `json:"gateway_ms"`
 	UpstreamMs  float64           `json:"upstream_ms"`
 	TTFBMs      float64           `json:"ttfb_ms"`
-	ConnSetupMs float64           `json:"conn_setup_ms,omitempty"` // TCP+TLS setup time (new connections only)
-	TransferMs  float64           `json:"transfer_ms,omitempty"`   // first→last byte sent to client
+	ConnSetupMs float64           `json:"conn_setup_ms,omitempty"`
+	TransferMs  float64           `json:"transfer_ms,omitempty"`
 	ReqBytes    int64             `json:"req_bytes"`
 	ResBytes    int64             `json:"res_bytes"`
-	Extra       map[string]string `json:"extra,omitempty"` // customer-configured extra fields
+	Extra       map[string]string `json:"extra,omitempty"`
 }
 
-// TraceRecord is a persisted request trace (sampled or error).
+// TraceRecord is a persisted request trace.
+//
+// V1 traces (memory, Redis) populate Payload with the full JSON blob.
+// V2 traces (Postgres) leave Payload nil and populate typed fields; they are
+// identified by InstrPCs != nil.  Stores that do not support V2 silently
+// ignore the typed fields.
 type TraceRecord struct {
-	TraceID   uint64  `json:"trace_id"`
-	Timestamp int64   `json:"timestamp"` // unix seconds
-	ApiName   string  `json:"api_name"`
-	TenantID  uint16  `json:"tenant_id"`
-	Status    int     `json:"status"`
-	TotalMs   float64 `json:"total_ms"`
-	Payload   json.RawMessage `json:"payload,omitempty"` // JSON-encoded RequestTrace
+	// Core fields — used by all stores.
+	TraceID   uint64          `json:"trace_id"`
+	Timestamp int64           `json:"timestamp"` // unix seconds
+	ApiName   string          `json:"api_name"`
+	TenantID  uint16          `json:"tenant_id"`
+	Status    int             `json:"status"`
+	TotalMs   float64         `json:"total_ms"`
+	Payload   json.RawMessage `json:"payload,omitempty"` // v1 only
+
+	// V2 typed fields — written to obs_traces_v2 (Postgres only).
+	// A nil InstrPCs slice means this is a v1 record.
+	ApiVersionID  uint32    `json:"api_version_id,omitempty"`
+	EndpointID    uint8     `json:"endpoint_id,omitempty"`
+	DurationNs    int64     `json:"duration_ns,omitempty"`
+	GatewayNs     int64     `json:"gateway_ns,omitempty"`
+	UpstreamNs    int64     `json:"upstream_ns,omitempty"`
+	ReqBytes      int64     `json:"req_bytes,omitempty"`
+	ResBytes      int64     `json:"res_bytes,omitempty"`
+	UpstreamCalls uint16    `json:"upstream_calls,omitempty"`
+	PhaseDurs     [10]int32 `json:"phase_durs,omitempty"`
+	InstrPCs      []int16   `json:"instr_pcs,omitempty"`    // nil ⇒ v1
+	InstrDursNs   []int32   `json:"instr_durs_ns,omitempty"`
+	LLMCalls      []LLMCallRow `json:"llm_calls,omitempty"`
+}
+
+// LLMCallRow is one LLM call within a trace, written to obs_llm_calls.
+type LLMCallRow struct {
+	PC           int16  `json:"pc"`
+	Seq          uint8  `json:"seq"`            // call index within this trace
+	ModelName    string `json:"model_name"`
+	Status       uint16 `json:"status"`
+	InputTokens  uint32 `json:"input_tokens"`
+	OutputTokens uint32 `json:"output_tokens"`
+	CostMicro    uint32 `json:"cost_micro"`     // cost in millionths of USD
+	DurationNs   int64  `json:"duration_ns"`
+	PromptText   string `json:"prompt_text,omitempty"`   // ≤4000 chars
+	SystemText   string `json:"system_text,omitempty"`   // ≤1000 chars
+	ResponseText string `json:"response_text,omitempty"` // ≤4000 chars
+}
+
+// InstrSchemaRow describes one instruction PC in a compiled API endpoint.
+// Written once at bake time; joined at read time to resolve PC → name.
+type InstrSchemaRow struct {
+	ApiName  string `json:"api_name"`
+	ApiHash  uint64 `json:"api_hash"` // version fingerprint for cache invalidation
+	PC       int16  `json:"pc"`
+	StepType string `json:"step_type"`
+	StepName string `json:"step_name"`
 }
 
 // AccessLogFilter filters access log queries.
 type AccessLogFilter struct {
 	ApiName   string
 	TenantKey string
-	Status    int   // 0 = any; 500 = only 5xx etc.
+	Status    int
 	FromUnixS int64
 	ToUnixS   int64
-	Limit     int  // default 100, max 1000
+	Limit     int
 }
 
 // MetricsFilter filters metric snapshot queries.
 type MetricsFilter struct {
-	Window    string // "1m" | "5m" | "1h"
-	Dimension string // prefix match: "api:" | "tenant:" | "gateway"
+	Window    string
+	Dimension string
 	FromUnixS int64
 	ToUnixS   int64
 }
@@ -80,8 +126,6 @@ type TraceFilter struct {
 
 // ObsStore is the persistence interface for observability data.
 // All write methods must be safe for concurrent use.
-// Implementations must handle the case where the underlying store is unavailable
-// (return error, never panic).
 type ObsStore interface {
 	// WriteAccessLog persists a batch of access log records.
 	WriteAccessLog(ctx context.Context, records []AccessLogRecord) error
@@ -89,8 +133,13 @@ type ObsStore interface {
 	// WriteMetricSnapshot persists a metric snapshot.
 	WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot) error
 
-	// WriteTrace persists a sampled or error trace.
-	WriteTrace(ctx context.Context, trace TraceRecord) error
+	// WriteTraceBatch persists a batch of trace records.
+	// V2 stores (Postgres) write typed columns; V1 stores iterate and persist each record's Payload.
+	WriteTraceBatch(ctx context.Context, records []TraceRecord) error
+
+	// UpsertInstrSchema writes or updates instruction schema rows for an API endpoint.
+	// Called once at bake time when an API is compiled.
+	UpsertInstrSchema(ctx context.Context, rows []InstrSchemaRow) error
 
 	// QueryAccessLog returns access log entries matching the filter.
 	QueryAccessLog(ctx context.Context, f AccessLogFilter) ([]AccessLogRecord, error)
@@ -101,6 +150,9 @@ type ObsStore interface {
 	// QueryTraces returns trace records matching the filter.
 	QueryTraces(ctx context.Context, f TraceFilter) ([]TraceRecord, error)
 
+	// QueryInstrSchema returns instruction schema rows for the given API name.
+	QueryInstrSchema(ctx context.Context, apiName string) ([]InstrSchemaRow, error)
+
 	// Close releases any held resources.
 	Close() error
 }
@@ -109,9 +161,10 @@ type ObsStore interface {
 // Used when observability persistence is not configured.
 type NoopObsStore struct{}
 
-func (NoopObsStore) WriteAccessLog(_ context.Context, _ []AccessLogRecord) error { return nil }
-func (NoopObsStore) WriteMetricSnapshot(_ context.Context, _ MetricSnapshot) error { return nil }
-func (NoopObsStore) WriteTrace(_ context.Context, _ TraceRecord) error              { return nil }
+func (NoopObsStore) WriteAccessLog(_ context.Context, _ []AccessLogRecord) error   { return nil }
+func (NoopObsStore) WriteMetricSnapshot(_ context.Context, _ MetricSnapshot) error  { return nil }
+func (NoopObsStore) WriteTraceBatch(_ context.Context, _ []TraceRecord) error       { return nil }
+func (NoopObsStore) UpsertInstrSchema(_ context.Context, _ []InstrSchemaRow) error  { return nil }
 func (NoopObsStore) QueryAccessLog(_ context.Context, _ AccessLogFilter) ([]AccessLogRecord, error) {
 	return nil, nil
 }
@@ -119,6 +172,9 @@ func (NoopObsStore) QueryMetrics(_ context.Context, _ MetricsFilter) ([]MetricSn
 	return nil, nil
 }
 func (NoopObsStore) QueryTraces(_ context.Context, _ TraceFilter) ([]TraceRecord, error) {
+	return nil, nil
+}
+func (NoopObsStore) QueryInstrSchema(_ context.Context, _ string) ([]InstrSchemaRow, error) {
 	return nil, nil
 }
 func (NoopObsStore) Close() error { return nil }

@@ -19,6 +19,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -40,7 +41,13 @@ const (
 	idPropPrefix     = ":id:"
 	metaPropPrefix   = ":meta:"
 	rateLimitPrefix  = "rl:"
+	tenantIDSuffix   = ":tid" // used as: "tenant:{alias}:tid"
 )
+
+// tenantTIDKey returns the datastore key used to persist a tenant's stable TenantID.
+func tenantTIDKey(alias string) string {
+	return tenantKeyPrefix + alias + tenantIDSuffix
+}
 
 // TenantRegistryStore is the default RegistryDatastore backed by any
 // RegistryStoreBackend (disk, Redis, DragonflyDB, etc.).
@@ -55,6 +62,34 @@ type TenantRegistryStore struct {
 // NewTenantRegistryStore wraps any RegistryStoreBackend as a RegistryDatastore.
 func NewTenantRegistryStore(backend RegistryStoreBackend) *TenantRegistryStore {
 	return &TenantRegistryStore{backend: backend}
+}
+
+// ── Tenant: stable TenantID ──────────────────────────────────────────────────
+
+// PutTenantID persists the stable TenantID for a primary alias so that restarts
+// and peer instances can recover the same numeric ID.
+func (s *TenantRegistryStore) PutTenantID(ctx context.Context, primaryAlias string, id uint16) error {
+	return s.backend.Put(ctx, tenantTIDKey(primaryAlias), []byte(fmt.Sprintf("%d", id)))
+}
+
+// GetTenantID retrieves the persisted TenantID for a primary alias.
+// Returns (0, false, nil) when the key does not exist.
+func (s *TenantRegistryStore) GetTenantID(ctx context.Context, primaryAlias string) (uint16, bool, error) {
+	data, ok, err := s.backend.Get(ctx, tenantTIDKey(primaryAlias))
+	if err != nil || !ok {
+		return 0, false, err
+	}
+	var id uint64
+	for _, b := range data {
+		if b < '0' || b > '9' {
+			return 0, false, nil
+		}
+		id = id*10 + uint64(b-'0')
+	}
+	if id == 0 || id > 0xFFFF {
+		return 0, false, nil
+	}
+	return uint16(id), true, nil
 }
 
 // ── Tenant: alias management ─────────────────────────────────────────────────
@@ -229,6 +264,11 @@ func (s *TenantRegistryStore) loadTenantRecord(ctx context.Context, primaryAlias
 	}
 	if len(rec.Aliases) == 0 {
 		rec.Aliases = []string{primaryAlias}
+	}
+
+	// Persisted TenantID — zero if not found (graceful degradation).
+	if id, ok, _ := s.GetTenantID(ctx, primaryAlias); ok {
+		rec.PersistedID = id
 	}
 
 	// Scan all property keys for this tenant.

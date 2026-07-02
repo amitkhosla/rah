@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -93,6 +95,67 @@ CREATE TABLE IF NOT EXISTS obs_traces (
 CREATE INDEX IF NOT EXISTS obs_traces_ts_idx     ON obs_traces(ts DESC);
 CREATE INDEX IF NOT EXISTS obs_traces_api_idx    ON obs_traces(api_name, ts DESC);
 CREATE INDEX IF NOT EXISTS obs_traces_tenant_idx ON obs_traces(tenant_id, ts DESC);
+
+-- V2 typed trace records (no JSONB blob)
+CREATE TABLE IF NOT EXISTS obs_traces_v2 (
+    trace_id       BIGINT   PRIMARY KEY,
+    ts             BIGINT   NOT NULL,
+    api_name       TEXT,
+    api_version_id INTEGER,
+    endpoint_id    SMALLINT,
+    tenant_id      SMALLINT,
+    status         SMALLINT,
+    method         SMALLINT,
+    duration_ns    BIGINT,
+    gateway_ns     BIGINT,
+    upstream_ns    BIGINT,
+    req_bytes      BIGINT,
+    res_bytes      BIGINT,
+    upstream_calls SMALLINT,
+    phase_durs     INTEGER[10],
+    instr_count    SMALLINT
+);
+CREATE INDEX IF NOT EXISTS obs_tv2_ts_idx     ON obs_traces_v2(ts DESC);
+CREATE INDEX IF NOT EXISTS obs_tv2_api_idx    ON obs_traces_v2(api_name, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_tv2_tenant_idx ON obs_traces_v2(tenant_id, ts DESC);
+
+-- Per-request instruction runs (join with obs_instruction_schema for names)
+CREATE TABLE IF NOT EXISTS obs_instruction_runs (
+    trace_id    BIGINT   NOT NULL REFERENCES obs_traces_v2(trace_id) ON DELETE CASCADE,
+    pc          SMALLINT NOT NULL,
+    seq         SMALLINT NOT NULL,
+    dur_ns      INTEGER  NOT NULL,
+    PRIMARY KEY (trace_id, pc, seq)
+);
+CREATE INDEX IF NOT EXISTS obs_ir_trace_idx ON obs_instruction_runs(trace_id);
+
+-- Per-trace LLM calls
+CREATE TABLE IF NOT EXISTS obs_llm_calls (
+    trace_id      BIGINT   NOT NULL,
+    pc            SMALLINT NOT NULL,
+    seq           SMALLINT NOT NULL,
+    model_name    TEXT,
+    status        SMALLINT,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cost_micro    INTEGER,
+    duration_ns   BIGINT,
+    prompt_text   TEXT,
+    system_text   TEXT,
+    response_text TEXT,
+    PRIMARY KEY (trace_id, pc, seq)
+);
+CREATE INDEX IF NOT EXISTS obs_llm_trace_idx ON obs_llm_calls(trace_id);
+
+-- Instruction schema: written once at API compile time
+CREATE TABLE IF NOT EXISTS obs_instruction_schema (
+    api_name  TEXT     NOT NULL,
+    api_hash  BIGINT   NOT NULL,
+    pc        SMALLINT NOT NULL,
+    step_type TEXT,
+    step_name TEXT,
+    PRIMARY KEY (api_name, pc)
+);
 `
 	_, err := s.pool.Exec(ctx, ddl)
 	return err
@@ -183,23 +246,187 @@ ON CONFLICT (ts, "window", dimension) DO UPDATE SET
 	return err
 }
 
-// ── WriteTrace ────────────────────────────────────────────────────────────────
+// ── WriteTraceBatch ───────────────────────────────────────────────────────────
 
-// WriteTrace persists a single trace record. If a record with the same
-// trace_id already exists it is silently skipped (DO NOTHING).
-func (s *postgresObsStore) WriteTrace(ctx context.Context, trace TraceRecord) error {
-	_, err := s.pool.Exec(ctx, `
+// methodToInt encodes an HTTP method string to its int16 representation.
+func methodToInt(m string) int16 {
+	switch m {
+	case "GET":
+		return 0
+	case "POST":
+		return 1
+	case "PUT":
+		return 2
+	case "DELETE":
+		return 3
+	case "PATCH":
+		return 4
+	case "HEAD":
+		return 5
+	case "OPTIONS":
+		return 6
+	default:
+		return 7
+	}
+}
+
+// WriteTraceBatch persists a batch of trace records.
+// V2 records (InstrPCs != nil) are written to obs_traces_v2, obs_instruction_runs,
+// and obs_llm_calls using pgx SendBatch for a single TCP round-trip.
+// V1 records (InstrPCs == nil) fall back to the legacy obs_traces table.
+func (s *postgresObsStore) WriteTraceBatch(ctx context.Context, records []TraceRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Partition records into v1 and v2.
+	var v1Records, v2Records []TraceRecord
+	for _, rec := range records {
+		if rec.InstrPCs == nil {
+			v1Records = append(v1Records, rec)
+		} else {
+			v2Records = append(v2Records, rec)
+		}
+	}
+
+	// Write v1 records individually into the legacy obs_traces table.
+	for _, rec := range v1Records {
+		_, err := s.pool.Exec(ctx, `
 INSERT INTO obs_traces (trace_id,ts,api_name,tenant_id,status,total_ms,payload)
 VALUES ($1,$2,$3,$4,$5,$6,$7)
 ON CONFLICT (trace_id) DO NOTHING`,
-		int64(trace.TraceID),
-		trace.Timestamp,
-		nilIfEmpty(trace.ApiName),
-		int16(trace.TenantID),
-		int16(trace.Status),
-		float32(trace.TotalMs),
-		trace.Payload,
-	)
+			int64(rec.TraceID),
+			rec.Timestamp,
+			nilIfEmpty(rec.ApiName),
+			int16(rec.TenantID),
+			int16(rec.Status),
+			float32(rec.TotalMs),
+			rec.Payload,
+		)
+		if err != nil {
+			log.Printf("obs postgres: WriteTraceBatch v1 insert error (trace_id=%d): %v", rec.TraceID, err)
+		}
+	}
+
+	if len(v2Records) == 0 {
+		return nil
+	}
+
+	// Build a SendBatch for all v2 records.
+	batch := &pgx.Batch{}
+	for _, rec := range v2Records {
+		// Convert PhaseDurs [10]int32 to []int32 for pgx array encoding.
+		phaseDurs := rec.PhaseDurs[:]
+
+		batch.Queue(
+			`INSERT INTO obs_traces_v2 (
+				trace_id, ts, api_name, api_version_id, endpoint_id, tenant_id,
+				status, method, duration_ns, gateway_ns, upstream_ns,
+				req_bytes, res_bytes, upstream_calls, phase_durs, instr_count
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			ON CONFLICT (trace_id) DO NOTHING`,
+			int64(rec.TraceID),
+			rec.Timestamp,
+			nilIfEmpty(rec.ApiName),
+			int32(rec.ApiVersionID),
+			int16(rec.EndpointID),
+			int16(rec.TenantID),
+			int16(rec.Status),
+			int16(7), // method: TraceRecord has no Method field; store OTHER (7) as default
+			rec.DurationNs,
+			rec.GatewayNs,
+			rec.UpstreamNs,
+			rec.ReqBytes,
+			rec.ResBytes,
+			int16(rec.UpstreamCalls),
+			phaseDurs,
+			int16(len(rec.InstrPCs)),
+		)
+
+		for i, pc := range rec.InstrPCs {
+			batch.Queue(
+				`INSERT INTO obs_instruction_runs (trace_id, pc, seq, dur_ns)
+				VALUES ($1,$2,$3,$4)
+				ON CONFLICT (trace_id, pc, seq) DO NOTHING`,
+				int64(rec.TraceID),
+				pc,
+				int16(i),
+				rec.InstrDursNs[i],
+			)
+		}
+
+		for _, llm := range rec.LLMCalls {
+			batch.Queue(
+				`INSERT INTO obs_llm_calls (
+					trace_id, pc, seq, model_name, status,
+					input_tokens, output_tokens, cost_micro, duration_ns,
+					prompt_text, system_text, response_text
+				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+				ON CONFLICT (trace_id, pc, seq) DO NOTHING`,
+				int64(rec.TraceID),
+				llm.PC,
+				int16(llm.Seq),
+				nilIfEmpty(llm.ModelName),
+				int16(llm.Status),
+				int32(llm.InputTokens),
+				int32(llm.OutputTokens),
+				int32(llm.CostMicro),
+				llm.DurationNs,
+				nilIfEmpty(llm.PromptText),
+				nilIfEmpty(llm.SystemText),
+				nilIfEmpty(llm.ResponseText),
+			)
+		}
+	}
+
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	n := batch.Len()
+	for i := 0; i < n; i++ {
+		if _, err := br.Exec(); err != nil {
+			log.Printf("obs postgres: WriteTraceBatch SendBatch exec[%d] error: %v", i, err)
+		}
+	}
+	return nil
+}
+
+// ── UpsertInstrSchema ─────────────────────────────────────────────────────────
+
+// UpsertInstrSchema writes or updates instruction schema rows for an API endpoint.
+// Called once at bake time when an API is compiled.
+func (s *postgresObsStore) UpsertInstrSchema(ctx context.Context, rows []InstrSchemaRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	const cols = 5
+	args := make([]any, 0, len(rows)*cols)
+	var sb strings.Builder
+	sb.WriteString(`INSERT INTO obs_instruction_schema (api_name,api_hash,pc,step_type,step_name) VALUES `)
+
+	for i, r := range rows {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		base := i * cols
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5)
+		args = append(args,
+			r.ApiName,
+			int64(r.ApiHash),
+			r.PC,
+			nilIfEmpty(r.StepType),
+			nilIfEmpty(r.StepName),
+		)
+	}
+
+	sb.WriteString(` ON CONFLICT (api_name, pc) DO UPDATE SET
+		api_hash  = EXCLUDED.api_hash,
+		step_type = EXCLUDED.step_type,
+		step_name = EXCLUDED.step_name`)
+
+	_, err := s.pool.Exec(ctx, sb.String(), args...)
 	return err
 }
 
@@ -348,6 +575,7 @@ func (s *postgresObsStore) QueryMetrics(ctx context.Context, f MetricsFilter) ([
 // ── QueryTraces ───────────────────────────────────────────────────────────────
 
 // QueryTraces returns trace records matching f, ordered by ts DESC.
+// Queries obs_traces_v2 first; falls back to obs_traces (v1) if no v2 results.
 // Limit defaults to 50 and is capped at 500.
 func (s *postgresObsStore) QueryTraces(ctx context.Context, f TraceFilter) ([]TraceRecord, error) {
 	limit := f.Limit
@@ -358,6 +586,91 @@ func (s *postgresObsStore) QueryTraces(ctx context.Context, f TraceFilter) ([]Tr
 		limit = 500
 	}
 
+	// ── Try v2 table first ──
+	v2Results, err := s.queryTracesV2(ctx, f, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(v2Results) > 0 {
+		return v2Results, nil
+	}
+
+	// ── Fall back to v1 table ──
+	return s.queryTracesV1(ctx, f, limit)
+}
+
+func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, limit int) ([]TraceRecord, error) {
+	qb := newQueryBuilder()
+
+	if f.ApiName != "" {
+		qb.add("api_name = $%d", f.ApiName)
+	}
+	if f.TenantID > 0 {
+		qb.add("tenant_id = $%d", int16(f.TenantID))
+	}
+	if f.MinMs > 0 {
+		// duration_ns >= f.MinMs * 1e6
+		qb.add("duration_ns >= $%d", int64(f.MinMs*1e6))
+	}
+	if f.FromUnixS > 0 {
+		qb.add("ts >= $%d", f.FromUnixS)
+	}
+	if f.ToUnixS > 0 {
+		qb.add("ts <= $%d", f.ToUnixS)
+	}
+	qb.add("TRUE LIMIT $%d", limit)
+
+	query := `SELECT trace_id,ts,api_name,api_version_id,endpoint_id,tenant_id,
+		status,duration_ns,gateway_ns,upstream_ns,req_bytes,res_bytes,upstream_calls,
+		phase_durs,instr_count
+		FROM obs_traces_v2` + qb.whereClause() + ` ORDER BY ts DESC`
+	query = rewriteLimit(query, qb.limitPlaceholder())
+
+	rows, err := s.pool.Query(ctx, query, qb.args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TraceRecord
+	for rows.Next() {
+		var t TraceRecord
+		var traceID int64
+		var apiVersionID int32
+		var endpointID, tenantID, status, upstreamCalls int16
+		var instrCount int16
+		var phaseDurs []int32
+
+		if err := rows.Scan(
+			&traceID, &t.Timestamp, &t.ApiName, &apiVersionID, &endpointID,
+			&tenantID, &status, &t.DurationNs, &t.GatewayNs, &t.UpstreamNs,
+			&t.ReqBytes, &t.ResBytes, &upstreamCalls, &phaseDurs, &instrCount,
+		); err != nil {
+			return nil, err
+		}
+		t.TraceID = uint64(traceID)
+		t.ApiVersionID = uint32(apiVersionID)
+		t.EndpointID = uint8(endpointID)
+		t.TenantID = uint16(tenantID)
+		t.Status = int(status)
+		t.UpstreamCalls = uint16(upstreamCalls)
+		t.TotalMs = float64(t.DurationNs) / 1e6
+		// Populate PhaseDurs from the DB array (up to 10 elements).
+		if len(phaseDurs) > 0 {
+			n := len(phaseDurs)
+			if n > 10 {
+				n = 10
+			}
+			copy(t.PhaseDurs[:], phaseDurs[:n])
+		}
+		// Mark as v2 with a non-nil (but empty) InstrPCs slice so callers can distinguish.
+		t.InstrPCs = make([]int16, 0, instrCount)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *postgresObsStore) queryTracesV1(ctx context.Context, f TraceFilter, limit int) ([]TraceRecord, error) {
 	qb := newQueryBuilder()
 
 	if f.ApiName != "" {
@@ -401,6 +714,43 @@ func (s *postgresObsStore) QueryTraces(ctx context.Context, f TraceFilter) ([]Tr
 		t.Status = int(status)
 		t.TotalMs = float64(totalMs)
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ── QueryInstrSchema ──────────────────────────────────────────────────────────
+
+// QueryInstrSchema returns instruction schema rows for the given API name,
+// ordered by PC ascending.
+func (s *postgresObsStore) QueryInstrSchema(ctx context.Context, apiName string) ([]InstrSchemaRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT api_name, api_hash, pc, step_type, step_name
+		FROM obs_instruction_schema
+		WHERE api_name = $1
+		ORDER BY pc`,
+		apiName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []InstrSchemaRow
+	for rows.Next() {
+		var r InstrSchemaRow
+		var apiHash int64
+		var stepType, stepName *string
+		if err := rows.Scan(&r.ApiName, &apiHash, &r.PC, &stepType, &stepName); err != nil {
+			return nil, err
+		}
+		r.ApiHash = uint64(apiHash)
+		if stepType != nil {
+			r.StepType = *stepType
+		}
+		if stepName != nil {
+			r.StepName = *stepName
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
