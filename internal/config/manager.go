@@ -27,15 +27,16 @@ func Load(path string) (*Manager, error) {
 		return nil, fmt.Errorf("reading config %q: %w", path, err)
 	}
 
+	expanded := []byte(os.ExpandEnv(string(data)))
 	var cfg GatewayConfig
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json":
-		if err = json.Unmarshal(data, &cfg); err != nil {
+		if err = json.Unmarshal(expanded, &cfg); err != nil {
 			return nil, fmt.Errorf("parsing JSON config %q: %w", path, err)
 		}
 	case ".yaml", ".yml":
-		if err = yaml.Unmarshal(data, &cfg); err != nil {
+		if err = yaml.Unmarshal(expanded, &cfg); err != nil {
 			return nil, fmt.Errorf("parsing YAML config %q: %w", path, err)
 		}
 	default:

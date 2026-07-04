@@ -209,6 +209,13 @@ type Context struct {
 	InstrPC    [64]int16
 	InstrDurNs [64]int32
 	InstrCount uint8
+	// InstrOverflow is the linked chain of instruction slots beyond the first 64.
+	// Nil in the common case. Each block holds up to 64 more (PC, durNs) pairs.
+	InstrOverflow *InstrBlock
+
+	// LLMCalls is the linked chain of LLM call entries captured during this request.
+	// Nil when no LLM calls were made. Read post-Execute by PersistTrace to build LLMCallRows.
+	LLMCalls *observability.LLMCallBlock
 
 	// AfterResponse holds zero-allocation callbacks invoked by the gateway
 	// after the HTTP response is committed. Used by ingest steps to emit
@@ -534,6 +541,8 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.ErrorMsg = nil
 	ctx.InternalTxID = [2]uint64{}
 	ctx.InstrCount = 0
+	ctx.InstrOverflow = nil
+	ctx.LLMCalls = nil
 	ctx.AfterResponse = ctx.AfterResponse[:0] // keep capacity, drop closures
 
 	// Reset timeout / context.Context state — only when a timeout was actually

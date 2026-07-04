@@ -18,6 +18,7 @@ import (
 	grpcutil "rah/internal/grpc"
 	"rah/internal/ingest"
 	"rah/internal/mcpreg"
+	"rah/internal/observability"
 	"rah/internal/rctx"
 	registrypkg "rah/internal/registry"
 	"rah/internal/vectorstore"
@@ -4081,4 +4082,23 @@ func canStreamResponseBodyWithFragments(steps []StepConfig, fragments map[string
 		return true
 	}
 	return walkCanStream(steps)
+}
+
+// ExportVarSchema returns VarSchemaRow entries for all named variables in
+// the compiled API. Called after Compile/BakeAll to persist the schema.
+// apiName and apiHash identify the API version (same values used for InstrSchema).
+func (c *Compiler) ExportVarSchema(apiName string, apiHash uint64) []observability.VarSchemaRow {
+	if len(c.slotMap) == 0 {
+		return nil
+	}
+	rows := make([]observability.VarSchemaRow, 0, len(c.slotMap))
+	for name, slotIdx := range c.slotMap {
+		rows = append(rows, observability.VarSchemaRow{
+			ApiName: apiName,
+			ApiHash: apiHash,
+			VarID:   uint16(slotIdx),
+			VarName: name,
+		})
+	}
+	return rows
 }

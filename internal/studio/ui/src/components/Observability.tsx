@@ -3,7 +3,9 @@ import {
   fetchObsMetrics, fetchObsAccessLog, fetchObsApis, fetchObsTraces,
   fetchObsDetailLogConfig, updateObsDetailLogConfig,
   fetchObsConfig, updateObsConfig,
+  fetchInstrSchema,
   type ObsRuntimeConfig,
+  type InstrSchemaRow,
 } from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -50,7 +52,12 @@ interface TraceRecord {
   tenant_id: number
   status: number
   total_ms: number
-  payload?: string
+  payload?: string         // V1 — JSON blob, used by existing rendering
+  // V2 fields:
+  instr_pcs?: number[]
+  instr_durs_ns?: number[]
+  endpoint_id?: number
+  api_version_id?: number
 }
 
 interface TracePayloadEvent {
@@ -166,6 +173,23 @@ function statusColor(status: number): string {
   if (status >= 400) return '#fbbf24'
   if (status >= 200 && status < 300) return '#34d399'
   return 'var(--muted)'
+}
+
+async function fetchAndCacheSchema(
+  apiName: string,
+  endpointID: number,
+  cache: Map<string, InstrSchemaRow[]>
+): Promise<InstrSchemaRow[]> {
+  const key = `${apiName}:${endpointID}`
+  if (cache.has(key)) return cache.get(key)!
+  try {
+    const rows: InstrSchemaRow[] = await fetchInstrSchema(apiName)
+    const filtered = rows.filter(r => r.endpoint_id === endpointID)
+    cache.set(key, filtered)
+    return filtered
+  } catch {
+    return []
+  }
 }
 
 // ── Stat Card ────────────────────────────────────────────────────
@@ -286,6 +310,8 @@ export default function Observability() {
 
   const metricsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const instrSchemaCache = useRef<Map<string, InstrSchemaRow[]>>(new Map())
+  const [v2Payloads, setV2Payloads] = useState<Map<number, TracePayload>>(new Map())
 
   // Derive status code for access log query
   function statusCodeForFilter(f: StatusFilter): number | undefined {
@@ -440,6 +466,35 @@ export default function Observability() {
   useEffect(() => {
     loadMetrics()
   }, [apiFilter])
+
+  // Load V2 instruction schema when a V2 trace is expanded
+  useEffect(() => {
+    if (expandedTrace === null) return
+    const trace = traces[expandedTrace]
+    if (!trace || !trace.instr_pcs?.length) return
+    if (v2Payloads.has(expandedTrace)) return  // already loaded
+
+    const endpointID = trace.endpoint_id ?? 0
+    fetchAndCacheSchema(trace.api_name, endpointID, instrSchemaCache.current).then(schema => {
+      const instructions: TracePayloadEvent[] = trace.instr_pcs!.map((pc, i) => {
+        const row = schema.find(s => s.pc === pc)
+        return {
+          seq: i,
+          name: row?.step_name ?? row?.step_type ?? String(pc),
+          duration_ns: trace.instr_durs_ns?.[i] ?? 0,
+          output: [],
+        }
+      })
+      const syntheticPayload: TracePayload = {
+        summary: {
+          status: trace.status,
+          duration_ns: Math.round(trace.total_ms * 1_000_000),
+        },
+        instructions,
+      }
+      setV2Payloads(prev => new Map(prev).set(expandedTrace, syntheticPayload))
+    })
+  }, [expandedTrace, traces])
 
   // ── Derived stats ──────────────────────────────────────────────
   const totalReqs = metrics?.requests_total ?? 0
@@ -1000,9 +1055,15 @@ export default function Observability() {
             <div>
               {traces.map((trace, i) => {
                 const isExpanded = expandedTrace === i
-                let payload: any = null
-                if (isExpanded && trace.payload) {
-                  try { payload = JSON.parse(trace.payload) } catch { payload = trace.payload }
+                let payload: TracePayload | string | null = null
+                if (isExpanded) {
+                  if (trace.instr_pcs?.length) {
+                    // V2 trace: use loaded schema-joined payload, or show loading
+                    payload = v2Payloads.get(i) ?? null
+                  } else if (trace.payload) {
+                    // V1 trace: parse JSON blob as before
+                    try { payload = JSON.parse(trace.payload) } catch { payload = trace.payload }
+                  }
                 }
                 return (
                   <div key={i} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -1068,6 +1129,8 @@ export default function Observability() {
                           }}>
                             {typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)}
                           </pre>
+                        ) : isExpanded && trace.instr_pcs?.length ? (
+                          <div style={{ color: 'var(--muted)' }}>Loading instruction schema…</div>
                         ) : (
                           <div style={{ color: 'var(--muted)' }}>No payload data</div>
                         )}

@@ -17,7 +17,7 @@ datastore:
       kind: postgresql
       enabled: true
       connection:
-        address: "postgres://gateway:devpassword@postgres:5432/gateway?sslmode=disable"
+        address: "postgres://gateway:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/gateway?sslmode=disable"
 
   bindings:
     api_definitions: "postgres_primary"

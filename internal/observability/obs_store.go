@@ -72,28 +72,38 @@ type TraceRecord struct {
 }
 
 // LLMCallRow is one LLM call within a trace, written to obs_llm_calls.
+// Raw request/response bytes are stored separately via LLMCallEntry/LLMCallBlock.
 type LLMCallRow struct {
 	PC           int16  `json:"pc"`
-	Seq          uint8  `json:"seq"`            // call index within this trace
+	Seq          uint8  `json:"seq"`             // call index within this trace
 	ModelName    string `json:"model_name"`
 	Status       uint16 `json:"status"`
 	InputTokens  uint32 `json:"input_tokens"`
 	OutputTokens uint32 `json:"output_tokens"`
-	CostMicro    uint32 `json:"cost_micro"`     // cost in millionths of USD
+	CostMicro    uint32 `json:"cost_micro"`      // cost in millionths of USD
 	DurationNs   int64  `json:"duration_ns"`
-	PromptText   string `json:"prompt_text,omitempty"`   // ≤4000 chars
-	SystemText   string `json:"system_text,omitempty"`   // ≤1000 chars
-	ResponseText string `json:"response_text,omitempty"` // ≤4000 chars
 }
 
 // InstrSchemaRow describes one instruction PC in a compiled API endpoint.
 // Written once at bake time; joined at read time to resolve PC → name.
 type InstrSchemaRow struct {
+	ApiName    string `json:"api_name"`
+	ApiHash    uint64 `json:"api_hash"` // version fingerprint for cache invalidation
+	EndpointID uint8  `json:"endpoint_id"`
+	PC         int16  `json:"pc"`
+	StepType   string `json:"step_type"`
+	StepName   string `json:"step_name"`
+}
+
+// VarSchemaRow maps a stable var_id (= slot index) to a human-readable variable
+// name within a compiled API version. Written once at bake time; joined at read
+// time to annotate trace variable values.
+type VarSchemaRow struct {
 	ApiName  string `json:"api_name"`
-	ApiHash  uint64 `json:"api_hash"` // version fingerprint for cache invalidation
-	PC       int16  `json:"pc"`
-	StepType string `json:"step_type"`
-	StepName string `json:"step_name"`
+	ApiHash  uint64 `json:"api_hash"`            // version fingerprint; used to invalidate stale schema
+	VarID    uint16 `json:"var_id"`              // == slot index, stable per API version
+	VarName  string `json:"var_name"`            // human-readable name (from flow YAML, e.g. "auth_header")
+	StepType string `json:"step_type,omitempty"` // step kind that writes this var (informational)
 }
 
 // AccessLogFilter filters access log queries.
@@ -122,6 +132,23 @@ type TraceFilter struct {
 	FromUnixS int64
 	ToUnixS   int64
 	Limit     int
+}
+
+// PayloadRecord holds one captured LLM or upstream API call payload.
+type PayloadRecord struct {
+	TraceID uint64
+	Kind    uint8  // 1=LLM, 2=upstream API
+	Seq     uint8  // call sequence within the trace (0-based)
+	PC      int16  // instruction PC that made the call
+	Content []byte // raw wire bytes (length-header format)
+}
+
+// InstrSnapshot is a zero-allocation copy of per-instruction timing from ctx.
+// Passed to PersistTrace to avoid heap allocation.
+type InstrSnapshot struct {
+	PCs  [64]int16
+	Durs [64]int32
+	N    uint8
 }
 
 // ObsStore is the persistence interface for observability data.
@@ -153,6 +180,19 @@ type ObsStore interface {
 	// QueryInstrSchema returns instruction schema rows for the given API name.
 	QueryInstrSchema(ctx context.Context, apiName string) ([]InstrSchemaRow, error)
 
+	// UpsertVarSchema writes or updates variable schema rows for a compiled API.
+	UpsertVarSchema(ctx context.Context, rows []VarSchemaRow) error
+
+	// QueryVarSchema returns the variable schema rows for the given API name.
+	QueryVarSchema(ctx context.Context, apiName string) ([]VarSchemaRow, error)
+
+	// WritePayloadBatch persists a batch of payload records.
+	// Implementations may be no-ops (Redis, noop).
+	WritePayloadBatch(ctx context.Context, payloads []PayloadRecord) error
+
+	// QueryPayloads returns all payload records for a given trace ID.
+	QueryPayloads(ctx context.Context, traceID uint64) ([]PayloadRecord, error)
+
 	// Close releases any held resources.
 	Close() error
 }
@@ -175,6 +215,14 @@ func (NoopObsStore) QueryTraces(_ context.Context, _ TraceFilter) ([]TraceRecord
 	return nil, nil
 }
 func (NoopObsStore) QueryInstrSchema(_ context.Context, _ string) ([]InstrSchemaRow, error) {
+	return nil, nil
+}
+func (NoopObsStore) UpsertVarSchema(_ context.Context, _ []VarSchemaRow) error { return nil }
+func (NoopObsStore) QueryVarSchema(_ context.Context, _ string) ([]VarSchemaRow, error) {
+	return nil, nil
+}
+func (NoopObsStore) WritePayloadBatch(_ context.Context, _ []PayloadRecord) error { return nil }
+func (NoopObsStore) QueryPayloads(_ context.Context, _ uint64) ([]PayloadRecord, error) {
 	return nil, nil
 }
 func (NoopObsStore) Close() error { return nil }

@@ -10,6 +10,7 @@ import (
 	"rah/internal/engine"
 	"rah/internal/engine/steps"
 	"rah/internal/gatewaylog"
+	"rah/internal/observability"
 	"rah/internal/router"
 	registrypkg "rah/internal/registry"
 	"strings"
@@ -38,6 +39,16 @@ type ManagementServer struct {
 	// compiler's model catalog. Wire this to cfgMgr.LLM so that models
 	// registered via the UI are visible to the compiler at sync time.
 	LLMProvider func() config.LLMConfig
+
+	// VarSchemaHook, if set, is called after each API is compiled.
+	// It receives the API name, version hash, and all variable schema rows
+	// exported from the compiler's slotMap. Wire this to obsWriter.UpsertVarSchema.
+	VarSchemaHook func(apiName string, apiHash uint64, rows []observability.VarSchemaRow)
+
+	// InstrSchemaHook, if set, is called after each API endpoint is baked.
+	// It receives the api name, endpoint ID, version hash, and all instruction
+	// schema rows derived from the compiled plan. Wire this to obsWriter.UpsertInstrSchema.
+	InstrSchemaHook func(apiName string, endpointID uint8, apiHash uint64, rows []observability.InstrSchemaRow)
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -680,7 +691,9 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		} else {
 			compiled, err := s.Compiler.Compile(f.Instructions)
 			if err != nil {
-				return fmt.Errorf("flow %q: %w", f.Name, err)
+				gatewaylog.Default.Warn("[Management] skipping flow with compile error",
+					gatewaylog.F("flow", f.Name), gatewaylog.F("error", err.Error()))
+				continue
 			}
 			newFlowConfigs[f.Name] = f.Instructions
 			newLibrary[f.Name] = compiled
@@ -784,6 +797,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				}
 				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
 				bakeEndpointSchema(def)
+				if s.InstrSchemaHook != nil {
+					ep := &def.Endpoints[len(def.Endpoints)-1]
+					rows := buildObsInstrSchema(a.Name, ep.EndpointId, uint64(thisVersion), ep.InstrSchema)
+					s.InstrSchemaHook(a.Name, ep.EndpointId, uint64(thisVersion), rows)
+				}
 			} else {
 				for ecIdx, ec := range a.EndpointConfigs {
 					// Resolve and register multi-entry RL policies at endpoint level.
@@ -866,6 +884,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 					s.Compiler.BakeSubRouter(def, epPath, method, epInstructions, isStrict, apiRLId, epRLId, asyncMode)
 					bakeEndpointSchema(def)
+					if s.InstrSchemaHook != nil {
+						ep := &def.Endpoints[len(def.Endpoints)-1]
+						rows := buildObsInstrSchema(a.Name, ep.EndpointId, uint64(thisVersion), ep.InstrSchema)
+						s.InstrSchemaHook(a.Name, ep.EndpointId, uint64(thisVersion), rows)
+					}
 				}
 			}
 
@@ -879,6 +902,14 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			newApiConfigs[a.Name] = a
 			routerChanged = true
 			log.Printf("[Management] Linked API %s -> Flow %s", cleanPath, a.FlowName)
+
+			// Export variable schema and fire the hook (e.g. persisting to obs store).
+			if s.VarSchemaHook != nil {
+				varRows := s.Compiler.ExportVarSchema(a.Name, uint64(thisVersion))
+				if len(varRows) > 0 {
+					s.VarSchemaHook(a.Name, uint64(thisVersion), varRows)
+				}
+			}
 
 			apiCfg := ApiConfig{
 				ApiID:             a.Name,
@@ -1108,6 +1139,22 @@ func bakeEndpointSchema(def *engine.ApiDefinition) {
 	ep := &def.Endpoints[len(def.Endpoints)-1]
 	ep.InstrSchema = buildInstrSchema(ep.Plan)
 	ep.Counters = make([]engine.InstrCounter, len(ep.Plan))
+}
+
+// buildObsInstrSchema converts compiled InstrSchema into observability rows for persistence.
+func buildObsInstrSchema(apiName string, endpointID uint8, apiHash uint64, schema []engine.InstrMeta) []observability.InstrSchemaRow {
+	rows := make([]observability.InstrSchemaRow, len(schema))
+	for i, meta := range schema {
+		rows[i] = observability.InstrSchemaRow{
+			ApiName:    apiName,
+			ApiHash:    apiHash,
+			EndpointID: endpointID,
+			PC:         int16(i),
+			StepType:   meta.StepType,
+			StepName:   meta.Name,
+		}
+	}
+	return rows
 }
 
 // buildInstrSchema derives a read-only []InstrMeta from a compiled plan.

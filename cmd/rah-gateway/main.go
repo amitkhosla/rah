@@ -191,18 +191,16 @@ func main() {
 	// For postgres/redis: resolve connection from observability domain bindings.
 	// Try traces first, then access log as a fallback.
 	if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsTraces); err == nil {
-		obsStoreParams.DSN = storeCfg.Connection.Address
+		obsStoreParams.DSN = buildObsDSN(storeCfg.Connection)
 		obsStoreParams.Password = storeCfg.Connection.Password
 		obsStoreParams.PoolSize = storeCfg.Connection.PoolSize
-		// If type is not explicitly set but a binding exists, infer type from store kind.
 		if obsStoreParams.Type == "" {
 			obsStoreParams.Type = string(storeCfg.Kind)
 		}
 	} else if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsAccessLog); err == nil {
-		obsStoreParams.DSN = storeCfg.Connection.Address
+		obsStoreParams.DSN = buildObsDSN(storeCfg.Connection)
 		obsStoreParams.Password = storeCfg.Connection.Password
 		obsStoreParams.PoolSize = storeCfg.Connection.PoolSize
-		// If type is not explicitly set but a binding exists, infer type from store kind.
 		if obsStoreParams.Type == "" {
 			obsStoreParams.Type = string(storeCfg.Kind)
 		}
@@ -293,11 +291,10 @@ func main() {
 		}
 	}
 	// Wire Enabled / SampleRate from config.
-	// Backward-compat: if the access_log section is absent entirely, both fields
-	// are zero-valued (Enabled=false, SampleRate=0). Treat that as "on by default"
-	// by enabling when neither was explicitly set to disable.
+	// Backward-compat: nil means the access_log section was absent → on by default.
+	// Explicit enabled: false in config → pointer is non-nil and false → disabled.
 	alCfg := obsCfg.AccessLog
-	accessLogEnabled := alCfg.Enabled || alCfg.SampleRate == 0
+	accessLogEnabled := alCfg.Enabled == nil || *alCfg.Enabled
 	accessLog.UpdateConfig(accessLogEnabled, alCfg.SampleRate)
 	obsWriter.SetEnabled(accessLogEnabled)
 	registry := control.NewNameRegistry()
@@ -1073,81 +1070,55 @@ func main() {
 			}
 
 			if shouldPersistTrace {
-				appendGatewayPhase := func(name string, d time.Duration, note string) {
-					if d <= 0 {
-						return
-					}
-					ev := observability.InstructionEvent{Name: name, PC: -1, DurationNs: d.Nanoseconds()}
-					if note != "" {
-						ev.Output = []observability.KV{{K: "note", V: note}}
-					}
-					ctx.Obs.AppendInstructionEvent(ctx.Trace, ev)
-				}
-
-				// Connection setup: TCP+TLS time before this request started (fresh connections only).
+				var phaseDurs [10]int32
+				// Phase index mapping:
+				// 0=CONN_SETUP 1=ROUTING 2=PROCESS_REQUEST 3=FINALIZE_RESPONSE
+				// 4=RESPONSE_TRANSFER 5=AFTER_RESPONSE_HOOKS 6=ACCESS_LOG_SNAPSHOT
+				// 7=TELEMETRY_FINISH 8=ACCESS_LOG_ENQUEUE 9=RESIDUAL
 				if connSetupMs > 0 {
-					connSetupDuration := time.Duration(connSetupMs * float64(time.Millisecond))
-					appendGatewayPhase("GATEWAY_PHASE_CONN_SETUP", connSetupDuration, "TCP+TLS connection setup (fresh connections only; 0 for keep-alive)")
+					phaseDurs[0] = int32(time.Duration(connSetupMs * float64(time.Millisecond)).Nanoseconds())
 				}
-
-				// Pre-execution setup: router lookup + context pool.Get + trace init.
-				// Represents the gateway overhead before the first flow instruction ran.
-				routingDuration := processStarted.Sub(reqStart)
-				appendGatewayPhase("GATEWAY_PHASE_ROUTING", routingDuration, "router lookup + context setup before first flow step")
-
-				appendGatewayPhase("GATEWAY_PHASE_PROCESS_REQUEST", processDuration, "time in flow manager request execution")
-				appendGatewayPhase("GATEWAY_PHASE_FINALIZE_RESPONSE", finalizeDuration, "time flushing buffered response to client")
+				phaseDurs[1] = int32(processStarted.Sub(reqStart).Nanoseconds())
+				phaseDurs[2] = int32(processDuration.Nanoseconds())
+				phaseDurs[3] = int32(finalizeDuration.Nanoseconds())
 				if transferMs > 0 {
-					transferDuration := time.Duration(transferMs * float64(time.Millisecond))
-					appendGatewayPhase("GATEWAY_PHASE_RESPONSE_TRANSFER", transferDuration, "time from first→last byte written to client")
+					phaseDurs[4] = int32(time.Duration(transferMs * float64(time.Millisecond)).Nanoseconds())
 				}
-				appendGatewayPhase("GATEWAY_PHASE_AFTER_RESPONSE_HOOKS", afterHooksDuration, "time running deferred hooks after client response")
-				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_SNAPSHOT", accessLogSnapshotDuration, "time building in-memory access log snapshot")
-				appendGatewayPhase("GATEWAY_PHASE_TELEMETRY_FINISH", obsFinishDuration, "time updating telemetry counters/export queue")
-				appendGatewayPhase("GATEWAY_PHASE_ACCESS_LOG_ENQUEUE", accessLogEnqueueDuration, "time enqueueing persistent access log write")
-
-				// RESIDUAL: flow manager time not attributed to any individual instruction.
-				// Scoped to processDuration (not clientTotal) so routing and finalize don't
-				// inflate or deflate it. Gateway phase events use PC=-1; real instructions
-				// use PC>=0 — use that to distinguish without importing "strings".
+				phaseDurs[5] = int32(afterHooksDuration.Nanoseconds())
+				phaseDurs[6] = int32(accessLogSnapshotDuration.Nanoseconds())
+				phaseDurs[7] = int32(obsFinishDuration.Nanoseconds())
+				phaseDurs[8] = int32(accessLogEnqueueDuration.Nanoseconds())
+				// RESIDUAL: flow time not attributed to individual instructions
 				var flowAttributedNs int64
-				for _, e := range ctx.Trace.Instructions {
-					if e.DurationNs > 0 && e.PC >= 0 {
-						flowAttributedNs += e.DurationNs
+				for i := uint8(0); i < ctx.InstrCount; i++ {
+					if ctx.InstrDurNs[i] > 0 {
+						flowAttributedNs += int64(ctx.InstrDurNs[i])
 					}
 				}
 				if residualNs := processDuration.Nanoseconds() - flowAttributedNs; residualNs > 0 {
-					ctx.Trace.Instructions = append(ctx.Trace.Instructions, observability.InstructionEvent{
-						Name:       "GATEWAY_PHASE_RESIDUAL",
-						PC:         -1,
-						DurationNs: residualNs,
-						Output:     []observability.KV{{K: "note", V: "flow manager overhead not captured by individual instruction events"}},
-					})
+					phaseDurs[9] = int32(residualNs)
 				}
 
-				// Build typed V2 TraceRecord — no json.Marshal, no heap alloc for payload.
-				traceRec := observability.TraceRecord{
-					TraceID:       ctx.Trace.Summary.TraceID,
-					Timestamp:     time.Now().Unix(),
-					ApiName:       apiName,
-					TenantID:      ctx.TenantID,
-					Status:        ctx.ResponseStatus,
-					TotalMs:       float64(clientTotal.Nanoseconds()) / 1e6,
-					ApiVersionID:  ctx.Trace.Summary.ApiVersionID,
-					DurationNs:    clientTotal.Nanoseconds(),
-					GatewayNs:     gateway.Nanoseconds(),
-					UpstreamNs:    upstreamNs,
-					ReqBytes:      req.ContentLength,
-					ResBytes:      ctx.Timing.ClientBytesSent,
-					UpstreamCalls: uint16(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
-				}
-				if n := int(ctx.InstrCount); n > 0 {
-					traceRec.InstrPCs = make([]int16, n)
-					traceRec.InstrDursNs = make([]int32, n)
-					copy(traceRec.InstrPCs, ctx.InstrPC[:n])
-					copy(traceRec.InstrDursNs, ctx.InstrDurNs[:n])
-				}
-				obsWriter.EnqueueTrace(traceRec)
+				var snap observability.InstrSnapshot
+				snap.N = ctx.InstrCount
+				copy(snap.PCs[:snap.N], ctx.InstrPC[:snap.N])
+				copy(snap.Durs[:snap.N], ctx.InstrDurNs[:snap.N])
+
+				obsWriter.PersistTrace(
+					ctx.Trace.Summary.TraceID,
+					time.Now().Unix(),
+					apiName,
+					ctx.Trace.Summary.ApiVersionID,
+					ctx.EndpointId,
+					ctx.TenantID,
+					ctx.ResponseStatus,
+					clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs,
+					req.ContentLength, ctx.Timing.ClientBytesSent,
+					uint16(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
+					phaseDurs,
+					snap,
+					ctx.LLMCalls,
+				)
 			}
 
 			if ctx.ShouldReturnToPool() {
@@ -1290,6 +1261,14 @@ func main() {
 	// Wire the LLM catalog provider so the compiler always sees models registered
 	// via the UI (stored in Postgres) rather than only the gateway.yaml snapshot.
 	ms.LLMProvider = func() config.LLMConfig { return cfgMgr.LLM() }
+	// Wire variable schema persistence: after each API bake, export the slot→name
+	// mapping and persist it to the obs store for trace annotation.
+	ms.VarSchemaHook = func(_ string, _ uint64, rows []observability.VarSchemaRow) {
+		obsWriter.UpsertVarSchema(rows)
+	}
+	ms.InstrSchemaHook = func(_ string, _ uint8, _ uint64, rows []observability.InstrSchemaRow) {
+		obsWriter.UpsertInstrSchema(rows)
+	}
 
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
@@ -1730,5 +1709,22 @@ func parseMetricWindows(windows []string) []time.Duration {
 		return []time.Duration{time.Minute}
 	}
 	return durations
+}
+
+// buildObsDSN builds a pgx-compatible DSN from a StoreConnection.
+// Uses Address directly when present; otherwise assembles from Host/Port/Database/Username/Password.
+func buildObsDSN(c config.StoreConnection) string {
+	if c.Address != "" {
+		return c.Address
+	}
+	if c.Host == "" {
+		return ""
+	}
+	if c.Port > 0 {
+		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			c.Host, c.Port, c.Username, c.Password, c.Database)
+	}
+	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		c.Host, c.Username, c.Password, c.Database)
 }
 

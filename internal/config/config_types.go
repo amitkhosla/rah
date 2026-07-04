@@ -283,7 +283,7 @@ type ObsStoreConfig struct {
 
 // ObsAccessLogConfig controls per-request access log capture.
 type ObsAccessLogConfig struct {
-	Enabled       bool            `json:"enabled,omitempty"          yaml:"enabled,omitempty"`
+	Enabled       *bool           `json:"enabled,omitempty"          yaml:"enabled,omitempty"`
 	SampleRate    float64         `json:"sample_rate,omitempty"      yaml:"sample_rate,omitempty"`    // 0.0–1.0; default 1.0
 	RetentionDays int             `json:"retention_days,omitempty"   yaml:"retention_days,omitempty"` // default 7
 	ExtraFields   []ObsExtraField `json:"extra_fields,omitempty"     yaml:"extra_fields,omitempty"`

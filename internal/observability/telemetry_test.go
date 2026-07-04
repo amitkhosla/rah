@@ -15,11 +15,6 @@ func TestTelemetryRecordsInstructionAndRequest(t *testing.T) {
 	trace := tel.StartRequest(7, 0, 11, "GET", "/v1/test")
 	tel.RecordInstrTiming("HTTP_CALL", int64(3*time.Millisecond))
 	tel.RecordUpstream("api.acme.com", 2*time.Millisecond, 10, 20)
-	tel.AppendInstructionEvent(&trace, InstructionEvent{Name: "HTTP_CALL", DurationNs: int64(time.Millisecond)})
-	tel.AppendInstructionEvent(&trace, InstructionEvent{Name: "HTTP_CALL", DurationNs: int64(time.Millisecond)})
-	if trace.Instructions[0].Seq != 1 || trace.Instructions[1].Seq != 2 {
-		t.Fatalf("instruction seq should increment")
-	}
 	tel.FinishRequest(&trace, 502, 10*time.Millisecond, 8*time.Millisecond, 2*time.Millisecond, 1, 40, 10, 20)
 
 	s := tel.Snapshot(10)

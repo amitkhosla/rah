@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"rah/internal/observability"
 	"rah/internal/rctx"
 	"time"
 )
@@ -75,8 +74,7 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 	for pc >= 0 && pc < tableLen {
 		state.PC = pc
 		current := table[pc]
-		shouldTrace := ctx.Obs != nil && ctx.Trace != nil
-		shouldMeasure := ctx.Obs != nil && (shouldTrace || ctx.Obs.InstructionTimingEnabled())
+		shouldMeasure := ctx.Obs != nil && ctx.Obs.InstructionTimingEnabled()
 		var started time.Time
 		if shouldMeasure {
 			started = time.Now()
@@ -85,34 +83,16 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 
 		// Accumulate PC and timing into ctx (not state) so Execute can return
 		// void — avoids copying the ~1200-byte ExecutionState on every request.
-		if ctx.InstrCount < 64 {
-			ctx.InstrPC[ctx.InstrCount] = state.PC
-			if shouldMeasure {
-				ns := time.Since(started).Nanoseconds()
-				if ns <= 0 {
-					ns = 1
-				}
-				ctx.InstrDurNs[ctx.InstrCount] = int32(ns)
-				if shouldTrace {
-					var outputKVs []observability.KV
-					if state.traceAttrCount > 0 {
-						outputKVs = make([]observability.KV, 0, int(state.traceAttrCount))
-						for i := int8(0); i < state.traceAttrCount; i++ {
-							outputKVs = append(outputKVs, observability.KV{K: state.TraceAttrs[i][0], V: state.TraceAttrs[i][1]})
-						}
-					}
-					state.traceAttrCount = 0
-					ctx.Obs.AppendInstructionEvent(ctx.Trace, observability.InstructionEvent{
-						PC:         state.PC,
-						StepIdx:    current.StepIdx,
-						DurationNs: ns,
-						Output:     outputKVs,
-					})
-				}
-			} else {
-				ctx.InstrDurNs[ctx.InstrCount] = 0
+		// AppendInstr handles both inline (first 64) and overflow chain cases.
+		if shouldMeasure {
+			ns := time.Since(started).Nanoseconds()
+			if ns <= 0 {
+				ns = 1
 			}
-			ctx.InstrCount++
+			ctx.AppendInstr(state.PC, int32(ns))
+			state.traceAttrCount = 0
+		} else {
+			ctx.AppendInstr(state.PC, 0)
 		}
 
 		if pc == StopPlan {

@@ -109,11 +109,6 @@ const (
 	traceSlabCount = 4
 	traceWindowMs  = 10 // rotation interval, matches obsWindowMs
 
-	// traceMaxInstrsPerReq caps how many instruction slots one trace can claim.
-	// Flows with more instructions than this have their tail truncated in the slab
-	// (the Instructions field on the reconstructed RequestTrace is still complete
-	// because it was already populated on the heap before Write is called).
-	traceMaxInstrsPerReq = 128
 )
 
 // TraceSlabRing is a lock-free rotating slab ring for traced request data.
@@ -161,24 +156,22 @@ func (r *TraceSlabRing) StopAndWait() {
 func (r *TraceSlabRing) Dropped() uint64 { return atomic.LoadUint64(&r.dropped) }
 
 // Write stamps a traced request into the active slab.
-// n = len(trace.Instructions); claims n+1 slots (1 header + n instruction slots).
-// If the trace has no instructions, claims 1 header-only slot.
+// Write stamps a traced request into the active slab (header-only mode).
+// Claims exactly 1 slot — instruction timing is persisted separately via
+// ObsWriter.PersistTrace / enqueueWithInstr; no per-instruction sub-slots here.
 // Zero allocations on the hot path.
 func (r *TraceSlabRing) Write(trace *RequestTrace) {
 	if trace == nil {
 		return
 	}
 
-	n := len(trace.Instructions)
-	if n > traceMaxInstrsPerReq {
-		n = traceMaxInstrsPerReq
-	}
-	need := int64(n + 1) // +1 for header slot
+	// Header-only: claim exactly 1 slot.
+	need := int64(1)
 
 	slabIdx := atomic.LoadInt32(&r.active)
 	slab := r.slabs[slabIdx]
 
-	// Claim a contiguous block of slots.
+	// Claim the slot.
 	end := atomic.AddInt64(&slab.cursor, need)
 	base := end - need
 
@@ -188,23 +181,10 @@ func (r *TraceSlabRing) Write(trace *RequestTrace) {
 		return
 	}
 
-	// 1. Write instruction slots first (base+1 … base+n), NO ready flag yet.
-	for i := 0; i < n; i++ {
-		slot := &slab.slots[base+1+int64(i)]
-		slot.isHeader = 0
-		ev := &trace.Instructions[i]
-		slot.PC = ev.PC
-		slot.StepIdx = ev.StepIdx
-		slot.DurNs = int32(ev.DurationNs)
-		nl := copy(slot.Name[:], ev.Name)
-		slot.NameLen = uint8(nl)
-		// ready intentionally NOT set yet
-	}
-
-	// 2. Write header slot LAST — signals the entire block is complete.
+	// Write header slot — Count=0 signals no instruction sub-slots follow.
 	hdr := &slab.slots[base]
 	hdr.isHeader = 1
-	hdr.Count = uint16(n)
+	hdr.Count = 0
 	hdr.TraceID = trace.Summary.TraceID
 	hdr.TenantID = trace.Summary.TenantID
 	hdr.ApiID = trace.Summary.ApiID
@@ -214,7 +194,7 @@ func (r *TraceSlabRing) Write(trace *RequestTrace) {
 	hdr.StartedAtUnixNano = trace.Summary.StartedAtUnixNano
 	hdr.PathLen = uint8(copy(hdr.Path[:], trace.Summary.Path))
 	hdr.MethodLen = uint8(copy(hdr.Method[:], trace.Summary.Method))
-	// Signal: all instruction slots are written, header is now complete.
+	// Signal: header is complete.
 	atomic.StoreUint32(&hdr.ready, 1)
 }
 
@@ -290,6 +270,7 @@ func (r *TraceSlabRing) rotateSlab() {
 			continue
 		}
 
+		// Count=0 in header-only mode; instruction sub-slots are not written here.
 		n := int(slot.Count)
 		end := i + 1 + int64(n)
 		if end > count {
@@ -298,7 +279,7 @@ func (r *TraceSlabRing) rotateSlab() {
 			continue
 		}
 
-		t := reconstructTrace(slot, slab.slots[i+1:end])
+		t := reconstructTrace(slot)
 		traces = append(traces, t)
 		i = end
 	}
@@ -324,10 +305,11 @@ done:
 	r.snapshot.Store(&merged)
 }
 
-// reconstructTrace builds a RequestTrace from a header slot and its instruction slots.
+// reconstructTrace builds a RequestTrace from a header slot.
+// In header-only mode (Count=0), no instruction sub-slots are read.
 // Called in the drain goroutine — allocations here are acceptable.
-func reconstructTrace(hdr *TraceSlot, instrSlots []TraceSlot) RequestTrace {
-	t := RequestTrace{
+func reconstructTrace(hdr *TraceSlot) RequestTrace {
+	return RequestTrace{
 		Summary: RequestSummary{
 			TraceID:           hdr.TraceID,
 			TenantID:          hdr.TenantID,
@@ -339,17 +321,5 @@ func reconstructTrace(hdr *TraceSlot, instrSlots []TraceSlot) RequestTrace {
 			Path:              string(hdr.Path[:hdr.PathLen]),
 			Method:            string(hdr.Method[:hdr.MethodLen]),
 		},
-		Instructions: make([]InstructionEvent, 0, len(instrSlots)),
 	}
-	for i := range instrSlots {
-		s := &instrSlots[i]
-		t.Instructions = append(t.Instructions, InstructionEvent{
-			Seq:        uint32(i),
-			PC:         s.PC,
-			StepIdx:    s.StepIdx,
-			DurationNs: int64(s.DurNs),
-			Name:       string(s.Name[:s.NameLen]),
-		})
-	}
-	return t
 }

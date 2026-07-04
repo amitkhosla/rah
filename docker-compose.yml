@@ -25,6 +25,8 @@ services:
       - ./deploy/docker/gateway-local.yaml:/app/gateway.yaml:ro
       - ./logs:/app/logs
     environment:
+      # Postgres password — used in gateway-local.yaml DSN via ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # API keys — values read from your host environment or a .env file
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

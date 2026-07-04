@@ -90,8 +90,7 @@ type RequestSummary struct {
 	ClientBytesSent       int64  `json:"client_bytes_sent"`
 	UpstreamBytesTx       int64  `json:"upstream_bytes_tx"`
 	UpstreamBytesRx       int64  `json:"upstream_bytes_rx"`
-	InstructionEventCount int    `json:"instruction_event_count"`
-	StartedAtUnixNano     int64  `json:"started_at_unix_nano"`
+	StartedAtUnixNano  int64  `json:"started_at_unix_nano"`
 }
 
 type InstructionEvent struct {
@@ -127,13 +126,11 @@ type UpstreamEvent struct {
 }
 
 type RequestTrace struct {
-	Summary        RequestSummary     `json:"summary"`
-	Instructions   []InstructionEvent `json:"instructions"`
-	Upstreams      []UpstreamEvent    `json:"upstreams"`
-	RequestHeaders map[string]string  `json:"request_headers,omitempty"`
-	QueryString    string             `json:"query_string,omitempty"`
-	instructionSeq uint32             `json:"-"`
-	upstreamSeq    uint32             `json:"-"`
+	Summary        RequestSummary    `json:"summary"`
+	Upstreams      []UpstreamEvent   `json:"upstreams"`
+	RequestHeaders map[string]string `json:"request_headers,omitempty"`
+	QueryString    string            `json:"query_string,omitempty"`
+	upstreamSeq    uint32            `json:"-"`
 }
 
 type counter struct {
@@ -220,7 +217,6 @@ func (LogSink) EmitSummary(summary RequestSummary, tenantName string) {
 func (LogSink) EmitTrace(trace RequestTrace) {
 	gatewaylog.Default.Info("obs trace",
 		gatewaylog.Fint("trace_id", int64(trace.Summary.TraceID)),
-		gatewaylog.Fint("instructions", int64(len(trace.Instructions))),
 		gatewaylog.Fint("upstream_calls", int64(len(trace.Upstreams))),
 	)
 }
@@ -588,7 +584,7 @@ func (t *Telemetry) shouldSampleAt(rate float64) bool {
 func (t *Telemetry) StartRequest(apiID uint32, apiVersionID uint32, tenantID uint16, method, path string) RequestTrace {
 	id := t.traceID.Add(1)
 	now := time.Now().UnixNano()
-	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, ApiVersionID: apiVersionID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Instructions: make([]InstructionEvent, 0, 16), Upstreams: make([]UpstreamEvent, 0, 4)}
+	return RequestTrace{Summary: RequestSummary{TraceID: id, ApiID: apiID, ApiVersionID: apiVersionID, TenantID: tenantID, Method: method, Path: path, StartedAtUnixNano: now}, Upstreams: make([]UpstreamEvent, 0, 4)}
 }
 
 // CaptureRequestHeaders records the incoming request headers (and query string)
@@ -731,12 +727,10 @@ func (t *Telemetry) FinishRequest(trace *RequestTrace, status int, total, gatewa
 	trace.Summary.ClientBytesSent = summary.ClientBytesSent
 	trace.Summary.UpstreamBytesTx = summary.UpstreamBytesTx
 	trace.Summary.UpstreamBytesRx = summary.UpstreamBytesRx
-	trace.Summary.InstructionEventCount = len(trace.Instructions)
-
 	// Per-tenant/API status + latency — lock-free via MetricsAggregator COW map.
 	t.Metrics.Record(trace.Summary.TenantID, trace.Summary.ApiID, status, total.Nanoseconds())
 
-	// Lock-free write: claims (len(Instructions)+1) slots atomically.
+	// Lock-free write: claims 1 header slot (header-only mode, no instruction sub-slots).
 	t.traceRing.Write(trace)
 
 	t.QueueMetric(MetricPoint{Name: "requests", Value: 1, Dims: []KV{{K: "api", V: strconv.FormatUint(uint64(trace.Summary.ApiID), 10)}, {K: "tenant", V: strconv.FormatUint(uint64(trace.Summary.TenantID), 10)}, {K: "status", V: strconv.Itoa(status)}}})
@@ -749,18 +743,6 @@ func (t *Telemetry) enqueueExport(trace RequestTrace) {
 	default:
 		t.droppedExports.Add(1)
 	}
-}
-
-func (t *Telemetry) AppendInstructionEvent(trace *RequestTrace, e InstructionEvent) {
-	if trace == nil {
-		return
-	}
-	if t.cfg.MaxEvents > 0 && len(trace.Instructions) >= t.cfg.MaxEvents {
-		return
-	}
-	trace.instructionSeq++
-	e.Seq = trace.instructionSeq
-	trace.Instructions = append(trace.Instructions, e)
 }
 
 func (t *Telemetry) AppendUpstreamEvent(trace *RequestTrace, e UpstreamEvent) {

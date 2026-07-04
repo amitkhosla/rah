@@ -519,6 +519,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			// through to the fallback chain exactly as a provider-returned 429 would.
 			var lastStatus int
 			var lastErrBody []byte // last provider error response body, for final exhaustion response
+			var llmSeq uint8      // incremented each time AppendLLMCall is called
 			if detail, allowed := engine.CheckUpstreamLimitWithDetail(activeCfg.Alias); !allowed {
 				state.AddTraceAttr("rate_limited", activeCfg.Alias)
 				state.AddTraceAttr("rate_limit_detail", detail) // e.g. "minute:60/60"
@@ -601,7 +602,23 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
 							streamProvider = "anthropic"
 						}
-						inTok, outTok, streamErr := streamLLMToClient(ctx, resp.Body, streamProvider)
+						// Tee the SSE body to accumulate raw bytes for verbatim capture.
+						var sseAccumBuf bytes.Buffer
+						teedRC := io.NopCloser(io.TeeReader(resp.Body, &sseAccumBuf))
+						inTok, outTok, streamErr := streamLLMToClient(ctx, teedRC, streamProvider)
+						// Capture raw bytes (even on partial error).
+						observability.AppendLLMCall(&ctx.LLMCalls, observability.LLMCallEntry{
+							PC:           state.PC,
+							Seq:          llmSeq,
+							ModelName:    activeCfg.Alias,
+							Status:       uint16(resp.StatusCode),
+							InputTokens:  uint32(inTok),
+							OutputTokens: uint32(outTok),
+							DurationNs:   elapsed.Nanoseconds(),
+							ReqBytes:     body,
+							ResBytes:     sseAccumBuf.Bytes(),
+						})
+						llmSeq++
 						// Write token counts to slots even in streaming mode.
 						if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
 							ctx.IntSlots[cfg.InputTokensSlot] = int64(inTok)
@@ -749,35 +766,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						}
 						state.AddTraceAttr("input_tokens", strconv.Itoa(llmResp.InputTokens))
 						state.AddTraceAttr("output_tokens", strconv.Itoa(llmResp.OutputTokens))
+						var computedCostMicro uint32
 						if activeCfg.CostPerInputToken > 0 || activeCfg.CostPerOutputToken > 0 {
 							cost := float64(llmResp.InputTokens)/1e6*activeCfg.CostPerInputToken +
 								float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
 							state.AddTraceAttr("cost_usd", fmt.Sprintf("%.6f", cost))
+							computedCostMicro = uint32(cost * 1e6)
 						}
-						// For multi-turn (MessagesSlot), log the serialized messages array.
-						promptFull := promptContent
-						if cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) {
-							if raw := ctx.ByteSlots[cfg.MessagesSlot]; len(raw) > 0 {
-								promptFull = string(raw)
-							}
-						}
-						promptSnip := promptFull
-						if len(promptSnip) > 4000 {
-							promptSnip = promptSnip[:4000] + "…"
-						}
-						state.AddTraceAttr("prompt", promptSnip)
-						if systemContent != "" {
-							sysSnip := systemContent
-							if len(sysSnip) > 1000 {
-								sysSnip = sysSnip[:1000] + "…"
-							}
-							state.AddTraceAttr("system", sysSnip)
-						}
-						respSnip := llmResp.Content
-						if len(respSnip) > 4000 {
-							respSnip = respSnip[:4000] + "…"
-						}
-						state.AddTraceAttr("response", respSnip)
 
 						// Optional full-detail JSONL file logging for incident/debug use.
 						observability.WriteDetailLog(map[string]any{
@@ -788,10 +783,22 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							"model_id":      activeCfg.ModelID,
 							"input_tokens":  llmResp.InputTokens,
 							"output_tokens": llmResp.OutputTokens,
-							"prompt":        promptFull,
-							"system":        systemContent,
-							"response":      llmResp.Content,
 						})
+
+						// Capture verbatim raw bytes for the non-streaming response.
+						observability.AppendLLMCall(&ctx.LLMCalls, observability.LLMCallEntry{
+							PC:           state.PC,
+							Seq:          llmSeq,
+							ModelName:    activeCfg.Alias,
+							Status:       uint16(lastStatus),
+							InputTokens:  uint32(llmResp.InputTokens),
+							OutputTokens: uint32(llmResp.OutputTokens),
+							CostMicro:    computedCostMicro,
+							DurationNs:   elapsed.Nanoseconds(),
+							ReqBytes:     body,
+							ResBytes:     respBody,
+						})
+						llmSeq++
 					}
 
 					return state.PC + 1

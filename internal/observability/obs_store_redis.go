@@ -303,6 +303,26 @@ func (s *redisObsStore) QueryInstrSchema(_ context.Context, _ string) ([]InstrSc
 	return nil, nil
 }
 
+// ── UpsertVarSchema / QueryVarSchema ─────────────────────────────────────────
+
+// UpsertVarSchema is a no-op for Redis (payloads too large for Redis).
+func (s *redisObsStore) UpsertVarSchema(_ context.Context, _ []VarSchemaRow) error { return nil }
+
+// QueryVarSchema returns nil for Redis (V1 store).
+func (s *redisObsStore) QueryVarSchema(_ context.Context, _ string) ([]VarSchemaRow, error) {
+	return nil, nil
+}
+
+// ── WritePayloadBatch / QueryPayloads ─────────────────────────────────────────
+
+// WritePayloadBatch is a no-op for the Redis store (V1 — payload bytes stored elsewhere).
+func (s *redisObsStore) WritePayloadBatch(_ context.Context, _ []PayloadRecord) error { return nil }
+
+// QueryPayloads returns nil for the Redis store (V1 — not supported).
+func (s *redisObsStore) QueryPayloads(_ context.Context, _ uint64) ([]PayloadRecord, error) {
+	return nil, nil
+}
+
 // ── Close ─────────────────────────────────────────────────────────────────────
 
 func (s *redisObsStore) Close() error { return s.closeFn() }

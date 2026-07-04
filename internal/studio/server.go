@@ -400,6 +400,7 @@ func (s *Server) Handler() http.Handler {
 			r2.URL.Path = strings.TrimPrefix(r.URL.Path, "/api")
 			s.obsHandler.TenantDetailHandler(w, r2)
 		})
+		apiMux.HandleFunc("/api/observability/instr-schema", s.obsHandler.InstrSchemaHandler)
 	} else {
 		apiMux.HandleFunc("/api/observability/", s.obsGatewayProxy)
 	}

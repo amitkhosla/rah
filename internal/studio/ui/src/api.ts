@@ -561,6 +561,21 @@ export async function fetchObsTraces(params?: { api?: string; limit?: number }):
   return r.json()
 }
 
+export interface InstrSchemaRow {
+  api_name: string
+  endpoint_id: number
+  pc: number
+  step_type: string
+  step_name: string
+}
+
+export async function fetchInstrSchema(apiName: string): Promise<InstrSchemaRow[]> {
+  const r = await fetch(`/api/observability/instr-schema?api=${encodeURIComponent(apiName)}`, { credentials: 'include' })
+  if (!r.ok) throw new Error(await r.text())
+  const body = await r.json()
+  return Array.isArray(body) ? body : (body.data ?? [])
+}
+
 export interface ObsDetailLogConfig {
   enabled: boolean
   path: string

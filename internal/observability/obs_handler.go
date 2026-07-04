@@ -84,7 +84,37 @@ func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, na
 	mux.HandleFunc("/observability/apis/", h.APIDetailHandler)
 	mux.HandleFunc("/observability/tenants/", h.TenantDetailHandler)
 	mux.HandleFunc("/observability/api-schemas", h.APISchemaHandler)
+	mux.HandleFunc("/observability/instr-schema", h.InstrSchemaHandler)
 	return h
+}
+
+// InstrSchemaHandler handles GET /observability/instr-schema.
+// Returns instruction schema rows for a given API name, used by Studio to render
+// the instruction timing waterfall in the trace view.
+func (h *ObsHandler) InstrSchemaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	apiName := r.URL.Query().Get("api")
+	if apiName == "" {
+		writeError(w, http.StatusBadRequest, "api param required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	rows, err := h.writer.Store().QueryInstrSchema(ctx, apiName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []InstrSchemaRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": rows})
 }
 
 // APISchemaHandler handles GET /observability/api-schemas.

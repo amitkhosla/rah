@@ -121,6 +121,28 @@ func (w *ObsWriter) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot
 // Store returns the underlying ObsStore for direct queries.
 func (w *ObsWriter) Store() ObsStore { return w.store }
 
+// UpsertVarSchema persists variable schema rows to the store.
+// Called once at bake time after each API is compiled.
+func (w *ObsWriter) UpsertVarSchema(rows []VarSchemaRow) {
+	if !w.enabled.Load() || len(rows) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = w.store.UpsertVarSchema(ctx, rows)
+}
+
+// UpsertInstrSchema persists instruction schema rows to the store.
+// Called once at bake time after each API endpoint is compiled.
+func (w *ObsWriter) UpsertInstrSchema(rows []InstrSchemaRow) {
+	if !w.enabled.Load() || len(rows) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = w.store.UpsertInstrSchema(ctx, rows)
+}
+
 // Close stops the background drain goroutines, performs a final flush, and
 // waits for all in-flight store writes to complete. Safe to call more than once.
 func (w *ObsWriter) Close() {
@@ -132,4 +154,47 @@ func (w *ObsWriter) Close() {
 		w.ring.stopAndWait()
 		w.traceRing.stopAndWait()
 	}
+}
+
+// PersistTrace builds a TraceRecord from the supplied fields and enqueues it
+// to the async write ring using inline per-instruction buffers (no heap alloc).
+// Must be called after the response is sent.
+// Returns false if the ring is at its hard limit (record dropped).
+func (w *ObsWriter) PersistTrace(
+	traceID uint64,
+	timestamp int64,
+	apiName string,
+	apiVersionID uint32,
+	endpointID uint8,
+	tenantID uint16,
+	status int,
+	totalNs, gatewayNs, upstreamNs int64,
+	reqBytes, resBytes int64,
+	upstreamCalls uint16,
+	phaseDurs [10]int32,
+	instr InstrSnapshot,
+	llmCalls *LLMCallBlock,
+) bool {
+	if !w.enabled.Load() {
+		return true
+	}
+	rec := TraceRecord{
+		TraceID:       traceID,
+		Timestamp:     timestamp,
+		ApiName:       apiName,
+		TenantID:      tenantID,
+		Status:        status,
+		TotalMs:       float64(totalNs) / 1e6,
+		ApiVersionID:  apiVersionID,
+		EndpointID:    endpointID,
+		DurationNs:    totalNs,
+		GatewayNs:     gatewayNs,
+		UpstreamNs:    upstreamNs,
+		ReqBytes:      reqBytes,
+		ResBytes:      resBytes,
+		UpstreamCalls: upstreamCalls,
+		PhaseDurs:     phaseDurs,
+		LLMCalls:      LLMCallRows(llmCalls),
+	}
+	return w.traceRing.enqueueWithInstr(rec, instr, llmCalls)
 }
