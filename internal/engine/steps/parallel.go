@@ -73,34 +73,65 @@ func releaseBranchCtx(bc *rctx.Context) {
 
 // ── Worker pool ───────────────────────────────────────────────────────────────
 
-// workerPool is a fixed-size goroutine pool with a buffered task queue.
+// workerPool is a goroutine pool that spawns workers on demand up to maxSize.
+// Workers stay alive for idleTimeout to service back-to-back requests without
+// re-creating goroutines; they exit after idleTimeout of inactivity so no
+// goroutines are held at idle.
 type workerPool struct {
-	tasks chan func()
+	tasks       chan func()
+	sem         chan struct{} // guards max live goroutines
+	idleTimeout time.Duration
 }
 
-// globalWorkerPool is the package-level goroutine pool shared by all
-// ParallelStep invocations. 128 workers handle typical gateway concurrency
-// without unbounded goroutine growth.
+const workerIdleTimeout = 5 * time.Second
+
+// globalWorkerPool is shared by all ParallelStep invocations. Workers are
+// spawned lazily: none exist at startup; up to 128 may run under load; all
+// exit within workerIdleTimeout of the last submitted task.
 var globalWorkerPool = newWorkerPool(128)
 
-func newWorkerPool(size int) *workerPool {
-	p := &workerPool{tasks: make(chan func(), 1024)}
-	for i := 0; i < size; i++ {
-		go func() {
-			for task := range p.tasks {
-				func() {
-					defer func() { recover() }() // C4: absorb worker panics
-					task()
-				}()
-			}
-		}()
+func newWorkerPool(maxSize int) *workerPool {
+	return &workerPool{
+		tasks:       make(chan func(), 1024),
+		sem:         make(chan struct{}, maxSize),
+		idleTimeout: workerIdleTimeout,
 	}
-	return p
 }
 
-// Submit enqueues a task. Blocks when the 1024-slot queue is full (back-pressure).
+// Submit enqueues f and ensures at least one worker is running.
+// If maxSize workers are already live, an existing worker will drain f.
+// Blocks only when the 1024-slot queue is full (back-pressure).
 func (p *workerPool) Submit(f func()) {
 	p.tasks <- f
+	select {
+	case p.sem <- struct{}{}: // got a slot — spawn a worker
+		go p.run()
+	default: // max workers already live; one will pick up the task
+	}
+}
+
+func (p *workerPool) run() {
+	defer func() { <-p.sem }()
+	timer := time.NewTimer(p.idleTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case task := <-p.tasks:
+			func() {
+				defer func() { recover() }() // C4: absorb worker panics
+				task()
+			}()
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(p.idleTimeout)
+		case <-timer.C:
+			return // idle timeout — release slot
+		}
+	}
 }
 
 // ── Branch execution ──────────────────────────────────────────────────────────

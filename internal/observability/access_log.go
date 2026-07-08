@@ -105,6 +105,12 @@ type AccessLogger struct {
 	signingKey      atomic.Pointer[[]byte]      // nil = no signing; set via SetSigningKey
 	snapshotCounter atomic.Uint64               // used for counter-based sampling
 	pipeline        atomic.Pointer[ingest.Pipeline] // nil until wired via SetPipeline
+
+	// Lifecycle management
+	mu      sync.Mutex
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	running bool
 }
 
 // SetPipeline wires the ingest pipeline into the access logger so that
@@ -131,7 +137,10 @@ func NewAccessLogger(queueSize int) *AccessLogger {
 		},
 	}
 	l.cfg.Store(&accessLogConfig{enabled: true, sampleRate: 1.0})
-	go l.drain()
+	l.stopCh = make(chan struct{})
+	l.doneCh = make(chan struct{})
+	l.running = true
+	go l.drainLoop(l.stopCh, l.doneCh)
 	return l
 }
 
@@ -302,6 +311,38 @@ func (l *AccessLogger) DroppedCount() uint64 {
 	return l.dropped.Load()
 }
 
+// Stop gracefully stops the drain goroutine, draining any remaining entries
+// before exiting. The channel l.ch remains open and can be written to after Stop() returns.
+// Stop is idempotent; calling it multiple times is safe.
+func (l *AccessLogger) Stop() {
+	l.mu.Lock()
+	if !l.running {
+		l.mu.Unlock()
+		return
+	}
+	stopCh := l.stopCh
+	doneCh := l.doneCh
+	l.running = false
+	l.mu.Unlock()
+	close(stopCh)
+	<-doneCh
+}
+
+// Restart starts the drain goroutine again after a Stop().
+// The channel l.ch continues to be used; no new channel is created.
+// Restart is idempotent; calling it multiple times (or when already running) is safe.
+func (l *AccessLogger) Restart() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.running {
+		return
+	}
+	l.stopCh = make(chan struct{})
+	l.doneCh = make(chan struct{})
+	l.running = true
+	go l.drainLoop(l.stopCh, l.doneCh)
+}
+
 // SetSigningKey installs a key for HMAC-SHA256 tamper-evidence on log lines.
 // Each line gains a trailing sig=<hex64> field computed over the rest of the line.
 // Pass nil or empty to disable signing. The key is copied internally.
@@ -315,7 +356,9 @@ func (l *AccessLogger) SetSigningKey(key []byte) {
 	l.signingKey.Store(&cp)
 }
 
-func (l *AccessLogger) drain() {
+func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
+	defer close(doneCh)
+
 	// 64 KB buffer: at ~200 bytes/line this batches ~320 lines per syscall.
 	// bufio auto-flushes when full; the ticker handles low-traffic flushing.
 	// Writing directly to os.Stderr avoids the global log.Print mutex entirely,
@@ -403,6 +446,91 @@ func (l *AccessLogger) drain() {
 			// Reset and return to pool — slice backing arrays are preserved.
 			entry.reset()
 			l.pool.Put(entry)
+
+		case <-stopCh:
+			// Drain remaining entries before exiting
+			ticker.Stop()
+			for {
+				select {
+				case entry, ok := <-l.ch:
+					if !ok {
+						_ = out.Flush()
+						return
+					}
+					sb.Reset()
+					sb.WriteString("[access]")
+					writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
+
+					// API identity — prefer name over internal ID
+					if entry.ApiName != "" {
+						writeKV(&sb, "api", entry.ApiName)
+					} else {
+						writeKVUint(&sb, "api_id", uint64(entry.ApiID))
+					}
+
+					// Tenant identity — prefer key over internal ID
+					if entry.TenantKey != "" {
+						writeKV(&sb, "tenant", entry.TenantKey)
+					} else if entry.TenantID != 0 {
+						writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
+					}
+
+					// Caller identity — omit when no API key auth was used
+					if entry.CallerKey != "" {
+						writeKV(&sb, "caller_key", entry.CallerKey)
+					}
+					if entry.CallerID != 0 {
+						writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
+					}
+
+					writeKV(&sb, "method", entry.Method)
+					writeKV(&sb, "path", entry.Path)
+					writeKVInt(&sb, "status", int64(entry.Status))
+
+					// Timing breakdown
+					writeKVFloat(&sb, "total_ms", float64(entry.TotalNs)/1e6)
+					writeKVFloat(&sb, "gateway_ms", float64(entry.GatewayNs)/1e6)
+					writeKVFloat(&sb, "upstream_ms", float64(entry.UpstreamNs)/1e6)
+					writeKVFloat(&sb, "ttfb_ms", float64(entry.TTFBNs)/1e6)
+
+					// Bytes
+					writeKVInt(&sb, "req_bytes", entry.ReqBytes)
+					writeKVInt(&sb, "res_bytes", entry.ResBytes)
+
+					// Customer-configured extra fields
+					for _, kv := range entry.Extra {
+						writeKV(&sb, kv.K, kv.V)
+					}
+
+					// Insights (derived flags)
+					for _, kv := range entry.Insights {
+						writeKV(&sb, kv.K, kv.V)
+					}
+
+					// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
+					// Signing happens in the async drain goroutine — allocation here is acceptable.
+					if kp := l.signingKey.Load(); kp != nil {
+						mac := hmac.New(sha256.New, *kp)
+						mac.Write([]byte(sb.String()))
+						writeKV(&sb, "sig", hex.EncodeToString(mac.Sum(nil)))
+					}
+
+					sb.WriteByte('\n')
+					_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
+
+					// Emit to ingest pipeline BEFORE reset so fields are still populated.
+					if p := l.pipeline.Load(); p != nil {
+						emitAccessLogEvent(p, entry)
+					}
+
+					// Reset and return to pool — slice backing arrays are preserved.
+					entry.reset()
+					l.pool.Put(entry)
+				default:
+					_ = out.Flush()
+					return
+				}
+			}
 
 		case <-ticker.C:
 			_ = out.Flush() // one syscall per ms at low traffic; noop when buffer is empty

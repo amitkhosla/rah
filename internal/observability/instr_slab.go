@@ -110,8 +110,10 @@ type InstrSlabRing struct {
 	active  int32 // current active slab index; atomic
 	slabCap int
 	dropped uint64 // atomic
-	stop    chan struct{}
-	done    sync.WaitGroup
+	mu      sync.Mutex
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	running bool
 
 	// drainFn is called for every ready slot during drain.
 	// Swapped from stubDrain to realDrain during S11 wiring.
@@ -124,7 +126,6 @@ type InstrSlabRing struct {
 func NewInstrSlabRing(slabCap int) *InstrSlabRing {
 	r := &InstrSlabRing{
 		slabCap: slabCap,
-		stop:    make(chan struct{}),
 		drainFn: stubDrain,
 	}
 	for i := range r.slabs {
@@ -140,13 +141,42 @@ func (r *InstrSlabRing) SetDrainFn(fn func(slot *InstrSlot)) {
 }
 
 func (r *InstrSlabRing) Start() {
-	r.done.Add(1)
-	go r.drain()
+	r.start()
 }
 
 func (r *InstrSlabRing) StopAndWait() {
-	close(r.stop)
-	r.done.Wait()
+	r.stop()
+}
+
+func (r *InstrSlabRing) Restart() {
+	r.stop()
+	r.start()
+}
+
+func (r *InstrSlabRing) start() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running {
+		return
+	}
+	r.stopCh = make(chan struct{})
+	r.doneCh = make(chan struct{})
+	r.running = true
+	go r.drain(r.stopCh, r.doneCh)
+}
+
+func (r *InstrSlabRing) stop() {
+	r.mu.Lock()
+	if !r.running {
+		r.mu.Unlock()
+		return
+	}
+	stopCh := r.stopCh
+	doneCh := r.doneCh
+	r.running = false
+	r.mu.Unlock()
+	close(stopCh)
+	<-doneCh
 }
 
 // InstrSlabDropped returns the total dropped batch count since creation.
@@ -186,8 +216,8 @@ func (r *InstrSlabRing) Write(b InstrBatch) {
 }
 
 // drain is the single consumer goroutine.
-func (r *InstrSlabRing) drain() {
-	defer r.done.Done()
+func (r *InstrSlabRing) drain(stopCh <-chan struct{}, doneCh chan struct{}) {
+	defer close(doneCh)
 
 	rotateTick := time.NewTicker(obsWindowMs * time.Millisecond)
 	defer rotateTick.Stop()
@@ -196,7 +226,7 @@ func (r *InstrSlabRing) drain() {
 		select {
 		case <-rotateTick.C:
 			r.rotateSlab()
-		case <-r.stop:
+		case <-stopCh:
 			r.rotateSlab()
 			return
 		}

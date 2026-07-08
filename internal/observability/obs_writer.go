@@ -27,12 +27,11 @@ const (
 // backed by a separate drain goroutine that flushes batches to WriteTraceBatch.
 //
 // ObsWriter is safe for concurrent use. Call Start() once before use and
-// Close() (or cancel the context passed to Start()) to shut down cleanly.
+// Stop() to shut down cleanly. Call Restart() to resume after stopping.
 type ObsWriter struct {
 	store      ObsStore
 	ring       *obsSlabRing
 	traceRing  *traceWriteRing
-	stop       chan struct{}
 	enabled    atomic.Bool
 }
 
@@ -54,24 +53,17 @@ func NewObsWriter(store ObsStore, batchSize int, flushEvery time.Duration) *ObsW
 		store:     store,
 		ring:      newObsSlabRing(store, obsComputeSlabCap(), batchSize, flushEvery),
 		traceRing: newTraceWriteRing(store, 4, 64, 16),
-		stop:      make(chan struct{}),
 	}
 	w.enabled.Store(true)
 	return w
 }
 
 // Start launches the background drain goroutines. Call once before the first
-// WriteAccessLog or EnqueueTrace. Stops when ctx is cancelled or Close() is called.
+// WriteAccessLog or EnqueueTrace. Call Stop() to shut down cleanly.
+// Idempotent — safe to call when already started.
 func (w *ObsWriter) Start(ctx context.Context) {
 	w.ring.start()
 	w.traceRing.start()
-	go func() {
-		select {
-		case <-ctx.Done():
-			w.Close()
-		case <-w.stop:
-		}
-	}()
 }
 
 // SetEnabled atomically sets whether access log writes are enabled.
@@ -143,17 +135,19 @@ func (w *ObsWriter) UpsertInstrSchema(rows []InstrSchemaRow) {
 	_ = w.store.UpsertInstrSchema(ctx, rows)
 }
 
-// Close stops the background drain goroutines, performs a final flush, and
-// waits for all in-flight store writes to complete. Safe to call more than once.
-func (w *ObsWriter) Close() {
-	select {
-	case <-w.stop:
-		// already stopped
-	default:
-		close(w.stop)
-		w.ring.stopAndWait()
-		w.traceRing.stopAndWait()
-	}
+// Stop stops both background drain goroutines, performs a final flush, and
+// waits for all in-flight store writes to complete. Idempotent — safe to call
+// when already stopped or never started.
+func (w *ObsWriter) Stop() {
+	w.ring.stop()
+	w.traceRing.stop()
+}
+
+// Restart starts the background drain goroutines. Safe to call after Stop()
+// or on a writer that was never started. Idempotent if already running.
+func (w *ObsWriter) Restart() {
+	w.ring.start()
+	w.traceRing.start()
 }
 
 // PersistTrace builds a TraceRecord from the supplied fields and enqueues it

@@ -207,7 +207,7 @@ func main() {
 	}
 	obsStore := observability.NewObsStoreFromParams(gatewayCtx, obsStoreParams)
 	obsWriter := observability.NewObsWriter(obsStore, 200, 2*time.Second)
-	obsWriter.Start(gatewayCtx)
+	defer obsWriter.Stop()
 
 	// Instruction-timing slab ring: lock-free counter aggregation, one batch per request.
 	// The drain function is set after fm is initialised (below), just before serving traffic.
@@ -275,7 +275,17 @@ func main() {
 		traceSampleRate = 1
 	}
 	instructionTiming := obsCfg.Traces.InstructionTiming
-	obs.UpdateConfig(&traceMode, &traceSampleRate, &instructionTiming, nil, nil, nil, nil)
+	infoLogEnabled := obsCfg.InfoLog.Enabled
+	var infoLogFields []string
+	if len(obsCfg.InfoLog.Fields) > 0 {
+		infoLogFields = obsCfg.InfoLog.Fields
+	}
+	obs.UpdateConfig(&traceMode, &traceSampleRate, &instructionTiming, nil, nil, &infoLogEnabled, infoLogFields)
+	// Stop Telemetry background goroutines when all features that use them are off.
+	// NewFromEnv() always starts them; config flags are applied after construction.
+	if !traceMode && !infoLogEnabled && !obsCfg.Metrics.Enabled {
+		obs.Stop()
+	}
 	alwaysTrace5xx := obsCfg.Traces.AlwaysTrace5xx
 	accessLog := observability.NewAccessLogger(8192)
 	if obsCfg.AccessLog.SigningKeyRef != "" {
@@ -297,6 +307,11 @@ func main() {
 	accessLogEnabled := alCfg.Enabled == nil || *alCfg.Enabled
 	accessLog.UpdateConfig(accessLogEnabled, alCfg.SampleRate)
 	obsWriter.SetEnabled(accessLogEnabled)
+	if accessLogEnabled {
+		obsWriter.Start(gatewayCtx)
+	} else {
+		accessLog.Stop() // NewAccessLogger auto-starts; stop when explicitly disabled
+	}
 	registry := control.NewNameRegistry()
 
 	// ── S8: OpenTelemetry SDK init ──────────────────────────────────────────────
@@ -798,9 +813,37 @@ func main() {
 			}
 		}
 	})
-	instrRing.Start()
-	defer instrRing.StopAndWait()
+	if obsCfg.Traces.Enabled {
+		instrRing.Start()
+	}
+	defer instrRing.StopAndWait() // idempotent noop if never started
 	fm.InstrRing = instrRing
+
+	// Build initial live state reflecting what was already started at boot.
+	var gcStatsEnabled atomic.Bool
+	gcStatsEnabled.Store(obsCfg.GCStats.Enabled)
+	accessLogEnabledVal := accessLogEnabled
+	accessLogSampleRateVal := alCfg.SampleRate
+	metricsEnabledVal := cfgMgr.Gateway().Observability.Metrics.Enabled
+	tracesEnabledVal := obsCfg.Traces.Enabled
+	sampleRateVal := traceSampleRate
+	instrTimingVal := instructionTiming
+	obsController := observability.NewObsController(
+		obs, obsWriter, instrRing, accessLog, metricsAgg,
+		observability.RuntimeConfigPatch{
+			TracesEnabled:       &tracesEnabledVal,
+			TraceSampleRate:     &sampleRateVal,
+			InstructionTiming:   &instrTimingVal,
+			AccessLogEnabled:    &accessLogEnabledVal,
+			AccessLogSampleRate: &accessLogSampleRateVal,
+			MetricsEnabled:      &metricsEnabledVal,
+			InfoLogEnabled:      &infoLogEnabled,
+			GCStatsEnabled:      &obsCfg.GCStats.Enabled,
+		},
+	)
+	obsController.GCStatsToggle = func(enabled bool) {
+		gcStatsEnabled.Store(enabled)
+	}
 
 	// Load default rate limit presets from config into the registry.
 	for _, preset := range cfg.DefaultRateLimits {
@@ -1380,6 +1423,7 @@ func main() {
 		control.RegisterCacheRoutes(mux, cacheMgr)
 	}
 	mux.HandleFunc("/debug/observability", obs.DebugHandler)
+	observability.RegisterObsControllerRoutes(mux, obsController)
 	obsHandler := observability.RegisterObsRoutes(mux, obsWriter, obs, registry.GetNameByID)
 	obsHandler.SetSchemaProvider(func() []observability.APISchema {
 		st := fm.State.Load()
@@ -1648,9 +1692,10 @@ func main() {
 	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
 
 	// Background GC stats logger — writes a compact [gc-stats] line to stderr
-	// every 30 seconds. Useful for correlating latency spikes with GC behaviour
-	// without needing pprof attached. Reads MemStats (non-STW in Go 1.15+) and
-	// includes goroutine count, heap, last GC pause, and dropped access log count.
+	// every 30 seconds. Controlled by gcStatsEnabled atomic flag (togglable at runtime
+	// via PATCH /observability/config or obsCfg.GCStats.Enabled in gateway.yaml).
+	// Reads MemStats (non-STW in Go 1.15+) and includes goroutine count, heap,
+	// last GC pause, and dropped access log count.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -1659,6 +1704,9 @@ func main() {
 			case <-gatewayCtx.Done():
 				return
 			case <-ticker.C:
+				if !gcStatsEnabled.Load() {
+					continue
+				}
 				var ms runtime.MemStats
 				runtime.ReadMemStats(&ms)
 				lastPauseUs := int64(0)

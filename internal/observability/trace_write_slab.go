@@ -215,16 +215,18 @@ func (p *slabPool) put(s *traceWriteSlab) {
 // Writers claim slots via atomic AddInt64; the drain goroutine is the sole
 // consumer and the only goroutine that advances head or returns slabs to the pool.
 type traceWriteRing struct {
-	head    atomic.Pointer[traceWriteSlab] // drain reads from here
-	tail    atomic.Pointer[traceWriteSlab] // writers append here
-	mu      sync.Mutex                     // protects tail advancement only
-	pool    slabPool
-	recPool sync.Pool // elements: *pooledTraceRec
-	wakeC   chan struct{}
-	dropped uint64 // atomic
-	store   ObsStore
-	stop    chan struct{}
-	done    sync.WaitGroup
+	head       atomic.Pointer[traceWriteSlab] // drain reads from here
+	tail       atomic.Pointer[traceWriteSlab] // writers append here
+	mu         sync.Mutex                     // protects tail advancement only
+	lifecycleMu sync.Mutex                    // protects lifecycle state (start/stop)
+	stopCh     chan struct{}
+	doneCh     chan struct{}
+	running    bool
+	pool       slabPool
+	recPool    sync.Pool // elements: *pooledTraceRec
+	wakeC      chan struct{}
+	dropped    uint64 // atomic
+	store      ObsStore
 }
 
 // newTraceWriteRing creates a traceWriteRing and pre-allocates initialSlabs
@@ -238,7 +240,6 @@ func newTraceWriteRing(store ObsStore, initialSlabs, maxSlabs, warnAt int) *trac
 		},
 		wakeC: make(chan struct{}, 1),
 		store: store,
-		stop:  make(chan struct{}),
 	}
 	r.recPool.New = func() any { return &pooledTraceRec{} }
 
@@ -382,15 +383,31 @@ func (r *traceWriteRing) droppedCount() uint64 {
 
 // start launches the background drain goroutine.
 func (r *traceWriteRing) start() {
-	r.done.Add(1)
-	go r.drain()
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.running {
+		return
+	}
+	r.stopCh = make(chan struct{})
+	r.doneCh = make(chan struct{})
+	r.running = true
+	go r.drain(r.stopCh, r.doneCh)
 }
 
-// stopAndWait signals the drain goroutine to stop and waits for it to finish
-// draining and flushing all remaining records.
-func (r *traceWriteRing) stopAndWait() {
-	close(r.stop)
-	r.done.Wait()
+// stop signals the drain goroutine to stop and waits for it to finish
+// draining and flushing all remaining records. Idempotent.
+func (r *traceWriteRing) stop() {
+	r.lifecycleMu.Lock()
+	if !r.running {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	stopCh := r.stopCh
+	doneCh := r.doneCh
+	r.running = false
+	r.lifecycleMu.Unlock()
+	close(stopCh)
+	<-doneCh
 }
 
 // drainSlab collects all ready slots from slab into batch and payloadBatch.
@@ -463,8 +480,8 @@ func (r *traceWriteRing) drainSlab(slab *traceWriteSlab, batch *[]TraceRecord, p
 //   - Backs off exponentially (up to traceMaxSleepDur) when there is nothing to drain.
 //   - Uses a short poll (traceMinSleepDur) when records are flowing steadily.
 //   - Uses traceSleepMid when some records were found but the batch is not yet full.
-func (r *traceWriteRing) drain() {
-	defer r.done.Done()
+func (r *traceWriteRing) drain(stopCh <-chan struct{}, doneCh chan struct{}) {
+	defer close(doneCh)
 
 	batch := make([]TraceRecord, 0, traceBatchSize*2)
 	payloadBatch := make([]PayloadRecord, 0, traceBatchSize*4)
@@ -498,7 +515,7 @@ func (r *traceWriteRing) drain() {
 
 	for {
 		select {
-		case <-r.stop:
+		case <-stopCh:
 			// Drain remaining records and flush before exiting.
 			r.drainAll(&batch, &payloadBatch)
 			flush()

@@ -160,8 +160,10 @@ type obsSlabRing struct {
 	batchSize  int
 	flushEvery time.Duration
 	dropped    uint64 // atomic
-	stop       chan struct{}
-	done       sync.WaitGroup
+	mu         sync.Mutex
+	stopCh     chan struct{}
+	doneCh     chan struct{}
+	running    bool
 }
 
 func newObsSlabRing(store ObsStore, slabCap, batchSize int, flushEvery time.Duration) *obsSlabRing {
@@ -170,7 +172,6 @@ func newObsSlabRing(store ObsStore, slabCap, batchSize int, flushEvery time.Dura
 		store:      store,
 		batchSize:  batchSize,
 		flushEvery: flushEvery,
-		stop:       make(chan struct{}),
 	}
 	for i := range r.slabs {
 		r.slabs[i] = newObsSlab(slabCap)
@@ -179,13 +180,33 @@ func newObsSlabRing(store ObsStore, slabCap, batchSize int, flushEvery time.Dura
 }
 
 func (r *obsSlabRing) start() {
-	r.done.Add(1)
-	go r.drain()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running {
+		return
+	}
+	r.stopCh = make(chan struct{})
+	r.doneCh = make(chan struct{})
+	r.running = true
+	go r.drain(r.stopCh, r.doneCh)
+}
+
+func (r *obsSlabRing) stop() {
+	r.mu.Lock()
+	if !r.running {
+		r.mu.Unlock()
+		return
+	}
+	stopCh := r.stopCh
+	doneCh := r.doneCh
+	r.running = false
+	r.mu.Unlock()
+	close(stopCh)
+	<-doneCh
 }
 
 func (r *obsSlabRing) stopAndWait() {
-	close(r.stop)
-	r.done.Wait()
+	r.stop()
 }
 
 // write stamps record into the current active slab. Hot path: two atomics
@@ -244,8 +265,8 @@ func (r *obsSlabRing) write(record AccessLogRecord) {
 // drain is the single consumer goroutine. It rotates slabs every obsWindowMs,
 // accumulates records into a pending batch, and flushes to the store either
 // when the batch reaches batchSize or when flushEvery elapses.
-func (r *obsSlabRing) drain() {
-	defer r.done.Done()
+func (r *obsSlabRing) drain(stopCh <-chan struct{}, doneCh chan struct{}) {
+	defer close(doneCh)
 
 	rotateTick := time.NewTicker(obsWindowMs * time.Millisecond)
 	flushTick := time.NewTicker(r.flushEvery)
@@ -277,7 +298,7 @@ func (r *obsSlabRing) drain() {
 		case <-flushTick.C:
 			flush()
 
-		case <-r.stop:
+		case <-stopCh:
 			r.rotateSlab(&pending)
 			flush()
 			return

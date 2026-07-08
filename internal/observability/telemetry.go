@@ -242,6 +242,13 @@ type Telemetry struct {
 
 	traceRing *TraceSlabRing // lock-free per-request trace writer
 
+	// Background goroutine lifecycle — Stop/Start are idempotent and safe to call
+	// concurrently. workerStop is closed to signal workers; data channels stay open.
+	lifecycleMu   sync.Mutex
+	workerRunning bool
+	workerStop    chan struct{}
+	workerDone    sync.WaitGroup
+
 	mu        sync.Mutex
 	custom    map[string]*metricCounter
 	instrTimings map[string]*counter // per-name aggregation, updated by drain goroutine
@@ -361,80 +368,167 @@ func New(cfg Config) *Telemetry {
 	// Pre-allocate 64 slots — covers most deployments without a single grow.
 	initial := make([]apiStat, 64)
 	t.apiStats.Store(&initial)
-	go t.exportWorker()
-	go t.metricWorker()
-	go t.upstreamWorker()
+	t.workerStop = make(chan struct{})
+	t.workerRunning = true
+	t.workerDone.Add(3)
+	go t.runExportWorker(t.workerStop)
+	go t.runMetricWorker(t.workerStop)
+	go t.runUpstreamWorker(t.workerStop)
 	return t
 }
 
-func (t *Telemetry) exportWorker() {
-	for trace := range t.exportCh {
-		tenantName := t.resolveTenantName(trace.Summary.TenantID)
-		if t.sink != nil {
-			if trace.Summary.TraceID == 0 {
-				t.sink.EmitSummary(trace.Summary, tenantName)
-			} else {
-				t.sink.EmitTrace(trace)
-			}
-		}
-		if t.reqSummaryLog.Load() {
-			bp := summaryBufPool.Get().(*[]byte)
-			*bp = appendSummaryFields((*bp)[:0], t.cfg.InfoLogFields, trace.Summary, tenantName)
-			gatewaylog.Default.Info(string(*bp))
-			summaryBufPool.Put(bp)
-		}
+// Stop stops the TraceSlabRing drain goroutine and the three worker goroutines,
+// draining any pending items before returning. Idempotent — safe to call when
+// already stopped or never started.
+func (t *Telemetry) Stop() {
+	t.lifecycleMu.Lock()
+	if !t.workerRunning {
+		t.lifecycleMu.Unlock()
+		return
 	}
+	t.workerRunning = false
+	t.traceRing.StopAndWait()
+	close(t.workerStop)
+	t.lifecycleMu.Unlock()
+	t.workerDone.Wait()
 }
 
-func (t *Telemetry) upstreamWorker() {
-	for u := range t.upstreamCh {
-		tenantName := t.resolveTenantName(u.TenantID)
-		var tenantField gatewaylog.Field
-		if tenantName != "" {
-			tenantField = gatewaylog.F("tenant", tenantName)
+// Start restarts the background goroutines after Stop(). Idempotent — safe to
+// call when already running.
+func (t *Telemetry) Start() {
+	t.lifecycleMu.Lock()
+	defer t.lifecycleMu.Unlock()
+	if t.workerRunning {
+		return
+	}
+	t.workerStop = make(chan struct{})
+	t.traceRing.Start()
+	t.workerDone.Add(3)
+	go t.runExportWorker(t.workerStop)
+	go t.runMetricWorker(t.workerStop)
+	go t.runUpstreamWorker(t.workerStop)
+	t.workerRunning = true
+}
+
+func (t *Telemetry) handleExport(trace RequestTrace) {
+	tenantName := t.resolveTenantName(trace.Summary.TenantID)
+	if t.sink != nil {
+		if trace.Summary.TraceID == 0 {
+			t.sink.EmitSummary(trace.Summary, tenantName)
 		} else {
-			tenantField = gatewaylog.Fint("tenant_id", int64(u.TenantID))
+			t.sink.EmitTrace(trace)
 		}
-		gatewaylog.Default.Info("upstream",
-			gatewaylog.Fint("api", int64(u.ApiID)),
-			tenantField,
-			gatewaylog.Fint("call", int64(u.Event.Seq)),
-			gatewaylog.Fint("attempt", int64(u.Event.Attempt)),
-			gatewaylog.F("url", u.Event.URL),
-			gatewaylog.Fint("status", int64(u.Event.Status)),
-			gatewaylog.Ffloat("connect_ms", float64(u.Event.ConnectDurationNs)/1e6),
-			gatewaylog.Ffloat("ttfb_ms", float64(u.Event.TTFBNs)/1e6),
-			gatewaylog.Ffloat("total_ms", float64(u.Event.TotalNs)/1e6),
-			gatewaylog.Fint("bytes_tx", u.Event.BytesSent),
-			gatewaylog.Fint("bytes_rx", u.Event.BytesReceived),
-			gatewaylog.F("err", fmt.Sprintf("%q", u.Event.Err)),
-		)
+	}
+	if t.reqSummaryLog.Load() {
+		bp := summaryBufPool.Get().(*[]byte)
+		*bp = appendSummaryFields((*bp)[:0], t.cfg.InfoLogFields, trace.Summary, tenantName)
+		gatewaylog.Default.Info(string(*bp))
+		summaryBufPool.Put(bp)
 	}
 }
 
-func (t *Telemetry) metricWorker() {
-	for p := range t.metricCh {
-		key := p.Name
-		if len(p.Dims) > 0 {
-			b := strings.Builder{}
-			b.WriteString(key)
-			for _, kv := range p.Dims {
-				b.WriteByte('|')
-				b.WriteString(kv.K)
-				b.WriteByte('=')
-				b.WriteString(kv.V)
+func (t *Telemetry) runExportWorker(stopCh <-chan struct{}) {
+	defer t.workerDone.Done()
+	for {
+		select {
+		case trace := <-t.exportCh:
+			t.handleExport(trace)
+		case <-stopCh:
+			for {
+				select {
+				case trace := <-t.exportCh:
+					t.handleExport(trace)
+				default:
+					return
+				}
 			}
-			key = b.String()
 		}
-		t.mu.Lock()
-		mc := t.custom[key]
-		if mc == nil {
-			mc = &metricCounter{}
-			t.custom[key] = mc
+	}
+}
+
+func (t *Telemetry) handleUpstream(u upstreamLog) {
+	tenantName := t.resolveTenantName(u.TenantID)
+	var tenantField gatewaylog.Field
+	if tenantName != "" {
+		tenantField = gatewaylog.F("tenant", tenantName)
+	} else {
+		tenantField = gatewaylog.Fint("tenant_id", int64(u.TenantID))
+	}
+	gatewaylog.Default.Info("upstream",
+		gatewaylog.Fint("api", int64(u.ApiID)),
+		tenantField,
+		gatewaylog.Fint("call", int64(u.Event.Seq)),
+		gatewaylog.Fint("attempt", int64(u.Event.Attempt)),
+		gatewaylog.F("url", u.Event.URL),
+		gatewaylog.Fint("status", int64(u.Event.Status)),
+		gatewaylog.Ffloat("connect_ms", float64(u.Event.ConnectDurationNs)/1e6),
+		gatewaylog.Ffloat("ttfb_ms", float64(u.Event.TTFBNs)/1e6),
+		gatewaylog.Ffloat("total_ms", float64(u.Event.TotalNs)/1e6),
+		gatewaylog.Fint("bytes_tx", u.Event.BytesSent),
+		gatewaylog.Fint("bytes_rx", u.Event.BytesReceived),
+		gatewaylog.F("err", fmt.Sprintf("%q", u.Event.Err)),
+	)
+}
+
+func (t *Telemetry) runUpstreamWorker(stopCh <-chan struct{}) {
+	defer t.workerDone.Done()
+	for {
+		select {
+		case u := <-t.upstreamCh:
+			t.handleUpstream(u)
+		case <-stopCh:
+			for {
+				select {
+				case u := <-t.upstreamCh:
+					t.handleUpstream(u)
+				default:
+					return
+				}
+			}
 		}
-		mc.count++
-		mc.total += p.Value
-		t.mu.Unlock()
+	}
+}
+
+func (t *Telemetry) handleMetric(p MetricPoint) {
+	key := p.Name
+	if len(p.Dims) > 0 {
+		b := strings.Builder{}
+		b.WriteString(key)
+		for _, kv := range p.Dims {
+			b.WriteByte('|')
+			b.WriteString(kv.K)
+			b.WriteByte('=')
+			b.WriteString(kv.V)
+		}
+		key = b.String()
+	}
+	t.mu.Lock()
+	mc := t.custom[key]
+	if mc == nil {
+		mc = &metricCounter{}
+		t.custom[key] = mc
+	}
+	mc.count++
+	mc.total += p.Value
+	t.mu.Unlock()
+}
+
+func (t *Telemetry) runMetricWorker(stopCh <-chan struct{}) {
+	defer t.workerDone.Done()
+	for {
+		select {
+		case p := <-t.metricCh:
+			t.handleMetric(p)
+		case <-stopCh:
+			for {
+				select {
+				case p := <-t.metricCh:
+					t.handleMetric(p)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 

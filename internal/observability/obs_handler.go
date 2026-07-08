@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -481,4 +482,223 @@ func (h *ObsHandler) TenantDetailHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// RuntimeConfigPatch is a partial update to the live observability configuration.
+// All fields are pointers — only non-nil fields are applied.
+// Send via PATCH /observability/config.
+type RuntimeConfigPatch struct {
+	TracesEnabled       *bool    `json:"traces_enabled,omitempty"`
+	TraceSampleRate     *float64 `json:"trace_sample_rate,omitempty"`
+	InstructionTiming   *bool    `json:"instruction_timing,omitempty"`
+	AccessLogEnabled    *bool    `json:"access_log_enabled,omitempty"`
+	AccessLogSampleRate *float64 `json:"access_log_sample_rate,omitempty"`
+	MetricsEnabled      *bool    `json:"metrics_enabled,omitempty"`
+	InfoLogEnabled      *bool    `json:"info_log_enabled,omitempty"`
+	GCStatsEnabled      *bool    `json:"gc_stats_enabled,omitempty"`
+}
+
+// ObsController manages the runtime lifecycle of all observability components.
+// Wired once in main.go; exposed via GET/PATCH /observability/config.
+type ObsController struct {
+	obs        *Telemetry
+	writer     *ObsWriter
+	instrRing  *InstrSlabRing
+	accessLog  *AccessLogger
+	metricsAgg *MetricsAggregator
+	mu         sync.Mutex
+	// current live flags (source of truth for GET response)
+	tracesEnabled       bool
+	traceSampleRate     float64
+	instructionTiming   bool
+	accessLogEnabled    bool
+	accessLogSampleRate float64
+	metricsEnabled      bool
+	infoLogEnabled      bool
+	gcStatsEnabled      bool
+	// gcStatsToggle is called by Apply when gcStatsEnabled changes.
+	// main.go provides this closure to start/stop the GC stats goroutine.
+	GCStatsToggle func(enabled bool)
+}
+
+// NewObsController creates an ObsController with the given initial state.
+// initialState reflects what was already started at boot (from YAML config).
+func NewObsController(
+	obs *Telemetry,
+	writer *ObsWriter,
+	instrRing *InstrSlabRing,
+	accessLog *AccessLogger,
+	metricsAgg *MetricsAggregator,
+	initialState RuntimeConfigPatch,
+) *ObsController {
+	c := &ObsController{
+		obs:        obs,
+		writer:     writer,
+		instrRing:  instrRing,
+		accessLog:  accessLog,
+		metricsAgg: metricsAgg,
+	}
+	// Seed live state from initial config
+	if initialState.TracesEnabled != nil {
+		c.tracesEnabled = *initialState.TracesEnabled
+	}
+	if initialState.TraceSampleRate != nil {
+		c.traceSampleRate = *initialState.TraceSampleRate
+	}
+	if initialState.InstructionTiming != nil {
+		c.instructionTiming = *initialState.InstructionTiming
+	}
+	if initialState.AccessLogEnabled != nil {
+		c.accessLogEnabled = *initialState.AccessLogEnabled
+	}
+	if initialState.AccessLogSampleRate != nil {
+		c.accessLogSampleRate = *initialState.AccessLogSampleRate
+	}
+	if initialState.MetricsEnabled != nil {
+		c.metricsEnabled = *initialState.MetricsEnabled
+	}
+	if initialState.InfoLogEnabled != nil {
+		c.infoLogEnabled = *initialState.InfoLogEnabled
+	}
+	if initialState.GCStatsEnabled != nil {
+		c.gcStatsEnabled = *initialState.GCStatsEnabled
+	}
+	return c
+}
+
+// needsBackground returns true when at least one feature that uses the Telemetry
+// background goroutines (traceRing drain + three worker channels) is enabled.
+func (c *ObsController) needsBackground() bool {
+	return c.tracesEnabled || c.metricsEnabled || c.infoLogEnabled
+}
+
+// Apply applies a partial configuration patch. Only non-nil fields are changed.
+// Thread-safe. Goroutines are stopped/started as needed.
+func (c *ObsController) Apply(patch RuntimeConfigPatch) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// --- Traces ---
+	if patch.TracesEnabled != nil && *patch.TracesEnabled != c.tracesEnabled {
+		if !*patch.TracesEnabled {
+			// disable: stop flag first, then goroutine
+			disabled := false
+			zero := 0.0
+			c.obs.UpdateConfig(&disabled, &zero, nil, nil, nil, nil, nil)
+			c.instrRing.StopAndWait()
+		} else {
+			// enable: start goroutine first, then set flag
+			c.instrRing.Restart()
+			rate := c.traceSampleRate
+			timing := c.instructionTiming
+			c.obs.UpdateConfig(patch.TracesEnabled, &rate, &timing, nil, nil, nil, nil)
+		}
+		c.tracesEnabled = *patch.TracesEnabled
+		c.reconcileBackground()
+	}
+	if patch.TraceSampleRate != nil {
+		c.traceSampleRate = *patch.TraceSampleRate
+		c.obs.UpdateConfig(nil, patch.TraceSampleRate, nil, nil, nil, nil, nil)
+	}
+	if patch.InstructionTiming != nil {
+		c.instructionTiming = *patch.InstructionTiming
+		c.obs.UpdateConfig(nil, nil, patch.InstructionTiming, nil, nil, nil, nil)
+	}
+
+	// --- Access Log ---
+	if patch.AccessLogEnabled != nil && *patch.AccessLogEnabled != c.accessLogEnabled {
+		if !*patch.AccessLogEnabled {
+			// disable: stop flags first, then goroutines
+			c.accessLog.UpdateConfig(false, c.accessLogSampleRate)
+			c.writer.SetEnabled(false)
+			c.accessLog.Stop()
+			c.writer.Stop()
+		} else {
+			// enable: start goroutines first, then set flags
+			c.writer.Restart()
+			c.accessLog.Restart()
+			c.writer.SetEnabled(true)
+			c.accessLog.UpdateConfig(true, c.accessLogSampleRate)
+		}
+		c.accessLogEnabled = *patch.AccessLogEnabled
+	}
+	if patch.AccessLogSampleRate != nil {
+		c.accessLogSampleRate = *patch.AccessLogSampleRate
+		c.accessLog.UpdateConfig(c.accessLogEnabled, *patch.AccessLogSampleRate)
+	}
+
+	// --- Metrics ---
+	if patch.MetricsEnabled != nil && *patch.MetricsEnabled != c.metricsEnabled {
+		if !*patch.MetricsEnabled {
+			c.metricsAgg.Stop()
+		} else {
+			c.metricsAgg.Start()
+		}
+		c.metricsEnabled = *patch.MetricsEnabled
+		c.reconcileBackground()
+	}
+
+	// --- Info Log ---
+	if patch.InfoLogEnabled != nil && *patch.InfoLogEnabled != c.infoLogEnabled {
+		c.infoLogEnabled = *patch.InfoLogEnabled
+		c.obs.UpdateConfig(nil, nil, nil, nil, nil, patch.InfoLogEnabled, nil)
+		c.reconcileBackground()
+	}
+
+	// --- GC Stats ---
+	if patch.GCStatsEnabled != nil && *patch.GCStatsEnabled != c.gcStatsEnabled {
+		c.gcStatsEnabled = *patch.GCStatsEnabled
+		if c.GCStatsToggle != nil {
+			c.GCStatsToggle(*patch.GCStatsEnabled)
+		}
+	}
+}
+
+// reconcileBackground starts or stops Telemetry background goroutines based on
+// whether any feature that needs them is currently enabled. Must be called with
+// c.mu held.
+func (c *ObsController) reconcileBackground() {
+	if c.needsBackground() {
+		c.obs.Start()
+	} else {
+		c.obs.Stop()
+	}
+}
+
+// State returns a snapshot of the current live configuration.
+func (c *ObsController) State() RuntimeConfigPatch {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return RuntimeConfigPatch{
+		TracesEnabled:       &c.tracesEnabled,
+		TraceSampleRate:     &c.traceSampleRate,
+		InstructionTiming:   &c.instructionTiming,
+		AccessLogEnabled:    &c.accessLogEnabled,
+		AccessLogSampleRate: &c.accessLogSampleRate,
+		MetricsEnabled:      &c.metricsEnabled,
+		InfoLogEnabled:      &c.infoLogEnabled,
+		GCStatsEnabled:      &c.gcStatsEnabled,
+	}
+}
+
+// RegisterObsControllerRoutes registers the runtime config endpoints on mux.
+//   GET  /observability/config  — returns current live state
+//   PATCH /observability/config — applies a partial update
+func RegisterObsControllerRoutes(mux *http.ServeMux, c *ObsController) {
+	mux.HandleFunc("/observability/config", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, c.State())
+		case http.MethodPatch:
+			var patch RuntimeConfigPatch
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			c.Apply(patch)
+			writeJSON(w, http.StatusOK, c.State())
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	})
 }

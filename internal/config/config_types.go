@@ -332,6 +332,20 @@ type ObsTenantConfig struct {
 	TracesSampleRate float64 `json:"traces_sample_rate,omitempty"  yaml:"traces_sample_rate,omitempty"`
 }
 
+// ObsGCStatsConfig controls the periodic GC/heap stats logger written to stderr.
+// Default disabled — absent from YAML means disabled.
+type ObsGCStatsConfig struct {
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+}
+
+// ObsInfoLogConfig controls the per-request info log line written to stderr.
+// Default disabled — absent from YAML means disabled.
+// Fields lists which request fields to include; defaults to ["api_id","status","duration_ns"] when empty.
+type ObsInfoLogConfig struct {
+	Enabled bool     `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Fields  []string `json:"fields,omitempty"  yaml:"fields,omitempty"`
+}
+
 // ObsExportConfig controls push to external observability systems.
 type ObsExportConfig struct {
 	Prometheus ObsPrometheusConfig `json:"prometheus,omitempty" yaml:"prometheus,omitempty"`
@@ -367,6 +381,8 @@ type ObservabilityConfig struct {
 	AccessLog ObsAccessLogConfig         `json:"access_log,omitempty" yaml:"access_log,omitempty"`
 	Metrics   ObsMetricsConfig           `json:"metrics,omitempty"    yaml:"metrics,omitempty"`
 	Traces    ObsTracesConfig            `json:"traces,omitempty"     yaml:"traces,omitempty"`
+	GCStats   ObsGCStatsConfig           `json:"gc_stats,omitempty"   yaml:"gc_stats,omitempty"`
+	InfoLog   ObsInfoLogConfig           `json:"info_log,omitempty"   yaml:"info_log,omitempty"`
 	APIs      map[string]ObsAPIConfig    `json:"apis,omitempty"       yaml:"apis,omitempty"`
 	Tenants   map[string]ObsTenantConfig `json:"tenants,omitempty"    yaml:"tenants,omitempty"`
 	Export    ObsExportConfig            `json:"export,omitempty"     yaml:"export,omitempty"`
