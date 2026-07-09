@@ -680,6 +680,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	// 2. Update Shared Flows (The Instruction Library)
 	var deletedFlows []string
+	var compileErrors []string
 	for _, f := range req.Flows {
 		if f.Action == "delete" {
 			delete(newLibrary, f.Name)
@@ -691,8 +692,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		} else {
 			compiled, err := s.Compiler.Compile(f.Instructions)
 			if err != nil {
-				gatewaylog.Default.Warn("[Management] skipping flow with compile error",
-					gatewaylog.F("flow", f.Name), gatewaylog.F("error", err.Error()))
+				compileErrors = append(compileErrors, fmt.Sprintf("flow %q: %s", f.Name, err.Error()))
 				continue
 			}
 			newFlowConfigs[f.Name] = f.Instructions
@@ -703,6 +703,9 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				pendingPersist = append(pendingPersist, persistOp{kind: "flow_upsert", name: f.Name, payload: data})
 			}
 		}
+	}
+	if len(compileErrors) > 0 {
+		return fmt.Errorf("compile errors:\n%s", strings.Join(compileErrors, "\n"))
 	}
 
 	// 3. Update API Routing & Linking
