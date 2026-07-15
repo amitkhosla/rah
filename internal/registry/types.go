@@ -268,6 +268,16 @@ type RateLimitConfigV2 struct {
 	// when enforcement is "approximate". Has no effect in strict mode (Redis is the
 	// source of truth there). Requires InstanceCountFn to be wired in FlowManager.
 	DivideByNodes  bool                 `json:"divide_by_nodes,omitempty"`
+	// TokenBucket configures token bucket enforcement. When set, Windows are ignored
+	// and the counter slot tracks [LastUpdate:32 | Tokens:32] instead of [epoch:32 | count:32].
+	// enforcement field should be set to "token_bucket" to activate this path.
+	TokenBucket    *TokenBucketConfig   `json:"token_bucket,omitempty"`
+}
+
+// TokenBucketConfig defines the token bucket parameters for V2 rate limiting.
+type TokenBucketConfig struct {
+	Rate  uint32 `json:"rate"`  // tokens added per second (refill rate)
+	Burst uint32 `json:"burst"` // maximum token capacity (also initial fill)
 }
 
 // RateLimitConfigV2Record pairs a name with a V2 config for persistence.

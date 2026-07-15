@@ -884,6 +884,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if rlv2DivideByNodes && rlv2RemoteRL == nil && c.fm.InstanceCountFn != nil {
 			rlv2NodeCountFn = c.fm.InstanceCountFn
 		}
+		// Resolve token bucket spec when enforcement == "token_bucket".
+		var rlv2TBucket *steps.TokenBucketSpec
+		if rlv2Enforcement == "token_bucket" && c.fm.RateLimitStore != nil {
+			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil && cfg.TokenBucket != nil {
+				rlv2TBucket = &steps.TokenBucketSpec{
+					Rate:       cfg.TokenBucket.Rate,
+					Burst:      cfg.TokenBucket.Burst,
+					Store:      c.fm.RateLimitStore,
+					ConfigSeed: uint32(configID) * 2654435761, // Knuth multiplicative hash
+				}
+			}
+		}
 		rlv2NextPC := len(c.GlobalTable) + 1
 		// DeniedPC = -1 (StopPlan): halt flow immediately on denial so the 429
 		// ResponseStatus set by CheckRateLimitV2 is preserved. A positive DeniedPC
@@ -891,6 +903,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// to override the status with 200.
 		const rlv2DeniedPC = -1
 		capturedNodeCountFn := rlv2NodeCountFn
+		capturedTBucket := rlv2TBucket
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "CHECK_RATE_LIMIT_V2",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -904,6 +917,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					ConfigName:    configName,
 					WeightIntSlot: weightIntSlot,
 					NodeCountFn:   capturedNodeCountFn,
+					TBucket:       capturedTBucket,
 				}
 				return step.Execute(ctx, s)
 			},
@@ -3632,6 +3646,19 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 			nodeCountFn = c.fm.InstanceCountFn
 		}
 
+		// Resolve token bucket spec when enforcement == "token_bucket".
+		var tbucket *steps.TokenBucketSpec
+		if enforcement == "token_bucket" && c.fm.RateLimitStore != nil {
+			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil && cfg.TokenBucket != nil {
+				tbucket = &steps.TokenBucketSpec{
+					Rate:       cfg.TokenBucket.Rate,
+					Burst:      cfg.TokenBucket.Burst,
+					Store:      c.fm.RateLimitStore,
+					ConfigSeed: uint32(configID) * 2654435761,
+				}
+			}
+		}
+
 		// Capture loop variables for the closure.
 		capturedConfigID := configID
 		capturedCountBy := countBy
@@ -3639,6 +3666,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		capturedConfigName := configName
 		capturedRemoteRL := remoteRL
 		capturedNodeCount := nodeCountFn
+		capturedTBucket := tbucket
 		// NextPC: the instruction immediately following this check (continue flow).
 		// DeniedPC: -1 (StopPlan) — halt execution immediately when denied.
 		// This is safe because we set ctx.ResponseStatus = 429 before returning.
@@ -3658,6 +3686,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 					ConfigName:    capturedConfigName,
 					WeightIntSlot: -1,
 					NodeCountFn:   capturedNodeCount,
+					TBucket:       capturedTBucket,
 				}
 				return rl.Execute(ctx, s)
 			},

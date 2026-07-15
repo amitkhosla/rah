@@ -23,6 +23,18 @@ type WindowSpec struct {
 	Idx      int    // windowIdx for arena slot disambiguation (unique per config)
 }
 
+// ─── TokenBucketSpec ──────────────────────────────────────────────────────────
+
+// TokenBucketSpec holds the bake-time-resolved parameters for V2 token bucket mode.
+// The slot index is derived from configSeed XOR a hash of the counter key, so each
+// (config, key) pair gets a stable slot in the shared CounterStore arena.
+type TokenBucketSpec struct {
+	Rate       uint32                // tokens refilled per second
+	Burst      uint32                // maximum token capacity (also the initial fill)
+	Store      *engine.CounterStore  // shared arena — must not be nil
+	ConfigSeed uint32                // hashed from configID to namespace slots per config
+}
+
 // ─── CheckRateLimitV2 ─────────────────────────────────────────────────────────
 
 // CheckRateLimitV2 applies a V2 multi-window rate limit against the current
@@ -53,6 +65,8 @@ type CheckRateLimitV2 struct {
 	// RemoteRL is nil (approximate mode), the per-window limit is divided by this
 	// value so each pod enforces its fair share. Resolved once per Execute call.
 	NodeCountFn      func() int                       // nil = no division (single node or strict mode)
+	// TBucket when non-nil activates token bucket mode. Windows and RemoteRL are ignored.
+	TBucket          *TokenBucketSpec
 }
 
 // Execute implements the engine.Step interface.
@@ -79,7 +93,12 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		return int16(s.NextPC)
 	}
 
-	// ── 1. Derive the counter key ────────────────────────────────────────────
+	// ── 1. Token bucket fast path (mutually exclusive with fixed-window path) ─
+	if s.TBucket != nil {
+		return s.executeTokenBucket(ctx)
+	}
+
+	// ── 2. Derive the counter key ────────────────────────────────────────────
 	keyBytes, useTenant := s.resolveKey(ctx)
 	if keyBytes == nil && !useTenant {
 		// resolveKey signals "deny" by returning (nil, false).
@@ -87,10 +106,10 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		return int16(s.DeniedPC)
 	}
 
-	// ── 2. Tenant multiplier ─────────────────────────────────────────────────
+	// ── 3. Tenant multiplier ─────────────────────────────────────────────────
 	mult := engine.GetTenantMultiplier(ctx.TenantID)
 
-	// ── 3. Resolve delta: token-count weight from a slot, or 1 for plain request counting.
+	// ── 4. Resolve delta: token-count weight from a slot, or 1 for plain request counting.
 	delta := uint32(1)
 	if s.WeightIntSlot >= 0 && s.WeightIntSlot < len(ctx.IntSlots) {
 		if v := ctx.IntSlots[s.WeightIntSlot]; v > 0 {
@@ -98,7 +117,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		}
 	}
 
-	// ── 4. Dispatch to local or distributed counter path ─────────────────────
+	// ── 5. Dispatch to local or distributed counter path ─────────────────────
 	var denied bool
 	if s.RemoteRL != nil {
 		denied = s.executeDistributed(ctx, keyBytes, useTenant, mult, delta)
@@ -212,6 +231,44 @@ func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte
 // Returns (nil, true)  → use TenantCounterArena with ctx.TenantID.
 // Returns (key, false) → use SlotCounterArena with the returned key bytes.
 // Returns (nil, false) → deny the request (OnEmptyFail with empty key).
+// executeTokenBucket handles the token_bucket enforcement path.
+// It derives a stable arena slot from the ConfigSeed XOR a hash of the counter
+// key, then delegates to CounterStore.TokenBucket which uses [LastUpdate:32 | Tokens:32].
+// Returns NextPC if allowed, DeniedPC (with 429 status) if the bucket is empty.
+func (s *CheckRateLimitV2) executeTokenBucket(ctx *rctx.Context) int16 {
+	tb := s.TBucket
+	now := uint32(time.Now().Unix())
+
+	// Derive a slot index from config seed XOR a compact hash of the key.
+	var keyHash uint32
+	switch s.CountBy.Kind {
+	case engine.CountByTenant:
+		keyHash = uint32(ctx.TenantID)
+	case engine.CountByGlobal:
+		keyHash = 0
+	default:
+		// FNV-1a 32-bit on keyBytes for non-tenant keys.
+		keyHash = 2166136261
+		kBytes, _ := s.resolveKey(ctx)
+		for _, b := range kBytes {
+			keyHash ^= uint32(b)
+			keyHash *= 16777619
+		}
+	}
+	arenaLen := uint32(len(tb.Store.Arena))
+	if arenaLen == 0 {
+		return int16(s.NextPC) // safety: allow if arena not initialised
+	}
+	slot := (tb.ConfigSeed ^ keyHash) % arenaLen
+
+	allowed, _ := tb.Store.TokenBucket(slot, tb.Rate, tb.Burst, now)
+	if !allowed {
+		ctx.ResponseStatus = 429
+		return int16(s.DeniedPC)
+	}
+	return int16(s.NextPC)
+}
+
 func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 	cb := &s.CountBy
 	switch cb.Kind {
