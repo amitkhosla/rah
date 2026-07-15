@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { FieldDef, FlowImpact, FlowStep, PaletteBlock, PatternCondition, SavedFlow, TemplatePatternStep } from '../types'
+import type { LLMModel } from '../types'
 import FlowMap   from './FlowMap'
 import FlowGraph from './FlowGraph'
 import { expandSteps, findSourceRefs, smartCondition } from '../utils/expressions'
@@ -8,6 +9,7 @@ import PatternConditionBuilder from './PatternConditionBuilder'
 import TemplatePatternBuilder from './TemplatePatternBuilder'
 import ValidateRouteBuilder from './ValidateRouteBuilder'
 import { isPatternCondition } from '../types'
+import { listLLMModels } from '../api'
 
 interface Props {
   blocks: PaletteBlock[]
@@ -45,6 +47,8 @@ interface VisualRecipe {
   title: string
   wraps: string        // action type this maps to
   description: string
+  defaults?: Record<string, string>
+  fields?: import('../types').FieldDef[]
 }
 
 interface VisualGroup {
@@ -55,7 +59,7 @@ interface VisualGroup {
 
 const VISUAL_GROUPS: VisualGroup[] = [
   {
-    label: 'INFERENCE',
+    label: 'LLM',
     icon: '🧠',
     recipes: [
       { title: 'Call LLM',        wraps: 'llm_call',            description: 'Send a prompt to an AI model' },
@@ -150,9 +154,24 @@ const VISUAL_GROUPS: VisualGroup[] = [
     label: 'REQUEST',
     icon: '📥',
     recipes: [
-      { title: 'Read Header',         wraps: 'bind_header',        description: 'Extract an HTTP request header into a slot' },
-      { title: 'Read Query Param',    wraps: 'bind_query',         description: 'Extract a URL query parameter into a slot' },
-      { title: 'Read Path Param',     wraps: 'bind_path',          description: 'Extract a path parameter like {id} into a slot' },
+      { title: 'Read Header',      wraps: 'bind_header', description: 'Extract an HTTP request header into a slot',
+        defaults: { key: 'X-Tenant-ID', as: 'tenant_id' },
+        fields: [
+          { key: 'key', label: 'Header name', description: 'Name of the HTTP request header to read', placeholder: 'X-Tenant-ID' },
+          { key: 'as',  label: 'Store as',    description: 'Slot name to save the header value into',  placeholder: 'tenant_id' },
+        ] },
+      { title: 'Read Query Param', wraps: 'bind_query_param', description: 'Extract a URL query parameter into a slot',
+        defaults: { key: 'param_name', as: 'param_value' },
+        fields: [
+          { key: 'key', label: 'Param name', description: 'Name of the URL query parameter to read', placeholder: 'param_name' },
+          { key: 'as',  label: 'Store as',   description: 'Slot name to save the parameter value into', placeholder: 'param_value' },
+        ] },
+      { title: 'Read Path Param',  wraps: 'bind_path', description: 'Extract a path parameter like {id} into a slot',
+        defaults: { key: 'id', as: 'path_id' },
+        fields: [
+          { key: 'key', label: 'Path param', description: 'Name of the path parameter as declared in the route (e.g. id for /users/{id})', placeholder: 'id' },
+          { key: 'as',  label: 'Store as',   description: 'Slot name to save the path parameter value into', placeholder: 'path_id' },
+        ] },
       { title: 'Client IP',           wraps: 'bind_client_ip',     description: 'Extract the real client IP address' },
       { title: 'Set Upstream Header', wraps: 'set_request_header', description: 'Inject a header into the upstream request' },
     ],
@@ -177,6 +196,26 @@ const VISUAL_GROUPS: VisualGroup[] = [
       { title: 'Set Body',   wraps: 'set_response_body',   description: 'Set the HTTP response body' },
       { title: 'Set Header', wraps: 'set_response_header', description: 'Set a response header' },
       { title: 'Set Status', wraps: 'set_response_status', description: 'Set the HTTP response status code' },
+    ],
+  },
+  {
+    label: 'STRING',
+    icon: '✂️',
+    recipes: [
+      { title: 'Concat',          wraps: 'concat',          description: 'Join two variables into one string (left + separator + right)' },
+      { title: 'Set Literal',     wraps: 'set_const',       description: 'Write a static string value into a variable' },
+      { title: 'Template',        wraps: 'render_template', description: 'Build a string by interpolating ${varname} placeholders' },
+      { title: 'To Lower',        wraps: 'to_lower',        description: 'Convert a string variable to lower-case' },
+      { title: 'To Upper',        wraps: 'to_upper',        description: 'Convert a string variable to upper-case' },
+      { title: 'Trim',            wraps: 'trim',            description: 'Remove leading and trailing whitespace' },
+      { title: 'Replace',         wraps: 'replace',         description: 'Replace all occurrences of a substring' },
+      { title: 'Contains',        wraps: 'contains',        description: 'Check if a string contains a fixed substring (→ bool)' },
+      { title: 'Starts With',     wraps: 'starts_with',     description: 'Check if a string starts with a fixed prefix (→ bool)' },
+      { title: 'Ends With',       wraps: 'ends_with',       description: 'Check if a string ends with a fixed suffix (→ bool)' },
+      { title: 'Split',           wraps: 'split',           description: 'Split a string by separator into a JSON array' },
+      { title: 'Substring',       wraps: 'substring',       description: 'Slice a string by byte offset' },
+      { title: 'String Length',   wraps: 'byte_length',     description: 'Write the byte length of a variable into an integer slot' },
+      { title: 'To Int',          wraps: 'to_int',          description: 'Parse a string variable as a 64-bit integer' },
     ],
   },
   {
@@ -237,6 +276,11 @@ export default function FlowDesigner({
   const [showThisFlow,   setShowThisFlow]   = useState(false)
   const [thisFlowTab,    setThisFlowTab]    = useState<'steps' | 'tree' | 'graph'>('steps')
   const [expandedCalls,  setExpandedCalls]  = useState<Set<string>>(new Set())
+  const [llmModels,      setLlmModels]      = useState<LLMModel[]>([])
+
+  useEffect(() => {
+    listLLMModels().then(setLlmModels).catch(() => { /* unavailable */ })
+  }, [])
 
   // ── Pattern condition builder state ───────────────────────────────────────
   // patternBuilderTarget: which step index is currently being edited (null = closed)
@@ -284,7 +328,6 @@ export default function FlowDesigner({
   function recipeToBlock(recipe: VisualRecipe): PaletteBlock {
     const existing = blockByType[recipe.wraps]
     if (existing) return existing
-    // Fallback for actions not in schema
     return {
       type: recipe.wraps,
       title: recipe.title,
@@ -292,8 +335,8 @@ export default function FlowDesigner({
       category: 'visual',
       capability: '',
       supports_nested: false,
-      defaults: {},
-      fields: [],
+      defaults: recipe.defaults ?? {},
+      fields: recipe.fields ?? [],
     }
   }
 
@@ -415,11 +458,15 @@ export default function FlowDesigner({
     'if':'🔀','switch':'🔀','call':'📞','return':'↩','fail':'✗',
     'token_validation':'🔒','http_call':'🌐','llm_call':'🧠',
     'cache_get':'🗄️','cache_put':'🗄️','cache_get_global':'🗄️','cache_put_global':'🗄️','cache_delete':'🗄️','cache_delete_global':'🗄️',
-    'bind_header':'📥','bind_query':'📥','bind_path':'📥','bind_body':'📥',
+    'bind_header':'📥','bind_query_param':'📥','bind_path':'📥','bind_body':'📥',
     'emit_event':'📊','log_field':'📋','registry_lookup':'🏷️',
     'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱','api_rate_limits':'📍',
     'set_response_body':'📤','set_response_header':'📤','set_response_status':'📤',
     'extract':'✂️','json_extract_emit':'✂️','mcp_call_tool':'🔧',
+    'concat':'✂️','set_const':'📝','render_template':'📝',
+    'to_lower':'✂️','to_upper':'✂️','trim':'✂️','replace':'✂️',
+    'contains':'🔍','starts_with':'🔍','ends_with':'🔍',
+    'split':'✂️','substring':'✂️','byte_length':'🔢','to_int':'🔢',
     'vector_search':'🔍','embed_text':'🔢','store_internal_tx_id':'🔖',
     'bind_correlation_id':'🔖','bind_client_ip':'🌐',
   }
@@ -1154,6 +1201,173 @@ export default function FlowDesigner({
     )
   }
 
+  // ── LLM Call step editor ─────────────────────────────────────────
+  function renderLlmCallBody(step: FlowStep, i: number) {
+    const rawInput = step['input']
+    let cfg: Record<string, string> = {}
+    if (typeof rawInput === 'string') {
+      try { cfg = JSON.parse(rawInput) } catch { /**/ }
+    } else if (rawInput && typeof rawInput === 'object') {
+      cfg = { ...(rawInput as Record<string, string>) }
+    }
+
+    function updateCfg(key: string, value: string) {
+      const next = { ...cfg, [key]: value }
+      if (!value) delete next[key]
+      updateStep(i, 'input', JSON.stringify(next))
+    }
+
+    const model         = cfg['model'] ?? ''
+    const fallbackRaw   = cfg['fallback_chain'] ?? ''
+    const fallbackChain = fallbackRaw ? fallbackRaw.split(',').filter(Boolean) : []
+    const promptVar     = (step['key_identifier'] ?? '') as string
+    const outputVar     = (step['as'] ?? '') as string
+    const maxTokens     = cfg['max_tokens'] ?? '2000'
+    const temperature   = cfg['temperature'] ?? '0.7'
+    const messagesSlot  = cfg['messages_slot'] ?? ''
+    const systemSlot    = cfg['system_slot'] ?? ''
+
+    const modelAliases = llmModels.map(m => m.alias)
+    const prevVars     = slotsUpTo(i)
+
+    const usedInFallback = new Set(fallbackChain)
+    const availableForFallback = (idx: number) =>
+      modelAliases.filter(m => m !== model && (!usedInFallback.has(m) || fallbackChain[idx] === m))
+
+    return (
+      <div className="step-body">
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', marginBottom: 12, borderRadius: 6, background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.3)' }}>
+          <span style={{ fontSize: 14 }}>🧠</span>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', letterSpacing: '0.04em' }}>LLM CALL</div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 1 }}>
+              {model ? `→ ${model}${fallbackChain.length ? ` (${fallbackChain.length} fallback${fallbackChain.length > 1 ? 's' : ''})` : ''}` : 'No model selected'}
+            </div>
+          </div>
+        </div>
+
+        {/* Primary model */}
+        <label className="field-label">Primary model</label>
+        {modelAliases.length > 0 ? (
+          <select className="input" value={model} onChange={e => updateCfg('model', e.target.value)}>
+            <option value="">— select a model —</option>
+            {modelAliases.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="e.g. claude-3-5-sonnet" value={model}
+            onChange={e => updateCfg('model', e.target.value)} />
+        )}
+        <span className="field-desc">
+          {modelAliases.length === 0
+            ? 'No models configured — add them under Settings → AI Models.'
+            : 'The LLM to call. Aliases are configured under Settings → AI Models.'}
+        </span>
+
+        {/* Fallback chain */}
+        <label className="field-label" style={{ marginTop: 10 }}>
+          Fallback chain <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(tried in order on rate-limit / 5xx)</span>
+        </label>
+        {fallbackChain.map((fb, fi) => (
+          <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span style={{ fontSize: 10, color: 'var(--muted)', width: 18, textAlign: 'right', flexShrink: 0 }}>{fi + 1}.</span>
+            {modelAliases.length > 0 ? (
+              <select className="input" style={{ flex: 1 }} value={fb} onChange={e => {
+                const next = [...fallbackChain]; next[fi] = e.target.value
+                updateCfg('fallback_chain', next.join(','))
+              }}>
+                <option value="">— select —</option>
+                {availableForFallback(fi).map(m => <option key={m} value={m}>{m}</option>)}
+                {/* Keep current value visible even if not in list */}
+                {fb && !modelAliases.includes(fb) && <option value={fb}>{fb}</option>}
+              </select>
+            ) : (
+              <input className="input" style={{ flex: 1 }} placeholder="model alias" value={fb}
+                onChange={e => { const next = [...fallbackChain]; next[fi] = e.target.value; updateCfg('fallback_chain', next.join(',')) }} />
+            )}
+            <button className="btn muted" style={{ padding: '2px 8px', fontSize: 13, flexShrink: 0 }}
+              onClick={() => updateCfg('fallback_chain', fallbackChain.filter((_, j) => j !== fi).join(','))}>
+              ×
+            </button>
+          </div>
+        ))}
+        <button className="btn muted mt4" style={{ fontSize: 11 }}
+          onClick={() => updateCfg('fallback_chain', [...fallbackChain, ''].join(','))}>
+          + Add fallback
+        </button>
+        {fallbackChain.length === 0 && (
+          <span className="field-desc">No fallback configured — if the primary model fails the request will error.</span>
+        )}
+
+        {/* Input / output variables */}
+        <label className="field-label" style={{ marginTop: 10 }}>
+          Prompt variable <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(slot holding user message)</span>
+        </label>
+        {prevVars.length > 0 ? (
+          <select className="input" value={promptVar} onChange={e => updateStep(i, 'key_identifier', e.target.value)}>
+            <option value="">— pick a variable —</option>
+            {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="var.prompt" value={promptVar}
+            onChange={e => updateStep(i, 'key_identifier', e.target.value)} />
+        )}
+
+        <label className="field-label" style={{ marginTop: 8 }}>
+          Output variable <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(where response is stored)</span>
+        </label>
+        <input className="input" placeholder="var.reply" value={outputVar}
+          onChange={e => updateStep(i, 'as', e.target.value)} />
+
+        {/* Parameters */}
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label className="field-label">Max tokens</label>
+            <input className="input" type="number" placeholder="2000" value={maxTokens}
+              onChange={e => updateCfg('max_tokens', e.target.value)} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="field-label">Temperature</label>
+            <input className="input" type="number" step="0.1" min="0" max="2" placeholder="0.7" value={temperature}
+              onChange={e => updateCfg('temperature', e.target.value)} />
+          </div>
+        </div>
+
+        {/* Advanced */}
+        <details style={{ marginTop: 10 }}>
+          <summary style={{ fontSize: 11, color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' as const, padding: '4px 0' }}>
+            Advanced options
+          </summary>
+          <div style={{ paddingTop: 8 }}>
+            <label className="field-label">Messages slot <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(multi-turn)</span></label>
+            {prevVars.length > 0 ? (
+              <select className="input" value={messagesSlot} onChange={e => updateCfg('messages_slot', e.target.value)}>
+                <option value="">— none —</option>
+                {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : (
+              <input className="input" placeholder="var.messages" value={messagesSlot}
+                onChange={e => updateCfg('messages_slot', e.target.value)} />
+            )}
+            <span className="field-desc">Slot holding the full messages array for multi-turn conversations (from parse_message_format).</span>
+
+            <label className="field-label" style={{ marginTop: 8 }}>System prompt slot</label>
+            {prevVars.length > 0 ? (
+              <select className="input" value={systemSlot} onChange={e => updateCfg('system_slot', e.target.value)}>
+                <option value="">— none —</option>
+                {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : (
+              <input className="input" placeholder="var.system" value={systemSlot}
+                onChange={e => updateCfg('system_slot', e.target.value)} />
+            )}
+            <span className="field-desc">Slot holding a dynamic system prompt injected before the conversation.</span>
+          </div>
+        </details>
+      </div>
+    )
+  }
+
   function renderGenericBody(step: FlowStep, i: number, defs: Record<string, FieldDef>) {
     // 'action' is the step type; obs meta-fields are rendered separately by renderObsFooter
     // 'then_steps', 'else_steps', and 'trace_vars' are Studio-only fields, not generic params
@@ -1167,7 +1381,8 @@ export default function FlowDesigner({
       )
     }
     // Fields that benefit from smart expression parsing
-    const smartFields = new Set(['condition', 'source', 'as', 'url'])
+    // 'as' excluded: it's an output slot name, not a source expression (switch has its own renderer)
+    const smartFields = new Set(['condition', 'source', 'url'])
     return (
       <div className="step-body">
         {params.map(([k, v]) =>
@@ -1407,7 +1622,7 @@ export default function FlowDesigner({
         if (s['as'] && typeof s['as'] === 'string') vars.push(s['as'] as string)
         // Steps that bind into key_identifier field or out/output aliases
         if (['bind_client_ip','store_internal_tx_id','bind_correlation_id',
-             'bind_header','bind_query','bind_path','bind_body',
+             'bind_header','bind_query_param','bind_path','bind_body',
              'registry_lookup','load_service_url','load_identifier','load_secret',
              'cache_get','cache_get_global','json_extract_emit',
              'llm_call','http_call','mcp_call_tool','vector_search','embed_text',
@@ -2923,6 +3138,7 @@ export default function FlowDesigner({
                          }}
                        />
                      ))() :
+                     step.action === 'llm_call'          ? renderLlmCallBody(step, i)             :
                      ['cache_get','cache_put','cache_get_global','cache_put_global','cache_delete','cache_delete_global'].includes(step.action)
                                                          ? renderCacheBody(step, i)               :
                                                            renderGenericBody(step, i, defs)}

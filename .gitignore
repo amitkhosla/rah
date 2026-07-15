@@ -65,7 +65,7 @@ docs/GAP_ANALYSIS.md
 # Build artifacts
 rah-gateway-v2.tar
 *.tar
-internal/studio/ui/dist/
+
 
 # Tyk comparison infra (not part of project)
 deploy/docker/tyk/
