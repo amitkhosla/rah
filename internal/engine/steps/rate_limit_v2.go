@@ -49,6 +49,10 @@ type CheckRateLimitV2 struct {
 	ConfigName       string                            // used as Redis key prefix
 	WeightIntSlot    int                              // -1 = +1 per request; >=0 = read ctx.IntSlots[n] as delta (token count)
 	QuotaGroupFilter uint8                            // 0 = unconditional; >0 = skip unless ctx.QuotaGroupID matches
+	// NodeCountFn returns the number of live gateway instances. When non-nil and
+	// RemoteRL is nil (approximate mode), the per-window limit is divided by this
+	// value so each pod enforces its fair share. Resolved once per Execute call.
+	NodeCountFn      func() int                       // nil = no division (single node or strict mode)
 }
 
 // Execute implements the engine.Step interface.
@@ -115,10 +119,26 @@ func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useT
 	reg := engine.ActiveCounterRegistry()
 	now := uint32(time.Now().Unix())
 
+	// When DivideByNodes is in effect, shrink the effective limit by the live
+	// instance count so each pod enforces its fair share in approximate mode.
+	nodeDivisor := uint32(1)
+	if s.NodeCountFn != nil {
+		if n := s.NodeCountFn(); n > 1 {
+			nodeDivisor = uint32(n)
+		}
+	}
+
 	for i := range s.Windows {
 		w := &s.Windows[i]
 		epoch := now / w.EpochDiv
 		limit := applyMultiplier(w.Limit, mult)
+		if nodeDivisor > 1 {
+			if limit > nodeDivisor {
+				limit = limit / nodeDivisor
+			} else {
+				limit = 1
+			}
+		}
 
 		var allowed bool
 		if useTenant {

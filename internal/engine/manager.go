@@ -124,6 +124,10 @@ type FlowManager struct {
 	// RemoteRL is the distributed rate limit provider (e.g. Redis-backed).
 	// Nil when distributed rate limiting is not configured — falls back to local counters.
 	RemoteRL ExternalRateLimitProvider
+	// InstanceCountFn returns the number of live gateway instances in this environment.
+	// Used by CheckRateLimitV2 in approximate mode with DivideByNodes=true to split
+	// the per-window limit evenly across pods. Nil = assume 1 instance (no division).
+	InstanceCountFn func() int
 	// DistRLPolicy controls cross-pod rate limit enforcement:
 	// 0 = LOCAL (in-memory only), 1 = ASYNC (local decision + background sync), 2 = STRICT (Redis before allow).
 	DistRLPolicy uint8

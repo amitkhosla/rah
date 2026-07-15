@@ -1382,6 +1382,7 @@ func main() {
 		ms,
 	)
 	instanceSync.Start(gatewayCtx)
+	fm.InstanceCountFn = instanceSync.InstanceCount
 	// Sweep stale test tenants (safety net for crash-interrupted test runs).
 	// Any test tenant older than 10 minutes that wasn't cleaned up by defer is removed.
 	regMgr.StartTestTenantSweep(gatewayCtx, 600)

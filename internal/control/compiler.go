@@ -823,15 +823,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		var configID uint16
 		var windows []steps.WindowSpec
 		var rlv2Enforcement string
+		var rlv2DivideByNodes bool
 		configName := step.Input["config"]
 		if c.RegMgr != nil {
 			// Resolve V1 config ID (used as arena key) from the named config.
 			if id, ok := c.RegMgr.GetRateLimitConfigId(configName); ok {
 				configID = id
 			}
-			// Resolve V2 window specs and enforcement mode from the named config.
+			// Resolve V2 window specs, enforcement mode, and node-division flag.
 			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil {
 				rlv2Enforcement = cfg.Enforcement
+				rlv2DivideByNodes = cfg.DivideByNodes
 				for i, w := range cfg.Windows {
 					epochDiv := w.PeriodSecs
 					if epochDiv == 0 {
@@ -877,12 +879,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if rlv2Enforcement == "strict" && c.fm.RemoteRL != nil {
 			rlv2RemoteRL = c.fm.RemoteRL
 		}
+		// In approximate mode, optionally divide the limit by live instance count.
+		var rlv2NodeCountFn func() int
+		if rlv2DivideByNodes && rlv2RemoteRL == nil && c.fm.InstanceCountFn != nil {
+			rlv2NodeCountFn = c.fm.InstanceCountFn
+		}
 		rlv2NextPC := len(c.GlobalTable) + 1
 		// DeniedPC = -1 (StopPlan): halt flow immediately on denial so the 429
 		// ResponseStatus set by CheckRateLimitV2 is preserved. A positive DeniedPC
 		// would jump to the next instruction, allowing subsequent steps (e.g. proxy)
 		// to override the status with 200.
 		const rlv2DeniedPC = -1
+		capturedNodeCountFn := rlv2NodeCountFn
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "CHECK_RATE_LIMIT_V2",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
@@ -895,6 +903,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					RemoteRL:      rlv2RemoteRL,
 					ConfigName:    configName,
 					WeightIntSlot: weightIntSlot,
+					NodeCountFn:   capturedNodeCountFn,
 				}
 				return step.Execute(ctx, s)
 			},
@@ -3511,12 +3520,14 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 				var configID uint16
 				var windows []steps.WindowSpec
 				var enforcement string
+				var divideByNodes bool
 				if c.RegMgr != nil {
 					if id, ok := c.RegMgr.GetRateLimitConfigId(mappedConfigName); ok {
 						configID = id
 					}
 					if cfg := c.RegMgr.GetRateLimitConfigV2(mappedConfigName); cfg != nil {
 						enforcement = cfg.Enforcement
+						divideByNodes = cfg.DivideByNodes
 						for wi, w := range cfg.Windows {
 							epochDiv := w.PeriodSecs
 							if epochDiv == 0 {
@@ -3534,12 +3545,17 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 				if enforcement == "strict" && c.fm.RemoteRL != nil {
 					remoteRL = c.fm.RemoteRL
 				}
+				var nodeCountFn func() int
+				if divideByNodes && remoteRL == nil && c.fm.InstanceCountFn != nil {
+					nodeCountFn = c.fm.InstanceCountFn
+				}
 				capturedGID := gid
 				capturedConfigID := configID
 				capturedCountBy := countBy
 				capturedWindows := windows
 				capturedConfigName := mappedConfigName
 				capturedRemoteRL := remoteRL
+				capturedNodeCount := nodeCountFn
 				nextPC := len(c.GlobalTable) + 1
 				const deniedPC = -1
 				c.GlobalTable = append(c.GlobalTable, engine.Instruction{
@@ -3556,6 +3572,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 							ConfigName:       capturedConfigName,
 							WeightIntSlot:    -1,
 							QuotaGroupFilter: capturedGID,
+							NodeCountFn:      capturedNodeCount,
 						}
 						return rl.Execute(ctx, s)
 					},
@@ -3579,12 +3596,14 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		var configID uint16
 		var windows []steps.WindowSpec
 		var enforcement string
+		var divideByNodes bool
 		if c.RegMgr != nil {
 			if id, ok := c.RegMgr.GetRateLimitConfigId(configName); ok {
 				configID = id
 			}
 			if cfg := c.RegMgr.GetRateLimitConfigV2(configName); cfg != nil {
 				enforcement = cfg.Enforcement
+				divideByNodes = cfg.DivideByNodes
 				for i, w := range cfg.Windows {
 					epochDiv := w.PeriodSecs
 					if epochDiv == 0 {
@@ -3606,12 +3625,20 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 			remoteRL = c.fm.RemoteRL
 		}
 
+		// Capture the node-count function for approximate mode with DivideByNodes.
+		// In strict mode Redis is the source of truth, so division is not needed.
+		var nodeCountFn func() int
+		if divideByNodes && remoteRL == nil && c.fm.InstanceCountFn != nil {
+			nodeCountFn = c.fm.InstanceCountFn
+		}
+
 		// Capture loop variables for the closure.
 		capturedConfigID := configID
 		capturedCountBy := countBy
 		capturedWindows := windows
 		capturedConfigName := configName
 		capturedRemoteRL := remoteRL
+		capturedNodeCount := nodeCountFn
 		// NextPC: the instruction immediately following this check (continue flow).
 		// DeniedPC: -1 (StopPlan) — halt execution immediately when denied.
 		// This is safe because we set ctx.ResponseStatus = 429 before returning.
@@ -3630,6 +3657,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 					RemoteRL:      capturedRemoteRL,
 					ConfigName:    capturedConfigName,
 					WeightIntSlot: -1,
+					NodeCountFn:   capturedNodeCount,
 				}
 				return rl.Execute(ctx, s)
 			},

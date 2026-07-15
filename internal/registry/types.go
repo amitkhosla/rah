@@ -264,6 +264,10 @@ type RateLimitConfigV2 struct {
 	HeaderNames    RateLimitHeaderNames `json:"header_names,omitempty"`
 	CaseSensitive  bool                 `json:"case_sensitive,omitempty"`
 	OnEmptyKey     uint8                `json:"on_empty_key,omitempty"` // 0=fail, 1=skip, 2=fallback_tenant
+	// DivideByNodes divides the per-window limit by the current live instance count
+	// when enforcement is "approximate". Has no effect in strict mode (Redis is the
+	// source of truth there). Requires InstanceCountFn to be wired in FlowManager.
+	DivideByNodes  bool                 `json:"divide_by_nodes,omitempty"`
 }
 
 // RateLimitConfigV2Record pairs a name with a V2 config for persistence.
