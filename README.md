@@ -21,7 +21,6 @@ Start with the **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for a system ove
 | [docs/latency-design.md](docs/latency-design.md) | Nanosecond-level optimization strategies | 8 min |
 | [docs/dependency-graph.md](docs/dependency-graph.md) | Package dependencies and import structure | 5 min |
 | [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Setup, build, debugging, common tasks | 10 min |
-| [claude.md](claude.md) | Claude Code project instructions | 3 min |
 
 ## Quick Start
 
