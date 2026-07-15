@@ -23,6 +23,7 @@ import (
 	registrypkg "rah/internal/registry"
 	"rah/internal/vectorstore"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -3475,29 +3476,92 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 
 		switch entry.Kind {
 		case RLEntryDynamic:
-			// Emit AssignQuotaGroup to map the runtime value to a quota group ID.
-			// The quota group enables V1 CheckRateLimit dispatch; full V2 dynamic
-			// dispatch (per-group CheckRateLimitV2) is a future enhancement.
+			// Emit AssignQuotaGroup then one guarded CheckRateLimitV2 per quota group.
+			// Sorting the mapping keys ensures deterministic instruction order and
+			// stable quota group IDs across recompilations.
 			if entry.Dynamic == nil || len(entry.Dynamic.Mappings) == 0 {
 				log.Printf("[Compiler] api_rate_limits dynamic entry: empty mapping — skipped")
 				continue
 			}
-			groupMap := make(map[string]uint8, len(entry.Dynamic.Mappings))
-			gid := uint8(1)
+			sortedKeys := make([]string, 0, len(entry.Dynamic.Mappings))
 			for runtimeVal := range entry.Dynamic.Mappings {
-				groupMap[runtimeVal] = gid
-				gid++
+				sortedKeys = append(sortedKeys, runtimeVal)
+			}
+			sort.Strings(sortedKeys)
+
+			groupMap := make(map[string]uint8, len(sortedKeys))
+			for i, runtimeVal := range sortedKeys {
+				groupMap[runtimeVal] = uint8(i + 1) // gid starts at 1
 			}
 			srcSlot := -1
 			if entry.Dynamic.Source != "" {
 				srcSlot, _ = c.getSlot(entry.Dynamic.Source)
 			}
 			c.GlobalTable = append(c.GlobalTable, steps.AssignQuotaGroup(srcSlot, groupMap))
-			// Use the first mapped config name as the representative V2 config.
-			for _, mappedName := range entry.Dynamic.Mappings {
-				configName = mappedName
-				break
+
+			// Emit one guarded CheckRateLimitV2 per quota group using its own config.
+			countBy := c.buildRLEntryCountBy(entry)
+			for i, runtimeVal := range sortedKeys {
+				gid := uint8(i + 1)
+				mappedConfigName := entry.Dynamic.Mappings[runtimeVal]
+				if mappedConfigName == "" {
+					log.Printf("[Compiler] api_rate_limits dynamic: group %q maps to empty config — skipped", runtimeVal)
+					continue
+				}
+				var configID uint16
+				var windows []steps.WindowSpec
+				var enforcement string
+				if c.RegMgr != nil {
+					if id, ok := c.RegMgr.GetRateLimitConfigId(mappedConfigName); ok {
+						configID = id
+					}
+					if cfg := c.RegMgr.GetRateLimitConfigV2(mappedConfigName); cfg != nil {
+						enforcement = cfg.Enforcement
+						for wi, w := range cfg.Windows {
+							epochDiv := w.PeriodSecs
+							if epochDiv == 0 {
+								epochDiv = 1
+							}
+							windows = append(windows, steps.WindowSpec{EpochDiv: epochDiv, Limit: w.Limit, Idx: wi})
+						}
+					}
+				}
+				if len(windows) == 0 {
+					log.Printf("[Compiler] api_rate_limits dynamic: config %q (group %q) not found or has no windows — skipped", mappedConfigName, runtimeVal)
+					continue
+				}
+				var remoteRL engine.ExternalRateLimitProvider
+				if enforcement == "strict" && c.fm.RemoteRL != nil {
+					remoteRL = c.fm.RemoteRL
+				}
+				capturedGID := gid
+				capturedConfigID := configID
+				capturedCountBy := countBy
+				capturedWindows := windows
+				capturedConfigName := mappedConfigName
+				capturedRemoteRL := remoteRL
+				nextPC := len(c.GlobalTable) + 1
+				const deniedPC = -1
+				c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+					Name:    "CHECK_RATE_LIMIT_V2",
+					StepIdx: -1,
+					Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+						rl := &steps.CheckRateLimitV2{
+							ConfigID:         capturedConfigID,
+							CountBy:          capturedCountBy,
+							Windows:          capturedWindows,
+							DeniedPC:         deniedPC,
+							NextPC:           nextPC,
+							RemoteRL:         capturedRemoteRL,
+							ConfigName:       capturedConfigName,
+							WeightIntSlot:    -1,
+							QuotaGroupFilter: capturedGID,
+						}
+						return rl.Execute(ctx, s)
+					},
+				})
 			}
+			continue // dynamic entries are fully emitted above — skip the shared emit below
 
 		case RLEntryNamed, RLEntryFixed:
 			// configName is already set from entry.Config (resolved by management server).

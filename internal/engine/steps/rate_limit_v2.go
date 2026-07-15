@@ -28,23 +28,27 @@ type WindowSpec struct {
 // CheckRateLimitV2 applies a V2 multi-window rate limit against the current
 // request. All configuration is resolved at bake time and captured in the struct.
 //
-//   - ConfigID    selects the ConfigCounterRegistry arena pair.
-//   - CountBy     controls how the counter key is derived from the request context.
-//   - Windows     is the ordered list of windows to check (fail-fast per window).
-//   - DeniedPC    is the absolute PC to jump to when any window is exceeded.
-//   - NextPC      is the absolute PC to jump to when all windows pass.
-//   - RemoteRL    when non-nil, routes counter checks to a distributed backend (strict mode).
-//   - ConfigName  used as Redis key prefix in the distributed path.
-//   - WeightIntSlot is the IntSlots index for token count weight (-1 = disabled, use delta=1).
+//   - ConfigID         selects the ConfigCounterRegistry arena pair.
+//   - CountBy          controls how the counter key is derived from the request context.
+//   - Windows          is the ordered list of windows to check (fail-fast per window).
+//   - DeniedPC         is the absolute PC to jump to when any window is exceeded.
+//   - NextPC           is the absolute PC to jump to when all windows pass.
+//   - RemoteRL         when non-nil, routes counter checks to a distributed backend (strict mode).
+//   - ConfigName       used as Redis key prefix in the distributed path.
+//   - WeightIntSlot    is the IntSlots index for token count weight (-1 = disabled, use delta=1).
+//   - QuotaGroupFilter when non-zero, this instruction is skipped (→ NextPC) unless
+//     ctx.QuotaGroupID matches. Used for dynamic dispatch: each group gets its own
+//     guarded CheckRateLimitV2 instruction emitted by the compiler.
 type CheckRateLimitV2 struct {
-	ConfigID      uint16
-	CountBy       engine.RateLimitCountBy
-	Windows       []WindowSpec
-	DeniedPC      int
-	NextPC        int
-	RemoteRL      engine.ExternalRateLimitProvider // nil = local only
-	ConfigName    string                            // used as Redis key prefix
-	WeightIntSlot int                              // -1 = +1 per request; >=0 = read ctx.IntSlots[n] as delta (token count)
+	ConfigID         uint16
+	CountBy          engine.RateLimitCountBy
+	Windows          []WindowSpec
+	DeniedPC         int
+	NextPC           int
+	RemoteRL         engine.ExternalRateLimitProvider // nil = local only
+	ConfigName       string                            // used as Redis key prefix
+	WeightIntSlot    int                              // -1 = +1 per request; >=0 = read ctx.IntSlots[n] as delta (token count)
+	QuotaGroupFilter uint8                            // 0 = unconditional; >0 = skip unless ctx.QuotaGroupID matches
 }
 
 // Execute implements the engine.Step interface.
@@ -62,6 +66,13 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		if mod.Flags&registry.TenantRLDisabled != 0 {
 			return int16(s.NextPC)
 		}
+	}
+
+	// ── 0b. Quota group filter (dynamic dispatch) ────────────────────────────
+	// When QuotaGroupFilter is set, this instruction only applies to requests
+	// whose AssignQuotaGroup has set ctx.QuotaGroupID to the matching group.
+	if s.QuotaGroupFilter != 0 && ctx.QuotaGroupID != s.QuotaGroupFilter {
+		return int16(s.NextPC)
 	}
 
 	// ── 1. Derive the counter key ────────────────────────────────────────────
