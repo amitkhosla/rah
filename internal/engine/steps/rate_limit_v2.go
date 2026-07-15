@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"rah/internal/engine"
+	"rah/internal/registry"
 	"rah/internal/rctx"
 )
 
@@ -48,6 +49,21 @@ type CheckRateLimitV2 struct {
 
 // Execute implements the engine.Step interface.
 func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+	// ── 0. Tenant-level gate ─────────────────────────────────────────────────
+	// Check blocking and RL-disabled flags from the registry before touching
+	// any counter. Mirrors the V1 CheckRateLimit behaviour in rate_limit_step.go.
+	reg := registry.State.Active.Load()
+	if reg != nil && int(ctx.TenantID) < len(reg.TenantModifiers) {
+		mod := reg.TenantModifiers[ctx.TenantID]
+		if mod.Flags&registry.TenantBlocked != 0 {
+			ctx.ResponseStatus = 403
+			return int16(s.DeniedPC)
+		}
+		if mod.Flags&registry.TenantRLDisabled != 0 {
+			return int16(s.NextPC)
+		}
+	}
+
 	// ── 1. Derive the counter key ────────────────────────────────────────────
 	keyBytes, useTenant := s.resolveKey(ctx)
 	if keyBytes == nil && !useTenant {

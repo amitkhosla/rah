@@ -24,6 +24,7 @@ datastore:
     flows:           "postgres_primary"
     tenant_data:     "postgres_primary"
     rate_limit:      "postgres_primary"
+    rl_configs_v2:   "postgres_primary"
     customer_data:   "postgres_primary"
     instances:       "postgres_primary"
     credentials:     "postgres_primary"

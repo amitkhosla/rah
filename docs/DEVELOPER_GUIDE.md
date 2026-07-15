@@ -12,10 +12,10 @@
 ```bash
 # Clone repository
 git clone <repo-url>
-cd D:\GoLand\rah
+cd rah
 
 # Verify Go version
-go version  # Should be 1.19+
+go version  # Should be 1.26+
 
 # Download dependencies
 go mod download
@@ -340,7 +340,7 @@ EOF
 ## Project Structure
 
 ```
-D:\GoLand\rah\
+rah\
 ├── cmd/
 │   └── rah-gateway/
 │       └── main.go                    Entry point
