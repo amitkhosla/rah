@@ -1,0 +1,128 @@
+# RAH Gateway — 4-instance cluster config (shared Redis + PostgreSQL)
+#
+# Differences from gateway-full.yaml:
+#   1. rate_limit_sync: redis_primary  → enables distributed RL via Redis INCR
+#   2. ingest redis_stream sink+source → cross-instance propagation of:
+#        db_put / db_delete  → re-bootstrap flows/APIs; apply registry changes
+#        cache_invalidate    → tombstone stale L1 slab entries on peer pods
+#   3. instance.poll_interval_s: 10   → fallback polling when ingest is down
+#
+# Each instance self-identifies via a 16-char fingerprint derived from
+# TxIDGenerator; events it emits carry that fingerprint in the Model field
+# and are skipped on consume to prevent cascade loops.
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "redis:6379"
+        pool_size: 16
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address: "postgres://gateway:$POSTGRES_PASSWORD@postgres:5432/gateway?sslmode=disable"
+
+  bindings:
+    api_definitions:    postgres_primary
+    flows:              postgres_primary
+    tenant_data:        postgres_primary   # registry: aliases, URLs, IDs, meta
+    rate_limit:         postgres_primary   # named rate-limit config persistence (V1)
+    rl_configs_v2:      postgres_primary   # V2 multi-window rate limit configs (required for cross-instance strict RL)
+    rate_limit_sync:    redis_primary      # ← distributed RL counters via Redis INCR
+    customer_data:      postgres_primary
+    instances:          postgres_primary   # legacy alias (unused)
+    gateway_instances:  postgres_primary   # live heartbeats — InstanceCount() reads from here
+    credentials:        postgres_primary
+    async_jobs:         postgres_primary
+    ai_config:          postgres_primary
+    mcp_tools:          postgres_primary
+    obs_access_log:     postgres_primary
+    obs_metrics:        postgres_primary
+    obs_traces:         postgres_primary
+    egress_profiles:    postgres_primary
+    validation_schemas: postgres_primary
+    grpc_descriptors:   postgres_primary
+    cache:              redis_primary      # L2 cache backend (shared across instances)
+
+# L1 in-memory slab — per-instance, 64 MB.
+# L2 Redis backend is shared across all instances.
+#   - cache_put writes value to L1 AND Redis L2.
+#   - KindCacheInvalidate events cause peers to drop their stale L1 copy.
+#   - Peers get the fresh value from Redis L2 on the next L1 miss.
+# Without L2 Redis, cache_invalidate only clears stale copies on peers;
+# the new value stays local to the writing instance.
+cache:
+  mem_budget_mb: 64
+  tenant_limit_mb: 8
+  backend:
+    kind: redis
+    connection:
+      address: "redis:6379"
+      pool_size: 8
+
+# ── Cross-instance event bus (Redis Streams) ──────────────────────────────────
+# sink:   each instance publishes db_put/db_delete/cache_invalidate to this stream.
+# source: each instance reads the same stream and reacts to peer events.
+#
+# Self-events are filtered by instanceFingerprint == Model — no cascade loops.
+ingest:
+  enabled: true
+  sinks:
+    - name: cluster_events
+      kind: redis_stream
+      dsn: "redis://redis:6379"
+      stream_name: rah:cluster:events
+      max_len: 500000        # XADD MAXLEN ~ — trim to 500k entries
+      max_batch_items: 64
+      flush_ms: 50           # publish within 50ms — fast enough for flow sync
+      min_workers: 1
+      max_workers: 4
+  sources:
+    - kind: redis_stream
+      dsn: "redis://redis:6379"
+      stream_name: rah:cluster:events
+      timeout_ms: 2000       # XREAD BLOCK timeout
+      events:
+        - db_put
+        - db_delete
+        - cache_invalidate
+  kinds:
+    - kind: db_put
+      ring_size: 65536
+      allow_drop: true       # never block the request path for a sync event
+      priority: 5
+      sinks: [cluster_events]
+    - kind: db_delete
+      ring_size: 16384
+      allow_drop: true
+      priority: 5
+      sinks: [cluster_events]
+    - kind: cache_invalidate
+      ring_size: 65536
+      allow_drop: true
+      priority: 5
+      sinks: [cluster_events]
+    - kind: log
+      ring_size: 4096
+      allow_drop: true
+      sinks: []              # container stdout — no file sink needed in Docker
+
+instance:
+  environment_id: "cluster"
+  poll_interval_s: 10        # fallback: also poll Postgres for newer config_version
+  heartbeat_interval_s: 10   # write heartbeat; dead instances silent for 30s
+
+observability:
+  store:
+    type: postgres
+  traces:
+    enabled: true
+    sample_rate: 1.0
+    always_trace_5xx: true
+    instruction_timing: true

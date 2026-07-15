@@ -1,0 +1,67 @@
+# RAH Gateway — rah-gtw-1 (10.142.0.13)
+# Redis: in-memory cache + rate-limit counters
+# Postgres: API definitions, flows, tenant data + obs access logs ingested to Postgres
+# Observability: access logs → Postgres, tracing ON (sample 10%, per-instruction timing)
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "10.142.0.6:6379"
+        pool_size: 32
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address: "postgres://gateway:devpassword@10.142.0.6:5432/gateway?sslmode=disable"
+        max_open_conns: 16
+        max_idle_conns: 8
+
+  bindings:
+    api_definitions:    "postgres_primary"
+    flows:              "postgres_primary"
+    tenant_data:        "postgres_primary"
+    rate_limit:         "redis_primary"
+    rl_configs_v2:      "redis_primary"
+    customer_data:      "postgres_primary"
+    instances:          "postgres_primary"
+    gateway_instances:  "postgres_primary"
+    credentials:        "postgres_primary"
+    async_jobs:         "postgres_primary"
+    ai_config:          "postgres_primary"
+    mcp_tools:          "postgres_primary"
+    obs_access_log:     "postgres_primary"
+    obs_metrics:        "postgres_primary"
+    obs_traces:         "postgres_primary"
+    egress_profiles:    "postgres_primary"
+    validation_schemas: "postgres_primary"
+    grpc_descriptors:   "postgres_primary"
+    cache:              "redis_primary"
+
+cache:
+  mem_budget_mb: 256
+  tenant_limit_mb: 32
+  backend:
+    kind: memory
+
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout_ms:  30000
+  write_timeout_ms: 30000
+
+observability:
+  log_level: info
+  traces:
+    enabled: true
+    sample_rate: 1.0
+    always_trace_5xx: true
+    instruction_timing: true
+  export:
+    prometheus:
+      enabled: true

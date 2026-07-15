@@ -1,0 +1,79 @@
+# RAH Gateway — GCP benchmark config
+#
+# Services VM (10.142.0.6): Redis :6379, Postgres :5432, auth server :9401, upstreams :9300-9309
+# Gateway VM (10.142.0.7): RAH :8080/:8081, Kong :8000/:8001, Tyk :5800
+#
+# Run as bare binary (not Docker) so it gets all 2 vCPUs on the n2-standard-2:
+#   ./bin/rah-gateway -config deploy/docker/gateway-bench.yaml
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        address: "10.142.0.6:6379"
+        pool_size: 32
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        address: "postgres://gateway:devpassword@10.142.0.6:5432/gateway?sslmode=disable"
+        max_open_conns: 64
+        max_idle_conns: 16
+
+  bindings:
+    api_definitions:     "postgres_primary"
+    flows:               "postgres_primary"
+    tenant_data:         "postgres_primary"
+    rate_limit:          "postgres_primary"
+    rl_configs_v2:       "postgres_primary"
+    customer_data:       "postgres_primary"
+    instances:           "postgres_primary"
+    gateway_instances:   "postgres_primary"
+    credentials:         "postgres_primary"
+    async_jobs:          "postgres_primary"
+    ai_config:           "postgres_primary"
+    mcp_tools:           "postgres_primary"
+    egress_profiles:     "postgres_primary"
+    validation_schemas:  "postgres_primary"
+    grpc_descriptors:    "postgres_primary"
+    cache:               "redis_primary"
+
+cache:
+  mem_budget_mb: 256      # generous — n2-standard-2 has 8GB
+  tenant_limit_mb: 32
+  backend:
+    kind: memory
+
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout_ms:  30000
+  write_timeout_ms: 30000
+
+observability:
+  log_level: error
+  access_log:
+    enabled: false
+  traces:
+    enabled: false
+    sample_rate: 0.0
+    always_trace_5xx: false
+    instruction_timing: false
+  metrics:
+    enabled: false
+  store:
+    type: memory
+    max_access_log: 0
+    max_traces: 0
+  export:
+    prometheus:
+      enabled: false
+    otel:
+      enabled: false
+    webhook:
+      enabled: false

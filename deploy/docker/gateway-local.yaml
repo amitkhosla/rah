@@ -1,0 +1,80 @@
+# RAH Gateway — local Docker Compose configuration
+# Mounted read-only at /app/gateway.yaml inside the container.
+#
+# Redis is running in Docker — use host.docker.internal to reach host-exposed
+# ports from inside a container (works on Docker Desktop for Windows/Mac).
+# If Redis is on a named Docker network, use its container name instead.
+#
+# PostgreSQL: replace the DSN below with your actual connection string.
+# The password can be set via POSTGRES_PASSWORD env var in your .env file:
+#   POSTGRES_PASSWORD=yourpassword
+# Or hardcode it below (keep out of git — this file is in .gitignore).
+
+datastore:
+  stores:
+    redis_primary:
+      name: redis_primary
+      kind: redis
+      enabled: true
+      connection:
+        # host.docker.internal resolves to the host machine from inside Docker Desktop.
+        # Use this if your Redis container exposes port 6379 on the host.
+        # If Redis is on the same Docker network, use its container name (e.g. "redis:6379").
+        address: "host.docker.internal:6379"
+        pool_size: 16
+
+    postgres_primary:
+      name: postgres_primary
+      kind: postgresql
+      enabled: true
+      connection:
+        # Separate fields avoid all URL-encoding issues with special chars in passwords.
+        # host.docker.internal reaches the host machine from inside Docker Desktop.
+        host: "host.docker.internal"
+        port: 5432
+        database: "gateway"
+        username: "postgres"
+        password: "${POSTGRES_PASSWORD}"
+
+  bindings:
+    api_definitions: "postgres_primary"
+    flows:           "postgres_primary"
+    tenant_data:     "postgres_primary"
+    rate_limit:      "postgres_primary"
+    rl_configs_v2:   "postgres_primary"
+    customer_data:   "postgres_primary"
+    instances:         "postgres_primary"
+    gateway_instances: "postgres_primary"
+    credentials:     "postgres_primary"
+    async_jobs:      "postgres_primary"
+    ai_config:       "postgres_primary"
+    mcp_tools:       "postgres_primary"
+    obs_access_log:  "postgres_primary"
+    obs_metrics:     "postgres_primary"
+    obs_traces:      "postgres_primary"
+    egress_profiles:     "postgres_primary"
+    validation_schemas:  "postgres_primary"
+    grpc_descriptors:    "postgres_primary"
+    cache:           "redis_primary"
+
+cache:
+  mem_budget_mb: 64
+  tenant_limit_mb: 8
+  backend:
+    kind: memory
+
+server:
+  port: 8080
+  management_port: 8081
+  read_timeout_ms: 30000
+  write_timeout_ms: 30000
+
+observability:
+  traces:
+    enabled: true
+    sample_rate: 1.0          # capture every request
+    always_trace_5xx: true
+    instruction_timing: true  # per-instruction durations in trace view
+
+# No ingest log sink in Docker — container logs go to stdout/stderr.
+# Use: docker compose logs -f gateway
