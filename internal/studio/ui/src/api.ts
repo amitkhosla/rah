@@ -858,3 +858,27 @@ export function patchConcurrencyConfig(body: ConcurrencyPatch): Promise<Concurre
     body: JSON.stringify(body),
   })
 }
+
+// ── Rate Limit V2 Overrides ────────────────────────────────────────
+
+export async function upsertV2Override(alias: string, body: {
+  rate_limit_v2: string;
+  blocked?: boolean;
+  rl_disabled?: boolean;
+  scale_override_pct?: number;
+  window_limits?: number[];
+}): Promise<void> {
+  const res = await fetch(`/api/management/tenants/${encodeURIComponent(alias)}/rate-limit-v2-overrides`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`upsertV2Override failed: ${res.status}`);
+}
+
+export async function deleteV2Override(alias: string, configName: string): Promise<void> {
+  const res = await fetch(`/api/management/tenants/${encodeURIComponent(alias)}/rate-limit-v2-overrides/${encodeURIComponent(configName)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`deleteV2Override failed: ${res.status}`);
+}

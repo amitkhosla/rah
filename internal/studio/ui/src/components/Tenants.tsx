@@ -4,6 +4,7 @@ import {
   listRateLimitConfigs, upsertRateLimitConfig,
   listCredentials, setCredential, deleteCredential,
   listTiers,
+  upsertV2Override, deleteV2Override,
 } from '../api'
 import type {
   TenantSummary, TenantDetail, RateLimitRecord, UpsertTenantRequest, TierDef,
@@ -226,6 +227,11 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
   const [tiers, setTiers]     = useState<TierDef[]>([])
   const [saveErr, setSaveErr] = useState('')
   const [saving, setSaving]   = useState(false)
+  const [showV2OverrideForm, setShowV2OverrideForm] = useState(false)
+  const [v2OverrideConfig, setV2OverrideConfig] = useState('')
+  const [v2OverrideBlocked, setV2OverrideBlocked] = useState(false)
+  const [v2OverrideDisabled, setV2OverrideDisabled] = useState(false)
+  const [v2OverrideScale, setV2OverrideScale] = useState('')
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -412,6 +418,57 @@ function TenantPanel({ alias, onDeleted }: { alias: string; onDeleted: () => voi
           <KVTable title="Service URLs" data={urls} />
           <KVTable title="Identifiers"  data={ids} />
           <KVTable title="Metadata"     data={meta} />
+
+          {/* V2 Rate Limit Overrides */}
+          <div style={{ marginTop: 20 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>V2 Rate Limit Overrides</span>
+              <button
+                onClick={() => setShowV2OverrideForm(f => !f)}
+                style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer', color: 'var(--text)' }}
+              >
+                {showV2OverrideForm ? 'Cancel' : '+ Add Override'}
+              </button>
+            </div>
+
+            {showV2OverrideForm && (
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginBottom: 12 }}>
+                <div style={{ fontSize: 12, marginBottom: 6, fontWeight: 600 }}>New Override</div>
+                <input placeholder="Config name (e.g. api_standard)" value={v2OverrideConfig} onChange={e => setV2OverrideConfig(e.target.value)}
+                  style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: 6, boxSizing: 'border-box' as const }} />
+                <div style={{ display: 'flex', gap: 12, marginBottom: 6 }}>
+                  <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="checkbox" checked={v2OverrideBlocked} onChange={e => setV2OverrideBlocked(e.target.checked)} /> Blocked (403)
+                  </label>
+                  <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="checkbox" checked={v2OverrideDisabled} onChange={e => setV2OverrideDisabled(e.target.checked)} /> RL Disabled
+                  </label>
+                </div>
+                <input placeholder="Scale override % (e.g. 50 = +50%, -25 = 75%)" value={v2OverrideScale} onChange={e => setV2OverrideScale(e.target.value)}
+                  style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginBottom: 8, boxSizing: 'border-box' as const }} />
+                <button
+                  onClick={async () => {
+                    if (!v2OverrideConfig.trim() || !detail) return;
+                    try {
+                      await upsertV2Override(detail.aliases?.[0] ?? '', {
+                        rate_limit_v2: v2OverrideConfig.trim(),
+                        blocked: v2OverrideBlocked,
+                        rl_disabled: v2OverrideDisabled,
+                        scale_override_pct: v2OverrideScale ? parseInt(v2OverrideScale, 10) : 0,
+                      });
+                      setShowV2OverrideForm(false);
+                      setV2OverrideConfig(''); setV2OverrideBlocked(false); setV2OverrideDisabled(false); setV2OverrideScale('');
+                    } catch (err) { alert(String(err)); }
+                  }}
+                  style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer' }}
+                >Save Override</button>
+              </div>
+            )}
+
+            <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Use the management API to list existing overrides: <code>GET /tenants/{`{alias}`}/rate-limit-v2-status</code>
+            </div>
+          </div>
 
           {Object.keys(detail.properties).length === 0 && !detail.tier && detail.rl_multiplier == null && (
             <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No properties stored.</div>
