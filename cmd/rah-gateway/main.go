@@ -731,7 +731,6 @@ func main() {
 		})
 		if rlProvider, err := engine.NewRedisRateLimitProvider(gatewayCtx, rlClient); err == nil {
 			fm.RemoteRL = rlProvider
-			fm.DistRLPolicy = 2 // STRICT by default; cross-pod enforcement via Redis
 			log.Printf("[rate-limit] distributed rate limiting enabled via Redis (%s)", rlCfg.Connection.Address)
 			defer rlProvider.Stop()
 		} else {

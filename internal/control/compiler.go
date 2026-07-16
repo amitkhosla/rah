@@ -758,47 +758,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				}
 			}
 
-			// V1 fallback: emit original V1 steps when V2 translation was not possible.
 			if !emittedV2 {
-				emitQuotaHeaders := step.Input["emit_quota_headers"] == "true"
-				syncPolicy := uint8(0)
-				if c.fm.RemoteRL != nil {
-					syncPolicy = c.fm.DistRLPolicy
-				}
-				if scope == "ip" {
-					ipSlotName := strings.TrimSpace(step.Input["ip_slot"])
-					ipSlot := -1
-					if ipSlotName != "" {
-						ipSlot, _ = c.getSlot(ipSlotName)
-					}
-					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitIP(c.fm.RateLimitStore, ipSlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
-				} else if scope == "slot" {
-					keySlotName := strings.TrimSpace(step.Input["key_slot"])
-					keySlot := -1
-					if keySlotName != "" {
-						keySlot, _ = c.getSlot(keySlotName)
-					}
-					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitSlot(c.fm.RateLimitStore, keySlot, syncPolicy, c.fm.RemoteRL, emitQuotaHeaders))
-				} else {
-					var quotaGroupRLIds []uint16
-					if len(step.Input) > 0 && c.RegMgr != nil {
-						quotaGroupRLIds = c.compileQuotaGroupMap(step.Input)
-					}
-					c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimit(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicy, quotaGroupRLIds, emitQuotaHeaders))
-				}
+				log.Printf("[Compiler] check_rate_limit: no V2 config resolved — step skipped (configure a V2 rate-limit config)")
 			}
 		}
 
 	case "check_rate_limit_global":
-		// Global (tenant-agnostic) rate limit enforcement. Counter key omits TenantID so
-		// all tenants hitting the same API/endpoint share a single counter bucket.
-		// Optional: "emit_quota_headers": "true" to emit X-RateLimit-* response headers.
-		emitQuotaHeadersGlobal := step.Input["emit_quota_headers"] == "true"
-		syncPolicyGlobal := uint8(0)
-		if c.fm.RemoteRL != nil {
-			syncPolicyGlobal = c.fm.DistRLPolicy
-		}
-		c.GlobalTable = append(c.GlobalTable, steps.CheckRateLimitGlobal(c.fm.RateLimitStore, c.fm.RemoteRL, syncPolicyGlobal, emitQuotaHeadersGlobal))
+		log.Printf("[Compiler] check_rate_limit_global: deprecated — use check_rate_limit_v2 with count_by=global instead; step skipped")
 
 	case "check_rate_limit_v2":
 		// V2 multi-window rate limit enforcement. Resolves config name → configID at bake

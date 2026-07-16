@@ -128,9 +128,6 @@ type FlowManager struct {
 	// Used by CheckRateLimitV2 in approximate mode with DivideByNodes=true to split
 	// the per-window limit evenly across pods. Nil = assume 1 instance (no division).
 	InstanceCountFn func() int
-	// DistRLPolicy controls cross-pod rate limit enforcement:
-	// 0 = LOCAL (in-memory only), 1 = ASYNC (local decision + background sync), 2 = STRICT (Redis before allow).
-	DistRLPolicy uint8
 	// SpikeArrestStore holds per-bucket last-allowed timestamps for all spike_arrest steps.
 	// Pre-allocated at startup; zero heap allocation per request.
 	SpikeArrestStore *SpikeArrestStore
