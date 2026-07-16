@@ -104,6 +104,8 @@ const VISUAL_GROUPS: VisualGroup[] = [
       { title: 'Validate Token',   wraps: 'token_validation',   description: 'Validate JWT or API key' },
       { title: 'API Rate Limits',  wraps: 'api_rate_limits',    description: 'Enforce rate limits configured in the API definition. Drag to control where in the flow enforcement happens. If absent, limits are auto-injected at the start of the flow.' },
       { title: 'Check Rate Limit', wraps: 'check_rate_limit',  description: 'Enforce request rate limits' },
+      { title: 'Rate Limit V2',    wraps: 'check_rate_limit_v2',   description: 'Multi-window V2 rate limiting with per-tenant overrides. Configure a named rate-limit config, count_by mode, and optional enforcement (approximate/strict/token_bucket).' },
+      { title: 'Rate Limit Tier',  wraps: 'check_rate_limit_tier',  description: 'Tier-based rate limiting: reads the tenant\'s tier from the registry and routes to the matching V2 rate-limit config automatically.' },
       { title: 'Load Credential',  wraps: 'load_identifier',   description: 'Fetch a stored credential' },
       { title: 'IP Restriction',   wraps: 'ip_restriction',    description: 'Allow or deny requests by IP CIDR range' },
       { title: 'Assign Quota Group',wraps: 'assign_quota_group',description: 'Map tenant tier to a quota group for rate limiting' },
@@ -460,7 +462,7 @@ export default function FlowDesigner({
     'cache_get':'🗄️','cache_put':'🗄️','cache_get_global':'🗄️','cache_put_global':'🗄️','cache_delete':'🗄️','cache_delete_global':'🗄️',
     'bind_header':'📥','bind_query_param':'📥','bind_path':'📥','bind_body':'📥',
     'emit_event':'📊','log_field':'📋','registry_lookup':'🏷️',
-    'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱','api_rate_limits':'📍',
+    'load_service_url':'🔗','load_identifier':'🔑','check_rate_limit':'⏱','check_rate_limit_v2':'⏱','check_rate_limit_tier':'🏷️','api_rate_limits':'📍',
     'set_response_body':'📤','set_response_header':'📤','set_response_status':'📤',
     'extract':'✂️','json_extract_emit':'✂️','mcp_call_tool':'🔧',
     'concat':'✂️','set_const':'📝','render_template':'📝',
@@ -3137,6 +3139,27 @@ export default function FlowDesigner({
                            updateStep(i, 'default_next', defaultNext)
                          }}
                        />
+                     ))() :
+                     step.action === 'check_rate_limit_v2' ? (() => (
+                       <div style={{ padding: '10px 12px' }}>
+                         <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Rate Limit V2 Config</div>
+                         <input
+                           placeholder="config name (e.g. api_standard)"
+                           value={step.config ?? ''}
+                           onChange={e => updateStep(i, 'config', e.target.value)}
+                           style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', boxSizing: 'border-box' }}
+                         />
+                         <select
+                           value={step.count_by ?? 'tenant'}
+                           onChange={e => updateStep(i, 'count_by', e.target.value)}
+                           style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginTop: 4 }}
+                         >
+                           <option value="tenant">Count by tenant</option>
+                           <option value="ip">Count by IP</option>
+                           <option value="global">Count globally</option>
+                           <option value="app">Count by app/caller</option>
+                         </select>
+                       </div>
                      ))() :
                      step.action === 'llm_call'          ? renderLlmCallBody(step, i)             :
                      ['cache_get','cache_put','cache_get_global','cache_put_global','cache_delete','cache_delete_global'].includes(step.action)
