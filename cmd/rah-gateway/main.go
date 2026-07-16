@@ -1368,8 +1368,13 @@ func main() {
 	// DomainFlows or DomainAPIDefinitions, re-bootstrap this instance from
 	// the datastore so all pods converge to the same compiled state.
 	if ingestPipeline != nil {
-		flowsDomain := string(config.DomainFlows)
-		apisDomain := string(config.DomainAPIDefinitions)
+		bootstrapDomains := map[string]struct{}{
+			string(config.DomainFlows):              {},
+			string(config.DomainAPIDefinitions):     {},
+			string(config.DomainRateLimitConfigsV2): {},
+			string(config.DomainTiers):              {},
+			string(config.DomainUpstreamServices):   {},
+		}
 		ingest.StartConsumers(gatewayCtx, cfgMgr.Gateway().Ingest, func(e ingest.Event) {
 			if e.Model == instanceFingerprint {
 				return // skip our own writes
@@ -1377,7 +1382,7 @@ func main() {
 			if e.Kind != ingest.KindDBPut {
 				return
 			}
-			if e.SessionID != flowsDomain && e.SessionID != apisDomain {
+			if _, ok := bootstrapDomains[e.SessionID]; !ok {
 				return
 			}
 			log.Printf("[sync] cross-instance config change detected (domain=%s), re-bootstrapping", e.SessionID)

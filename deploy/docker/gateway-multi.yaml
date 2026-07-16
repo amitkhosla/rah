@@ -34,6 +34,7 @@ datastore:
     tenant_data:        postgres_primary   # registry: aliases, URLs, IDs, meta
     rate_limit:         postgres_primary   # named rate-limit config persistence (V1)
     rl_configs_v2:      postgres_primary   # V2 multi-window rate limit configs (required for cross-instance strict RL)
+    tiers:              postgres_primary   # tier definitions (free/premium/enterprise rate limit groupings)
     rate_limit_sync:    redis_primary      # ← distributed RL counters via Redis INCR
     customer_data:      postgres_primary
     instances:          postgres_primary   # legacy alias (unused)
