@@ -89,6 +89,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 	}
 
 	// ── Layer 2: per-tenant per-config V2 override (sparse table) ───────────
+	var windowLimits []uint32
 	if ov, ok := registry.LookupV2Override(reg, ctx.TenantID, s.ConfigID); ok {
 		if ov.Flags&registry.V2ConfigBlocked != 0 {
 			ctx.ResponseStatus = 403
@@ -97,10 +98,10 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		if ov.Flags&registry.V2ConfigDisabled != 0 {
 			return int16(s.NextPC)
 		}
-		// Config-scoped scale overrides global ScalePct for this config only.
 		if ov.ScaleOverridePct != 0 {
 			scalePct = ov.ScaleOverridePct
 		}
+		windowLimits = ov.WindowLimits
 	}
 
 	// ── Quota group filter (dynamic dispatch) ────────────────────────────────
@@ -147,7 +148,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 	if s.RemoteRL != nil {
 		denied = s.executeDistributed(ctx, keyBytes, useTenant, mult, delta)
 	} else {
-		denied = s.executeLocal(ctx, keyBytes, useTenant, mult, delta)
+		denied = s.executeLocal(ctx, keyBytes, useTenant, mult, delta, windowLimits)
 	}
 
 	if denied {
@@ -159,7 +160,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 
 // executeLocal checks all windows against the in-process counter arenas.
 // Returns true if any window is exceeded (denied), false if all pass.
-func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useTenant bool, mult, delta uint32) bool {
+func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useTenant bool, mult, delta uint32, windowLimits []uint32) bool {
 	reg := engine.ActiveCounterRegistry()
 	now := uint32(time.Now().Unix())
 
@@ -176,6 +177,9 @@ func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useT
 		w := &s.Windows[i]
 		epoch := now / w.EpochDiv
 		limit := applyMultiplier(w.Limit, mult)
+		if int(w.Idx) < len(windowLimits) && windowLimits[w.Idx] != 0 {
+			limit = windowLimits[w.Idx]
+		}
 		if nodeDivisor > 1 {
 			if limit > nodeDivisor {
 				limit = limit / nodeDivisor

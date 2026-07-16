@@ -390,10 +390,11 @@ func (s *TenantServer) UpsertTenantRateLimitOverrideHandler(w http.ResponseWrite
 
 // upsertV2OverrideRequest is the body for POST /tenants/{alias}/rate-limit-v2-overrides
 type upsertV2OverrideRequest struct {
-	RateLimitV2Name  string `json:"rate_limit_v2"`       // V2 config name
-	Blocked          bool   `json:"blocked"`             // block tenant for this config → 403
-	RLDisabled       bool   `json:"rl_disabled"`         // disable RL for this config → pass
-	ScaleOverridePct int16  `json:"scale_override_pct"`  // %-override: +50=150%, -25=75%, 0=inherit
+	RateLimitV2Name  string   `json:"rate_limit_v2"`       // V2 config name
+	Blocked          bool     `json:"blocked"`             // block tenant for this config → 403
+	RLDisabled       bool     `json:"rl_disabled"`         // disable RL for this config → pass
+	ScaleOverridePct int16    `json:"scale_override_pct"`  // %-override: +50=150%, -25=75%, 0=inherit
+	WindowLimits     []uint32 `json:"window_limits,omitempty"`
 }
 
 // UpsertTenantV2OverrideHandler handles POST /tenants/{alias}/rate-limit-v2-overrides
@@ -448,6 +449,7 @@ func (s *TenantServer) UpsertTenantV2OverrideHandler(w http.ResponseWriter, r *h
 	s.mgr.UpsertTenantV2Override(tID, configID, TenantV2ConfigOverride{
 		Flags:            flags,
 		ScaleOverridePct: req.ScaleOverridePct,
+		WindowLimits:     req.WindowLimits,
 	})
 	jsonOK(w, map[string]string{"status": "ok"})
 }

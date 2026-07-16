@@ -99,6 +99,7 @@ type TenantV2ConfigOverride struct {
 	_                [1]byte // pad
 	ScaleOverridePct int16   // %-override: +50 → 150%, -25 → 75%, 0 = use global
 	_                [4]byte // pad to 8 bytes
+	WindowLimits     []uint32
 }
 
 // TenantV2OverrideTable is a sparse list of per-config V2 overrides for one tenant.
