@@ -1236,6 +1236,7 @@ func main() {
 	ts := tenantregistry.NewTenantServer(regMgr)
 	ts.RLRegistrar = rlCounterRegistrar{}
 	ts.CounterStatus = counterStatusProvider{}
+	ts.RLV2Store = dataStoreMgr
 	aks := apikey.NewServer(dataStoreMgr)
 
 	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping

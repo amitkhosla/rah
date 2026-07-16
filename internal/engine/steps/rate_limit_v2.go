@@ -148,7 +148,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 	// ── 5. Dispatch to local or distributed counter path ─────────────────────
 	var denied bool
 	if s.RemoteRL != nil {
-		denied = s.executeDistributed(ctx, keyBytes, useTenant, mult, delta)
+		denied = s.executeDistributed(ctx, keyBytes, useTenant, mult, delta, windowLimits)
 	} else {
 		denied = s.executeLocal(ctx, keyBytes, useTenant, mult, delta, windowLimits)
 	}
@@ -219,7 +219,7 @@ func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useT
 //
 // Returns true if any window is exceeded (denied), false if all pass.
 // Fail-open: RedisRateLimitProvider.Check already returns (true, limit) on error/timeout.
-func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte, useTenant bool, mult, delta uint32) bool {
+func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte, useTenant bool, mult, delta uint32, windowLimits []uint32) bool {
 	// Build the key identifier once — either decimal TenantID or hex key bytes.
 	var keyID string
 	if useTenant {
@@ -233,6 +233,9 @@ func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte
 	for i := range s.Windows {
 		w := &s.Windows[i]
 		limit := applyMultiplier(w.Limit, mult)
+		if int(w.Idx) < len(windowLimits) && windowLimits[w.Idx] != 0 {
+			limit = windowLimits[w.Idx]
+		}
 		// Redis key: rl2:{configName}:{epochDiv}:{keyIdentifier}
 		redisKey := "rl2:" + s.ConfigName + ":" + strconv.FormatUint(uint64(w.EpochDiv), 10) + ":" + keyID
 
