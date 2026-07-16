@@ -21,6 +21,7 @@ package steps
 import (
 	"rah/internal/engine"
 	"rah/internal/rctx"
+	"rah/internal/registry"
 )
 
 // AssignQuotaGroup reads a string value from srcSlot, maps it to a quota
@@ -45,6 +46,26 @@ func AssignQuotaGroup(srcSlot int, groupMap map[string]uint8) engine.Instruction
 			}
 			if gid, ok := groupMap[string(val)]; ok {
 				ctx.QuotaGroupID = gid
+			}
+			return s.PC + 1
+		},
+	}
+}
+
+// AssignTierGroup reads the tenant's tier name from the registry at request time
+// and maps it to a quota group ID using the bake-time groupMap.
+// Unlike AssignQuotaGroup, this bypasses slot reads — the registry is authoritative.
+// groupMap: tier name → group ID (uint8, 1–255; 0 is reserved for "no group").
+func AssignTierGroup(groupMap map[string]uint8) engine.Instruction {
+	return engine.Instruction{
+		Name: "ASSIGN_TIER_GROUP",
+		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+			reg := registry.State.Active.Load()
+			tierName := registry.TenantTierName(reg, ctx.TenantID)
+			if tierName != "" {
+				if gid, ok := groupMap[tierName]; ok {
+					ctx.QuotaGroupID = gid
+				}
 			}
 			return s.PC + 1
 		},

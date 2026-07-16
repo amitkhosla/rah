@@ -923,6 +923,107 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			},
 		})
 
+	case "check_rate_limit_tier":
+		// Tier-based rate limiting dispatch. Reads the tenant's tier from the registry at
+		// request time and routes to that tier's V2 rate limit config.
+		//
+		// At bake time: iterates all TierDef entries that have a ConfigName,
+		// assigns each tier a stable QuotaGroupID (1-based), emits AssignTierGroup
+		// followed by one CheckRateLimitV2 per tier (each guarded by QuotaGroupFilter).
+		//
+		// Tenants with no tier assigned or a tier without a ConfigName pass through.
+		tiers := registrypkg.ListTiers()
+		sort.Slice(tiers, func(i, j int) bool { return tiers[i].Name < tiers[j].Name })
+
+		groupMap := make(map[string]uint8, len(tiers))
+		var nextGID uint8 = 1
+		for i := range tiers {
+			if tiers[i].ConfigName == "" {
+				continue
+			}
+			groupMap[tiers[i].Name] = nextGID
+			nextGID++
+		}
+
+		if len(groupMap) == 0 {
+			log.Printf("[Compiler] check_rate_limit_tier: no tiers with a config_name found — step skipped")
+			break
+		}
+
+		c.GlobalTable = append(c.GlobalTable, steps.AssignTierGroup(groupMap))
+
+		for i := range tiers {
+			tier := &tiers[i]
+			if tier.ConfigName == "" {
+				continue
+			}
+			capturedGID := groupMap[tier.Name]
+
+			var configID uint16
+			var tierWindows []steps.WindowSpec
+			var enforcement string
+			var divideByNodes bool
+
+			if c.RegMgr != nil {
+				if id, ok := c.RegMgr.GetRateLimitConfigId(tier.ConfigName); ok {
+					configID = id
+				}
+				if cfg := c.RegMgr.GetRateLimitConfigV2(tier.ConfigName); cfg != nil {
+					enforcement = cfg.Enforcement
+					divideByNodes = cfg.DivideByNodes
+					for j, w := range cfg.Windows {
+						epochDiv := w.PeriodSecs
+						if epochDiv == 0 {
+							epochDiv = 1
+						}
+						tierWindows = append(tierWindows, steps.WindowSpec{EpochDiv: epochDiv, Limit: w.Limit, Idx: j})
+					}
+				}
+			}
+
+			if len(tierWindows) == 0 {
+				log.Printf("[Compiler] check_rate_limit_tier: tier %q config %q has no windows — skipped", tier.Name, tier.ConfigName)
+				continue
+			}
+
+			var remoteRL engine.ExternalRateLimitProvider
+			if enforcement == "strict" && c.fm.RemoteRL != nil {
+				remoteRL = c.fm.RemoteRL
+			}
+
+			var nodeCountFn func() int
+			if divideByNodes && remoteRL == nil && c.fm.InstanceCountFn != nil {
+				nodeCountFn = c.fm.InstanceCountFn
+			}
+
+			tierNextPC := len(c.GlobalTable) + 1
+			const tierDeniedPC = -1
+			capturedConfigID := configID
+			capturedWindows := tierWindows
+			capturedRemoteRL := remoteRL
+			capturedNodeCount := nodeCountFn
+			capturedConfigName := tier.ConfigName
+
+			capturedStep := &steps.CheckRateLimitV2{
+				ConfigID:         capturedConfigID,
+				CountBy:          engine.RateLimitCountBy{Kind: engine.CountByTenant},
+				Windows:          capturedWindows,
+				DeniedPC:         tierDeniedPC,
+				NextPC:           tierNextPC,
+				RemoteRL:         capturedRemoteRL,
+				ConfigName:       capturedConfigName,
+				WeightIntSlot:    -1,
+				QuotaGroupFilter: capturedGID,
+				NodeCountFn:      capturedNodeCount,
+			}
+			c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+				Name: "CHECK_RATE_LIMIT_TIER",
+				Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
+					return capturedStep.Execute(ctx, s)
+				},
+			})
+		}
+
 	case "check_upstream_rate_limit":
 		// Upstream rate limit enforcement using URL-pattern matching.
 		// Reads the upstream URL from the named slot and checks it against
