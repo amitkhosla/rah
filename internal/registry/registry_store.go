@@ -279,11 +279,17 @@ func (s *TenantRegistryStore) loadTenantRecord(ctx context.Context, primaryAlias
 	}
 
 	for _, k := range propKeys {
-		rest := strings.TrimPrefix(k, propPrefix)
+		// ListKeys strips the full scoped prefix (e.g. "tenant:__global__:tenant_data:tenant:freeco:")
+		// so k is a bare suffix like "meta:tier", "url:primary", "id:api_key".
+		// Re-attach propPrefix before calling Get so the backend can reconstruct the
+		// correct full scoped key (e.g. "tenant:freeco:meta:tier" → the backend
+		// prepends the domain scope to get the actual DB key).
+		fullKey := propPrefix + k
+		rest := k // k IS the rest — no propPrefix to strip
 		switch {
 		case strings.HasPrefix(rest, "url:"):
 			key := strings.TrimPrefix(rest, "url:")
-			if val, ok, _ := s.backend.Get(ctx, k); ok {
+			if val, ok, _ := s.backend.Get(ctx, fullKey); ok {
 				if rec.ServiceURLs == nil {
 					rec.ServiceURLs = make(map[string]string)
 				}
@@ -291,7 +297,7 @@ func (s *TenantRegistryStore) loadTenantRecord(ctx context.Context, primaryAlias
 			}
 		case strings.HasPrefix(rest, "id:"):
 			key := strings.TrimPrefix(rest, "id:")
-			if val, ok, _ := s.backend.Get(ctx, k); ok {
+			if val, ok, _ := s.backend.Get(ctx, fullKey); ok {
 				if rec.Identifiers == nil {
 					rec.Identifiers = make(map[string]string)
 				}
@@ -299,7 +305,7 @@ func (s *TenantRegistryStore) loadTenantRecord(ctx context.Context, primaryAlias
 			}
 		case strings.HasPrefix(rest, "meta:"):
 			key := strings.TrimPrefix(rest, "meta:")
-			if val, ok, _ := s.backend.Get(ctx, k); ok {
+			if val, ok, _ := s.backend.Get(ctx, fullKey); ok {
 				if rec.Metadata == nil {
 					rec.Metadata = make(map[string]string)
 				}
