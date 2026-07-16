@@ -113,7 +113,9 @@ func (s *InstanceSync) refreshInstanceCount(ctx context.Context) {
 	if !s.dsm.IsConfigured(config.DomainGatewayInstances) {
 		return
 	}
-	keys, err := s.dsm.ListGlobalKeys(ctx, config.DomainGatewayInstances, s.cfg.EnvironmentID+"/")
+	// Heartbeats are written with key = instanceID (no env prefix), so list
+	// all keys and filter by EnvironmentID from the record value.
+	keys, err := s.dsm.ListGlobalKeys(ctx, config.DomainGatewayInstances, "")
 	if err != nil {
 		return
 	}
@@ -126,7 +128,9 @@ func (s *InstanceSync) refreshInstanceCount(ctx context.Context) {
 			continue
 		}
 		var rec InstanceRecord
-		if json.Unmarshal(data, &rec) == nil && (now-rec.LastHeartbeat) < ttl {
+		if json.Unmarshal(data, &rec) == nil &&
+			rec.EnvironmentID == s.cfg.EnvironmentID &&
+			(now-rec.LastHeartbeat) < ttl {
 			alive++
 		}
 	}

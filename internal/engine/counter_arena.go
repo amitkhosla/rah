@@ -302,11 +302,16 @@ func NewConfigCounterRegistry(maxConfigs int) *ConfigCounterRegistry {
 	}
 }
 
-// RegisterTenantConfig wires configID to a fresh TenantCounterArena.
+// RegisterTenantConfig wires configID to a TenantCounterArena.
 // maxTenants == 0 → default 65536.
+// If an arena is already registered for this configID, it is preserved to
+// avoid resetting in-flight counters on re-sync / cross-instance bootstrap.
 func (r *ConfigCounterRegistry) RegisterTenantConfig(configID uint16, numWindows, maxTenants int) {
 	if int(configID) >= r.cap {
 		return
+	}
+	if r.tenantArenas[configID] != nil {
+		return // preserve existing arena; counters survive re-bootstrap
 	}
 	if maxTenants == 0 {
 		maxTenants = 65536
@@ -314,17 +319,20 @@ func (r *ConfigCounterRegistry) RegisterTenantConfig(configID uint16, numWindows
 	r.tenantArenas[configID] = NewTenantCounterArena(maxTenants, numWindows)
 }
 
-// RegisterSlotConfig wires configID to a fresh SlotCounterArena.
+// RegisterSlotConfig wires configID to a SlotCounterArena.
 // arenaSize == 0 → default 65536.
+// If an arena is already registered for this configID, it is preserved to
+// avoid resetting in-flight counters on re-sync / cross-instance bootstrap.
 func (r *ConfigCounterRegistry) RegisterSlotConfig(configID uint16, numWindows, arenaSize int) {
 	if int(configID) >= r.cap {
 		return
 	}
+	if r.slotArenas[configID] != nil {
+		return // preserve existing arena; counters survive re-bootstrap
+	}
 	if arenaSize == 0 {
 		arenaSize = 65536
 	}
-	// numWindows not directly stored in SlotCounterArena — it is encoded into
-	// the windowIdx argument at call time to disambiguate slots.
 	r.slotArenas[configID] = NewSlotCounterArena(arenaSize)
 }
 

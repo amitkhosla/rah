@@ -1328,6 +1328,19 @@ func main() {
 		log.Printf("[grpc] descriptor bootstrap: %v", err)
 	}
 
+	// Create instanceSync early so fm.InstanceCountFn is set before Bootstrap.
+	// Flows compiled during bootstrap with divide_by_nodes:true need NodeCountFn
+	// to be non-nil at bake time — it's captured by value in the closure.
+	// Start() is called after bootstrap to avoid the config-poll goroutine
+	// racing with the initial bootstrap load.
+	instanceSync := control.NewInstanceSync(
+		instanceFingerprint,
+		cfgMgr.Gateway().Instance,
+		dataStoreMgr,
+		ms,
+	)
+	fm.InstanceCountFn = instanceSync.InstanceCount
+
 	// Bootstrap BEFORE SetDataStore so the bootstrap reads do not trigger
 	// redundant writes back to the store. Registry must be restored first (above)
 	// so named rate limit configs are available when Bootstrap bakes flows.
@@ -1375,14 +1388,7 @@ func main() {
 	}
 
 	// Start instance heartbeat and config-poll goroutines.
-	instanceSync := control.NewInstanceSync(
-		instanceFingerprint,
-		cfgMgr.Gateway().Instance,
-		dataStoreMgr,
-		ms,
-	)
 	instanceSync.Start(gatewayCtx)
-	fm.InstanceCountFn = instanceSync.InstanceCount
 	// Sweep stale test tenants (safety net for crash-interrupted test runs).
 	// Any test tenant older than 10 minutes that wasn't cleaned up by defer is removed.
 	regMgr.StartTestTenantSweep(gatewayCtx, 600)
@@ -1461,6 +1467,40 @@ func main() {
 	mux.HandleFunc("/debug/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops())
+	})
+	mux.HandleFunc("/debug/rl_v2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		reg := engine.ActiveCounterRegistry()
+		type configEntry struct {
+			ConfigID    int    `json:"config_id"`
+			Name        string `json:"name"`
+			SlotArena   bool   `json:"slot_arena"`
+			TenantArena bool   `json:"tenant_arena"`
+		}
+		var entries []configEntry
+		for _, cfg := range tenantregistry.ListRateLimitConfigsV2() {
+			id, ok := regMgr.GetRateLimitConfigId(cfg.Name)
+			if !ok {
+				continue
+			}
+			entries = append(entries, configEntry{
+				ConfigID:    int(id),
+				Name:        cfg.Name,
+				SlotArena:   reg.SlotArena(id) != nil,
+				TenantArena: reg.TenantArena(id) != nil,
+			})
+		}
+		instanceCount := 1
+		if fm.InstanceCountFn != nil {
+			instanceCount = fm.InstanceCountFn()
+		}
+		out := map[string]any{
+			"instance_count": instanceCount,
+			"configs":        entries,
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
 	})
 	mux.HandleFunc("/admin/concurrency", fm.ConcurrencyHandler)
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
