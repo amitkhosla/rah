@@ -737,20 +737,20 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					capturedRemoteRL := rlv2RemoteRL
 					rlv2NextPC := len(c.GlobalTable) + 1
 					rlv2DeniedPC := len(c.GlobalTable) + 2
+					capturedStep1 := &steps.CheckRateLimitV2{
+						ConfigID:      capturedConfigID,
+						CountBy:       capturedCountBy,
+						Windows:       capturedWindows,
+						DeniedPC:      rlv2DeniedPC,
+						NextPC:        rlv2NextPC,
+						RemoteRL:      capturedRemoteRL,
+						ConfigName:    capturedConfigName,
+						WeightIntSlot: -1,
+					}
 					c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 						Name: "CHECK_RATE_LIMIT_V2",
 						Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-							step := &steps.CheckRateLimitV2{
-								ConfigID:      capturedConfigID,
-								CountBy:       capturedCountBy,
-								Windows:       capturedWindows,
-								DeniedPC:      rlv2DeniedPC,
-								NextPC:        rlv2NextPC,
-								RemoteRL:      capturedRemoteRL,
-								ConfigName:    capturedConfigName,
-								WeightIntSlot: -1,
-							}
-							return step.Execute(ctx, s)
+							return capturedStep1.Execute(ctx, s)
 						},
 					})
 					emittedV2 = true
@@ -882,20 +882,20 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// would jump to the next instruction, allowing subsequent steps (e.g. proxy)
 		// to override the status with 200.
 		const rlv2DeniedPC = -1
+		capturedStep2 := &steps.CheckRateLimitV2{
+			ConfigID:      configID,
+			CountBy:       countBy,
+			Windows:       windows,
+			DeniedPC:      rlv2DeniedPC,
+			NextPC:        rlv2NextPC,
+			RemoteRL:      rlv2RemoteRL,
+			ConfigName:    configName,
+			WeightIntSlot: weightIntSlot,
+		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "CHECK_RATE_LIMIT_V2",
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				step := &steps.CheckRateLimitV2{
-					ConfigID:      configID,
-					CountBy:       countBy,
-					Windows:       windows,
-					DeniedPC:      rlv2DeniedPC,
-					NextPC:        rlv2NextPC,
-					RemoteRL:      rlv2RemoteRL,
-					ConfigName:    configName,
-					WeightIntSlot: weightIntSlot,
-				}
-				return step.Execute(ctx, s)
+				return capturedStep2.Execute(ctx, s)
 			},
 		})
 
@@ -3553,21 +3553,21 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		// This is safe because we set ctx.ResponseStatus = 429 before returning.
 		nextPC := len(c.GlobalTable) + 1
 		const deniedPC = -1 // StopPlan: halt flow on denial
+		capturedStep3 := &steps.CheckRateLimitV2{
+			ConfigID:      capturedConfigID,
+			CountBy:       capturedCountBy,
+			Windows:       capturedWindows,
+			DeniedPC:      deniedPC,
+			NextPC:        nextPC,
+			RemoteRL:      capturedRemoteRL,
+			ConfigName:    capturedConfigName,
+			WeightIntSlot: -1,
+		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name:    "CHECK_RATE_LIMIT_V2",
 			StepIdx: -1, // system instruction — not a user-defined flow step
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-				rl := &steps.CheckRateLimitV2{
-					ConfigID:      capturedConfigID,
-					CountBy:       capturedCountBy,
-					Windows:       capturedWindows,
-					DeniedPC:      deniedPC,
-					NextPC:        nextPC,
-					RemoteRL:      capturedRemoteRL,
-					ConfigName:    capturedConfigName,
-					WeightIntSlot: -1,
-				}
-				return rl.Execute(ctx, s)
+				return capturedStep3.Execute(ctx, s)
 			},
 		})
 	}
