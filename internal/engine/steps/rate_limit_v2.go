@@ -12,6 +12,8 @@ import (
 	"rah/internal/rctx"
 )
 
+var globalCounterKey = []byte("__global__")
+
 // ─── WindowSpec ───────────────────────────────────────────────────────────────
 
 // WindowSpec describes one fixed-window within a CheckRateLimitV2 step.
@@ -172,7 +174,7 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 		return nil, true // direct TenantID index — no key bytes needed
 
 	case engine.CountByGlobal:
-		return []byte("__global__"), false
+		return globalCounterKey, false
 
 	case engine.CountByStatic:
 		return cb.StaticKey, false
@@ -207,10 +209,8 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 		if ctx.CallerID == 0 {
 			return s.handleEmpty(ctx, nil)
 		}
-		var b [4]byte
-		binary.BigEndian.PutUint32(b[:], ctx.CallerID)
-		key := make([]byte, 4)
-		copy(key, b[:])
+		key := ctx.Alloc(4)
+		binary.BigEndian.PutUint32(key, ctx.CallerID)
 		return key, false
 
 	default:
