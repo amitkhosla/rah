@@ -665,6 +665,11 @@ func (m *RegistryManager) RegisterTestTenant(runID string) (alias string, tenant
 		copy(grown, reg.TenantRateLimits)
 		reg.TenantRateLimits = grown
 	}
+	if needed > len(reg.TenantV2Overrides) {
+		grown := make([]*TenantV2OverrideTable, needed)
+		copy(grown, reg.TenantV2Overrides)
+		reg.TenantV2Overrides = grown
+	}
 	if needed > int(reg.MaxTenants) {
 		newMax := uint16(needed + 127)
 		if reg.URLs.Stride > 0 {
@@ -821,6 +826,88 @@ func (m *RegistryManager) UpsertTenantRateLimitOverride(tenantID, policyID uint1
 	tbl.Entries[insertAt] = entry
 
 	State.Active.Store(reg)
+}
+
+// UpsertTenantV2Override inserts or updates a per-tenant V2 rate limit override
+// for one V2 ConfigID. The override is searched by binary search; a new entry is
+// inserted in sorted order if no existing entry matches configID.
+func (m *RegistryManager) UpsertTenantV2Override(tenantID, configID uint16, entry TenantV2ConfigOverride) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	reg := m.activeOrEmpty()
+
+	needed := int(tenantID) + 1
+	if needed > len(reg.TenantV2Overrides) {
+		grown := make([]*TenantV2OverrideTable, needed)
+		copy(grown, reg.TenantV2Overrides)
+		reg.TenantV2Overrides = grown
+	}
+
+	tbl := reg.TenantV2Overrides[tenantID]
+	if tbl == nil {
+		tbl = &TenantV2OverrideTable{}
+		reg.TenantV2Overrides[tenantID] = tbl
+	}
+
+	lo, hi := 0, len(tbl.ConfigIDs)-1
+	insertAt := len(tbl.ConfigIDs)
+	for lo <= hi {
+		mid := (lo + hi) >> 1
+		if tbl.ConfigIDs[mid] == configID {
+			tbl.Entries[mid] = entry
+			State.Active.Store(reg)
+			return
+		} else if tbl.ConfigIDs[mid] < configID {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+			insertAt = mid
+		}
+	}
+
+	tbl.ConfigIDs = append(tbl.ConfigIDs, 0)
+	copy(tbl.ConfigIDs[insertAt+1:], tbl.ConfigIDs[insertAt:])
+	tbl.ConfigIDs[insertAt] = configID
+
+	tbl.Entries = append(tbl.Entries, TenantV2ConfigOverride{})
+	copy(tbl.Entries[insertAt+1:], tbl.Entries[insertAt:])
+	tbl.Entries[insertAt] = entry
+
+	State.Active.Store(reg)
+}
+
+// DeleteTenantV2Override removes the per-tenant V2 override for configID.
+// No-op if the tenant or config entry does not exist.
+func (m *RegistryManager) DeleteTenantV2Override(tenantID, configID uint16) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	reg := m.activeOrEmpty()
+	if int(tenantID) >= len(reg.TenantV2Overrides) {
+		return
+	}
+	tbl := reg.TenantV2Overrides[tenantID]
+	if tbl == nil {
+		return
+	}
+
+	lo, hi := 0, len(tbl.ConfigIDs)-1
+	for lo <= hi {
+		mid := (lo + hi) >> 1
+		if tbl.ConfigIDs[mid] == configID {
+			tbl.ConfigIDs = append(tbl.ConfigIDs[:mid], tbl.ConfigIDs[mid+1:]...)
+			tbl.Entries = append(tbl.Entries[:mid], tbl.Entries[mid+1:]...)
+			State.Active.Store(reg)
+			return
+		} else if tbl.ConfigIDs[mid] < configID {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
 }
 
 // UpsertNamedRateLimitConfig creates or updates a named rate limit config.
@@ -1191,6 +1278,11 @@ func (m *RegistryManager) resolveOrCreateTenant(reg *TenantRegistry, alias strin
 		copy(grown, reg.TenantRateLimits)
 		reg.TenantRateLimits = grown
 	}
+	if needed > len(reg.TenantV2Overrides) {
+		grown := make([]*TenantV2OverrideTable, needed)
+		copy(grown, reg.TenantV2Overrides)
+		reg.TenantV2Overrides = grown
+	}
 
 	// If this TenantID would be out of bounds for the property store matrices,
 	// grow all three stores to accommodate the new tenant row.
@@ -1393,10 +1485,11 @@ func (m *RegistryManager) activeOrEmpty() *TenantRegistry {
 		return &clone
 	}
 	return &TenantRegistry{
-		RateLimitConfigs: make([]RateLimitConfig, 1),           // index 0 = system baseline
-		TenantModifiers:  make([]TenantRateLimitModifier, 128), // pre-allocate for 128 tenants
-		TenantRateLimits: make([]*TenantRateLimitTable, 128),
-		MaxTenants:       128,
+		RateLimitConfigs:  make([]RateLimitConfig, 1),           // index 0 = system baseline
+		TenantModifiers:   make([]TenantRateLimitModifier, 128), // pre-allocate for 128 tenants
+		TenantRateLimits:  make([]*TenantRateLimitTable, 128),
+		TenantV2Overrides: make([]*TenantV2OverrideTable, 128),
+		MaxTenants:        128,
 		// URLs, IDs, Meta are zero — matrices will be allocated on first key addition.
 	}
 }

@@ -81,6 +81,50 @@ type TenantRateLimitTable struct {
 	Entries   []TenantRateLimitEntry // parallel with PolicyIDs
 }
 
+// ─── V2 Per-Config Tenant Overrides ──────────────────────────────────────────
+
+// TenantV2RLFlags control per-V2-config behavior for a specific tenant.
+type TenantV2RLFlags uint8
+
+const (
+	V2ConfigBlocked  TenantV2RLFlags = 1 << 0 // tenant blocked for this V2 config → 403
+	V2ConfigDisabled TenantV2RLFlags = 1 << 1 // RL disabled for this tenant for this V2 config → pass
+)
+
+// TenantV2ConfigOverride is one sparse override row for a single V2 rate limit config.
+// ScaleOverridePct replaces the global ScalePct/multiplier for this config only.
+// When ScaleOverridePct == 0 the global modifier applies unchanged.
+type TenantV2ConfigOverride struct {
+	Flags            TenantV2RLFlags
+	_                [1]byte // pad
+	ScaleOverridePct int16   // %-override: +50 → 150%, -25 → 75%, 0 = use global
+	_                [4]byte // pad to 8 bytes
+}
+
+// TenantV2OverrideTable is a sparse list of per-config V2 overrides for one tenant.
+// ConfigIDs are kept sorted ascending for binary search.
+type TenantV2OverrideTable struct {
+	ConfigIDs []uint16                 // sorted ascending
+	Entries   []TenantV2ConfigOverride // parallel with ConfigIDs
+}
+
+// find performs a binary search for configID in the sorted ConfigIDs slice.
+func (t *TenantV2OverrideTable) find(configID uint16) (TenantV2ConfigOverride, bool) {
+	lo, hi := 0, len(t.ConfigIDs)-1
+	for lo <= hi {
+		mid := (lo + hi) >> 1
+		switch {
+		case t.ConfigIDs[mid] == configID:
+			return t.Entries[mid], true
+		case t.ConfigIDs[mid] < configID:
+			lo = mid + 1
+		default:
+			hi = mid - 1
+		}
+	}
+	return TenantV2ConfigOverride{}, false
+}
+
 // ─── General Property Storage (Management Plane) ─────────────────────────────
 
 // RegistryNode is a 16-byte node for the Properties radix tree (key → KeyID).
@@ -125,9 +169,14 @@ type TenantRegistry struct {
 	// ScalePct and global block flags are applied to every rate limit resolution.
 	TenantModifiers []TenantRateLimitModifier
 
-	// TenantRateLimits holds sparse per-tenant rate limit overrides indexed by TenantID.
+	// TenantRateLimits holds sparse per-tenant V1 rate limit overrides indexed by TenantID.
 	// nil means "use global default + modifier only" — true for most tenants.
 	TenantRateLimits []*TenantRateLimitTable
+
+	// TenantV2Overrides holds sparse per-tenant V2 rate limit overrides indexed by TenantID.
+	// Each row is a sparse table keyed by V2 ConfigID providing per-config block/disable/scale.
+	// nil means "use global modifier only" for that tenant — true for most tenants.
+	TenantV2Overrides []*TenantV2OverrideTable
 
 	// ── Reserved: consumer-side identity ─────────────────────────────────────
 	// Always nil today. Declared now to prevent structural rewrites when

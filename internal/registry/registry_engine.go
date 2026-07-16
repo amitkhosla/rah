@@ -213,6 +213,19 @@ func ResolveRateLimit(reg *TenantRegistry, callerID uint32, tenantID, apiRateLim
 	}, false
 }
 
+// LookupV2Override returns the per-tenant V2 config override for the given configID,
+// or (zero, false) if none is set. Safe to call with a nil registry — returns false.
+func LookupV2Override(reg *TenantRegistry, tenantID, configID uint16) (TenantV2ConfigOverride, bool) {
+	if reg == nil || int(tenantID) >= len(reg.TenantV2Overrides) {
+		return TenantV2ConfigOverride{}, false
+	}
+	tbl := reg.TenantV2Overrides[tenantID]
+	if tbl == nil {
+		return TenantV2ConfigOverride{}, false
+	}
+	return tbl.find(configID)
+}
+
 // find performs a binary search for policyID in the sorted PolicyIDs slice.
 // ~3–6 comparisons for tables with 5–50 entries.
 func (t *TenantRateLimitTable) find(policyID uint16) (TenantRateLimitEntry, bool) {

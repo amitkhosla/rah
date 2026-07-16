@@ -71,10 +71,9 @@ type CheckRateLimitV2 struct {
 
 // Execute implements the engine.Step interface.
 func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-	// ── 0. Tenant-level gate ─────────────────────────────────────────────────
-	// Check blocking and RL-disabled flags from the registry before touching
-	// any counter. Mirrors the V1 CheckRateLimit behaviour in rate_limit_step.go.
+	// ── Layer 1: tenant-wide block / RL-disabled flags ───────────────────────
 	reg := registry.State.Active.Load()
+	var scalePct int16
 	if reg != nil && int(ctx.TenantID) < len(reg.TenantModifiers) {
 		mod := reg.TenantModifiers[ctx.TenantID]
 		if mod.Flags&registry.TenantBlocked != 0 {
@@ -84,21 +83,35 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		if mod.Flags&registry.TenantRLDisabled != 0 {
 			return int16(s.NextPC)
 		}
+		scalePct = mod.ScalePct // Layer 4: global per-tenant scale
 	}
 
-	// ── 0b. Quota group filter (dynamic dispatch) ────────────────────────────
-	// When QuotaGroupFilter is set, this instruction only applies to requests
-	// whose AssignQuotaGroup has set ctx.QuotaGroupID to the matching group.
+	// ── Layer 2: per-tenant per-config V2 override (sparse table) ───────────
+	if ov, ok := registry.LookupV2Override(reg, ctx.TenantID, s.ConfigID); ok {
+		if ov.Flags&registry.V2ConfigBlocked != 0 {
+			ctx.ResponseStatus = 403
+			return int16(s.DeniedPC)
+		}
+		if ov.Flags&registry.V2ConfigDisabled != 0 {
+			return int16(s.NextPC)
+		}
+		// Config-scoped scale overrides global ScalePct for this config only.
+		if ov.ScaleOverridePct != 0 {
+			scalePct = ov.ScaleOverridePct
+		}
+	}
+
+	// ── Quota group filter (dynamic dispatch) ────────────────────────────────
 	if s.QuotaGroupFilter != 0 && ctx.QuotaGroupID != s.QuotaGroupFilter {
 		return int16(s.NextPC)
 	}
 
-	// ── 1. Token bucket fast path (mutually exclusive with fixed-window path) ─
+	// ── Token bucket fast path (mutually exclusive with fixed-window path) ───
 	if s.TBucket != nil {
 		return s.executeTokenBucket(ctx)
 	}
 
-	// ── 2. Derive the counter key ────────────────────────────────────────────
+	// ── Derive the counter key ───────────────────────────────────────────────
 	keyBytes, useTenant := s.resolveKey(ctx)
 	if keyBytes == nil && !useTenant {
 		// resolveKey signals "deny" by returning (nil, false).
@@ -106,8 +119,18 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		return int16(s.DeniedPC)
 	}
 
-	// ── 3. Tenant multiplier ─────────────────────────────────────────────────
-	mult := engine.GetTenantMultiplier(ctx.TenantID)
+	// ── Layer 3: resolve effective multiplier ────────────────────────────────
+	// ScalePct (int16): +50 = 150%, -25 = 75%, 0 = no change (100%).
+	// Layer 2 config-scoped scale takes priority over Layer 4 global scale.
+	var mult uint32 = 100
+	if scalePct != 0 {
+		s16 := int32(100) + int32(scalePct)
+		if s16 > 0 {
+			mult = uint32(s16)
+		} else {
+			mult = 1 // floor: never allow more than +100% reduction
+		}
+	}
 
 	// ── 4. Resolve delta: token-count weight from a slot, or 1 for plain request counting.
 	delta := uint32(1)

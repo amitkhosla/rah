@@ -388,6 +388,109 @@ func (s *TenantServer) UpsertTenantRateLimitOverrideHandler(w http.ResponseWrite
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
+// upsertV2OverrideRequest is the body for POST /tenants/{alias}/rate-limit-v2-overrides
+type upsertV2OverrideRequest struct {
+	RateLimitV2Name  string `json:"rate_limit_v2"`       // V2 config name
+	Blocked          bool   `json:"blocked"`             // block tenant for this config → 403
+	RLDisabled       bool   `json:"rl_disabled"`         // disable RL for this config → pass
+	ScaleOverridePct int16  `json:"scale_override_pct"`  // %-override: +50=150%, -25=75%, 0=inherit
+}
+
+// UpsertTenantV2OverrideHandler handles POST /tenants/{alias}/rate-limit-v2-overrides
+//
+// Sets a per-tenant override for one V2 rate limit config: block, disable, or scale.
+func (s *TenantServer) UpsertTenantV2OverrideHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	alias := aliasFromPath(r.URL.Path, "/tenants/")
+	alias = strings.TrimSuffix(alias, "/rate-limit-v2-overrides")
+	if alias == "" {
+		http.Error(w, "alias required in path", http.StatusBadRequest)
+		return
+	}
+
+	var req upsertV2OverrideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.RateLimitV2Name == "" {
+		http.Error(w, "rate_limit_v2 name must not be empty", http.StatusBadRequest)
+		return
+	}
+
+	configID, ok := s.mgr.GetRateLimitConfigId(req.RateLimitV2Name)
+	if !ok {
+		http.Error(w, "V2 rate limit config not found: "+req.RateLimitV2Name, http.StatusBadRequest)
+		return
+	}
+
+	reg := State.Active.Load()
+	if reg == nil {
+		http.Error(w, "registry not initialised", http.StatusServiceUnavailable)
+		return
+	}
+	tID, found := reg.Aliases.Lookup(alias)
+	if !found {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	var flags TenantV2RLFlags
+	if req.Blocked {
+		flags |= V2ConfigBlocked
+	}
+	if req.RLDisabled {
+		flags |= V2ConfigDisabled
+	}
+	s.mgr.UpsertTenantV2Override(tID, configID, TenantV2ConfigOverride{
+		Flags:            flags,
+		ScaleOverridePct: req.ScaleOverridePct,
+	})
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+// DeleteTenantV2OverrideHandler handles DELETE /tenants/{alias}/rate-limit-v2-overrides/{configName}
+func (s *TenantServer) DeleteTenantV2OverrideHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/tenants/")
+	idx := strings.Index(rest, "/rate-limit-v2-overrides/")
+	if idx < 0 {
+		http.Error(w, "path must be /tenants/{alias}/rate-limit-v2-overrides/{configName}", http.StatusBadRequest)
+		return
+	}
+	alias := rest[:idx]
+	configName := rest[idx+len("/rate-limit-v2-overrides/"):]
+	if alias == "" || configName == "" {
+		http.Error(w, "alias and configName are required", http.StatusBadRequest)
+		return
+	}
+
+	configID, ok := s.mgr.GetRateLimitConfigId(configName)
+	if !ok {
+		http.Error(w, "V2 rate limit config not found: "+configName, http.StatusBadRequest)
+		return
+	}
+
+	reg := State.Active.Load()
+	if reg == nil {
+		http.Error(w, "registry not initialised", http.StatusServiceUnavailable)
+		return
+	}
+	tID, found := reg.Aliases.Lookup(alias)
+	if !found {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	s.mgr.DeleteTenantV2Override(tID, configID)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
 // SetTenantDebugHandler handles PATCH /tenants/{alias}/debug
 //
 // Request body: {"enabled": true}
@@ -770,6 +873,10 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 		s.SetTenantModifierHandler(w, r)
 	case strings.HasSuffix(path, "/rate-limit-overrides") && r.Method == http.MethodPost:
 		s.UpsertTenantRateLimitOverrideHandler(w, r)
+	case strings.HasSuffix(path, "/rate-limit-v2-overrides") && r.Method == http.MethodPost:
+		s.UpsertTenantV2OverrideHandler(w, r)
+	case strings.Contains(path, "/rate-limit-v2-overrides/") && r.Method == http.MethodDelete:
+		s.DeleteTenantV2OverrideHandler(w, r)
 	case strings.HasSuffix(path, "/debug") && r.Method == http.MethodPatch:
 		s.SetTenantDebugHandler(w, r)
 	case strings.HasSuffix(path, "/log-level") && r.Method == http.MethodPatch:
