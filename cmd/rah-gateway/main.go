@@ -411,6 +411,13 @@ func main() {
 		log.Printf("[flow-log] KindFlowLog ingest emission enabled")
 	}
 
+	// Wire cache hit/miss events into ingest pipeline so KindCacheHit/KindCacheMiss
+	// events are intercepted by the telemetry aggregator and routed to sinks.
+	if ingestPipeline != nil {
+		obs.SetIngestPipeline(ingestPipeline)
+		log.Printf("[cache-metrics] KindCacheHit/KindCacheMiss ingest emission enabled")
+	}
+
 	// 2b2. Metrics aggregator â€” window-based per-API metric flush to ingest pipeline.
 	// Enabled when observability.metrics.enabled=true. Starts background goroutines
 	// that flush aggregated snapshots at each configured window boundary.
