@@ -289,6 +289,28 @@ func methodToInt(m string) int16 {
 	}
 }
 
+// intToMethod decodes a stored HTTP method int16 back to its string representation.
+func intToMethod(m int16) string {
+	switch m {
+	case 0:
+		return "GET"
+	case 1:
+		return "POST"
+	case 2:
+		return "PUT"
+	case 3:
+		return "DELETE"
+	case 4:
+		return "PATCH"
+	case 5:
+		return "HEAD"
+	case 6:
+		return "OPTIONS"
+	default:
+		return "OTHER"
+	}
+}
+
 // WriteTraceBatch persists a batch of trace records.
 // V2 records (InstrPCs != nil) are written to obs_traces_v2, obs_instruction_runs,
 // and obs_llm_calls using pgx SendBatch for a single TCP round-trip.
@@ -351,7 +373,7 @@ ON CONFLICT (trace_id) DO NOTHING`,
 			int16(rec.EndpointID),
 			int16(rec.TenantID),
 			int16(rec.Status),
-			int16(7), // method: TraceRecord has no Method field; store OTHER (7) as default
+			methodToInt(rec.Method),
 			rec.DurationNs,
 			rec.GatewayNs,
 			rec.UpstreamNs,
@@ -638,7 +660,7 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 	// LEFT JOIN obs_instruction_runs to populate InstrPCs/InstrDursNs in one round-trip.
 	query := `SELECT t.trace_id,t.ts,t.api_name,t.api_version_id,t.endpoint_id,t.tenant_id,
 		t.status,t.duration_ns,t.gateway_ns,t.upstream_ns,t.req_bytes,t.res_bytes,t.upstream_calls,
-		t.phase_durs,t.instr_count,
+		t.phase_durs,t.instr_count,t.method,
 		ARRAY_AGG(r.pc   ORDER BY r.seq) FILTER (WHERE r.pc   IS NOT NULL) AS instr_pcs,
 		ARRAY_AGG(r.dur_ns ORDER BY r.seq) FILTER (WHERE r.dur_ns IS NOT NULL) AS instr_durs_ns
 		FROM obs_traces_v2 t
@@ -646,7 +668,7 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 		qb.whereClause() +
 		` GROUP BY t.trace_id,t.ts,t.api_name,t.api_version_id,t.endpoint_id,t.tenant_id,
 		t.status,t.duration_ns,t.gateway_ns,t.upstream_ns,t.req_bytes,t.res_bytes,t.upstream_calls,
-		t.phase_durs,t.instr_count
+		t.phase_durs,t.instr_count,t.method
 		ORDER BY t.ts DESC`
 	query = rewriteLimit(query, qb.limitPlaceholder())
 
@@ -661,7 +683,7 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 		var t TraceRecord
 		var traceID int64
 		var apiVersionID int32
-		var endpointID, tenantID, status, upstreamCalls int16
+		var endpointID, tenantID, status, upstreamCalls, methodInt int16
 		var instrCount int16
 		var phaseDurs []int32
 		var instrPCs []int16
@@ -670,7 +692,7 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 		if err := rows.Scan(
 			&traceID, &t.Timestamp, &t.ApiName, &apiVersionID, &endpointID,
 			&tenantID, &status, &t.DurationNs, &t.GatewayNs, &t.UpstreamNs,
-			&t.ReqBytes, &t.ResBytes, &upstreamCalls, &phaseDurs, &instrCount,
+			&t.ReqBytes, &t.ResBytes, &upstreamCalls, &phaseDurs, &instrCount, &methodInt,
 			&instrPCs, &instrDurs,
 		); err != nil {
 			return nil, err
@@ -681,6 +703,7 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 		t.TenantID = uint16(tenantID)
 		t.Status = int(status)
 		t.UpstreamCalls = uint16(upstreamCalls)
+		t.Method = intToMethod(methodInt)
 		t.TotalMs = float64(t.DurationNs) / 1e6
 		if len(phaseDurs) > 0 {
 			n := len(phaseDurs)

@@ -83,11 +83,9 @@ func ExpTruncExpired(trunc uint16, nowSec uint32) bool {
 // Bit layout (lower 48 bits of uint64, little-endian in EntryHeader.XSlotPtrB):
 //
 //	[47]    lane     — 1b  0=tinyIdx, 1=hashIdx
-//	[46:39] shard    — 8b  pre-computed shard index (= shardOf(tag))
+//	[46:39] shard    — 8b  shard index field (reserved; not currently used)
 //	[38: 0] tagBits  — 39b lower 39 bits of the tag (routing bits for trieFind)
 //
-// The stored shard is pre-computed (rather than re-derived) so that hashed
-// shard selection (tinyIdx hashShards=true) works correctly at tombstone time.
 // The 39 routing bits cover shardBits(8) + maxDepth×xTrieBits(30) = 38 bits,
 // leaving one spare bit.
 type xSlotPtr uint64
@@ -105,7 +103,6 @@ const (
 )
 
 func (p xSlotPtr) laneBit() uint64 { return uint64(p) >> xPtrLaneBit & 0x1 }
-func (p xSlotPtr) shardIdx() uint8 { return uint8(uint64(p) >> xPtrShardBit & 0xFF) }
 func (p xSlotPtr) tagBits() uint64 { return uint64(p) & xPtrTagMask }
 
 // xSlotPtrTo6 serialises p into 6 little-endian bytes for EntryHeader.XSlotPtrB.

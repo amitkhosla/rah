@@ -1157,6 +1157,7 @@ func main() {
 					clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs,
 					req.ContentLength, ctx.Timing.ClientBytesSent,
 					uint16(atomic.LoadInt32(&ctx.Timing.UpstreamCalls)),
+					req.Method,
 					phaseDurs,
 					snap,
 					ctx.LLMCalls,

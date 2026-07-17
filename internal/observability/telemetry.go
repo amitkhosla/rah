@@ -16,6 +16,7 @@ import (
 
 	"github.com/amitkhosla/rah/internal/apikey"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/ingest"
 )
 
 type KV struct {
@@ -269,6 +270,14 @@ type Telemetry struct {
 	// Metrics is the window-based per-API metrics aggregator. Always non-nil.
 	Metrics *MetricsAggregator
 
+	// cacheAgg aggregates cache hit/miss events from the ingest pipeline.
+	// Protected by mu (same lock as custom and instrTimings).
+	cacheAgg *cacheAggregator
+
+	// ingestPipeline is the async event ingest pipeline (nil if disabled).
+	// Wire via SetIngestPipeline(); used by RecordCacheOp to emit events.
+	ingestPipeline ingest.Emitter
+
 	// tenantTracer provides per-tenant trace sample rate overrides.
 	// Nil by default â€” call SetTenantTracer to wire in the registry manager.
 	tenantTracer TenantTracer
@@ -346,7 +355,7 @@ func New(cfg Config) *Telemetry {
 	ring := NewTraceSlabRing(slabCap)
 	ring.Start()
 	agg := NewMetricsAggregator(nil)
-	t := &Telemetry{cfg: cfg, Metrics: agg, traceRing: ring, custom: make(map[string]*metricCounter), instrTimings: make(map[string]*counter), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
+	t := &Telemetry{cfg: cfg, Metrics: agg, traceRing: ring, custom: make(map[string]*metricCounter), instrTimings: make(map[string]*counter), cacheAgg: newCacheAggregator(), exportCh: make(chan RequestTrace, cfg.ExportQueueSize), metricCh: make(chan MetricPoint, cfg.MetricQueueSize), upstreamCh: make(chan upstreamLog, cfg.ExportQueueSize), sink: LogSink{}}
 	if len(cfg.TraceHeaderNames) == 1 && cfg.TraceHeaderNames[0] == "*" {
 		t.captureAll = true
 	} else {
@@ -513,6 +522,14 @@ func (t *Telemetry) handleMetric(p MetricPoint) {
 	t.mu.Unlock()
 }
 
+// handleCacheEvent processes a cache event from the ingest pipeline.
+// Called by StartCacheEventConsumer goroutine.
+func (t *Telemetry) handleCacheEvent(e ingest.Event) {
+	t.mu.Lock()
+	t.cacheAgg.handleCacheEvent(e)
+	t.mu.Unlock()
+}
+
 func (t *Telemetry) runMetricWorker(stopCh <-chan struct{}) {
 	defer t.workerDone.Done()
 	for {
@@ -630,6 +647,14 @@ func (t *Telemetry) SetTenantNamer(tn TenantNamer) {
 	t.tenantNamer = tn
 }
 
+// SetIngestPipeline wires an Emitter (ingest pipeline) into Telemetry.
+// Called during gateway startup to enable RecordCacheOp to emit cache hit/miss events.
+// Wraps the emitter with middleware that intercepts cache events for in-process aggregation.
+func (t *Telemetry) SetIngestPipeline(e ingest.Emitter) {
+	handler := NewCacheEventHandler(t)
+	t.ingestPipeline = NewCacheEventMiddleware(e, handler)
+}
+
 // resolveTenantName returns the human-readable name for tenantID, or an empty
 // string when tenantID is 0 or no namer is configured.
 func (t *Telemetry) resolveTenantName(tenantID uint16) string {
@@ -738,8 +763,25 @@ func (t *Telemetry) QueueMetric(point MetricPoint) {
 // RecordCacheOp records a single cache GET outcome: whether it was a hit or miss,
 // and how long the underlying store call took (excluding slot writes and overhead).
 // name should be the instruction name, e.g. "cache_get" or "cache_get_global".
-// RecordCacheOp is a no-op. Cache stats are now aggregated via the ingest pipeline.
-func (t *Telemetry) RecordCacheOp(_ string, _ bool, _ int64) {}
+// Emits a KindCacheHit or KindCacheMiss event into the ingest pipeline (if configured).
+func (t *Telemetry) RecordCacheOp(name string, hit bool, durationNs int64) {
+	if !t.Enabled() || t.ingestPipeline == nil || name == "" {
+		return
+	}
+
+	kind := ingest.KindCacheMiss
+	if hit {
+		kind = ingest.KindCacheHit
+	}
+
+	e := ingest.Event{
+		Kind:       kind,
+		Model:      name, // instruction name goes in Model field
+		DurationNs: durationNs,
+		TimestampNs: time.Now().UnixNano(),
+	}
+	t.ingestPipeline.Emit(e)
+}
 
 // RecordInstruction is a no-op. Per-instruction aggregation is now handled
 // lock-free via instrSlabRing (see internal/observability/instr_slab.go).
@@ -1056,6 +1098,8 @@ func (t *Telemetry) Snapshot(topN int) map[string]any {
 	t.mu.Lock()
 	m.CustomMetricTop = topNMetrics(t.custom, topN)
 	m.InstructionTopSlow = topNFromMap(t.instrTimings, topN)
+	cacheStats := t.cacheAgg.snapshot()
+	m.CacheStats = cacheStatsSlice(cacheStats)
 	t.mu.Unlock()
 	traces := t.traceRing.Snapshot() // lock-free atomic pointer load
 	cfg := map[string]any{"trace_mode": t.traceMode.Load(), "trace_sample_rate": float64(t.sampleRate10k.Load()) / 10000.0, "instruction_timing_enabled": t.instrEnabled.Load(), "upstream_phase_timing_enabled": t.phaseEnabled.Load(), "always_export_summary": t.alwaysExport.Load(), "info_log_enabled": t.reqSummaryLog.Load(), "info_log_fields": t.cfg.InfoLogFields, "max_events": t.cfg.MaxEvents, "max_traces": t.cfg.MaxTraces, "export_queue_size": cap(t.exportCh), "metric_queue_size": cap(t.metricCh), "metric_dropped": t.metricDropped.Load()}

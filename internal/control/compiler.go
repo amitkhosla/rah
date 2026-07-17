@@ -400,6 +400,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "mcp_call_tool":
 		return c.compileMCPCallTool(step)
 
+	case "detect_intent":
+		return c.compileDetectIntent(step)
+
 	case "detect_message_format":
 		return c.compileDetectMessageFormat(step)
 
@@ -2010,6 +2013,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		oldVal := step.Input["old"]
 		newVal := step.Input["new"]
 		c.GlobalTable = append(c.GlobalTable, steps.ReplaceStep(src, result, []byte(oldVal), []byte(newVal)))
+
+	case "cut_prefix":
+		src, err := c.getSlot(step.Source)
+		if err != nil {
+			return fmt.Errorf("cut_prefix: %w", err)
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("cut_prefix: %w", err)
+		}
+		prefix := step.Input["prefix"]
+		caseSensitive := step.Input["case_sensitive"] != "false"
+		c.GlobalTable = append(c.GlobalTable, steps.CutPrefixStep(src, result, []byte(prefix), caseSensitive))
 
 	case "split":
 		src, err := c.getSlot(step.Source)

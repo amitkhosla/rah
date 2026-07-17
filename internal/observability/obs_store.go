@@ -57,6 +57,7 @@ type TraceRecord struct {
 
 	// V2 typed fields — written to obs_traces_v2 (Postgres only).
 	// A nil InstrPCs slice means this is a v1 record.
+	Method        string    `json:"method,omitempty"`
 	ApiVersionID  uint32    `json:"api_version_id,omitempty"`
 	EndpointID    uint8     `json:"endpoint_id,omitempty"`
 	DurationNs    int64     `json:"duration_ns,omitempty"`

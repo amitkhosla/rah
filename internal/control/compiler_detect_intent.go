@@ -20,7 +20,7 @@ func (c *Compiler) compileDetectIntent(step StepConfig) error {
 
 	headerRules := make(map[string]map[string]string)
 	for k, v := range step.Input {
-		if headerName, ok := cutPrefix(k, "header:"); ok {
+		if headerName, ok := strings.CutPrefix(k, "header:"); ok {
 			// v format: "pattern -> tag"
 			parts := strings.Split(v, "->")
 			if len(parts) == 2 {
@@ -41,11 +41,4 @@ func (c *Compiler) compileDetectIntent(step StepConfig) error {
 
 	c.GlobalTable = append(c.GlobalTable, steps.DetectIntent(cfg))
 	return nil
-}
-
-func cutPrefix(s, prefix string) (string, bool) {
-	if len(s) >= len(prefix) && s[0:len(prefix)] == prefix {
-		return s[len(prefix):], true
-	}
-	return s, false
 }

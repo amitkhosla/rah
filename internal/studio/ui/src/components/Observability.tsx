@@ -52,6 +52,7 @@ interface TraceRecord {
   tenant_id: number
   status: number
   total_ms: number
+  method?: string          // HTTP method (GET, POST, etc.)
   payload?: string         // V1 — JSON blob, used by existing rendering
   // V2 fields:
   instr_pcs?: number[]
@@ -1084,6 +1085,11 @@ export default function Observability() {
                       <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, flex: 1 }}>
                         {trace.api_name || '—'}
                       </span>
+                      {trace.method && (
+                        <span style={{ fontSize: 11, color: '#60a5fa', fontWeight: 600, minWidth: 50 }}>
+                          {trace.method}
+                        </span>
+                      )}
                       <span style={{ fontSize: 12, color: statusColor(trace.status), fontWeight: 700, minWidth: 36 }}>
                         {trace.status}
                       </span>

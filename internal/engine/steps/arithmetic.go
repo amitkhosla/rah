@@ -343,6 +343,37 @@ func splitPackedGet(buf []byte, i int) (start, end uint32) {
 	return binary.LittleEndian.Uint32(buf[i*8:]), binary.LittleEndian.Uint32(buf[i*8+4:])
 }
 
+// CutPrefixStep removes a prefix from ByteSlots[src] into ByteSlots[result].
+// If the string starts with the prefix, writes the remainder (zero-copy sub-slice).
+// If the prefix doesn't match, writes the original string unchanged.
+// caseSensitive controls whether the prefix match is case-sensitive (default true).
+func CutPrefixStep(src, result int, prefix []byte, caseSensitive bool) engine.Instruction {
+	return engine.Instruction{
+		Name: "CUT_PREFIX",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			s := ctx.ByteSlots[src]
+
+			if caseSensitive {
+				if bytes.HasPrefix(s, prefix) {
+					ctx.ByteSlots[result] = s[len(prefix):]
+				} else {
+					ctx.ByteSlots[result] = s
+				}
+			} else {
+				// Case-insensitive: convert both to lowercase for comparison
+				prefixLower := bytes.ToLower(prefix)
+				sLower := bytes.ToLower(s)
+				if bytes.HasPrefix(sLower, prefixLower) {
+					ctx.ByteSlots[result] = s[len(prefix):]
+				} else {
+					ctx.ByteSlots[result] = s
+				}
+			}
+			return state.PC + 1
+		},
+	}
+}
+
 // SetResponseHeaderFromSlot sets a response header named `name` from ByteSlots[src].
 func SetResponseHeaderFromSlot(name string, src int) engine.Instruction {
 	nameBytes := []byte(name)

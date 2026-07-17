@@ -925,6 +925,17 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "cut_prefix", Title: "Cut Prefix", Category: "string", Capability: "string-op",
+			Description: "Strip a static prefix from a string slot. If the string starts with the prefix, writes the remainder (zero-copy); otherwise writes the original string unchanged.",
+			Defaults: map[string]string{"source": "var.input", "input.prefix": "Bearer ", "input.case_sensitive": "true", "as": "result"},
+			Fields: []StepField{
+				sf("source", "Source variable", "Variable containing the string to modify", "var.input"),
+				sf("input.prefix", "Prefix (static)", "Fixed prefix to strip (baked at compile time)", "Bearer "),
+				sf("input.case_sensitive", "Case Sensitive", "Match prefix case-sensitively — true or false (default: true)", "true"),
+				sf("as", "Store as", "Variable to save the result into", "result"),
+			},
+		},
+		{
 			Type: "split", Title: "Split", Category: "string", Capability: "string-op",
 			Description: "Split a string variable by a static separator and store the result as a JSON array into another variable. Use foreach to iterate the result.",
 			Defaults: map[string]string{"source": "var.input", "value": ",", "as": "parts"},

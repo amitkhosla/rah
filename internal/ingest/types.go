@@ -261,6 +261,14 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 	return json.Marshal(w)
 }
 
+// Emitter is the minimal interface for sending events into the ingest pipeline.
+// Used by observability and other subsystems to emit events without holding
+// a reference to the full Pipeline struct.
+type Emitter interface {
+	// Emit sends an event into the pipeline. Never blocks the caller.
+	Emit(e Event)
+}
+
 // Sink is the pluggable backend that receives batches of formatted bytes.
 // Implementations must be safe for concurrent calls from multiple workers.
 type Sink interface {
