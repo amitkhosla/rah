@@ -3145,12 +3145,12 @@ export default function FlowDesigner({
                          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>Rate Limit V2 Config</div>
                          <input
                            placeholder="config name (e.g. api_standard)"
-                           value={step.config ?? ''}
+                           value={(step.config ?? '') as string}
                            onChange={e => updateStep(i, 'config', e.target.value)}
                            style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', boxSizing: 'border-box' }}
                          />
                          <select
-                           value={step.count_by ?? 'tenant'}
+                           value={(step.count_by ?? 'tenant') as string}
                            onChange={e => updateStep(i, 'count_by', e.target.value)}
                            style={{ width: '100%', fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', marginTop: 4 }}
                          >
