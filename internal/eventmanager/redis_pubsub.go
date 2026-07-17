@@ -1,4 +1,4 @@
-package eventmanager
+﻿package eventmanager
 
 // Redis Pub/Sub publisher and subscriber for cross-instance cache event sync.
 //
@@ -28,7 +28,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"rah/internal/cache"
+	"github.com/amitkhosla/rah/internal/cache"
 )
 
 // pubSubEvent is the JSON wire format for WriteEvents published over Redis.
@@ -40,7 +40,7 @@ type pubSubEvent struct {
 	TTL      uint32 `json:"ttl,omitempty"`
 }
 
-// ── Publisher ─────────────────────────────────────────────────────────────────
+// â”€â”€ Publisher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // RedisPubSubPublisher publishes cache.WriteEvents to a Redis channel via PUBLISH.
 // The caller owns and manages the Redis client's lifecycle.
@@ -51,7 +51,7 @@ type RedisPubSubPublisher struct {
 }
 
 // NewRedisPubSubPublisher creates a publisher. timeoutMs is the per-PUBLISH
-// deadline (default 2000ms when ≤0).
+// deadline (default 2000ms when â‰¤0).
 func NewRedisPubSubPublisher(client goredis.UniversalClient, channel string, timeoutMs int) *RedisPubSubPublisher {
 	if timeoutMs <= 0 {
 		timeoutMs = 2000
@@ -68,7 +68,7 @@ func NewRedisPubSubPublisher(client goredis.UniversalClient, channel string, tim
 func (p *RedisPubSubPublisher) Handler(name string, filter func(cache.WriteEvent) bool) Handler {
 	return Handler{
 		Name:   name,
-		Async:  true, // PUBLISH is I/O — must not stall the cache dispatch loop
+		Async:  true, // PUBLISH is I/O â€” must not stall the cache dispatch loop
 		Filter: filter,
 		Handle: p.publish,
 	}
@@ -99,7 +99,7 @@ func (p *RedisPubSubPublisher) publish(ev cache.WriteEvent) {
 	}
 }
 
-// ── Subscriber ────────────────────────────────────────────────────────────────
+// â”€â”€ Subscriber â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // RedisPubSubSubscriber SUBSCRIBEs to a Redis channel and delivers received
 // WriteEvents to onEvent. Reconnects automatically on channel closure.

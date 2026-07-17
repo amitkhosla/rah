@@ -1,15 +1,15 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 	"time"
 
-	"rah/internal/datastore"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ─── overflow_history ─────────────────────────────────────────────────────────
+// â”€â”€â”€ overflow_history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // OverflowHistoryConfig controls the overflow_history instruction.
 type OverflowHistoryConfig struct {
@@ -36,7 +36,7 @@ type OverflowHistoryConfig struct {
 //  4. Neither set: noop.
 //
 // If Store is nil, overflow messages are silently discarded (just trimmed).
-// If the store write fails, the error is ignored — the history slot is still
+// If the store write fails, the error is ignored â€” the history slot is still
 // trimmed so the request can continue.
 func OverflowHistory(cfg OverflowHistoryConfig) engine.Instruction {
 	return engine.Instruction{
@@ -53,7 +53,7 @@ func OverflowHistory(cfg OverflowHistoryConfig) engine.Instruction {
 				// Budget driven by a slot value (e.g. from check_context_fit).
 				overflowTokens := int(ctx.IntSlots[cfg.OverflowSlot])
 				if overflowTokens <= 0 {
-					// Nothing overflows — history already fits.
+					// Nothing overflows â€” history already fits.
 					return state.PC + 1
 				}
 				// Trim oldest messages until total tokens drop by at least overflowTokens.
@@ -77,7 +77,7 @@ func OverflowHistory(cfg OverflowHistoryConfig) engine.Instruction {
 				trimmed = msgs[:cutPoint]
 				msgs = after
 			} else {
-				// No budget configured — noop.
+				// No budget configured â€” noop.
 				return state.PC + 1
 			}
 
@@ -121,11 +121,11 @@ func OverflowHistory(cfg OverflowHistoryConfig) engine.Instruction {
 	}
 }
 
-// ─── load_overflow_history ────────────────────────────────────────────────────
+// â”€â”€â”€ load_overflow_history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // LoadOverflowHistoryConfig controls the load_overflow_history instruction.
 type LoadOverflowHistoryConfig struct {
-	HistorySlot int                    // ByteSlots index: JSON-encoded []CanonicalMessage — overflow is prepended
+	HistorySlot int                    // ByteSlots index: JSON-encoded []CanonicalMessage â€” overflow is prepended
 	KeySlot     int                    // ByteSlots index: conversation key
 	MaxTurns    int                    // if > 0, keep only the last MaxTurns pairs from overflow (most recent)
 	Domain      string                 // datastore domain

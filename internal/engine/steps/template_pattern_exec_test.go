@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // newCtx returns an initialised Context with BaseByteSlots slots.
@@ -119,7 +119,7 @@ func TestValidateTemplatePattern_SuffixMatch(t *testing.T) {
 
 func TestValidateTemplatePattern_PrefixSuffixExtract_Match(t *testing.T) {
 	alloc, _ := newTestAllocSlot()
-	// Pattern: literal_prefix + (capture) + literal_suffix → StrategyPrefixSuffixExtract
+	// Pattern: literal_prefix + (capture) + literal_suffix â†’ StrategyPrefixSuffixExtract
 	ctp := mustParse(t, "pre_(cap)_suf", nil, alloc)
 
 	ctx := newCtx()

@@ -1,4 +1,4 @@
-//go:build awssm
+﻿//go:build awssm
 
 package main
 
@@ -20,9 +20,9 @@ package main
 import (
 	"context"
 
-	"rah/internal/config"
-	"rah/internal/secrets"
-	"rah/internal/secrets/awssm"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/secrets/awssm"
 )
 
 func init() {

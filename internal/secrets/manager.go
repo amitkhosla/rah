@@ -1,4 +1,4 @@
-package secrets
+﻿package secrets
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 // Results are cached in memory with zeroing on eviction.
 // Safe for concurrent use.
 type Manager struct {
-	providers map[string]Provider // scheme → provider
+	providers map[string]Provider // scheme â†’ provider
 	cache     *secretCache
 	sf        singleflight.Group // coalesces concurrent resolutions of the same ref
 	cacheTTL  time.Duration
@@ -33,14 +33,14 @@ type Manager struct {
 // forwarded to all provider factories (e.g. for token-refresh goroutines).
 //
 // Built-in providers (always available, no config required):
-//   - env  — "env:VAR", "$VAR", "${VAR}"
-//   - file — "file:///path"
+//   - env  â€” "env:VAR", "$VAR", "${VAR}"
+//   - file â€” "file:///path"
 //
 // Built-in providers (require config):
-//   - enc  — "enc:base64" — needs cfg.Encrypted.Enabled + Key
+//   - enc  â€” "enc:base64" â€” needs cfg.Encrypted.Enabled + Key
 //
 // Pluggable providers (activated by blank imports in main.go):
-//   - gsm, vault, awssm, … — registered via RegisterProviderFactory in init()
+//   - gsm, vault, awssm, â€¦ â€” registered via RegisterProviderFactory in init()
 func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 	m := &Manager{
 		providers: make(map[string]Provider),
@@ -48,13 +48,13 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		cacheTTL:  defaultCacheTTL,
 	}
 
-	// Bootstrap providers — always registered, no external deps.
+	// Bootstrap providers â€” always registered, no external deps.
 	// Must be registered first so the encrypted provider and cloud provider
 	// factories can use them to resolve their own bootstrap credentials.
 	m.register(newEnvProvider())
 	m.register(newFileProvider())
 
-	// Encrypted provider — built in, needs master key config.
+	// Encrypted provider â€” built in, needs master key config.
 	if cfg.Encrypted.Enabled {
 		p, err := newEncryptedProvider(ctx, cfg.Encrypted, m)
 		if err != nil {
@@ -63,7 +63,7 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		m.register(p)
 	}
 
-	// Pluggable cloud providers — registered via init() in sub-packages.
+	// Pluggable cloud providers â€” registered via init() in sub-packages.
 	// Copy the global map under lock so concurrent test binaries are safe.
 	globalFactoriesMu.Lock()
 	factories := make(map[string]ProviderFactory, len(globalFactories))
@@ -80,7 +80,7 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		if p != nil {
 			m.register(p)
 		}
-		// nil return means "not enabled in config" — silently skip.
+		// nil return means "not enabled in config" â€” silently skip.
 	}
 
 	go m.rotationLoop(ctx)
@@ -103,14 +103,14 @@ func (m *Manager) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	v, err, _ := m.sf.Do(ref, func() (any, error) {
 		scheme := parseScheme(ref)
 
-		// Literal — no provider needed, return as-is.
+		// Literal â€” no provider needed, return as-is.
 		if scheme == "" {
 			return []byte(ref), nil
 		}
 
 		p, ok := m.providers[scheme]
 		if !ok {
-			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q — "+
+			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q â€” "+
 				"is the provider sub-package imported in main.go?", scheme, ref)
 		}
 
@@ -139,7 +139,7 @@ func (m *Manager) Resolve(ctx context.Context, ref string) ([]byte, error) {
 		return nil, err
 	}
 
-	// singleflight returns the same slice to all waiters — return a copy so
+	// singleflight returns the same slice to all waiters â€” return a copy so
 	// each caller can zero their own copy independently.
 	raw := v.([]byte)
 	out := make([]byte, len(raw))
@@ -188,15 +188,15 @@ func (m *Manager) rotationLoop(ctx context.Context) {
 // parseScheme extracts the scheme prefix from a ref string.
 // Returns "" for literals (no recognised prefix).
 //
-//	"env:FOO"      → "env"
-//	"$FOO"         → "env"   (legacy shell syntax)
-//	"${FOO}"       → "env"
-//	"file:///path" → "file"
-//	"enc:base64"   → "enc"
-//	"gsm://..."    → "gsm"
-//	"vault://..."  → "vault"
-//	"awssm://..."  → "awssm"
-//	"plaintext"    → ""
+//	"env:FOO"      â†’ "env"
+//	"$FOO"         â†’ "env"   (legacy shell syntax)
+//	"${FOO}"       â†’ "env"
+//	"file:///path" â†’ "file"
+//	"enc:base64"   â†’ "enc"
+//	"gsm://..."    â†’ "gsm"
+//	"vault://..."  â†’ "vault"
+//	"awssm://..."  â†’ "awssm"
+//	"plaintext"    â†’ ""
 func parseScheme(ref string) string {
 	if strings.HasPrefix(ref, "$") {
 		return "env"

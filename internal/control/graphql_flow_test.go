@@ -1,12 +1,12 @@
-package control
+﻿package control
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func TestCompileGraphQLCallStaticQuery(t *testing.T) {

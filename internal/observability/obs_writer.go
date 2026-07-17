@@ -1,4 +1,4 @@
-package observability
+﻿package observability
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 const (
@@ -60,7 +60,7 @@ func NewObsWriter(store ObsStore, batchSize int, flushEvery time.Duration) *ObsW
 
 // Start launches the background drain goroutines. Call once before the first
 // WriteAccessLog or EnqueueTrace. Call Stop() to shut down cleanly.
-// Idempotent — safe to call when already started.
+// Idempotent â€” safe to call when already started.
 func (w *ObsWriter) Start(ctx context.Context) {
 	w.ring.start()
 	w.traceRing.start()
@@ -72,7 +72,7 @@ func (w *ObsWriter) SetEnabled(v bool) {
 	w.enabled.Store(v)
 }
 
-// WriteAccessLog stamps r into the active slab slot — no mutex, no allocation.
+// WriteAccessLog stamps r into the active slab slot â€” no mutex, no allocation.
 // Hot path cost: one atomic.Add (slot claim) + plain field writes + one
 // atomic.Store (ready signal). Any records that arrive while a slab rotation
 // is in progress are counted in DroppedCount; this is extremely rare at normal
@@ -136,7 +136,7 @@ func (w *ObsWriter) UpsertInstrSchema(rows []InstrSchemaRow) {
 }
 
 // Stop stops both background drain goroutines, performs a final flush, and
-// waits for all in-flight store writes to complete. Idempotent — safe to call
+// waits for all in-flight store writes to complete. Idempotent â€” safe to call
 // when already stopped or never started.
 func (w *ObsWriter) Stop() {
 	w.ring.stop()

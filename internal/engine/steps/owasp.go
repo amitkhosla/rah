@@ -1,6 +1,6 @@
-package steps
+﻿package steps
 
-// owasp_check — OWASP Top-10 injection pattern scanning step.
+// owasp_check â€” OWASP Top-10 injection pattern scanning step.
 //
 // Scans the incoming request (URL query, body, selected headers) for SQL
 // injection, XSS, path traversal, and command injection patterns.
@@ -10,23 +10,23 @@ package steps
 //   - tag: writes the name of the first matched check category (or "") into a
 //     slot and continues execution.
 //
-// All matching is case-insensitive substring matching — no regex, zero alloc
+// All matching is case-insensitive substring matching â€” no regex, zero alloc
 // per request. Patterns are pre-lowercased once at bake time.
 //
 // Config keys:
 //
-//	owasp.checks          — comma-separated checks to run: "sqli","xss","path_traversal","cmd_inject","all"
-//	owasp.targets         — comma-separated scan targets: "body","query","headers","all"
-//	owasp.mode            — "block" (default) or "tag"
-//	owasp.tag_var         — slot name to write first matched category into when mode=tag
-//	owasp.failure_status  — HTTP status when blocked (default 403)
-//	owasp.failure_body    — response body when blocked (default "request blocked")
+//	owasp.checks          â€” comma-separated checks to run: "sqli","xss","path_traversal","cmd_inject","all"
+//	owasp.targets         â€” comma-separated scan targets: "body","query","headers","all"
+//	owasp.mode            â€” "block" (default) or "tag"
+//	owasp.tag_var         â€” slot name to write first matched category into when mode=tag
+//	owasp.failure_status  â€” HTTP status when blocked (default 403)
+//	owasp.failure_body    â€” response body when blocked (default "request blocked")
 
 import (
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // owaspSQLiPatterns is the pre-lowercased SQL injection pattern list.
@@ -165,7 +165,7 @@ func ParseOWASPConfig(input map[string]string, tagSlot int) OWASPConfig {
 		cfg.OnFailureBody = v
 	}
 
-	// Parse checks — default "all".
+	// Parse checks â€” default "all".
 	checksRaw := strings.TrimSpace(input["owasp.checks"])
 	if checksRaw == "" {
 		checksRaw = "all"
@@ -192,7 +192,7 @@ func ParseOWASPConfig(input map[string]string, tagSlot int) OWASPConfig {
 		cfg.CheckCmdInject = true
 	}
 
-	// Parse targets — default "all".
+	// Parse targets â€” default "all".
 	targetsRaw := strings.TrimSpace(input["owasp.targets"])
 	if targetsRaw == "" {
 		targetsRaw = "all"
@@ -273,7 +273,7 @@ func CheckOWASP(cfg OWASPConfig) engine.Instruction {
 			}
 
 			if len(targets) == 0 {
-				// Nothing to scan — continue.
+				// Nothing to scan â€” continue.
 				if !cfg.ModeBlock && cfg.TagSlot >= 0 && cfg.TagSlot < len(ctx.ByteSlots) {
 					ctx.ByteSlots[cfg.TagSlot] = []byte("")
 				}

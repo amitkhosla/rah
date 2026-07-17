@@ -1,13 +1,13 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/xml"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/xml"
 )
 
 func newXMLTestCtx() (*rctx.Context, *engine.ExecutionState) {

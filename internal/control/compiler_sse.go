@@ -1,8 +1,8 @@
-package control
+﻿package control
 
 import (
 	"fmt"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 func (c *Compiler) compileSSEEvent(step StepConfig) error {

@@ -1,12 +1,12 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
 	"net/http"
 	"strings"
 
-	"rah/internal/engine/steps"
-	"rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/registry"
 )
 
 // CacheServer exposes cache lookup and invalidation over HTTP for management-plane use.
@@ -22,7 +22,7 @@ func RegisterCacheRoutes(mux *http.ServeMux, store steps.CacheStore) {
 }
 
 func (s *CacheServer) cacheHandler(w http.ResponseWriter, r *http.Request) {
-	// Parse /cache/{alias}/{key} — key may contain slashes.
+	// Parse /cache/{alias}/{key} â€” key may contain slashes.
 	rest := strings.TrimPrefix(r.URL.Path, "/cache/")
 	alias, key, ok2 := strings.Cut(rest, "/")
 	if !ok2 {

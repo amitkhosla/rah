@@ -1,4 +1,4 @@
-//go:build googletoken
+﻿//go:build googletoken
 
 package googletoken
 
@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/api/idtoken"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // earlyRefresh is how early before expiry we treat a cached token as expired.
@@ -42,7 +42,7 @@ func (p *Provider) Resolve(ctx context.Context, ref string) ([]byte, error) {
 }
 
 // ResolveTTL fetches an ID token and returns it with a TTL set to
-// token expiry minus earlyRefresh — ensuring the cache is refreshed
+// token expiry minus earlyRefresh â€” ensuring the cache is refreshed
 // before the token becomes invalid.
 func (p *Provider) ResolveTTL(ctx context.Context, ref string) ([]byte, time.Duration, error) {
 	tok, expiry, err := p.fetchToken(ctx, ref)
@@ -59,7 +59,7 @@ func (p *Provider) ResolveTTL(ctx context.Context, ref string) ([]byte, time.Dur
 func (p *Provider) fetchToken(ctx context.Context, ref string) ([]byte, time.Time, error) {
 	audience := strings.TrimPrefix(ref, "googletoken://")
 	if audience == "" || audience == ref {
-		return nil, time.Time{}, fmt.Errorf("googletoken: invalid URI %q — expected googletoken://https://audience", ref)
+		return nil, time.Time{}, fmt.Errorf("googletoken: invalid URI %q â€” expected googletoken://https://audience", ref)
 	}
 
 	ts, err := idtoken.NewTokenSource(ctx, audience)

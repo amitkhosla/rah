@@ -1,4 +1,4 @@
-package observability
+﻿package observability
 
 import (
 	"bufio"
@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"rah/internal/ingest"
+	"github.com/amitkhosla/rah/internal/ingest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,7 +36,7 @@ type accessLogConfig struct {
 	extraFields []ExtraField
 	insights    InsightConfig
 	enabled     bool    // mirrors ObsAccessLogConfig.Enabled; default true
-	sampleRate  float64 // 0.0–1.0; 0 means "not set" → treated as 1.0
+	sampleRate  float64 // 0.0â€“1.0; 0 means "not set" â†’ treated as 1.0
 }
 
 // AccessLogEntry is the snapshot sent to the drain goroutine.
@@ -61,7 +61,7 @@ type AccessLogEntry struct {
 
 	// Timings (all in nanoseconds)
 	Time       int64 // Unix nanoseconds at request completion (captured in Snapshot)
-	TotalNs    int64 // end-to-end (handler entry → last byte sent)
+	TotalNs    int64 // end-to-end (handler entry â†’ last byte sent)
 	GatewayNs  int64 // TotalNs minus upstream time
 	UpstreamNs int64 // total time spent waiting on upstream calls
 	TTFBNs     int64 // time from handler entry to first byte sent to client
@@ -177,7 +177,7 @@ func (l *AccessLogger) UpdateConfig(enabled bool, sampleRate float64) {
 	old := l.cfg.Load()
 	rate := sampleRate
 	if rate <= 0 {
-		rate = 1.0 // treat 0 as "not configured" → full sampling
+		rate = 1.0 // treat 0 as "not configured" â†’ full sampling
 	}
 	if rate > 1.0 {
 		rate = 1.0
@@ -191,7 +191,7 @@ func (l *AccessLogger) UpdateConfig(enabled bool, sampleRate float64) {
 }
 
 // shouldSample returns true if this request should be included in the access log.
-// Uses a fast atomic counter — no rand, no allocation, no mutex.
+// Uses a fast atomic counter â€” no rand, no allocation, no mutex.
 func (l *AccessLogger) shouldSample(rate float64) bool {
 	if rate <= 0 {
 		return false
@@ -230,7 +230,7 @@ func (l *AccessLogger) Snapshot(
 	if !cfg.enabled {
 		return
 	}
-	// Counter-based sampling — no rand, no allocation.
+	// Counter-based sampling â€” no rand, no allocation.
 	if !l.shouldSample(cfg.sampleRate) {
 		return
 	}
@@ -256,7 +256,7 @@ func (l *AccessLogger) Snapshot(
 	entry.ReqBytes = reqBytes
 	entry.ResBytes = resBytes
 
-	// Resolve extra fields from the original request — safe because req is still
+	// Resolve extra fields from the original request â€” safe because req is still
 	// valid at this point (handler goroutine has not returned yet).
 	if req != nil && len(cfg.extraFields) > 0 {
 		var queryVals url.Values // parsed lazily, at most once per request
@@ -300,7 +300,7 @@ func (l *AccessLogger) Snapshot(
 	select {
 	case l.ch <- entry:
 	default:
-		// Channel full — return entry to pool rather than leaking it.
+		// Channel full â€” return entry to pool rather than leaking it.
 		l.pool.Put(entry)
 		l.dropped.Add(1)
 	}
@@ -381,21 +381,21 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			sb.WriteString("[access]")
 			writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
 
-			// API identity — prefer name over internal ID
+			// API identity â€” prefer name over internal ID
 			if entry.ApiName != "" {
 				writeKV(&sb, "api", entry.ApiName)
 			} else {
 				writeKVUint(&sb, "api_id", uint64(entry.ApiID))
 			}
 
-			// Tenant identity — prefer key over internal ID
+			// Tenant identity â€” prefer key over internal ID
 			if entry.TenantKey != "" {
 				writeKV(&sb, "tenant", entry.TenantKey)
 			} else if entry.TenantID != 0 {
 				writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
 			}
 
-			// Caller identity — omit when no API key auth was used
+			// Caller identity â€” omit when no API key auth was used
 			if entry.CallerKey != "" {
 				writeKV(&sb, "caller_key", entry.CallerKey)
 			}
@@ -428,7 +428,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			}
 
 			// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
-			// Signing happens in the async drain goroutine — allocation here is acceptable.
+			// Signing happens in the async drain goroutine â€” allocation here is acceptable.
 			if kp := l.signingKey.Load(); kp != nil {
 				mac := hmac.New(sha256.New, *kp)
 				mac.Write([]byte(sb.String()))
@@ -436,14 +436,14 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			}
 
 			sb.WriteByte('\n')
-			_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
+			_, _ = out.WriteString(sb.String()) // copies to bufio buffer â€” no syscall in the common case
 
 			// Emit to ingest pipeline BEFORE reset so fields are still populated.
 			if p := l.pipeline.Load(); p != nil {
 				emitAccessLogEvent(p, entry)
 			}
 
-			// Reset and return to pool — slice backing arrays are preserved.
+			// Reset and return to pool â€” slice backing arrays are preserved.
 			entry.reset()
 			l.pool.Put(entry)
 
@@ -461,21 +461,21 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					sb.WriteString("[access]")
 					writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
 
-					// API identity — prefer name over internal ID
+					// API identity â€” prefer name over internal ID
 					if entry.ApiName != "" {
 						writeKV(&sb, "api", entry.ApiName)
 					} else {
 						writeKVUint(&sb, "api_id", uint64(entry.ApiID))
 					}
 
-					// Tenant identity — prefer key over internal ID
+					// Tenant identity â€” prefer key over internal ID
 					if entry.TenantKey != "" {
 						writeKV(&sb, "tenant", entry.TenantKey)
 					} else if entry.TenantID != 0 {
 						writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
 					}
 
-					// Caller identity — omit when no API key auth was used
+					// Caller identity â€” omit when no API key auth was used
 					if entry.CallerKey != "" {
 						writeKV(&sb, "caller_key", entry.CallerKey)
 					}
@@ -508,7 +508,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					}
 
 					// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
-					// Signing happens in the async drain goroutine — allocation here is acceptable.
+					// Signing happens in the async drain goroutine â€” allocation here is acceptable.
 					if kp := l.signingKey.Load(); kp != nil {
 						mac := hmac.New(sha256.New, *kp)
 						mac.Write([]byte(sb.String()))
@@ -516,14 +516,14 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					}
 
 					sb.WriteByte('\n')
-					_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
+					_, _ = out.WriteString(sb.String()) // copies to bufio buffer â€” no syscall in the common case
 
 					// Emit to ingest pipeline BEFORE reset so fields are still populated.
 					if p := l.pipeline.Load(); p != nil {
 						emitAccessLogEvent(p, entry)
 					}
 
-					// Reset and return to pool — slice backing arrays are preserved.
+					// Reset and return to pool â€” slice backing arrays are preserved.
 					entry.reset()
 					l.pool.Put(entry)
 				default:
@@ -539,7 +539,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 }
 
 // emitAccessLogEvent marshals entry as JSON and emits a KindAccessLog event
-// into the ingest pipeline. Runs in the drain goroutine — allocations are fine.
+// into the ingest pipeline. Runs in the drain goroutine â€” allocations are fine.
 // AccessLogEntry fields do not have JSON tags; json.Marshal will use field names as-is.
 func emitAccessLogEvent(p *ingest.Pipeline, entry *AccessLogEntry) {
 	n := p.NumSinksForKind(ingest.KindAccessLog)
@@ -563,8 +563,8 @@ func emitAccessLogEvent(p *ingest.Pipeline, entry *AccessLogEntry) {
 
 // ConfigHandler handles GET/POST for the log configuration.
 //
-//	GET  /config/log  → returns current extra fields, insight config, dropped count
-//	POST /config/log  → replaces configuration
+//	GET  /config/log  â†’ returns current extra fields, insight config, dropped count
+//	POST /config/log  â†’ replaces configuration
 func (l *AccessLogger) ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

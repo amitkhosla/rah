@@ -1,23 +1,23 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileGraphQLCall handles the "graphql_call" step type.
 //
 // Step input keys:
 //
-//	url              — static upstream GraphQL endpoint URL
-//	url_slot         — var name whose slot holds the dynamic URL (use if URL is dynamic)
-//	query            — static GraphQL query string (baked into StaticPrefix at compile time)
-//	variables_slot   — var name whose slot holds the JSON variables object (optional)
-//	data_slot        — var name whose slot will store the response "data" field
-//	errors_slot      — var name whose slot will store the response "errors" field
-//	timeout_ms       — request timeout in milliseconds (default: 10000)
-//	fail_on_errors   — "true" to set ctx.Failed when errors are present in the response
+//	url              â€” static upstream GraphQL endpoint URL
+//	url_slot         â€” var name whose slot holds the dynamic URL (use if URL is dynamic)
+//	query            â€” static GraphQL query string (baked into StaticPrefix at compile time)
+//	variables_slot   â€” var name whose slot holds the JSON variables object (optional)
+//	data_slot        â€” var name whose slot will store the response "data" field
+//	errors_slot      â€” var name whose slot will store the response "errors" field
+//	timeout_ms       â€” request timeout in milliseconds (default: 10000)
+//	fail_on_errors   â€” "true" to set ctx.Failed when errors are present in the response
 //
 // At bake time, the query string is JSON-escaped and baked into StaticPrefix.
 // The instruction POSTs {"query":"<query>","variables":<vars>} to the upstream endpoint.
@@ -105,9 +105,9 @@ func (c *Compiler) compileGraphQLCall(step StepConfig) error {
 //
 // Step input keys (via StepConfig fields):
 //
-//	step.Source       — var name whose slot holds the GraphQL response "data" JSON
-//	step.Input["path"] — static gjson path to extract from the data JSON
-//	step.As           — var name whose slot will store the extracted value
+//	step.Source       â€” var name whose slot holds the GraphQL response "data" JSON
+//	step.Input["path"] â€” static gjson path to extract from the data JSON
+//	step.As           â€” var name whose slot will store the extracted value
 func (c *Compiler) compileGraphQLGet(step StepConfig) error {
 	if step.Source == "" {
 		return fmt.Errorf("graphql_get: 'source' is required")
@@ -143,8 +143,8 @@ func (c *Compiler) compileGraphQLGet(step StepConfig) error {
 //
 // Step input keys (via StepConfig fields):
 //
-//	step.Source — var name whose slot holds the GraphQL errors array JSON
-//	step.As     — var name whose slot will store the extracted error message string
+//	step.Source â€” var name whose slot holds the GraphQL errors array JSON
+//	step.As     â€” var name whose slot will store the extracted error message string
 func (c *Compiler) compileParseGraphQLError(step StepConfig) error {
 	if step.Source == "" {
 		return fmt.Errorf("parse_graphql_error: 'source' is required")

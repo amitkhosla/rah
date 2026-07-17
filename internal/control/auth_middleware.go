@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
-// ── Role permission engine ────────────────────────────────────────────────────
+// â”€â”€ Role permission engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // compiledRole holds the parsed permission rules for one role.
 type compiledRole struct {
@@ -71,7 +71,7 @@ func (cr compiledRole) allows(method, path string) bool {
 	return false
 }
 
-// ── AdminUser ─────────────────────────────────────────────────────────────────
+// â”€â”€ AdminUser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // AdminUser is one user record, persisted to the datastore.
 type AdminUser struct {
@@ -82,7 +82,7 @@ type AdminUser struct {
 	UpdatedAt    int64  `json:"updated_at"`
 }
 
-// ── AdminUserStore ────────────────────────────────────────────────────────────
+// â”€â”€ AdminUserStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // AdminUserStore holds users and compiled roles in memory.
 // Mutations persist to the datastore. Safe for concurrent use.
@@ -155,7 +155,7 @@ func NewAdminUserStore(ctx context.Context, dsm *DataStoreManager, cfg config.Ad
 		}
 	}
 
-	// Seed from config — config hash wins (enables password reset via config).
+	// Seed from config â€” config hash wins (enables password reset via config).
 	for _, cu := range cfg.Users {
 		if cu.Username == "" || cu.PasswordHash == "" {
 			continue
@@ -341,7 +341,7 @@ func (s *AdminUserStore) adminCount() int {
 	return n
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// â”€â”€ Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // exemptPaths are always accessible without credentials.
 var exemptPaths = map[string]bool{
@@ -383,7 +383,7 @@ func (s *AdminUserStore) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// ── Context helpers ───────────────────────────────────────────────────────────
+// â”€â”€ Context helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type ctxKeyAdminUser struct{}
 

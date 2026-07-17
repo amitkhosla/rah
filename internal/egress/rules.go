@@ -1,4 +1,4 @@
-package egress
+﻿package egress
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // patternEntry holds a compiled glob/prefix pattern for host matching.
@@ -91,7 +91,7 @@ func buildRuleSet(cfg *config.EgressConfig) (*RuleSet, error) {
 		return rs, nil
 	}
 
-	// Build name→ID map. IDs start at 1 (0 is reserved for Auto default).
+	// Build nameâ†’ID map. IDs start at 1 (0 is reserved for Auto default).
 	nameToID := make(map[string]uint8, len(cfg.Profiles))
 	for i, pc := range cfg.Profiles {
 		if pc.Name == "" {
@@ -155,7 +155,7 @@ func buildRuleSet(cfg *config.EgressConfig) (*RuleSet, error) {
 		return rs.Patterns[i].specificity > rs.Patterns[j].specificity
 	})
 	// Fix up patternIdx after sort so it reflects position in the final slice
-	// (used for cache invalidation — must be stable per entry, not per original index).
+	// (used for cache invalidation â€” must be stable per entry, not per original index).
 	for i := range rs.Patterns {
 		rs.Patterns[i].patternIdx = uint8(i)
 	}

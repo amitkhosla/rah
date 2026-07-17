@@ -1,9 +1,9 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"fmt"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // NewVectorStore creates a VectorStore for the given config.

@@ -1,9 +1,9 @@
-package control
+﻿package control
 
 import (
 	"testing"
 
-	"rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine"
 )
 
 // TestCompileXMLToJSON verifies that the xml_to_json compiler method emits one instruction.

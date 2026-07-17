@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func makeRerankCtx() *rctx.Context {

@@ -1,4 +1,4 @@
-// Package gsm implements a secrets.Provider that resolves credentials from
+﻿// Package gsm implements a secrets.Provider that resolves credentials from
 // Google Secret Manager.
 //
 // # Build tag
@@ -17,7 +17,7 @@
 // The provider registers itself automatically via init() when the package is
 // imported. In your binary's main package, add:
 //
-//	import _ "rah/internal/secrets/gsm"
+//	import _ "github.com/amitkhosla/rah/internal/secrets/gsm"
 //
 // See cmd/rah-gateway/providers_gsm.go for the pre-wired adapter.
 //
@@ -33,7 +33,7 @@
 //
 // Uses Application Default Credentials (ADC) by default:
 //   - GKE Workload Identity / Cloud Run service identity (zero config)
-//   - GOOGLE_APPLICATION_CREDENTIALS env var → service-account JSON file
+//   - GOOGLE_APPLICATION_CREDENTIALS env var â†’ service-account JSON file
 //   - gcloud auth application-default login (local development)
 //
 // For explicit credentials, set secrets.gsm.credentials_file in gateway config:

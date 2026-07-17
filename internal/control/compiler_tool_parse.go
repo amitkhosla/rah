@@ -1,21 +1,21 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileParseToolCalls resolves slots and appends the parse_tool_calls instruction.
 //
 // Slot mapping:
-//   - key_identifier → responseSlot (input: raw LLM response content to parse)
-//   - as             → toolCallsSlot (output: extracted []CanonicalToolCall JSON)
+//   - key_identifier â†’ responseSlot (input: raw LLM response content to parse)
+//   - as             â†’ toolCallsSlot (output: extracted []CanonicalToolCall JSON)
 //
 // Optional input fields:
-//   - input["count_slot"]            → IntSlot name for writing tool call count (-1 if absent)
-//   - input["has_tool_calls_slot"]   → BoolSlot name for writing presence flag (-1 if absent)
-//   - input["source_format"]         → "anthropic", "openai", or "" (auto-detect)
+//   - input["count_slot"]            â†’ IntSlot name for writing tool call count (-1 if absent)
+//   - input["has_tool_calls_slot"]   â†’ BoolSlot name for writing presence flag (-1 if absent)
+//   - input["source_format"]         â†’ "anthropic", "openai", or "" (auto-detect)
 func (c *Compiler) compileParseToolCalls(step StepConfig) error {
 	responseSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -61,14 +61,14 @@ func (c *Compiler) compileParseToolCalls(step StepConfig) error {
 // compileAppendToolResult resolves slots and appends the append_tool_result instruction.
 //
 // Slot mapping:
-//   - key_identifier → historySlot (ByteSlots, in-place modification)
+//   - key_identifier â†’ historySlot (ByteSlots, in-place modification)
 //
 // Required input fields:
-//   - input["tool_call_id_slot"] → ByteSlot name holding the tool call ID string
-//   - input["result_slot"]       → ByteSlot name holding the tool result content
+//   - input["tool_call_id_slot"] â†’ ByteSlot name holding the tool call ID string
+//   - input["result_slot"]       â†’ ByteSlot name holding the tool result content
 //
 // Optional input fields:
-//   - input["target_format"] → "anthropic" or "openai" (default "openai")
+//   - input["target_format"] â†’ "anthropic" or "openai" (default "openai")
 func (c *Compiler) compileAppendToolResult(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

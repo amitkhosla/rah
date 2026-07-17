@@ -1,38 +1,38 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileCheckContextFit resolves and appends the check_context_fit instruction.
 //
 // Step config mapping:
-//   - step.KeyIdentifier      → promptSlot  (ByteSlots)
-//   - step.As                 → fitsSlot    (BoolSlots — written via unified slot index)
-//   - step.Input["system_slot"]   → systemSlot  (optional, default -1)
-//   - step.Input["history_slot"]  → historySlot (optional, default -1)
-//   - step.Input["tools_slot"]    → toolsSlot   (optional, default -1)
-//   - step.Input["overflow_slot"] → overflowSlot (optional, default -1; IntSlots)
-//   - step.Input["total_slot"]    → totalSlot    (optional, default -1; IntSlots)
-//   - step.Input["model"]         → look up in c.LLMCfg.Models; read MaxContextTokens + MaxTokens
-//   - step.Input["max_output_tokens"] → override for output reservation
+//   - step.KeyIdentifier      â†’ promptSlot  (ByteSlots)
+//   - step.As                 â†’ fitsSlot    (BoolSlots â€” written via unified slot index)
+//   - step.Input["system_slot"]   â†’ systemSlot  (optional, default -1)
+//   - step.Input["history_slot"]  â†’ historySlot (optional, default -1)
+//   - step.Input["tools_slot"]    â†’ toolsSlot   (optional, default -1)
+//   - step.Input["overflow_slot"] â†’ overflowSlot (optional, default -1; IntSlots)
+//   - step.Input["total_slot"]    â†’ totalSlot    (optional, default -1; IntSlots)
+//   - step.Input["model"]         â†’ look up in c.LLMCfg.Models; read MaxContextTokens + MaxTokens
+//   - step.Input["max_output_tokens"] â†’ override for output reservation
 func (c *Compiler) compileCheckContextFit(step StepConfig) error {
-	// ── PromptSlot (required) ──────────────────────────────────────────────────
+	// â”€â”€ PromptSlot (required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	promptSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
 		return fmt.Errorf("check_context_fit: prompt slot: %w", err)
 	}
 
-	// ── FitsSlot (required) ───────────────────────────────────────────────────
+	// â”€â”€ FitsSlot (required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	fitsSlot, err := c.getSlot(step.As)
 	if err != nil {
 		return fmt.Errorf("check_context_fit: fits slot: %w", err)
 	}
 
-	// ── Optional input slots ──────────────────────────────────────────────────
+	// â”€â”€ Optional input slots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	systemSlot := -1
 	if name := step.Input["system_slot"]; name != "" {
 		if s, slotErr := c.getSlot(name); slotErr == nil {
@@ -54,7 +54,7 @@ func (c *Compiler) compileCheckContextFit(step StepConfig) error {
 		}
 	}
 
-	// ── Optional output slots ─────────────────────────────────────────────────
+	// â”€â”€ Optional output slots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	overflowSlot := -1
 	if name := step.Input["overflow_slot"]; name != "" {
 		if s, slotErr := c.getSlot(name); slotErr == nil {
@@ -69,7 +69,7 @@ func (c *Compiler) compileCheckContextFit(step StepConfig) error {
 		}
 	}
 
-	// ── Model limits (baked at compile time) ──────────────────────────────────
+	// â”€â”€ Model limits (baked at compile time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	maxContextTokens := 0
 	maxOutputTokens := 2000 // default output reservation
 

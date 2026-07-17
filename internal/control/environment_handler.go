@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // EnvironmentRecord describes one deployment environment.

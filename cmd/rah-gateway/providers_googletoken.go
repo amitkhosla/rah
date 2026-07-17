@@ -1,4 +1,4 @@
-//go:build googletoken
+﻿//go:build googletoken
 
 package main
 
@@ -7,7 +7,7 @@ package main
 //
 // To enable:
 //  1. go build -tags googletoken ./cmd/rah-gateway/
-//     (no extra go get needed — google.golang.org/api is already in go.mod)
+//     (no extra go get needed â€” google.golang.org/api is already in go.mod)
 //
 // In gateway.yaml:
 //
@@ -18,9 +18,9 @@ package main
 import (
 	"context"
 
-	"rah/internal/config"
-	"rah/internal/secrets"
-	"rah/internal/secrets/googletoken"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/secrets/googletoken"
 )
 
 func init() {

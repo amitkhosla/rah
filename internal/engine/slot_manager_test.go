@@ -1,11 +1,11 @@
-package engine
+﻿package engine
 
 import (
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"testing"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // newState builds an ExecutionState (no overflow store in new design).
 func newState() *ExecutionState {
@@ -19,7 +19,7 @@ func newCtx() *rctx.Context {
 	return ctx
 }
 
-// ── Case 1: arena path (value ≤ SlotValueThreshold) ──────────────────────────
+// â”€â”€ Case 1: arena path (value â‰¤ SlotValueThreshold) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestWriteReadSlot_ArenaPath(t *testing.T) {
 	ctx := newCtx()
@@ -53,7 +53,7 @@ func TestWriteReadSlot_ArenaPath_MultipleSlots(t *testing.T) {
 	}
 }
 
-// ── Case 2: heap path (value > SlotValueThreshold) ───────────────────────────
+// â”€â”€ Case 2: heap path (value > SlotValueThreshold) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestWriteReadSlot_HeapPath_LargeValue(t *testing.T) {
 	ctx := newCtx()
@@ -67,7 +67,7 @@ func TestWriteReadSlot_HeapPath_LargeValue(t *testing.T) {
 
 	s.WriteSlot(ctx, 0, big)
 
-	// Value is on heap — ArenaOverflowed is set.
+	// Value is on heap â€” ArenaOverflowed is set.
 	if !ctx.ArenaOverflowed {
 		t.Fatal("ArenaOverflowed should be true for large value")
 	}
@@ -87,7 +87,7 @@ func TestWriteReadSlot_BoundaryValue_AtThreshold(t *testing.T) {
 	ctx := newCtx()
 	s := newState()
 
-	// Exactly at threshold — should go into arena, not heap.
+	// Exactly at threshold â€” should go into arena, not heap.
 	data := make([]byte, rctx.SlotValueThreshold)
 	for i := range data {
 		data[i] = 0xAB
@@ -103,7 +103,7 @@ func TestWriteReadSlot_BoundaryValue_AtThreshold(t *testing.T) {
 	}
 }
 
-// ── ReadSlot edge cases ───────────────────────────────────────────────────────
+// â”€â”€ ReadSlot edge cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestReadSlot_EmptySlot_ReturnsNil(t *testing.T) {
 	ctx := newCtx()
@@ -144,13 +144,13 @@ func TestWriteSlot_OutOfRange_IsNoop(t *testing.T) {
 	}
 }
 
-// ── slotValueThreshold override ───────────────────────────────────────────────
+// â”€â”€ slotValueThreshold override â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestWriteSlot_ThresholdOverride(t *testing.T) {
 	ctx := newCtx()
 	s := &ExecutionState{slotValueThreshold: 4} // tiny threshold
 
-	// 5-byte value exceeds the 4-byte override → heap.
+	// 5-byte value exceeds the 4-byte override â†’ heap.
 	data := []byte("hello")
 	s.WriteSlot(ctx, 0, data)
 

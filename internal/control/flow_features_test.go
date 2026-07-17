@@ -1,13 +1,13 @@
-package control
+﻿package control
 
-// flow_features_test.go — comprehensive integration tests for RAH gateway flows.
+// flow_features_test.go â€” comprehensive integration tests for RAH gateway flows.
 //
 // Coverage:
 //   - If/else branching (condition gate)
 //   - Switch/case routing
 //   - Slot liveness (many-variable flows)
-//   - Batch ops: json_extract_emit → batch_flush (mock flusher)
-//   - Batch ops: json_foreach_emit → batch_flush (mock flusher)
+//   - Batch ops: json_extract_emit â†’ batch_flush (mock flusher)
+//   - Batch ops: json_foreach_emit â†’ batch_flush (mock flusher)
 //   - Registry write + read: set_service_url / set_identifier / load_* round-trip
 //   - TMS onboarding pipeline (end-to-end tenant property set + load)
 //
@@ -25,13 +25,13 @@ import (
 	"sync"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	tenantregistry "rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	tenantregistry "github.com/amitkhosla/rah/internal/registry"
 )
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type mockOpFlusher struct {
 	mu      sync.Mutex
@@ -119,13 +119,13 @@ func runRequest(t *testing.T, fm *engine.FlowManager, method, path string, heade
 	return ctx
 }
 
-// ─── Test 1: If/Else branching ────────────────────────────────────────────────
+// â”€â”€â”€ Test 1: If/Else branching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestIfElseBranching verifies that the if/else gate routes to the correct
 // sub-flow based on whether a header slot is non-empty.
 //
 // Flow:
-//   if header.X-Admin → allowFlow (200) | denyFlow (403)
+//   if header.X-Admin â†’ allowFlow (200) | denyFlow (403)
 func TestIfElseBranching(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
@@ -152,13 +152,13 @@ func TestIfElseBranching(t *testing.T) {
 		},
 	})
 
-	// With header → should go to allowFlow → 200
+	// With header â†’ should go to allowFlow â†’ 200
 	ctxAllow := runRequest(t, fm, http.MethodGet, "/v1/if-test", map[string]string{"X-Admin": "yes"})
 	if ctxAllow.ResponseStatus != http.StatusOK {
 		t.Errorf("expected 200 when X-Admin header present, got %d", ctxAllow.ResponseStatus)
 	}
 
-	// Without header → should go to denyFlow → 403
+	// Without header â†’ should go to denyFlow â†’ 403
 	ctxDeny := runRequest(t, fm, http.MethodGet, "/v1/if-test", nil)
 	if ctxDeny.ResponseStatus != http.StatusForbidden {
 		t.Errorf("expected 403 when X-Admin header absent, got %d", ctxDeny.ResponseStatus)
@@ -166,7 +166,7 @@ func TestIfElseBranching(t *testing.T) {
 }
 
 // TestIfElseWithAndCondition verifies a compound condition (header.A && header.B).
-// Both headers must be present for the then-branch; either missing → else-branch.
+// Both headers must be present for the then-branch; either missing â†’ else-branch.
 func TestIfElseWithAndCondition(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
@@ -193,20 +193,20 @@ func TestIfElseWithAndCondition(t *testing.T) {
 		},
 	})
 
-	// Both headers → 200
+	// Both headers â†’ 200
 	ctx := runRequest(t, fm, "GET", "/v1/and-test", map[string]string{"X-Auth": "token", "X-Tenant": "acme"})
 	if ctx.ResponseStatus != 200 {
 		t.Errorf("both headers present: expected 200, got %d", ctx.ResponseStatus)
 	}
 
-	// Only one header → 401
+	// Only one header â†’ 401
 	ctx2 := runRequest(t, fm, "GET", "/v1/and-test", map[string]string{"X-Auth": "token"})
 	if ctx2.ResponseStatus != 401 {
 		t.Errorf("only X-Auth: expected 401, got %d", ctx2.ResponseStatus)
 	}
 }
 
-// ─── Test 2: Switch/Case routing ─────────────────────────────────────────────
+// â”€â”€â”€ Test 2: Switch/Case routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestSwitchCaseRouting verifies that a switch step dispatches to the correct
 // sub-flow based on a query parameter value.
@@ -258,7 +258,7 @@ func TestSwitchCaseRouting(t *testing.T) {
 		}
 	}
 
-	// Unknown tier → switch exits without matching, status stays at default 200
+	// Unknown tier â†’ switch exits without matching, status stays at default 200
 	// (ctx.Reset initialises ResponseStatus=200; no case sets it, so it stays 200).
 	// The key property we assert: it did NOT dispatch to pro (202) or enterprise (201).
 	ctx := runRequest(t, fm, "GET", "/v1/switch?tier=unknown", nil)
@@ -267,7 +267,7 @@ func TestSwitchCaseRouting(t *testing.T) {
 	}
 }
 
-// ─── Test 3: Slot liveness enables large flows ────────────────────────────────
+// â”€â”€â”€ Test 3: Slot liveness enables large flows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestSlotLivenessEnablesLargeFlow creates a flow that sequentially introduces
 // and discards many variables. Without slot liveness analysis, this would
@@ -276,7 +276,7 @@ func TestSlotLivenessEnablesLargeFlow(t *testing.T) {
 	_, compiler, _, _ := newTestStack(t)
 
 	// Build a flow where each variable is used once then a new one introduced.
-	// Pattern: bind v0, use v0 in concat → v1, use v1 in concat → v2, ...
+	// Pattern: bind v0, use v0 in concat â†’ v1, use v1 in concat â†’ v2, ...
 	// With liveness: vN-1 is freed when vN+1 is allocated.
 	const chainLen = 40 // would overflow 48 slots without liveness
 	steps := make([]StepConfig, 0, chainLen*2)
@@ -284,7 +284,7 @@ func TestSlotLivenessEnablesLargeFlow(t *testing.T) {
 	// Step 0: bind a header to a slot
 	steps = append(steps, StepConfig{Action: "set_response_status", Value: "200"})
 
-	// Create a chain: concat current + "" → next, dropping the previous slot
+	// Create a chain: concat current + "" â†’ next, dropping the previous slot
 	for i := 0; i < chainLen; i++ {
 		srcA := "chain.var"
 		srcB := "chain.const"
@@ -306,7 +306,7 @@ func TestSlotLivenessEnablesLargeFlow(t *testing.T) {
 	}
 }
 
-// ─── Test 4: json_extract_emit → batch_flush (mock flusher) ──────────────────
+// â”€â”€â”€ Test 4: json_extract_emit â†’ batch_flush (mock flusher) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestJSONExtractEmitDispatchesBatch verifies that json_extract_emit enqueues
 // PUT ops into the op buffer, and batch_flush dispatches them to the flusher.
@@ -412,7 +412,7 @@ func TestJSONExtractEmitDispatchesBatch(t *testing.T) {
 	}
 }
 
-// ─── Test 5: json_foreach_emit → batch_flush (array of N elements) ───────────
+// â”€â”€â”€ Test 5: json_foreach_emit â†’ batch_flush (array of N elements) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestJSONForeachEmitIteratesArray verifies that json_foreach_emit emits one
 // batch of ops per array element, and batch_flush dispatches them all.
@@ -486,10 +486,10 @@ func TestJSONForeachEmitIteratesArray(t *testing.T) {
 		t.Errorf("expected 200, got %d", ctx.ResponseStatus)
 	}
 
-	// 5 elements × 2 ops per element = 10 total ops
+	// 5 elements Ã— 2 ops per element = 10 total ops
 	ops := mock.opsFlat()
 	if len(ops) != 10 {
-		t.Errorf("expected 10 ops (5 elements × 2 ops), got %d", len(ops))
+		t.Errorf("expected 10 ops (5 elements Ã— 2 ops), got %d", len(ops))
 	}
 
 	// Verify svc: keys
@@ -511,7 +511,7 @@ func TestJSONForeachEmitIteratesArray(t *testing.T) {
 	}
 }
 
-// ─── Test 6: Registry set + load round-trip ──────────────────────────────────
+// â”€â”€â”€ Test 6: Registry set + load round-trip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestRegistrySetAndLoadRoundTrip sets a service URL and identifier via
 // set_service_url / set_identifier steps, then loads them back using
@@ -526,7 +526,7 @@ func TestRegistrySetAndLoadRoundTrip(t *testing.T) {
 	const upstreamURL = "https://acme-service.internal/v2"
 	const apiKey = "sk-acme-live-001"
 
-	// --- Flow 1: onboarding — write URL and identifier to registry ---
+	// --- Flow 1: onboarding â€” write URL and identifier to registry ---
 	// Data sources are request headers so BindHeader populates the right slots
 	// at request time; no slot-index guessing needed.
 	mustSync(t, server, UnifiedSyncRequest{
@@ -544,7 +544,7 @@ func TestRegistrySetAndLoadRoundTrip(t *testing.T) {
 		},
 	})
 
-	// Execute onboarding request — values come from headers, no slot pre-population needed.
+	// Execute onboarding request â€” values come from headers, no slot pre-population needed.
 	ctxOnboard := runRequest(t, fm, "POST", "/v1/onboard", map[string]string{
 		"X-Tenant":       "acme",
 		"X-Upstream-URL": upstreamURL,
@@ -554,7 +554,7 @@ func TestRegistrySetAndLoadRoundTrip(t *testing.T) {
 		t.Fatalf("onboarding flow failed: status %d", ctxOnboard.ResponseStatus)
 	}
 
-	// --- Flow 2: data plane — load URL and identifier from registry ---
+	// --- Flow 2: data plane â€” load URL and identifier from registry ---
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "registry-load",
 		Flows: []FlowUpdate{
@@ -594,7 +594,7 @@ func TestRegistrySetAndLoadRoundTrip(t *testing.T) {
 	}
 }
 
-// ─── Test 7: TMS onboarding pipeline — full E2E ───────────────────────────────
+// â”€â”€â”€ Test 7: TMS onboarding pipeline â€” full E2E â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestTMSOnboardingPipeline simulates the Tenant Management Service (TMS) use case:
 //
@@ -604,7 +604,7 @@ func TestRegistrySetAndLoadRoundTrip(t *testing.T) {
 //  3. json_foreach_emit iterates the services array and emits registry PUT ops.
 //  4. batch_flush dispatches all ops to RegistryExecutor synchronously.
 //  5. Subsequent requests use load_service_url / load_identifier to serve the
-//     registry-resident data — no upstream call needed.
+//     registry-resident data â€” no upstream call needed.
 //
 // This test demonstrates the full pipeline working end-to-end and identifies
 // the missing link (http_call body capture) as a future improvement.
@@ -630,7 +630,7 @@ func TestTMSOnboardingPipeline(t *testing.T) {
 	// This test uses Phase B (registry) via set_service_url for named properties,
 	// and demonstrates Phase A (cache) via json_foreach_emit for bulk storage.
 
-	// Compact single-line JSON — newlines in header values can cause issues in http.
+	// Compact single-line JSON â€” newlines in header values can cause issues in http.
 	const tmsJSON = `{"primary_url":"https://alpha-primary.internal/api","secondary_url":"https://alpha-secondary.internal/api","api_key":"sk-alpha-prod-001","webhook_secret":"whs-abc123"}`
 
 	// Wire mock cache flusher for bulk cache ops.
@@ -639,8 +639,8 @@ func TestTMSOnboardingPipeline(t *testing.T) {
 
 	// --- Sync flow: onboard a tenant from TMS data ---
 	// All data sources are request headers so BindHeader populates the correct slots
-	// at request time — no slot-index assumptions needed.
-	// (In production, a future json_extract_to_slot step would bridge http_call → slots.)
+	// at request time â€” no slot-index assumptions needed.
+	// (In production, a future json_extract_to_slot step would bridge http_call â†’ slots.)
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "tms-onboard",
 		Flows: []FlowUpdate{
@@ -685,7 +685,7 @@ func TestTMSOnboardingPipeline(t *testing.T) {
 		},
 	})
 
-	// Execute TMS sync for tenant-alpha — all values come from request headers.
+	// Execute TMS sync for tenant-alpha â€” all values come from request headers.
 	ctxSync := runRequest(t, fm, "POST", "/v1/tms/sync", map[string]string{
 		"X-Tenant":         "tenant-alpha",
 		"X-Primary-URL":    "https://alpha-primary.internal/api",
@@ -724,7 +724,7 @@ func TestTMSOnboardingPipeline(t *testing.T) {
 		t.Errorf("expected 2 cache ops from json_extract_emit, got %d", len(ops))
 	}
 
-	// --- Flow 2: API gateway — load properties from registry on each request ---
+	// --- Flow 2: API gateway â€” load properties from registry on each request ---
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "tms-load",
 		Flows: []FlowUpdate{
@@ -752,19 +752,19 @@ func TestTMSOnboardingPipeline(t *testing.T) {
 		t.Errorf("upstream after load: want %q, got %q", want, got)
 	}
 
-	// tenant-beta should return empty (not yet onboarded) — no crash.
+	// tenant-beta should return empty (not yet onboarded) â€” no crash.
 	ctx4 := runRequest(t, fm, "GET", "/v1/tms/call", map[string]string{"X-Tenant": "tenant-beta"})
 	if ctx4.ResponseStatus == 500 {
 		t.Errorf("un-onboarded tenant should not cause 500, got %d", ctx4.ResponseStatus)
 	}
 }
 
-// ─── Test 8: Batch ops with RegistryExec (json_foreach_emit → registry) ──────
+// â”€â”€â”€ Test 8: Batch ops with RegistryExec (json_foreach_emit â†’ registry) â”€â”€â”€â”€â”€â”€
 
 // TestJSONForeachEmitToRegistry tests the full batch pipeline routing to the
 // RegistryExecutor. Each array element writes a service URL entry to the registry.
 //
-// Design note: since RegistryExecutor.Submit resolves TenantID→alias, ctx.TenantID
+// Design note: since RegistryExecutor.Submit resolves TenantIDâ†’alias, ctx.TenantID
 // must be set before batch_flush. We set it directly here (simulating registry_lookup).
 func TestJSONForeachEmitToRegistry(t *testing.T) {
 	fm, _, server, regMgr := newTestStack(t)
@@ -782,8 +782,8 @@ func TestJSONForeachEmitToRegistry(t *testing.T) {
 
 	// JSON: array of {id, url} records. Each element emits one PUT to registry URLs.
 	// Key = "ep:" + extracted_id_value (e.g. "ep:svc-a")
-	// Value = extracted_id_value (the ID itself — represents a self-referencing record ID).
-	// This tests the batch pipeline end-to-end. For key≠value scenarios a future
+	// Value = extracted_id_value (the ID itself â€” represents a self-referencing record ID).
+	// This tests the batch pipeline end-to-end. For keyâ‰ value scenarios a future
 	// ValuePath field in ExtractOp would be needed.
 	const jsonBody = `[{"id":"svc-a"},{"id":"svc-b"},{"id":"svc-c"}]`
 
@@ -845,7 +845,7 @@ func TestJSONForeachEmitToRegistry(t *testing.T) {
 	}
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func keysOf(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
@@ -876,14 +876,14 @@ func findSlotForStep(plan []engine.Instruction, name string) int {
 // TestIfElseLiteralHeadersNoInfiniteLoop is a regression test for the
 // simulateBake undercount bug. set_response_header with a literal source emits
 // 2 instructions (SetConst + SetHeader), but the old simulateBake counted 1.
-// This caused postElseID to land inside the else block → GOTO → same spot →
+// This caused postElseID to land inside the else block â†’ GOTO â†’ same spot â†’
 // infinite loop. The test hangs if the bug is present; it completes if fixed.
 func TestIfElseLiteralHeadersNoInfiniteLoop(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
 	// hit branch: set two literal headers + 200 status
 	// miss branch: set two different literal headers + 404 status
-	// Both branches have set_response_header with literal source → 2 instructions each.
+	// Both branches have set_response_header with literal source â†’ 2 instructions each.
 	// The if step's postElseID must point past the end of the else block.
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "literal-header-ifelse",
@@ -912,20 +912,20 @@ func TestIfElseLiteralHeadersNoInfiniteLoop(t *testing.T) {
 		},
 	})
 
-	// Hit branch: header present → cacheHitFlow → 200
+	// Hit branch: header present â†’ cacheHitFlow â†’ 200
 	ctxHit := runRequest(t, fm, http.MethodGet, "/v1/cache-test", map[string]string{"X-Cache-Hit": "1"})
 	if ctxHit.ResponseStatus != http.StatusOK {
 		t.Errorf("hit branch: expected 200, got %d", ctxHit.ResponseStatus)
 	}
 
-	// Miss branch: no header → cacheMissFlow → 404
+	// Miss branch: no header â†’ cacheMissFlow â†’ 404
 	ctxMiss := runRequest(t, fm, http.MethodGet, "/v1/cache-test", nil)
 	if ctxMiss.ResponseStatus != http.StatusNotFound {
 		t.Errorf("miss branch: expected 404, got %d", ctxMiss.ResponseStatus)
 	}
 }
 
-// For use in assertions only — returns the first slot modified by the named instr.
+// For use in assertions only â€” returns the first slot modified by the named instr.
 func findNamedSlot(plan []engine.Instruction, name string) int {
 	for i, instr := range plan {
 		if instr.Name == name {

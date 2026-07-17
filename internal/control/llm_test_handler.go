@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"bytes"
@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // llmTestRequest is the optional JSON body for the test endpoint.
@@ -193,7 +193,7 @@ func llmTestModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 				"response_body":  body,
 				"latency_ms":     latencyMs,
 			},
-			"error": fmt.Sprintf("provider returned HTTP %d — see debug for details", resp.StatusCode),
+			"error": fmt.Sprintf("provider returned HTTP %d â€” see debug for details", resp.StatusCode),
 		})
 		return
 	}

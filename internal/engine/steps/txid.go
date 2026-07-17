@@ -1,8 +1,8 @@
-package steps
+﻿package steps
 
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"unsafe"
 )
 
@@ -26,7 +26,7 @@ func StoreInternalTxID(slotIdx int) engine.Instruction {
 // If the header is absent and generateIfMissing is true, a new transaction ID
 // is generated and stored instead.
 //
-// This is the customer-driven correlation ID path — wired into an API flow at
+// This is the customer-driven correlation ID path â€” wired into an API flow at
 // registration time, not globally. It lets the gateway echo back X-Request-ID
 // (or similar) from the caller, falling back to a generated ID when absent.
 func BindCorrelationID(headerKey string, generateIfMissing bool, gen *rctx.TxIDGenerator, slotIdx int) engine.Instruction {

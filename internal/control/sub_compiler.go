@@ -1,8 +1,8 @@
-package control
+﻿package control
 
 import (
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 	"strings"
 )
 

@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ============================================================================
@@ -170,7 +170,7 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 		// Parse the key: format is "Tenant:serviceCode"
 		parts := splitServiceKey(serviceKey)
 		if len(parts) != 2 {
-			t.Logf("⚠️  Invalid service key format: %s", serviceKey)
+			t.Logf("âš ï¸  Invalid service key format: %s", serviceKey)
 			continue
 		}
 
@@ -199,16 +199,16 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 		// Check for unassigned services
 		if actualURL == "unassigned" {
 			result.UnassignedServices = append(result.UnassignedServices, mapping)
-			t.Logf("⚠️  [UNASSIGNED] %s:%s (Tenant: %s, ID: %s)", tenant, serviceCode, tenant, tenantID)
+			t.Logf("âš ï¸  [UNASSIGNED] %s:%s (Tenant: %s, ID: %s)", tenant, serviceCode, tenant, tenantID)
 		} else if expectedURL == "" {
 			result.MissingURLs = append(result.MissingURLs, mapping)
-			t.Errorf("❌ [MISSING] %s:%s - No expected URL found", tenant, serviceCode)
+			t.Errorf("âŒ [MISSING] %s:%s - No expected URL found", tenant, serviceCode)
 		} else if actualURL != expectedURL {
 			result.MismatchedURLs = append(result.MismatchedURLs, mapping)
-			t.Errorf("❌ [MISMATCH] %s:%s\n   Expected: %s\n   Got: %s", tenant, serviceCode, expectedURL, actualURL)
+			t.Errorf("âŒ [MISMATCH] %s:%s\n   Expected: %s\n   Got: %s", tenant, serviceCode, expectedURL, actualURL)
 		} else {
 			result.ValidatedCount++
-			t.Logf("✓ [VALID] %s:%s → %s (Tenant ID: %s)", tenant, serviceCode, actualURL, tenantID)
+			t.Logf("âœ“ [VALID] %s:%s â†’ %s (Tenant ID: %s)", tenant, serviceCode, actualURL, tenantID)
 		}
 	}
 
@@ -219,10 +219,10 @@ func TestCrossValidateServiceCodesAndURLs(t *testing.T) {
 	// Print summary
 	t.Log("\n=== SUMMARY ===")
 	t.Logf("Total Services: %d", result.TotalServices)
-	t.Logf("✓ Validated: %d", result.ValidatedCount)
-	t.Logf("⚠️  Unassigned: %d", result.UnassignedCount)
-	t.Logf("❌ Mismatches: %d", len(result.MismatchedURLs))
-	t.Logf("❌ Missing URLs: %d", len(result.MissingURLs))
+	t.Logf("âœ“ Validated: %d", result.ValidatedCount)
+	t.Logf("âš ï¸  Unassigned: %d", result.UnassignedCount)
+	t.Logf("âŒ Mismatches: %d", len(result.MismatchedURLs))
+	t.Logf("âŒ Missing URLs: %d", len(result.MissingURLs))
 
 	// Fail if there are mismatches
 	if len(result.MismatchedURLs) > 0 {
@@ -293,9 +293,9 @@ func TestVerifyEachTenantHasIdentifier(t *testing.T) {
 
 		if _, exists := expectedTenants[idVal]; exists {
 			expectedTenants[idVal] = true
-			t.Logf("✓ Tenant ID found: %s (stored as key: %s)", idVal, key)
+			t.Logf("âœ“ Tenant ID found: %s (stored as key: %s)", idVal, key)
 		} else {
-			t.Logf("⚠️  Unexpected tenant ID: %s", idVal)
+			t.Logf("âš ï¸  Unexpected tenant ID: %s", idVal)
 		}
 	}
 
@@ -303,13 +303,13 @@ func TestVerifyEachTenantHasIdentifier(t *testing.T) {
 	allFound := true
 	for expected, found := range expectedTenants {
 		if !found {
-			t.Errorf("❌ Expected tenant ID not found: %s", expected)
+			t.Errorf("âŒ Expected tenant ID not found: %s", expected)
 			allFound = false
 		}
 	}
 
 	if allFound {
-		t.Logf("\n✓ All %d tenant identifiers correctly extracted and stored", len(expectedTenants))
+		t.Logf("\nâœ“ All %d tenant identifiers correctly extracted and stored", len(expectedTenants))
 	}
 
 	sort.Strings(extractedIDs)
@@ -396,13 +396,13 @@ func TestVerifyServiceCodeConsistency(t *testing.T) {
 	for code, extractedCount := range extractedServiceCodes {
 		expectedCount, exists := expectedServiceCodes[code]
 		if !exists {
-			t.Logf("⚠️  Extra service code: %s (count: %d)", code, extractedCount)
+			t.Logf("âš ï¸  Extra service code: %s (count: %d)", code, extractedCount)
 			extra++
 		} else if extractedCount > expectedCount {
-			t.Logf("⚠️  Duplicate service code: %s (expected: %d, got: %d)", code, expectedCount, extractedCount)
+			t.Logf("âš ï¸  Duplicate service code: %s (expected: %d, got: %d)", code, expectedCount, extractedCount)
 			duplicates++
 		} else if extractedCount == expectedCount {
-			t.Logf("✓ Service code consistent: %s (count: %d)", code, extractedCount)
+			t.Logf("âœ“ Service code consistent: %s (count: %d)", code, extractedCount)
 		}
 	}
 
@@ -410,10 +410,10 @@ func TestVerifyServiceCodeConsistency(t *testing.T) {
 	for code, expectedCount := range expectedServiceCodes {
 		extractedCount, exists := extractedServiceCodes[code]
 		if !exists {
-			t.Logf("❌ Missing service code: %s", code)
+			t.Logf("âŒ Missing service code: %s", code)
 			missing++
 		} else if extractedCount < expectedCount {
-			t.Logf("❌ Incomplete extraction: %s (expected: %d, got: %d)", code, expectedCount, extractedCount)
+			t.Logf("âŒ Incomplete extraction: %s (expected: %d, got: %d)", code, expectedCount, extractedCount)
 			missing++
 		}
 	}
@@ -422,17 +422,17 @@ func TestVerifyServiceCodeConsistency(t *testing.T) {
 	t.Log("\n=== CONSISTENCY SUMMARY ===")
 	t.Logf("Expected service codes: %d", len(expectedServiceCodes))
 	t.Logf("Extracted service codes: %d", len(extractedServiceCodes))
-	t.Logf("✓ Consistent: %d", len(extractedServiceCodes)-duplicates-extra)
-	t.Logf("⚠️  Duplicates: %d", duplicates)
-	t.Logf("⚠️  Extra: %d", extra)
-	t.Logf("❌ Missing: %d", missing)
+	t.Logf("âœ“ Consistent: %d", len(extractedServiceCodes)-duplicates-extra)
+	t.Logf("âš ï¸  Duplicates: %d", duplicates)
+	t.Logf("âš ï¸  Extra: %d", extra)
+	t.Logf("âŒ Missing: %d", missing)
 
 	if missing > 0 || duplicates > 0 || extra > 0 {
 		t.Errorf("Service code consistency check failed: %d missing, %d duplicates, %d extra", missing, duplicates, extra)
 	}
 
 	if len(extractedServiceCodes) == len(expectedServiceCodes) {
-		t.Logf("\n✓ All service codes extracted correctly (total: %d)", len(extractedServiceCodes))
+		t.Logf("\nâœ“ All service codes extracted correctly (total: %d)", len(extractedServiceCodes))
 	}
 }
 
@@ -549,9 +549,9 @@ func TestDetailedServiceMapping(t *testing.T) {
 		serviceCode := parts[1]
 
 		if mapping, exists := mappings[tenantName]; exists {
-			status := "✓ ASSIGNED"
+			status := "âœ“ ASSIGNED"
 			if string(urlVal) == "unassigned" {
-				status = "⚠️  UNASSIGNED"
+				status = "âš ï¸  UNASSIGNED"
 			}
 
 			mapping.Services = append(mapping.Services, struct {
@@ -579,7 +579,7 @@ func TestDetailedServiceMapping(t *testing.T) {
 			})
 
 			for _, svc := range mapping.Services {
-				t.Logf("    [%s] %s → %s", svc.Status, svc.Code, svc.URL)
+				t.Logf("    [%s] %s â†’ %s", svc.Status, svc.Code, svc.URL)
 			}
 			t.Log("")
 		}
@@ -605,8 +605,8 @@ func TestDetailedServiceMapping(t *testing.T) {
 	t.Log("SUMMARY STATISTICS")
 	t.Log(separator)
 	t.Logf("Total Services: %d", totalServices)
-	t.Logf("✓ Assigned: %d", assignedServices)
-	t.Logf("⚠️  Unassigned: %d", unassignedServices)
+	t.Logf("âœ“ Assigned: %d", assignedServices)
+	t.Logf("âš ï¸  Unassigned: %d", unassignedServices)
 	t.Logf("Tenants with Data: %d", len(mappings))
 	t.Log(separator)
 }

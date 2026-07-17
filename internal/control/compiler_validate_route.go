@@ -1,12 +1,12 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // compileValidateRoute compiles a "validate_route" step into a ValidateRouteInstruction.
@@ -30,7 +30,7 @@ func (c *Compiler) compileValidateRoute(step StepConfig) error {
 		// Register pending validate jump for DestJump rules.
 		if rule.DestKind == steps.DestJump && rc.OnMatch.TargetStep != "" {
 			if targetPC, ok := c.FragmentMap[rc.OnMatch.TargetStep]; ok {
-				// Already compiled — resolve immediately.
+				// Already compiled â€” resolve immediately.
 				rule.MatchPC = int(targetPC)
 			} else {
 				// Defer to second pass.
@@ -50,7 +50,7 @@ func (c *Compiler) compileValidateRoute(step StepConfig) error {
 	defaultNext := step.Input["default_next"]
 	if defaultNext != "" {
 		if targetPC, ok := c.FragmentMap[defaultNext]; ok {
-			// Already compiled — resolve immediately.
+			// Already compiled â€” resolve immediately.
 			defaultPC = targetPC
 		} else {
 			// Defer to second pass; ruleIdx=-1 signals DefaultPC patch.

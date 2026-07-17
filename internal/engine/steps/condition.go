@@ -1,8 +1,8 @@
-package steps
+﻿package steps
 
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"strings"
 )
 
@@ -60,8 +60,8 @@ func RetryGate(condFn ConditionFunc, loopStart, exitID int16) engine.Instruction
 
 /*
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"strconv"
 )
 

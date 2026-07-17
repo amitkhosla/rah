@@ -1,6 +1,6 @@
-package secrets
+﻿package secrets
 
-// AWS Secrets Manager provider — not yet implemented.
+// AWS Secrets Manager provider â€” not yet implemented.
 // When ready, create internal/secrets/awssm/provider.go and register it via:
 //
-//	import _ "rah/internal/secrets/awssm"
+//	import _ "github.com/amitkhosla/rah/internal/secrets/awssm"

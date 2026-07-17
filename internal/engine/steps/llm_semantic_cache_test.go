@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"context"
@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/vectorstore"
 )
 
 // mockSemanticStore is a test mock for VectorStore.

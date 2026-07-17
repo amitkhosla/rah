@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // DetectIntentConfig holds the pattern matching rules for intent detection.

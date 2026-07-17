@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -8,14 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/cache"
-	"rah/internal/config"
-	"rah/internal/engine"
-	registrypkg "rah/internal/registry"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/cache"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestSuite is a collection of test cases run in sequence sharing one test tenant.
 type TestSuite struct {
@@ -51,7 +51,7 @@ type SuiteCaseResult struct {
 	Error      string            `json:"error,omitempty"`
 }
 
-// ── Suite Runner ──────────────────────────────────────────────────────────────
+// â”€â”€ Suite Runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // runSuite executes all cases in the suite sequentially under a single isolated
 // test tenant. The tenant is registered before the first case and cleaned up
@@ -240,7 +240,7 @@ func (h *TestHandler) executeOneCase(mode string, tc TestCase, testTenantID uint
 	return cr
 }
 
-// ── HTTP Handlers ─────────────────────────────────────────────────────────────
+// â”€â”€ HTTP Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // SuitesHandler handles GET /test/suites and POST /test/suites.
 func (h *TestHandler) SuitesHandler(w http.ResponseWriter, r *http.Request) {

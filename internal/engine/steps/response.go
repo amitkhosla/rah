@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"net/url"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"strconv"
 )
 
@@ -108,7 +108,7 @@ func MapStatusStep(slot int, mappings map[int]int, defaultStatus int) engine.Ins
 // SetConstStep writes a static string value (captured at bake time) into a ByteSlot.
 // Use for injecting fixed system prompts, labels, or flags into the slot space.
 func SetConstStep(value string, slot int) engine.Instruction {
-	data := []byte(value) // captured once at bake time — zero runtime allocation
+	data := []byte(value) // captured once at bake time â€” zero runtime allocation
 	return engine.Instruction{
 		Name: "SET_CONST",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

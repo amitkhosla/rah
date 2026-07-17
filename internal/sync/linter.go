@@ -1,16 +1,16 @@
-package sync
+﻿package sync
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
 
-	"rah/internal/control"
+	"github.com/amitkhosla/rah/internal/control"
 )
 
-// Lint runs Level 0–4 checks on the loaded bundle.
+// Lint runs Level 0â€“4 checks on the loaded bundle.
 // Issues already present in result.Issues (from the loader/parser) are included
-// unchanged at the front of the returned slice — the linter appends to, never
+// unchanged at the front of the returned slice â€” the linter appends to, never
 // replaces them.
 func Lint(result LoadResult) []LintIssue {
 	issues := make([]LintIssue, len(result.Issues), len(result.Issues)+256)
@@ -23,7 +23,7 @@ func Lint(result LoadResult) []LintIssue {
 	return issues
 }
 
-// ─── Level 0: Structural checks ─────────────────────────────────────────────
+// â”€â”€â”€ Level 0: Structural checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func lintLevel0(result LoadResult) []LintIssue {
 	var issues []LintIssue
@@ -220,7 +220,7 @@ func checkStepHasAction(step control.StepConfig, flowName string, stepNum int, l
 	return issues
 }
 
-// ─── Level 1: Schema validation ──────────────────────────────────────────────
+// â”€â”€â”€ Level 1: Schema validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func lintLevel1(result LoadResult) []LintIssue {
 	descriptors := control.AllStepDescriptors()
@@ -296,11 +296,11 @@ func validateStepSchema(
 
 	// Build the set of valid input-map keys.
 	// UserFacingFields returns fields with keys in two forms:
-	//   "input.xxx"  — these correspond to Input["xxx"] in the parsed StepConfig
-	//   "input"      — the whole Input map is free-form (e.g. assign_quota_group)
+	//   "input.xxx"  â€” these correspond to Input["xxx"] in the parsed StepConfig
+	//   "input"      â€” the whole Input map is free-form (e.g. assign_quota_group)
 	//
 	// We also keep the full descriptor key for type inference via Defaults.
-	// validInputKeys: short key ("xxx") → full descriptor field key ("input.xxx")
+	// validInputKeys: short key ("xxx") â†’ full descriptor field key ("input.xxx")
 	validInputKeys := make(map[string]string)
 	freeFormInput := false
 
@@ -325,7 +325,7 @@ func validateStepSchema(
 	}
 
 	for key, val := range step.Input {
-		// Reject any _slot-suffixed key — these are internal compiler details.
+		// Reject any _slot-suffixed key â€” these are internal compiler details.
 		if IsSlotKey(key) {
 			issues = append(issues, slotKeyError(key, step.Action, flowName, stepNum, loc))
 			continue
@@ -381,8 +381,8 @@ func slotKeyError(key, action, flowName string, stepNum int, loc SourceLocation)
 // all other field types are left unconstrained.
 //
 // Type inference rules:
-//   - Defaults[fullKey] == "true" or "false" → boolean; value must be "true"/"false"
-//   - Defaults[fullKey] is a pure decimal integer → integer; value must parse as int64
+//   - Defaults[fullKey] == "true" or "false" â†’ boolean; value must be "true"/"false"
+//   - Defaults[fullKey] is a pure decimal integer â†’ integer; value must parse as int64
 func checkFieldType(fullKey, displayKey, value string, descriptor control.StepDescriptor,
 	flowName string, stepNum int, action string, loc SourceLocation,
 ) *LintIssue {
@@ -432,7 +432,7 @@ func isIntegerString(s string) bool {
 	return err == nil
 }
 
-// ─── Level 2: Reference integrity ────────────────────────────────────────────
+// â”€â”€â”€ Level 2: Reference integrity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // lintLevel2 checks that every flow name referenced by APIs and steps exists in
 // the bundle, detects flows that are defined but never reachable from any API,
@@ -441,7 +441,7 @@ func lintLevel2(result LoadResult) []LintIssue {
 	var issues []LintIssue
 	b := result.Bundle
 
-	// Build flow index: name → source location.
+	// Build flow index: name â†’ source location.
 	flowIndex := make(map[string]SourceLocation, len(b.Flows))
 	for _, flow := range b.Flows {
 		if flow.Name != "" {
@@ -449,7 +449,7 @@ func lintLevel2(result LoadResult) []LintIssue {
 		}
 	}
 
-	// Build API index: key → source location.
+	// Build API index: key â†’ source location.
 	apiIndex := make(map[string]SourceLocation, len(b.Apis))
 	for _, api := range b.Apis {
 		key := apiKey(api.Method, api.Path)
@@ -608,7 +608,7 @@ func lintStepRefs(
 	// on_miss: used by cache_get, registry_lookup, etc.
 	checkRef("on_miss", step.OnMiss)
 
-	// cases: switch-style branching — each value is a flow name.
+	// cases: switch-style branching â€” each value is a flow name.
 	for caseKey, caseFlow := range step.Cases {
 		if caseFlow == "" {
 			continue
@@ -735,14 +735,14 @@ func collectStepFlowRefs(step control.StepConfig, fn func(string)) {
 	}
 }
 
-// ─── Fuzzy matching ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Fuzzy matching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // fuzzyMatchString returns the element of candidates that is closest to target
-// (after normalisation via norm), provided the Levenshtein distance is ≤ 2.
+// (after normalisation via norm), provided the Levenshtein distance is â‰¤ 2.
 // Returns "" when no candidate qualifies.
 func fuzzyMatchString(target string, candidates []string, norm func(string) string) string {
 	best := ""
-	bestDist := 3 // only accept distance ≤ 2
+	bestDist := 3 // only accept distance â‰¤ 2
 	for _, c := range candidates {
 		if d := levenshtein(target, norm(c)); d < bestDist {
 			bestDist = d
@@ -789,7 +789,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-// ─── Level 3: Named variable analysis + cycle detection ──────────────────────
+// â”€â”€â”€ Level 3: Named variable analysis + cycle detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // lintLevel3 adds two categories of checks:
 //
@@ -822,7 +822,7 @@ func lintLevel3(result LoadResult) []LintIssue {
 		}
 	}
 
-	// Variable forward-use analysis — one flow at a time.
+	// Variable forward-use analysis â€” one flow at a time.
 	for _, flow := range b.Flows {
 		loc := result.SourceMap[flow.Name]
 		seed := apiConstants[flow.Name]
@@ -836,7 +836,7 @@ func lintLevel3(result LoadResult) []LintIssue {
 	return issues
 }
 
-// ─── Variable forward-use analysis ───────────────────────────────────────────
+// â”€â”€â”€ Variable forward-use analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // l3BuildAPIConstants collects the variable names pre-populated via API and
 // endpoint Constants maps, keyed by the flow name those constants are injected into.
@@ -877,7 +877,7 @@ func l3AnalyzeFlowVars(
 	loc SourceLocation,
 	isEntryPoint bool,
 ) []LintIssue {
-	// knownVars: variable name → step number that assigned it (0 = pre-seeded).
+	// knownVars: variable name â†’ step number that assigned it (0 = pre-seeded).
 	knownVars := make(map[string]int)
 	for v := range seed {
 		knownVars[v] = 0
@@ -1098,7 +1098,7 @@ var l3InputMapRefKeys = []string{
 	"payload_var", "model_var", "session_var",
 }
 
-// ─── Cycle detection ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Cycle detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // l3CallEdge is a directed edge in the flow call graph.
 type l3CallEdge struct {
@@ -1132,7 +1132,7 @@ func l3DetectCycles(b control.UnifiedSyncRequest, result LoadResult) []LintIssue
 		for _, edge := range graph[node] {
 			switch color[edge.Target] {
 			case 1:
-				// Back edge — cycle found. Report once per cycle root.
+				// Back edge â€” cycle found. Report once per cycle root.
 				if !reported[edge.Target] {
 					reported[edge.Target] = true
 					cycleNodes := l3ExtractCyclePath(path, edge.Target)
@@ -1225,9 +1225,9 @@ func l3ExtractCyclePath(path []string, root string) []string {
 // l3ClassifyCycle produces one lint issue that describes the detected cycle.
 //
 // Classification rules:
-//   - All edges unconditional                → Error: guaranteed infinite loop
-//   - ≥1 conditional edge + mutation in cycle → Warning: bounded recursion
-//   - ≥1 conditional edge, no mutation        → Warning: recursive call
+//   - All edges unconditional                â†’ Error: guaranteed infinite loop
+//   - â‰¥1 conditional edge + mutation in cycle â†’ Warning: bounded recursion
+//   - â‰¥1 conditional edge, no mutation        â†’ Warning: recursive call
 func l3ClassifyCycle(
 	cycleNodes []string,
 	graph map[string][]l3CallEdge,
@@ -1256,7 +1256,7 @@ func l3ClassifyCycle(
 		}
 	}
 
-	cyclePath := strings.Join(cycleNodes, " → ")
+	cyclePath := strings.Join(cycleNodes, " â†’ ")
 
 	if allUnconditional {
 		return []LintIssue{{
@@ -1265,7 +1265,7 @@ func l3ClassifyCycle(
 			File:     loc.File,
 			Line:     loc.Line,
 			Message: fmt.Sprintf(
-				"guaranteed infinite loop: %s — all call edges in this cycle are unconditional",
+				"guaranteed infinite loop: %s â€” all call edges in this cycle are unconditional",
 				cyclePath),
 			Suggestion: "add an if/condition step to guard the recursive call so the flow eventually terminates",
 		}}
@@ -1278,7 +1278,7 @@ func l3ClassifyCycle(
 			File:     loc.File,
 			Line:     loc.Line,
 			Message: fmt.Sprintf(
-				"bounded recursion pattern detected: %s — verify the exit condition is always eventually reached",
+				"bounded recursion pattern detected: %s â€” verify the exit condition is always eventually reached",
 				cyclePath),
 			Suggestion: "ensure the mutation step changes the value checked by the exit condition on every iteration",
 		}}
@@ -1290,7 +1290,7 @@ func l3ClassifyCycle(
 		File:     loc.File,
 		Line:     loc.Line,
 		Message: fmt.Sprintf(
-			"recursive call detected: %s — ensure the exit condition changes on each iteration",
+			"recursive call detected: %s â€” ensure the exit condition changes on each iteration",
 			cyclePath),
 		Suggestion: "add a state-mutation step (cache_put, set_identifier, etc.) to make progress toward the exit condition",
 	}}
@@ -1318,7 +1318,7 @@ func l3HasMutationStep(steps []control.StepConfig) bool {
 	return false
 }
 
-// ─── Level 3 utility helpers ──────────────────────────────────────────────────
+// â”€â”€â”€ Level 3 utility helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // l3CopyVarMap makes a shallow copy of a map[string]int.
 func l3CopyVarMap(m map[string]int) map[string]int {
@@ -1359,7 +1359,7 @@ func l3UnionBoolMaps(maps []map[string]bool) map[string]bool {
 	return result
 }
 
-// ─── Level 4: Advisory warnings ───────────────────────────────────────────────
+// â”€â”€â”€ Level 4: Advisory warnings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // lintLevel4 checks for common patterns that are not errors but worth warning about.
 //
@@ -1504,7 +1504,7 @@ func looksLikeSecret(s string) bool {
 	if len(s) < 20 {
 		return false
 	}
-	// URLs are never secrets — they're endpoint addresses.
+	// URLs are never secrets â€” they're endpoint addresses.
 	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
 		return false
 	}
@@ -1631,7 +1631,7 @@ func l4CheckAPI(api control.ApiUpdate, loc SourceLocation) []LintIssue {
 	return issues
 }
 
-// ─── Utilities ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func methodOrAny(method string) string {
 	if method == "" {

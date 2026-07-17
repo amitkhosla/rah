@@ -1,8 +1,8 @@
-// Package eventmanager routes cache.WriteEvents to a set of named, filterable
+﻿// Package eventmanager routes cache.WriteEvents to a set of named, filterable
 // sinks. It registers a single cache.EventHandler subscriber with one or more
 // CacheManager instances and fans events out internally.
 //
-// Dependency direction: eventmanager → cache (one-way; cache has no knowledge
+// Dependency direction: eventmanager â†’ cache (one-way; cache has no knowledge
 // of this package).
 //
 // Typical wiring at startup:
@@ -19,7 +19,7 @@
 package eventmanager
 
 import (
-	"rah/internal/cache"
+	"github.com/amitkhosla/rah/internal/cache"
 	"sync"
 )
 

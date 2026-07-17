@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // CredentialLookup resolves named credentials with optional tenant scoping.

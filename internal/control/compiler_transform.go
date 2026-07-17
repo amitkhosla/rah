@@ -1,28 +1,28 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileTransformMessages resolves slots and appends the transform_messages instruction.
 //
 // Slot mapping:
-//   - key_identifier             → historySlot (ByteSlots, in-place transform)
-//   - input["system_slot"]       → systemSlot (optional; default -1)
-//   - input["thinking_slot"]     → thinkingSlot (optional; default -1)
-//   - input["format_slot"]       → formatSlot (optional; default -1)
-//   - input["source_format"]     → sourceFormat string (used if format_slot not set)
-//   - input["target_format"]     → targetFormat string (required if format_slot not set)
-//   - input["strip_thinking"]    → bool "true"/"false"
-//   - input["extract_thinking"]  → bool "true"/"false"
-//   - input["extract_system"]    → bool "true"/"false"
-//   - input["inject_system"]     → bool "true"/"false"
-//   - input["flatten_content"]   → bool "true"/"false"
-//   - input["adapt_roles"]       → bool "true"/"false"
-//   - input["normalize_tools"]   → bool "true"/"false"
+//   - key_identifier             â†’ historySlot (ByteSlots, in-place transform)
+//   - input["system_slot"]       â†’ systemSlot (optional; default -1)
+//   - input["thinking_slot"]     â†’ thinkingSlot (optional; default -1)
+//   - input["format_slot"]       â†’ formatSlot (optional; default -1)
+//   - input["source_format"]     â†’ sourceFormat string (used if format_slot not set)
+//   - input["target_format"]     â†’ targetFormat string (required if format_slot not set)
+//   - input["strip_thinking"]    â†’ bool "true"/"false"
+//   - input["extract_thinking"]  â†’ bool "true"/"false"
+//   - input["extract_system"]    â†’ bool "true"/"false"
+//   - input["inject_system"]     â†’ bool "true"/"false"
+//   - input["flatten_content"]   â†’ bool "true"/"false"
+//   - input["adapt_roles"]       â†’ bool "true"/"false"
+//   - input["normalize_tools"]   â†’ bool "true"/"false"
 func (c *Compiler) compileTransformMessages(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

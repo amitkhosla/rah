@@ -1,13 +1,13 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
 	"testing"
 
-	"rah/internal/avro"
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/avro"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // TestCompileAvroToJSON tests avro_to_json compiler method
@@ -221,7 +221,7 @@ func TestAvroFlowEndToEnd(t *testing.T) {
 	ctx.ByteSlots = make([][]byte, 48)
 	ctx.ByteSlots[0] = origJSON
 
-	// Step 1: JSON → Avro
+	// Step 1: JSON â†’ Avro
 	encInstr, _ := newJSONToAvroStepHelper(0, 1, encProg)
 	state := &engine.ExecutionState{PC: 0}
 	encInstr.Action(ctx, state)
@@ -230,7 +230,7 @@ func TestAvroFlowEndToEnd(t *testing.T) {
 		t.Fatalf("JSON->Avro encoding failed")
 	}
 
-	// Step 2: Avro → JSON (decode what we just encoded)
+	// Step 2: Avro â†’ JSON (decode what we just encoded)
 	decInstr, _ := newAvroToJSONStepHelper(1, 2, decProg)
 	decInstr.Action(ctx, state)
 

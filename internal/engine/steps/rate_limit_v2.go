@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/binary"
@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/registry"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 var globalCounterKey = []byte("__global__")
 
-// ─── WindowSpec ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ WindowSpec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // WindowSpec describes one fixed-window within a CheckRateLimitV2 step.
 // All fields are resolved at bake time; zero runtime allocations.
@@ -27,7 +27,7 @@ type WindowSpec struct {
 	Idx      int    // windowIdx for arena slot disambiguation (unique per config)
 }
 
-// ─── TokenBucketSpec ──────────────────────────────────────────────────────────
+// â”€â”€â”€ TokenBucketSpec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TokenBucketSpec holds the bake-time-resolved parameters for V2 token bucket mode.
 // The slot index is derived from configSeed XOR a hash of the counter key, so each
@@ -35,11 +35,11 @@ type WindowSpec struct {
 type TokenBucketSpec struct {
 	Rate       uint32                // tokens refilled per second
 	Burst      uint32                // maximum token capacity (also the initial fill)
-	Store      *engine.CounterStore  // shared arena — must not be nil
+	Store      *engine.CounterStore  // shared arena â€” must not be nil
 	ConfigSeed uint32                // hashed from configID to namespace slots per config
 }
 
-// ─── CheckRateLimitV2 ─────────────────────────────────────────────────────────
+// â”€â”€â”€ CheckRateLimitV2 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // CheckRateLimitV2 applies a V2 multi-window rate limit against the current
 // request. All configuration is resolved at bake time and captured in the struct.
@@ -52,7 +52,7 @@ type TokenBucketSpec struct {
 //   - RemoteRL         when non-nil, routes counter checks to a distributed backend (strict mode).
 //   - ConfigName       used as Redis key prefix in the distributed path.
 //   - WeightIntSlot    is the IntSlots index for token count weight (-1 = disabled, use delta=1).
-//   - QuotaGroupFilter when non-zero, this instruction is skipped (→ NextPC) unless
+//   - QuotaGroupFilter when non-zero, this instruction is skipped (â†’ NextPC) unless
 //     ctx.QuotaGroupID matches. Used for dynamic dispatch: each group gets its own
 //     guarded CheckRateLimitV2 instruction emitted by the compiler.
 type CheckRateLimitV2 struct {
@@ -75,7 +75,7 @@ type CheckRateLimitV2 struct {
 
 // Execute implements the engine.Step interface.
 func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-	// ── Layer 1: tenant-wide block / RL-disabled flags ───────────────────────
+	// â”€â”€ Layer 1: tenant-wide block / RL-disabled flags â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	reg := registry.State.Active.Load()
 	var scalePct int16
 	if reg != nil && int(ctx.TenantID) < len(reg.TenantModifiers) {
@@ -90,7 +90,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		scalePct = mod.ScalePct // Layer 4: global per-tenant scale
 	}
 
-	// ── Layer 2: per-tenant per-config V2 override (sparse table) ───────────
+	// â”€â”€ Layer 2: per-tenant per-config V2 override (sparse table) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	var windowLimits []uint32
 	if ov, ok := registry.LookupV2Override(reg, ctx.TenantID, s.ConfigID); ok {
 		if ov.Flags&registry.V2ConfigBlocked != 0 {
@@ -106,17 +106,17 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		windowLimits = ov.WindowLimits
 	}
 
-	// ── Quota group filter (dynamic dispatch) ────────────────────────────────
+	// â”€â”€ Quota group filter (dynamic dispatch) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if s.QuotaGroupFilter != 0 && ctx.QuotaGroupID != s.QuotaGroupFilter {
 		return int16(s.NextPC)
 	}
 
-	// ── Token bucket fast path (mutually exclusive with fixed-window path) ───
+	// â”€â”€ Token bucket fast path (mutually exclusive with fixed-window path) â”€â”€â”€
 	if s.TBucket != nil {
 		return s.executeTokenBucket(ctx)
 	}
 
-	// ── Derive the counter key ───────────────────────────────────────────────
+	// â”€â”€ Derive the counter key â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	keyBytes, useTenant := s.resolveKey(ctx)
 	if keyBytes == nil && !useTenant {
 		// resolveKey signals "deny" by returning (nil, false).
@@ -124,7 +124,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		return int16(s.DeniedPC)
 	}
 
-	// ── Layer 3: resolve effective multiplier ────────────────────────────────
+	// â”€â”€ Layer 3: resolve effective multiplier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	// ScalePct (int16): +50 = 150%, -25 = 75%, 0 = no change (100%).
 	// Layer 2 config-scoped scale takes priority over Layer 4 global scale.
 	var mult uint32 = 100
@@ -137,7 +137,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		}
 	}
 
-	// ── 4. Resolve delta: token-count weight from a slot, or 1 for plain request counting.
+	// â”€â”€ 4. Resolve delta: token-count weight from a slot, or 1 for plain request counting.
 	delta := uint32(1)
 	if s.WeightIntSlot >= 0 && s.WeightIntSlot < len(ctx.IntSlots) {
 		if v := ctx.IntSlots[s.WeightIntSlot]; v > 0 {
@@ -145,7 +145,7 @@ func (s *CheckRateLimitV2) Execute(ctx *rctx.Context, state *engine.ExecutionSta
 		}
 	}
 
-	// ── 5. Dispatch to local or distributed counter path ─────────────────────
+	// â”€â”€ 5. Dispatch to local or distributed counter path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	var denied bool
 	if s.RemoteRL != nil {
 		denied = s.executeDistributed(ctx, keyBytes, useTenant, mult, delta, windowLimits)
@@ -194,13 +194,13 @@ func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useT
 		if useTenant {
 			arena := reg.TenantArena(s.ConfigID)
 			if arena == nil {
-				continue // arena not registered — allow safely
+				continue // arena not registered â€” allow safely
 			}
 			allowed, _ = arena.IncrementBy(ctx.TenantID, w.Idx, epoch, limit, delta)
 		} else {
 			arena := reg.SlotArena(s.ConfigID)
 			if arena == nil {
-				continue // arena not registered — allow safely
+				continue // arena not registered â€” allow safely
 			}
 			allowed, _ = arena.IncrementBy(keyBytes, w.Idx, epoch, limit, delta)
 		}
@@ -220,7 +220,7 @@ func (s *CheckRateLimitV2) executeLocal(ctx *rctx.Context, keyBytes []byte, useT
 // Returns true if any window is exceeded (denied), false if all pass.
 // Fail-open: RedisRateLimitProvider.Check already returns (true, limit) on error/timeout.
 func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte, useTenant bool, mult, delta uint32, windowLimits []uint32) bool {
-	// Build the key identifier once — either decimal TenantID or hex key bytes.
+	// Build the key identifier once â€” either decimal TenantID or hex key bytes.
 	var keyID string
 	if useTenant {
 		var buf [24]byte
@@ -262,9 +262,9 @@ func (s *CheckRateLimitV2) executeDistributed(ctx *rctx.Context, keyBytes []byte
 
 // resolveKey derives the counter key bytes from the request context.
 //
-// Returns (nil, true)  → use TenantCounterArena with ctx.TenantID.
-// Returns (key, false) → use SlotCounterArena with the returned key bytes.
-// Returns (nil, false) → deny the request (OnEmptyFail with empty key).
+// Returns (nil, true)  â†’ use TenantCounterArena with ctx.TenantID.
+// Returns (key, false) â†’ use SlotCounterArena with the returned key bytes.
+// Returns (nil, false) â†’ deny the request (OnEmptyFail with empty key).
 // executeTokenBucket handles the token_bucket enforcement path.
 // It derives a stable arena slot from the ConfigSeed XOR a hash of the counter
 // key, then delegates to CounterStore.TokenBucket which uses [LastUpdate:32 | Tokens:32].
@@ -307,7 +307,7 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 	cb := &s.CountBy
 	switch cb.Kind {
 	case engine.CountByTenant:
-		return nil, true // direct TenantID index — no key bytes needed
+		return nil, true // direct TenantID index â€” no key bytes needed
 
 	case engine.CountByGlobal:
 		return globalCounterKey, false
@@ -316,7 +316,7 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 		return cb.StaticKey, false
 
 	case engine.CountByIP:
-		// Extract IP directly from the request — XFFIndex selects the XFF entry.
+		// Extract IP directly from the request â€” XFFIndex selects the XFF entry.
 		ip := ipFromXFF(ctx.Request.Header.Get("X-Forwarded-For"), cb.XFFIndex)
 		if ip == "" {
 			ip = strings.TrimSpace(ctx.Request.Header.Get("X-Real-IP"))
@@ -350,7 +350,7 @@ func (s *CheckRateLimitV2) resolveKey(ctx *rctx.Context) ([]byte, bool) {
 		return key, false
 
 	default:
-		return nil, true // unknown kind — fall back to tenant
+		return nil, true // unknown kind â€” fall back to tenant
 	}
 }
 
@@ -361,10 +361,10 @@ func (s *CheckRateLimitV2) handleEmpty(_ *rctx.Context, key []byte) ([]byte, boo
 	}
 	switch s.CountBy.OnEmpty {
 	case engine.OnEmptyKeySkip:
-		// Signal "skip" by returning a non-nil sentinel — caller must handle.
+		// Signal "skip" by returning a non-nil sentinel â€” caller must handle.
 		// We encode skip as returning NextPC; simplest: return a special pair.
 		// Instead, we return a special marker via the bool=true path.
-		return nil, true // treat as tenant — effectively skip to tenant bucket
+		return nil, true // treat as tenant â€” effectively skip to tenant bucket
 	case engine.OnEmptyKeyTenant:
 		return nil, true // fall back to tenant
 	default: // OnEmptyKeyFail
@@ -411,8 +411,8 @@ func buildCompositeKey(ctx *rctx.Context, indexes []int) []byte {
 	return buf[:pos]
 }
 
-// applyMultiplier scales limit by a fixed-point multiplier (×100 encoding).
-// multiplier == 0 or 100 → identity. Result clamped to [1, 0xFFFFFFFF].
+// applyMultiplier scales limit by a fixed-point multiplier (Ã—100 encoding).
+// multiplier == 0 or 100 â†’ identity. Result clamped to [1, 0xFFFFFFFF].
 func applyMultiplier(limit uint32, multiplier uint32) uint32 {
 	if multiplier == 0 || multiplier == 100 {
 		return limit
@@ -427,9 +427,9 @@ func applyMultiplier(limit uint32, multiplier uint32) uint32 {
 	return uint32(v)
 }
 
-// ─── SetRateLimitHeaders ──────────────────────────────────────────────────────
+// â”€â”€â”€ SetRateLimitHeaders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// Pre-allocated header name byte slices — never mutated after init.
+// Pre-allocated header name byte slices â€” never mutated after init.
 var (
 	defaultLimitHeader     = []byte("X-RateLimit-Limit")
 	defaultRemainingHeader = []byte("X-RateLimit-Remaining")
@@ -442,7 +442,7 @@ var (
 //
 //   - LimitHeader / RemainingHeader / ResetHeader: override default names.
 //   - WindowEpochDiv: the reference window size in seconds (for Reset calc).
-//   - Limit: the effective base limit (before multiplier — headers show base).
+//   - Limit: the effective base limit (before multiplier â€” headers show base).
 //   - NextPC: absolute PC to jump to after emitting headers.
 type SetRateLimitHeaders struct {
 	LimitHeader     string // default "X-RateLimit-Limit"
@@ -480,7 +480,7 @@ func (s *SetRateLimitHeaders) Execute(ctx *rctx.Context, state *engine.Execution
 	ctx.SetResponseHeader(limitKey, fmtUint32v2(ctx, s.Limit))
 	ctx.SetResponseHeader(resetKey, fmtUint32v2(ctx, resetAt))
 
-	// Remaining is stored in IntSlots[0] by convention — emit if present.
+	// Remaining is stored in IntSlots[0] by convention â€” emit if present.
 	var remaining uint32
 	if len(ctx.IntSlots) > 0 && ctx.IntSlots[0] >= 0 {
 		remaining = uint32(ctx.IntSlots[0])
@@ -499,14 +499,14 @@ func fmtUint32v2(ctx *rctx.Context, v uint32) []byte {
 // ParseWindowDuration converts a human-readable duration string to seconds (EpochDiv).
 // Accepted formats (case-insensitive):
 //
-//	Ns / Nsec / Nsecond(s)  → N seconds
-//	Nm / Nmin / Nminute(s)  → N*60
-//	Nh / Nhr  / Nhour(s)    → N*3600
-//	Nd / Nday(s)            → N*86400
-//	Nw / Nweek(s)           → N*604800
-//	Nmo / Nmonth(s)         → N*2592000  (fixed 30-day window)
-//	Ny / Nyr / Nyear(s)     → N*31536000
-//	Raw integer string       → parsed directly as seconds (backward compat)
+//	Ns / Nsec / Nsecond(s)  â†’ N seconds
+//	Nm / Nmin / Nminute(s)  â†’ N*60
+//	Nh / Nhr  / Nhour(s)    â†’ N*3600
+//	Nd / Nday(s)            â†’ N*86400
+//	Nw / Nweek(s)           â†’ N*604800
+//	Nmo / Nmonth(s)         â†’ N*2592000  (fixed 30-day window)
+//	Ny / Nyr / Nyear(s)     â†’ N*31536000
+//	Raw integer string       â†’ parsed directly as seconds (backward compat)
 //
 // Returns an error if the string is empty or unparseable.
 func ParseWindowDuration(s string) (uint32, error) {

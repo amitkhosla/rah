@@ -1,19 +1,19 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/datastore"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileAppendMessage resolves and appends the append_message instruction.
 //
-// step.KeyIdentifier         → historySlot (ByteSlots, in-place modification)
-// step.As                    → contentSlot (ByteSlots)
-// step.Input["role"]         → "user" | "assistant" (default "user")
-// step.Input["max_turns"]    → int (default 0 = unlimited)
+// step.KeyIdentifier         â†’ historySlot (ByteSlots, in-place modification)
+// step.As                    â†’ contentSlot (ByteSlots)
+// step.Input["role"]         â†’ "user" | "assistant" (default "user")
+// step.Input["max_turns"]    â†’ int (default 0 = unlimited)
 func (c *Compiler) compileAppendMessage(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -45,9 +45,9 @@ func (c *Compiler) compileAppendMessage(step StepConfig) error {
 
 // compileTrimHistory resolves and appends the trim_history instruction.
 //
-// step.KeyIdentifier         → historySlot (ByteSlots, in-place modification)
-// step.Input["max_turns"]    → int (default 0 = unlimited)
-// step.Input["max_tokens"]   → int (default 0 = unlimited)
+// step.KeyIdentifier         â†’ historySlot (ByteSlots, in-place modification)
+// step.Input["max_turns"]    â†’ int (default 0 = unlimited)
+// step.Input["max_tokens"]   â†’ int (default 0 = unlimited)
 func (c *Compiler) compileTrimHistory(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -74,9 +74,9 @@ func (c *Compiler) compileTrimHistory(step StepConfig) error {
 
 // compileLoadHistory resolves and appends the load_history instruction.
 //
-// step.KeyIdentifier         → historySlot (ByteSlots, write target)
-// step.As                    → keySlot (ByteSlots, conversation key)
-// step.Input["domain"]       → datastore domain name (required)
+// step.KeyIdentifier         â†’ historySlot (ByteSlots, write target)
+// step.As                    â†’ keySlot (ByteSlots, conversation key)
+// step.Input["domain"]       â†’ datastore domain name (required)
 func (c *Compiler) compileLoadHistory(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -103,10 +103,10 @@ func (c *Compiler) compileLoadHistory(step StepConfig) error {
 
 // compileSaveHistory resolves and appends the save_history instruction.
 //
-// step.KeyIdentifier         → historySlot (ByteSlots, read source)
-// step.As                    → keySlot (ByteSlots, conversation key)
-// step.Input["domain"]       → datastore domain name (required)
-// step.Input["ttl_secs"]     → int (default 0 = no TTL)
+// step.KeyIdentifier         â†’ historySlot (ByteSlots, read source)
+// step.As                    â†’ keySlot (ByteSlots, conversation key)
+// step.Input["domain"]       â†’ datastore domain name (required)
+// step.Input["ttl_secs"]     â†’ int (default 0 = no TTL)
 func (c *Compiler) compileSaveHistory(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

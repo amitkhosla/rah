@@ -1,13 +1,13 @@
-package steps
+﻿package steps
 
-// network.go — steps that extract network-level metadata from the request.
+// network.go â€” steps that extract network-level metadata from the request.
 
 import (
 	"net"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // BindClientIP extracts the real client IP address and stores it in destSlot.
@@ -18,10 +18,10 @@ import (
 //   N  = Nth entry (0-based); if out of range, falls through to X-Real-IP / RemoteAddr
 //
 // Resolution order (first non-empty result wins):
-//  1. X-Forwarded-For header — entry selected by xffIndex.
+//  1. X-Forwarded-For header â€” entry selected by xffIndex.
 //     Trusted only when the gateway is behind a known reverse proxy.
-//  2. X-Real-IP header — set by nginx and similar proxies.
-//  3. RemoteAddr — the raw TCP peer address (always present; may be the proxy).
+//  2. X-Real-IP header â€” set by nginx and similar proxies.
+//  3. RemoteAddr â€” the raw TCP peer address (always present; may be the proxy).
 //
 // The stored value is an IP string with no port (e.g. "203.0.113.42").
 // If extraction fails for all three sources, the slot is left unchanged.
@@ -56,7 +56,7 @@ func BindClientIP(destSlot int, xffIndex int) engine.Instruction {
 }
 
 // ipFromXFF returns the IP at xffIndex from a comma-separated X-Forwarded-For value.
-// xffIndex=0 → first (leftmost), xffIndex=-1 → last (rightmost), xffIndex=N → Nth entry.
+// xffIndex=0 â†’ first (leftmost), xffIndex=-1 â†’ last (rightmost), xffIndex=N â†’ Nth entry.
 // Returns "" if the header is empty or the index is out of range.
 func ipFromXFF(header string, xffIndex int) string {
 	if header == "" {
@@ -65,7 +65,7 @@ func ipFromXFF(header string, xffIndex int) string {
 	parts := strings.Split(header, ",")
 	idx := xffIndex
 	if idx < 0 {
-		idx = len(parts) + idx // -1 → last
+		idx = len(parts) + idx // -1 â†’ last
 	}
 	if idx < 0 || idx >= len(parts) {
 		return ""

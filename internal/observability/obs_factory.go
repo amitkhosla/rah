@@ -1,11 +1,11 @@
-package observability
+﻿package observability
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
-	"rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // ObsStoreParams holds the resolved parameters for creating an ObsStore.

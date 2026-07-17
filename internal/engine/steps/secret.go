@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // SecretLoader is the subset of secrets.Resolver used by this package.
@@ -19,7 +19,7 @@ type SecretLoader interface {
 //
 // The resolved value is served from the secrets manager's in-memory cache
 // after the first fetch, so per-request overhead is a cache lookup (~RLock +
-// map read + slice copy) — not a network call.
+// map read + slice copy) â€” not a network call.
 //
 // On resolution failure the request is aborted with HTTP 500. Use this step
 // only for secrets that must be present for the flow to function correctly

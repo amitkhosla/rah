@@ -1,24 +1,24 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
-	"rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/vectorstore"
 )
 
 // compileVectorSearch handles the "vector_search" step type.
 //
 // StepConfig fields:
-//   - key_identifier              → vectorSlot (query vector JSON from embed_text)
-//   - as                          → resultSlot ([]SearchResult JSON output)
-//   - input["store"]              → named VectorStore (resolved from Compiler.VectorStores)
-//   - input["collection"]         → default collection name (fallback)
-//   - input["collection_slot"]    → optional slot name holding the collection at runtime
-//   - input["top_k"]              → max results to return (default 5)
-//   - input["min_score"]          → minimum similarity score 0.0–1.0 (default 0)
-//   - input["count_slot"]         → optional IntSlot index for result count output
+//   - key_identifier              â†’ vectorSlot (query vector JSON from embed_text)
+//   - as                          â†’ resultSlot ([]SearchResult JSON output)
+//   - input["store"]              â†’ named VectorStore (resolved from Compiler.VectorStores)
+//   - input["collection"]         â†’ default collection name (fallback)
+//   - input["collection_slot"]    â†’ optional slot name holding the collection at runtime
+//   - input["top_k"]              â†’ max results to return (default 5)
+//   - input["min_score"]          â†’ minimum similarity score 0.0â€“1.0 (default 0)
+//   - input["count_slot"]         â†’ optional IntSlot index for result count output
 func (c *Compiler) compileVectorSearch(step StepConfig) error {
 	vectorSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -84,13 +84,13 @@ func (c *Compiler) compileVectorSearch(step StepConfig) error {
 // compileVectorUpsert handles the "vector_upsert" step type.
 //
 // StepConfig fields:
-//   - key_identifier              → vectorSlot (embedding vector JSON)
-//   - input["store"]              → named VectorStore
-//   - input["collection"]         → default collection name
-//   - input["collection_slot"]    → optional slot name holding collection at runtime
-//   - input["content_slot"]       → slot name holding the text chunk to index
-//   - input["id_slot"]            → optional slot name holding the item ID (-1 = auto sha256)
-//   - input["metadata_slot"]      → optional slot name holding JSON metadata object
+//   - key_identifier              â†’ vectorSlot (embedding vector JSON)
+//   - input["store"]              â†’ named VectorStore
+//   - input["collection"]         â†’ default collection name
+//   - input["collection_slot"]    â†’ optional slot name holding collection at runtime
+//   - input["content_slot"]       â†’ slot name holding the text chunk to index
+//   - input["id_slot"]            â†’ optional slot name holding the item ID (-1 = auto sha256)
+//   - input["metadata_slot"]      â†’ optional slot name holding JSON metadata object
 func (c *Compiler) compileVectorUpsert(step StepConfig) error {
 	vectorSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

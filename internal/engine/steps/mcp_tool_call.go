@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // MCPCallConfig configures a call_mcp_tool instruction (static tool name variant).
@@ -48,8 +48,8 @@ type mcpToolCallResponse struct {
 //  1. Reads arguments from ctx.ByteSlots[cfg.InputSlot] (default {} if empty or -1)
 //  2. Validates arguments as a valid JSON object
 //  3. Posts JSON-RPC 2.0 tools/call to cfg.Server.URL
-//  4. On JSON-RPC error or isError:true → sets 502 + StopPlan
-//  5. On success → concatenates all text-type content blocks and writes to ResultSlot
+//  4. On JSON-RPC error or isError:true â†’ sets 502 + StopPlan
+//  5. On success â†’ concatenates all text-type content blocks and writes to ResultSlot
 func MCPToolCall(cfg MCPCallConfig) engine.Instruction {
 	timeoutMs := cfg.TimeoutMs
 	if timeoutMs <= 0 {

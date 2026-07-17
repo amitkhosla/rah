@@ -1,27 +1,27 @@
-package steps
+﻿package steps
 
 import (
 	"strconv"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // CurrentTimestampStep stores the current time into ByteSlots[slot] as ASCII bytes.
 //
 // Formats:
-//   - "unix_s"   — seconds since epoch  (e.g. "1748477823")
-//   - "unix_ms"  — milliseconds          (e.g. "1748477823451")
-//   - "unix_ns"  — nanoseconds           (e.g. "1748477823451000000")
-//   - "rfc3339"  — "2006-01-02T15:04:05Z" (UTC)
-//   - ""         — defaults to "unix_ms"
+//   - "unix_s"   â€” seconds since epoch  (e.g. "1748477823")
+//   - "unix_ms"  â€” milliseconds          (e.g. "1748477823451")
+//   - "unix_ns"  â€” nanoseconds           (e.g. "1748477823451000000")
+//   - "rfc3339"  â€” "2006-01-02T15:04:05Z" (UTC)
+//   - ""         â€” defaults to "unix_ms"
 //
 // nowSec is optional: when non-nil it is called for "unix_s" instead of
 // time.Now(), reusing the CacheManager's coarse clock (one atomic load, ~1 ns).
 // For all other formats time.Now() is called once (~20 ns).
 //
-// Output bytes are allocated from the request arena — zero heap allocation.
+// Output bytes are allocated from the request arena â€” zero heap allocation.
 func CurrentTimestampStep(slot int, format string, nowSec func() uint32) engine.Instruction {
 	if format == "" {
 		format = "unix_ms"

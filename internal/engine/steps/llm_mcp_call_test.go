@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -7,11 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func newMCPCallTestContext() *rctx.Context {
 	ctx := &rctx.Context{}
@@ -53,11 +53,11 @@ func writeMCPCallErrorResp(w http.ResponseWriter, code int, message string) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// ── TestMCPCallTool_Success ───────────────────────────────────────────────────
+// â”€â”€ TestMCPCallTool_Success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_Success(t *testing.T) {
 	content := []map[string]any{
-		{"type": "text", "text": "The weather in Paris is sunny, 22°C."},
+		{"type": "text", "text": "The weather in Paris is sunny, 22Â°C."},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify the request is a proper JSON-RPC tools/call.
@@ -107,7 +107,7 @@ func TestMCPCallTool_Success(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_EmptyToolName_Skips ───────────────────────────────────────
+// â”€â”€ TestMCPCallTool_EmptyToolName_Skips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_EmptyToolName_Skips(t *testing.T) {
 	callCount := 0
@@ -118,7 +118,7 @@ func TestMCPCallTool_EmptyToolName_Skips(t *testing.T) {
 	defer srv.Close()
 
 	ctx := newMCPCallTestContext()
-	// ToolNameSlot (0) is empty — no tool name set.
+	// ToolNameSlot (0) is empty â€” no tool name set.
 
 	cfg := MCPCallToolConfig{
 		ServerURL:    srv.URL,
@@ -144,7 +144,7 @@ func TestMCPCallTool_EmptyToolName_Skips(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_EmptyArgs_UsesEmptyObject ─────────────────────────────────
+// â”€â”€ TestMCPCallTool_EmptyArgs_UsesEmptyObject â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_EmptyArgs_UsesEmptyObject(t *testing.T) {
 	var receivedArgs json.RawMessage
@@ -160,7 +160,7 @@ func TestMCPCallTool_EmptyArgs_UsesEmptyObject(t *testing.T) {
 
 	ctx := newMCPCallTestContext()
 	ctx.ByteSlots[0] = []byte("list_files")
-	// ArgsSlot (1) is empty — should default to {}.
+	// ArgsSlot (1) is empty â€” should default to {}.
 
 	cfg := MCPCallToolConfig{
 		ServerURL:    srv.URL,
@@ -186,7 +186,7 @@ func TestMCPCallTool_EmptyArgs_UsesEmptyObject(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_InvalidJSONArgs_Returns400 ────────────────────────────────
+// â”€â”€ TestMCPCallTool_InvalidJSONArgs_Returns400 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_InvalidJSONArgs_Returns400(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +220,7 @@ func TestMCPCallTool_InvalidJSONArgs_Returns400(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_JSONRPCError_Returns502 ───────────────────────────────────
+// â”€â”€ TestMCPCallTool_JSONRPCError_Returns502 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_JSONRPCError_Returns502(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +253,7 @@ func TestMCPCallTool_JSONRPCError_Returns502(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_429Retry_ThenSuccess ─────────────────────────────────────
+// â”€â”€ TestMCPCallTool_429Retry_ThenSuccess â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_429Retry_ThenSuccess(t *testing.T) {
 	var callCount atomic.Int32
@@ -303,7 +303,7 @@ func TestMCPCallTool_429Retry_ThenSuccess(t *testing.T) {
 	}
 }
 
-// ── TestMCPCallTool_503AllRetries_Returns502 ──────────────────────────────────
+// â”€â”€ TestMCPCallTool_503AllRetries_Returns502 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPCallTool_503AllRetries_Returns502(t *testing.T) {
 	var callCount atomic.Int32

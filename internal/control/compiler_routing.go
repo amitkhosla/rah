@@ -1,23 +1,23 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"rah/internal/config"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileRouteLLM resolves and appends the route_llm instruction.
 // It evaluates rules at runtime to select the best model slug and writes it to
 // the result slot, which a subsequent llm_call (with model_slot) will consume.
 //
-// step.As         → result slot (ByteSlots) for the selected model slug
-// step.Input["rules"]       → JSON array of {condition, model} objects
-// step.Input["default"]     → fallback model slug if no rule matches
-// step.Input["token_slot"]  → slot name holding token estimate (IntSlots); optional
-// step.Input["meta_slot"]   → slot name holding tenant meta value (ByteSlots); optional
+// step.As         â†’ result slot (ByteSlots) for the selected model slug
+// step.Input["rules"]       â†’ JSON array of {condition, model} objects
+// step.Input["default"]     â†’ fallback model slug if no rule matches
+// step.Input["token_slot"]  â†’ slot name holding token estimate (IntSlots); optional
+// step.Input["meta_slot"]   â†’ slot name holding tenant meta value (ByteSlots); optional
 func (c *Compiler) compileRouteLLM(step StepConfig) error {
 	resultSlot, err := c.getSlot(step.As)
 	if err != nil {

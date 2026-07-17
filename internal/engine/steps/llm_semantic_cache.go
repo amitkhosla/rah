@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -13,14 +13,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/vectorstore"
 )
 
 // semanticCacheClientCache pools HTTP clients by endpoint
 var (
-	semanticCacheClientCache sync.Map // key: endpoint string → *http.Client
+	semanticCacheClientCache sync.Map // key: endpoint string â†’ *http.Client
 	semanticCacheClientCount atomic.Int64
 )
 
@@ -126,7 +126,7 @@ func SemanticCacheGet(cfg SemanticCacheGetConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.EmbedCfg.Provider, cfg.EmbedCfg.BaseURL, cfg.EmbedCfg.Model)
 	if endpoint == "" {
-		// Misconfiguration — return poisoned instruction that always treats as miss
+		// Misconfiguration â€” return poisoned instruction that always treats as miss
 		return engine.Instruction{
 			Name: "semantic_cache_get[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
@@ -330,7 +330,7 @@ func SemanticCachePut(cfg SemanticCachePutConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.EmbedCfg.Provider, cfg.EmbedCfg.BaseURL, cfg.EmbedCfg.Model)
 	if endpoint == "" {
-		// Misconfiguration — return no-op instruction
+		// Misconfiguration â€” return no-op instruction
 		return engine.Instruction{
 			Name: "semantic_cache_put[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

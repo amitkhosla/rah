@@ -1,15 +1,15 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // CheckContextFitConfig holds all bake-time parameters for the check_context_fit step.
 type CheckContextFitConfig struct {
-	// Input slots — each is optional (-1 = not used)
+	// Input slots â€” each is optional (-1 = not used)
 	PromptSlot  int // ByteSlots: current user message text or JSON messages array
 	SystemSlot  int // ByteSlots: system prompt text
 	HistorySlot int // ByteSlots: JSON-encoded []CanonicalMessage history
@@ -28,7 +28,7 @@ type CheckContextFitConfig struct {
 // CheckContextFit returns an Instruction that estimates total token usage across
 // the configured slots and compares it against the model's context budget.
 //
-// It never stops the flow — callers use the FitsSlot / OverflowSlot values in a
+// It never stops the flow â€” callers use the FitsSlot / OverflowSlot values in a
 // subsequent if/switch step to decide what to do with an overflow.
 func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 	return engine.Instruction{
@@ -36,19 +36,19 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			total := 0
 
-			// ── PromptSlot ────────────────────────────────────────────────────────
+			// â”€â”€ PromptSlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			if cfg.PromptSlot >= 0 && cfg.PromptSlot < len(ctx.ByteSlots) {
 				slot := ctx.ByteSlots[cfg.PromptSlot]
 				if len(slot) > 0 {
 					if slot[0] == '[' {
-						// Looks like a JSON messages array — decode and sum per message.
+						// Looks like a JSON messages array â€” decode and sum per message.
 						var msgs []CanonicalMessage
 						if err := json.Unmarshal(slot, &msgs); err == nil {
 							for _, m := range msgs {
 								total += estimateTokens(m.Content) + 4
 							}
 						} else {
-							// Malformed JSON — fall back to plain-text estimate.
+							// Malformed JSON â€” fall back to plain-text estimate.
 							total += estimateTokens(string(slot))
 						}
 					} else {
@@ -57,7 +57,7 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 				}
 			}
 
-			// ── SystemSlot ────────────────────────────────────────────────────────
+			// â”€â”€ SystemSlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			if cfg.SystemSlot >= 0 && cfg.SystemSlot < len(ctx.ByteSlots) {
 				slot := ctx.ByteSlots[cfg.SystemSlot]
 				if len(slot) > 0 {
@@ -65,7 +65,7 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 				}
 			}
 
-			// ── HistorySlot ───────────────────────────────────────────────────────
+			// â”€â”€ HistorySlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			if cfg.HistorySlot >= 0 && cfg.HistorySlot < len(ctx.ByteSlots) {
 				slot := ctx.ByteSlots[cfg.HistorySlot]
 				if len(slot) > 0 {
@@ -80,7 +80,7 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 				}
 			}
 
-			// ── ToolsSlot ─────────────────────────────────────────────────────────
+			// â”€â”€ ToolsSlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			if cfg.ToolsSlot >= 0 && cfg.ToolsSlot < len(ctx.ByteSlots) {
 				slot := ctx.ByteSlots[cfg.ToolsSlot]
 				if len(slot) > 0 {
@@ -88,7 +88,7 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 				}
 			}
 
-			// ── Budget check ──────────────────────────────────────────────────────
+			// â”€â”€ Budget check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			fits := true
 			overflow := 0
 
@@ -103,7 +103,7 @@ func CheckContextFit(cfg CheckContextFitConfig) engine.Instruction {
 				fits = overflow == 0
 			}
 
-			// ── Write outputs ─────────────────────────────────────────────────────
+			// â”€â”€ Write outputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			if cfg.FitsSlot >= 0 && cfg.FitsSlot < len(ctx.BoolSlots) {
 				ctx.BoolSlots[cfg.FitsSlot] = fits
 			}

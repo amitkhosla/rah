@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"fmt"
@@ -8,21 +8,21 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"rah/internal/avro"
-	"rah/internal/engine"
-	grpcutil "rah/internal/grpc"
-	"rah/internal/rctx"
-	"rah/internal/transcode"
+	"github.com/amitkhosla/rah/internal/avro"
+	"github.com/amitkhosla/rah/internal/engine"
+	grpcutil "github.com/amitkhosla/rah/internal/grpc"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/transcode"
 )
 
-// ── avro_to_proto ─────────────────────────────────────────────────────────────
+// â”€â”€ avro_to_proto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // AvroToProtoConvertConfig holds the state for the avro_to_proto instruction.
-// Multi-hop: Avro binary → JSON (pivot) → Proto binary.
+// Multi-hop: Avro binary â†’ JSON (pivot) â†’ Proto binary.
 type AvroToProtoConvertConfig struct {
 	SrcSlot        int                            // source ByteSlot (Avro binary)
 	DstSlot        int                            // destination ByteSlot (Proto binary)
-	DecProg        *avro.AvroProgram              // decode Avro → JSON
+	DecProg        *avro.AvroProgram              // decode Avro â†’ JSON
 	MsgDesc        protoreflect.MessageDescriptor // proto message descriptor
 	MsgPool        *grpcutil.ProtoMsgPool         // pooled dynamic messages
 	MarshalBufPool *sync.Pool                     // *[]byte pool for proto marshal scratch
@@ -32,7 +32,7 @@ type AvroToProtoConvertConfig struct {
 func (cfg *AvroToProtoConvertConfig) Action(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 	src := ctx.ByteSlots[cfg.SrcSlot]
 
-	// Step 1: Avro → JSON into pivot buffer
+	// Step 1: Avro â†’ JSON into pivot buffer
 	pivot := transcode.GetPivot()
 	defer transcode.PutPivot(pivot)
 
@@ -43,7 +43,7 @@ func (cfg *AvroToProtoConvertConfig) Action(ctx *rctx.Context, state *engine.Exe
 		return state.PC + 1
 	}
 
-	// Step 2: JSON → proto dynamic message
+	// Step 2: JSON â†’ proto dynamic message
 	msg := cfg.MsgPool.Get()
 	defer cfg.MsgPool.Put(msg)
 
@@ -105,16 +105,16 @@ func NewAvroToProtoStep(srcSlot, dstSlot int, decProg *avro.AvroProgram,
 	}, nil
 }
 
-// ── proto_to_avro ─────────────────────────────────────────────────────────────
+// â”€â”€ proto_to_avro â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // ProtoToAvroConvertConfig holds the state for the proto_to_avro instruction.
-// Multi-hop: Proto binary → JSON (pivot) → Avro binary.
+// Multi-hop: Proto binary â†’ JSON (pivot) â†’ Avro binary.
 type ProtoToAvroConvertConfig struct {
 	SrcSlot     int                            // source ByteSlot (Proto binary)
 	DstSlot     int                            // destination ByteSlot (Avro binary)
 	MsgDesc     protoreflect.MessageDescriptor // proto message descriptor
 	MsgPool     *grpcutil.ProtoMsgPool         // pooled dynamic messages
-	EncProg     *avro.AvroProgram              // encode JSON → Avro
+	EncProg     *avro.AvroProgram              // encode JSON â†’ Avro
 	ScratchPool *sync.Pool                     // *[]byte pool for avro encode scratch
 }
 
@@ -122,7 +122,7 @@ type ProtoToAvroConvertConfig struct {
 func (cfg *ProtoToAvroConvertConfig) Action(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 	src := ctx.ByteSlots[cfg.SrcSlot]
 
-	// Step 1: Proto binary → JSON via pivot buffer
+	// Step 1: Proto binary â†’ JSON via pivot buffer
 	pivot := transcode.GetPivot()
 	defer transcode.PutPivot(pivot)
 
@@ -144,7 +144,7 @@ func (cfg *ProtoToAvroConvertConfig) Action(ctx *rctx.Context, state *engine.Exe
 		return state.PC + 1
 	}
 
-	// Step 2: JSON → Avro binary
+	// Step 2: JSON â†’ Avro binary
 	buf := cfg.ScratchPool.Get().(*[]byte)
 	defer func() {
 		*buf = (*buf)[:0]

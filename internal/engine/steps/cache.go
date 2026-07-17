@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // CacheStore is the subset of cache.CacheManager used by cache instruction steps.
@@ -27,10 +27,10 @@ const globalCacheTenantID uint16 = 0
 // CacheGet looks up ByteSlots[keySlot] in the cache under ctx.TenantID.
 // On hit:  writes the cached value into ByteSlots[destSlot].
 // On miss: ByteSlots[destSlot] is left unchanged (empty if not previously set).
-// Execution always continues to the next instruction — use an `if` step checking
+// Execution always continues to the next instruction â€” use an `if` step checking
 // whether the dest slot is non-empty to branch on hit vs miss.
 // In test mode ctx.TenantID is the ephemeral test tenant, so no special key
-// namespacing is needed — isolation is handled by the tenant ID itself.
+// namespacing is needed â€” isolation is handled by the tenant ID itself.
 func CacheGet(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_get",
@@ -77,7 +77,7 @@ func CachePut(keySlot, valueSlot int, ttl uint32) engine.Instruction {
 // CacheGetGlobal looks up ByteSlots[keySlot] in the shared (tenant-agnostic) namespace.
 // Behaviour is identical to CacheGet except tenantID=0 is used for all lookups,
 // making the entry visible to all tenants.
-// Test mode does not require special handling here — global cache reads are read-only
+// Test mode does not require special handling here â€” global cache reads are read-only
 // against the shared namespace, and no test isolation is needed for reads.
 func CacheGetGlobal(store CacheStore, keySlot, destSlot int) engine.Instruction {
 	return engine.Instruction{
@@ -198,7 +198,7 @@ func CacheGetGlobalBatched(keySlot, destSlot int) engine.Instruction {
 }
 
 // CacheExists writes true to BoolSlots[resultSlot] if the key exists and is not expired.
-// Does NOT check the backend — L1 only for speed.
+// Does NOT check the backend â€” L1 only for speed.
 func CacheExists(store CacheStore, keySlot, resultSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "cache_exists",

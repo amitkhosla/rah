@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ConditionFunc is a pre-compiled condition closure that evaluates against a
@@ -216,7 +216,7 @@ func isStringPredicate(name string) bool {
 // string (for comparisons), plus a bool indicating whether it is a byte-slot
 // (as opposed to a special field like "status").
 func (p *parser) resolveStringReader(name string) func(ctx *rctx.Context) string {
-	// Allow "slot.name" prefix — strip it so slotMap lookup works.
+	// Allow "slot.name" prefix â€” strip it so slotMap lookup works.
 	if stripped, ok := strings.CutPrefix(name, "slot."); ok {
 		name = stripped
 	}
@@ -237,7 +237,7 @@ func (p *parser) resolveStringReader(name string) func(ctx *rctx.Context) string
 			return ""
 		}
 	}
-	// Unknown — return empty string
+	// Unknown â€” return empty string
 	return func(ctx *rctx.Context) string { return "" }
 }
 
@@ -340,7 +340,7 @@ func (p *parser) parsePrimary() (ConditionFunc, error) {
 				}
 			}
 
-			// RHS is null/nil/"" → empty check
+			// RHS is null/nil/"" â†’ empty check
 			if rhs.kind == tkIdent && (rhs.val == "null" || rhs.val == "nil") {
 				p.consume()
 				// Resolve as byte-slot emptiness
@@ -392,7 +392,7 @@ func (p *parser) parsePrimary() (ConditionFunc, error) {
 			return nil, fmt.Errorf("unsupported RHS token %q after operator %q", rhs.val, op.val)
 		}
 
-		// No comparison operator: bare identifier — truthiness check.
+		// No comparison operator: bare identifier â€” truthiness check.
 		// Strip "slot." prefix so conditions like !slot.my_var work.
 		if stripped, ok := strings.CutPrefix(name, "slot."); ok {
 			name = stripped
@@ -414,7 +414,7 @@ func (p *parser) parsePrimary() (ConditionFunc, error) {
 			}, nil
 		}
 
-		// Check bool slot by name — the slotMap for bool slots reuses the same
+		// Check bool slot by name â€” the slotMap for bool slots reuses the same
 		// namespace (getBoolSlot calls getSlot). If not in slotMap, try BoolSlots
 		// by treating the name as a numeric index (not common; skip for now).
 		// For unknown identifiers: default to false (safe for conditions).

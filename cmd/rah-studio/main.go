@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"rah/internal/studio"
+	"github.com/amitkhosla/rah/internal/studio"
 	"strconv"
 )
 

@@ -1,12 +1,12 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
 	"strconv"
 	"unsafe"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 var cookieHeaderKey = []byte("Cookie")
@@ -54,7 +54,7 @@ func ExtractCookie(cookieName string, destSlot int) engine.Instruction {
 // Attributes are baked at compile time: Name (required), Path (default "/"), HttpOnly (bool),
 // Secure (bool), MaxAge (int, 0=session), SameSite (string: "Strict"/"Lax"/"None"/empty).
 // Value is read from ByteSlots[valueSlot] at runtime.
-// Uses ctx.Alloc to build the header value string — no heap allocation.
+// Uses ctx.Alloc to build the header value string â€” no heap allocation.
 func SetResponseCookie(cookieName string, valueSlot int, path string, maxAge int, httpOnly, secure bool, sameSite string) engine.Instruction {
 	setCookieKey := []byte("Set-Cookie")
 	// Build the static suffix (everything after the value): "; Path=/; HttpOnly; ..."

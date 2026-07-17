@@ -1,22 +1,22 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"context"
 	"fmt"
 	"net/http"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // httpVectorStore implements VectorStore as a generic HTTP client.
 // It uses a standard envelope format compatible with any custom HTTP vector service.
 //
 // Options (all optional):
-//   "search_path"  — URL path for search (default: "/search")
-//   "upsert_path"  — URL path for upsert (default: "/upsert")
-//   "delete_path"  — URL path for delete (default: "/delete")
-//   "auth_header"  — auth header name (default: "Authorization")
-//   "auth_prefix"  — auth value prefix (default: "Bearer")
+//   "search_path"  â€” URL path for search (default: "/search")
+//   "upsert_path"  â€” URL path for upsert (default: "/upsert")
+//   "delete_path"  â€” URL path for delete (default: "/delete")
+//   "auth_header"  â€” auth header name (default: "Authorization")
+//   "auth_prefix"  â€” auth value prefix (default: "Bearer")
 type httpVectorStore struct {
 	cfg        config.VectorStoreConfig
 	apiKey     string

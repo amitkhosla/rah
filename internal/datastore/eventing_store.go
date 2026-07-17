@@ -1,10 +1,10 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
 	"time"
 
-	"rah/internal/ingest"
+	"github.com/amitkhosla/rah/internal/ingest"
 )
 
 // EventingStore wraps any KeyValueStore and emits ingest events after
@@ -36,7 +36,7 @@ func WrapWithEventing(store KeyValueStore, pipeline *ingest.Pipeline, domain, so
 	return &EventingStore{inner: store, pipeline: pipeline, domain: domain, sourceID: sourceID}
 }
 
-// ── KeyValueStore ────────────────────────────────────────────────────────────
+// â”€â”€ KeyValueStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (s *EventingStore) Put(ctx context.Context, tenant Tenant, key string, value []byte) error {
 	if err := s.inner.Put(ctx, tenant, key, value); err != nil {
@@ -67,7 +67,7 @@ func (s *EventingStore) Name() string       { return s.inner.Name() }
 func (s *EventingStore) PoolStats() PoolStats { return s.inner.PoolStats() }
 func (s *EventingStore) Close() error       { return s.inner.Close() }
 
-// ── BatchStore — always available ────────────────────────────────────────────
+// â”€â”€ BatchStore â€” always available â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // MultiGet delegates to the inner BatchStore if available; otherwise falls
 // back to sequential Gets in a single call (no goroutines, no extra allocs).
@@ -108,7 +108,7 @@ func (s *EventingStore) MultiPut(ctx context.Context, tenant Tenant, kvs map[str
 	return nil
 }
 
-// ── ExpiringStore — pass-through if inner supports it ────────────────────────
+// â”€â”€ ExpiringStore â€” pass-through if inner supports it â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // PutWithTTL delegates to the inner ExpiringStore if available; falls back to
 // a plain Put (no TTL honoured) and emits an event either way.
@@ -126,7 +126,7 @@ func (s *EventingStore) PutWithTTL(ctx context.Context, tenant Tenant, key strin
 	return nil
 }
 
-// ── event helpers ─────────────────────────────────────────────────────────────
+// â”€â”€ event helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (s *EventingStore) emitPut(tenant Tenant, key string, value []byte) {
 	n := s.pipeline.NumSinksForKind(ingest.KindDBPut)

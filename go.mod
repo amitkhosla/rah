@@ -1,4 +1,4 @@
-module rah
+module github.com/amitkhosla/rah
 
 go 1.26.0
 

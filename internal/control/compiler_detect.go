@@ -1,16 +1,16 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileDetectMessageFormat resolves slots and appends the detect_message_format instruction.
 //
 // Slot mapping:
-//   - key_identifier → bodySlot (input: raw JSON request body)
-//   - as             → formatSlot (output: detected format string)
+//   - key_identifier â†’ bodySlot (input: raw JSON request body)
+//   - as             â†’ formatSlot (output: detected format string)
 func (c *Compiler) compileDetectMessageFormat(step StepConfig) error {
 	bodySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

@@ -1,10 +1,10 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
 	"testing"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 func TestBuildScopedKeyRequiresTenantName(t *testing.T) {

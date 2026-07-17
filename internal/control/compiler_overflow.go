@@ -1,22 +1,22 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/datastore"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileOverflowHistory resolves and appends the overflow_history instruction.
 //
-// step.KeyIdentifier            → historySlot (ByteSlots, trimmed in place)
-// step.As                       → keySlot (ByteSlots, conversation key)
-// step.Input["overflow_slot"]   → IntSlots index for token overflow budget (optional; default -1)
-// step.Input["max_tokens"]      → int fallback token budget (default 0)
-// step.Input["max_turns"]       → int fallback turn limit (default 0)
-// step.Input["domain"]          → datastore domain (required when a store is needed)
-// step.Input["ttl_secs"]        → int TTL in seconds (default 0)
+// step.KeyIdentifier            â†’ historySlot (ByteSlots, trimmed in place)
+// step.As                       â†’ keySlot (ByteSlots, conversation key)
+// step.Input["overflow_slot"]   â†’ IntSlots index for token overflow budget (optional; default -1)
+// step.Input["max_tokens"]      â†’ int fallback token budget (default 0)
+// step.Input["max_turns"]       â†’ int fallback turn limit (default 0)
+// step.Input["domain"]          â†’ datastore domain (required when a store is needed)
+// step.Input["ttl_secs"]        â†’ int TTL in seconds (default 0)
 func (c *Compiler) compileOverflowHistory(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -79,10 +79,10 @@ func (c *Compiler) compileOverflowHistory(step StepConfig) error {
 
 // compileLoadOverflowHistory resolves and appends the load_overflow_history instruction.
 //
-// step.KeyIdentifier          → historySlot (ByteSlots, overflow prepended here)
-// step.As                     → keySlot (ByteSlots, conversation key)
-// step.Input["domain"]        → datastore domain (required)
-// step.Input["max_turns"]     → int: limit overflow turns prepended (default 0 = unlimited)
+// step.KeyIdentifier          â†’ historySlot (ByteSlots, overflow prepended here)
+// step.As                     â†’ keySlot (ByteSlots, conversation key)
+// step.Input["domain"]        â†’ datastore domain (required)
+// step.Input["max_turns"]     â†’ int: limit overflow turns prepended (default 0 = unlimited)
 func (c *Compiler) compileLoadOverflowHistory(step StepConfig) error {
 	historySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

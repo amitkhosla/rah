@@ -1,22 +1,22 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strings"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileExtractJWTClaim resolves slots and appends the extract_jwt_claim instruction.
 //
 // Slot mapping:
-//   - key_identifier → token source:
-//       "header.Authorization" → TokenHeader="Authorization", StripBearer=true
-//       "header.X-Token"       → TokenHeader="X-Token", StripBearer=false
-//       "var.mytoken"          → TokenSlot=<resolved slot>
-//   - as             → outputSlot
-//   - input["claim_name"]    → ClaimName (default "sub")
-//   - input["default_value"] → DefaultValue (default "")
+//   - key_identifier â†’ token source:
+//       "header.Authorization" â†’ TokenHeader="Authorization", StripBearer=true
+//       "header.X-Token"       â†’ TokenHeader="X-Token", StripBearer=false
+//       "var.mytoken"          â†’ TokenSlot=<resolved slot>
+//   - as             â†’ outputSlot
+//   - input["claim_name"]    â†’ ClaimName (default "sub")
+//   - input["default_value"] â†’ DefaultValue (default "")
 func (c *Compiler) compileExtractJWTClaim(step StepConfig) error {
 	outputSlot, err := c.getSlot(step.As)
 	if err != nil {

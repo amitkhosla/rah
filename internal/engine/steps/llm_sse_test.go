@@ -1,12 +1,12 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
 	"net/http"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // mockSSEWriter implements rctx.ResponseWriter and http.Flusher.

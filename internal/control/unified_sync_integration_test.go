@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"bytes"
@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
 )
 
 func TestUnifiedSyncRegistersApiAndRuntimeConsumesCompiledFlow(t *testing.T) {
@@ -136,9 +136,9 @@ func TestUnifiedSyncBuildsApiPlanWithInputBindingsAndSubflowCalls(t *testing.T) 
 		t.Fatalf("expected endpoint plan to be generated")
 	}
 
-	// [0] SET_STREAM_RESPONSE_BODY — always first; flow has no http_call so streaming=true
-	// [1] BIND_QUERY — auto-bind preamble for query.user dependency
-	// [2] REG_LOOKUP — from the called lookupUser subflow
+	// [0] SET_STREAM_RESPONSE_BODY â€” always first; flow has no http_call so streaming=true
+	// [1] BIND_QUERY â€” auto-bind preamble for query.user dependency
+	// [2] REG_LOOKUP â€” from the called lookupUser subflow
 	if got := def.Endpoints[0].Plan[1].Name; got != "BIND_QUERY" {
 		t.Fatalf("expected Plan[1] to be BIND_QUERY, got %s", got)
 	}

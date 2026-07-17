@@ -1,20 +1,20 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileMCPCallTool resolves and appends the mcp_call_tool instruction.
 //
 // Step fields:
-//   - step.KeyIdentifier       → slot name holding the tool name to call
-//   - step.As                  → result slot name (output: JSON content array)
-//   - step.Input["server"]     → MCP server alias (required)
-//   - step.Input["args_slot"]  → slot name holding the JSON-encoded arguments object
-//   - step.Input["timeout_ms"] → int milliseconds (default 30000)
+//   - step.KeyIdentifier       â†’ slot name holding the tool name to call
+//   - step.As                  â†’ result slot name (output: JSON content array)
+//   - step.Input["server"]     â†’ MCP server alias (required)
+//   - step.Input["args_slot"]  â†’ slot name holding the JSON-encoded arguments object
+//   - step.Input["timeout_ms"] â†’ int milliseconds (default 30000)
 func (c *Compiler) compileMCPCallTool(step StepConfig) error {
 	alias := step.Input["server"]
 	if alias == "" {

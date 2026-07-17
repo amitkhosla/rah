@@ -1,8 +1,8 @@
-package engine
+﻿package engine
 
 import (
-	"rah/internal/rctx"
-	"rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/registry"
 )
 
 // RegistryExecutor implements OpFlusher for registry PUT operations.
@@ -13,9 +13,9 @@ import (
 // Only OpPut operations are processed; OpGet is not supported for registry
 // ops (registry reads use the lock-free hot-path methods directly).
 //
-// TenantID → alias resolution: the RegistryManager's Add* methods identify
+// TenantID â†’ alias resolution: the RegistryManager's Add* methods identify
 // tenants by alias string (management-plane key), not by numeric TenantID.
-// RegistryExecutor resolves TenantID → primary alias via GetTenantRecord
+// RegistryExecutor resolves TenantID â†’ primary alias via GetTenantRecord
 // before dispatching. If no record is found the op is silently dropped
 // (the tenant does not exist in the management plane).
 type RegistryExecutor struct {
@@ -35,11 +35,11 @@ func (re *RegistryExecutor) Submit(batch rctx.Batch) {
 			continue
 		}
 
-		// Resolve TenantID → primary alias. The Add* methods on RegistryManager
+		// Resolve TenantID â†’ primary alias. The Add* methods on RegistryManager
 		// are alias-addressed; GetTenantRecord gives us the alias list.
 		rec := re.mgr.GetTenantRecord(op.TenantID)
 		if rec == nil || len(rec.Aliases) == 0 {
-			continue // tenant unknown — drop the op
+			continue // tenant unknown â€” drop the op
 		}
 		alias := rec.Aliases[0]
 		key := string(op.Key)

@@ -1,13 +1,13 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
 	"context"
 	"net/http"
-	"rah/internal/egress"
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/soap"
+	"github.com/amitkhosla/rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/soap"
 	"time"
 )
 
@@ -83,7 +83,7 @@ func BuildSOAPEnvelopeFromConfig(cfg BuildSOAPEnvelopeStepConfig) engine.Instruc
 }
 
 // buildSOAPEnvelopeConfig is an internal helper kept for bake-time envSizeHint computation
-// on SOAPCallConfig (not a step — used only within compileSOAPCall).
+// on SOAPCallConfig (not a step â€” used only within compileSOAPCall).
 func buildSOAPEnvelopeHint(cfg SOAPCallConfig) SOAPCallConfig {
 	cfg.envSizeHint = 150 + 256
 	return cfg

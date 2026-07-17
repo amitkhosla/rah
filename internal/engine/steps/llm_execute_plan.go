@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // MCPServerConfig is a type alias for config.MCPServerConfig for use in this package.
@@ -103,7 +103,7 @@ func ExecutePlan(cfg ExecutePlanConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "execute_plan[" + cfg.MCPConfig.URL + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// 1. Read plan JSON from slot — if empty, no-op.
+			// 1. Read plan JSON from slot â€” if empty, no-op.
 			if cfg.PlanSlot < 0 || cfg.PlanSlot >= len(ctx.ByteSlots) {
 				return state.PC + 1
 			}
@@ -126,7 +126,7 @@ func ExecutePlan(cfg ExecutePlanConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 			if len(plan.Plan) == 0 {
-				// Empty plan — write empty object and continue.
+				// Empty plan â€” write empty object and continue.
 				empty := []byte("{}")
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(empty))
@@ -194,7 +194,7 @@ func buildGraph(steps []PlanStep) (nodes map[int]*PlanStep, readyQueue []int, wa
 	nodes = make(map[int]*PlanStep, len(steps))
 	waitingFor = make(map[int]int, len(steps))
 
-	// Map step ID → *PlanStep.
+	// Map step ID â†’ *PlanStep.
 	for i := range steps {
 		s := &steps[i]
 		nodes[s.Step] = s
@@ -210,7 +210,7 @@ func buildGraph(steps []PlanStep) (nodes map[int]*PlanStep, readyQueue []int, wa
 			parent.nextSteps = append(parent.nextSteps, stepID)
 			waitingFor[stepID]++
 		} else {
-			// Invalid dep → treat as ready.
+			// Invalid dep â†’ treat as ready.
 			readyQueue = append(readyQueue, stepID)
 		}
 	}
@@ -246,7 +246,7 @@ func parseDependsOn(v interface{}) int {
 }
 
 // executeGraph runs the DAG sequentially (FIFO queue).
-// Returns a map of stepID → result (interface{}) and any fatal error.
+// Returns a map of stepID â†’ result (interface{}) and any fatal error.
 func executeGraph(
 	ctx *rctx.Context,
 	cfg ExecutePlanConfig,
@@ -272,7 +272,7 @@ func executeGraph(
 			if !cfg.SkipNewToolRequired {
 				return nil, fmt.Errorf("step %d requires new tool %q which is not available", task.Step, task.ToolName)
 			}
-			// Skip — record nil result and unlock children.
+			// Skip â€” record nil result and unlock children.
 			results[currentID] = nil
 			for _, childID := range task.nextSteps {
 				waitingFor[childID]--
@@ -342,7 +342,7 @@ func executeGraph(
 
 // injectValue replaces placeholder strings in params with the given value.
 // It marshals the params to JSON, performs string replacement, then unmarshals
-// back — the same approach used in the Python orchestrator.
+// back â€” the same approach used in the Python orchestrator.
 func injectValue(params map[string]interface{}, value interface{}) map[string]interface{} {
 	if value == nil {
 		return params

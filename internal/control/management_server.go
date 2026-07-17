@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
-	"rah/internal/gatewaylog"
-	"rah/internal/observability"
-	"rah/internal/router"
-	registrypkg "rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/observability"
+	"github.com/amitkhosla/rah/internal/router"
+	registrypkg "github.com/amitkhosla/rah/internal/registry"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +28,7 @@ type ManagementServer struct {
 	RegMgr      *registrypkg.RegistryManager // optional; enables rate limit name resolution at bake time
 	mu          sync.RWMutex
 	flowConfigs map[string][]StepConfig
-	apiConfigs  map[string]ApiUpdate // api name → last upserted config
+	apiConfigs  map[string]ApiUpdate // api name â†’ last upserted config
 
 	// dataStore is optional. When set, every upsert/delete is persisted so the
 	// gateway can restore its state on restart. Leave nil (or use SetDataStore)
@@ -273,7 +273,7 @@ func (s *ManagementServer) buildSyncWarnings(req UnifiedSyncRequest) []RateLimit
 }
 
 // applyDraftSync compiles req into DraftState without touching the live State.
-// The draft is never routed to — only /test/execute uses it.
+// The draft is never routed to â€” only /test/execute uses it.
 // No datastore persistence and no router registration occur.
 func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	oldState := s.FlowManager.State.Load()
@@ -305,7 +305,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 		newRouteUpstreamUrls[k] = v
 	}
 
-	// Pre-pass: expand DSL code → Instructions
+	// Pre-pass: expand DSL code â†’ Instructions
 	{
 		var dslExtras []FlowUpdate
 		for i := range req.Flows {
@@ -490,12 +490,12 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	for _, flowName := range deletedFlows {
 		for apiName, apiCfg := range newApiConfigs {
 			if apiCfg.FlowName == flowName {
-				return fmt.Errorf("cannot delete flow %q: still referenced by API %q — delete the API first", flowName, apiName)
+				return fmt.Errorf("cannot delete flow %q: still referenced by API %q â€” delete the API first", flowName, apiName)
 			}
 		}
 	}
 
-	// 5. Build a draft router (internal use only — never registered with the live router).
+	// 5. Build a draft router (internal use only â€” never registered with the live router).
 	draftRouter := router.New()
 	for _, d := range newDefs {
 		if d != nil {
@@ -503,7 +503,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 		}
 	}
 
-	// 6. Store in DraftState — does NOT touch FlowManager.State.
+	// 6. Store in DraftState â€” does NOT touch FlowManager.State.
 	s.FlowManager.DraftState.Store(&engine.EngineState{
 		Router:            draftRouter,
 		Definitions:       newDefs,
@@ -540,7 +540,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		s.Compiler.LLMCfg = s.LLMProvider()
 	}
 
-	// Apply V2 rate limit configs — store config + assign stable integer ID +
+	// Apply V2 rate limit configs â€” store config + assign stable integer ID +
 	// register counter arenas so the compiled CheckRateLimitV2 step can count.
 	for _, cfg := range req.RateLimitConfigsV2 {
 		// Auto-populate PeriodSecs from the human-readable Period string when absent.
@@ -657,7 +657,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		}
 	}
 
-	// Pre-pass: expand DSL code → Instructions
+	// Pre-pass: expand DSL code â†’ Instructions
 	{
 		var dslExtras []FlowUpdate
 		for i := range req.Flows {
@@ -781,7 +781,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			}
 
 			if len(a.EndpointConfigs) == 0 {
-				// No sub-route config — register root for all methods.
+				// No sub-route config â€” register root for all methods.
 				epID := uint8(len(def.Endpoints)) // = 0 before BakeSubRouter
 				routeKey := uint64(id)<<8 | uint64(epID)
 				mergedConsts := a.Constants
@@ -938,7 +938,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	for _, flowName := range deletedFlows {
 		for apiName, apiCfg := range newApiConfigs {
 			if apiCfg.FlowName == flowName {
-				return fmt.Errorf("cannot delete flow %q: still referenced by API %q — delete the API first", flowName, apiName)
+				return fmt.Errorf("cannot delete flow %q: still referenced by API %q â€” delete the API first", flowName, apiName)
 			}
 		}
 	}
@@ -959,7 +959,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		finalRouter = oldState.Router
 	}
 
-	// 6. Atomic Swap — live traffic sees new state immediately after this line.
+	// 6. Atomic Swap â€” live traffic sees new state immediately after this line.
 	s.FlowManager.SetState(&engine.EngineState{
 		Router:            finalRouter,
 		Definitions:       newDefs,
@@ -975,7 +975,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 	// 7. Persist changes to datastore (optional, best-effort).
 	// Runs after the atomic swap so routing is never blocked by I/O.
-	// Errors are logged but do not roll back the in-memory state — the
+	// Errors are logged but do not roll back the in-memory state â€” the
 	// central orchestrator is the source of truth if a datastore is shared.
 	if s.dataStore != nil && len(pendingPersist) > 0 {
 		ctx := context.Background()
@@ -1026,7 +1026,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 }
 
 // StepsMetaHandler handles GET /meta/steps.
-// Returns the full step catalog — the single source of truth for every action
+// Returns the full step catalog â€” the single source of truth for every action
 // buildUpstreamUrlInfo converts an UpstreamUrlConfig into a baked UpstreamUrlInfo.
 // slotIdx is the resolved ByteSlot index for the "upstream_url" slot.
 // regMgr is optional; when nil, registry source is left with KeyID=0 (resolved at runtime).
@@ -1053,7 +1053,7 @@ func buildUpstreamUrlInfo(cfg *UpstreamUrlConfig, slotIdx int, regMgr *registryp
 	case "queryparam":
 		info.Source = engine.UpstreamUrlSourceQueryParam
 	default:
-		// Unknown source — treat as static to avoid silent no-ops.
+		// Unknown source â€” treat as static to avoid silent no-ops.
 		info.Source = engine.UpstreamUrlSourceStatic
 	}
 	return info
@@ -1078,15 +1078,15 @@ func resolveAndRegisterRLPolicies(scopeID string, policies []APIRateLimitEntry) 
 		switch entry.Kind {
 		case RLEntryNamed:
 			if entry.Config == "" {
-				log.Printf("[Management] RL policy %s row %d (named): empty config name — skipped", scopeID, i)
+				log.Printf("[Management] RL policy %s row %d (named): empty config name â€” skipped", scopeID, i)
 				continue
 			}
 			if registrypkg.GetRateLimitConfigV2(entry.Config) == nil {
-				log.Printf("[Management] RL policy %s row %d (named): config %q not found — will produce warning at compile time", scopeID, i, entry.Config)
+				log.Printf("[Management] RL policy %s row %d (named): config %q not found â€” will produce warning at compile time", scopeID, i, entry.Config)
 			}
 		case RLEntryFixed:
 			if len(entry.Windows) == 0 {
-				log.Printf("[Management] RL policy %s row %d (fixed): no windows defined — skipped", scopeID, i)
+				log.Printf("[Management] RL policy %s row %d (fixed): no windows defined â€” skipped", scopeID, i)
 				continue
 			}
 			anonName := fmt.Sprintf("__fixed__%s_%d", scopeID, i)
@@ -1106,7 +1106,7 @@ func resolveAndRegisterRLPolicies(scopeID string, policies []APIRateLimitEntry) 
 			log.Printf("[Management] RL policy %s row %d (fixed): registered anonymous config %q (%d window(s))", scopeID, i, anonName, len(windows))
 		case RLEntryDynamic:
 			if entry.Dynamic == nil || len(entry.Dynamic.Mappings) == 0 {
-				log.Printf("[Management] RL policy %s row %d (dynamic): empty mapping — skipped", scopeID, i)
+				log.Printf("[Management] RL policy %s row %d (dynamic): empty mapping â€” skipped", scopeID, i)
 				continue
 			}
 			for runtimeVal, cfgName := range entry.Dynamic.Mappings {
@@ -1250,8 +1250,8 @@ func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Requ
 
 // FlowProfileHandler handles GET /flows/{name}/profile and DELETE /flows/{name}.
 //
-//   - GET  /flows/{name}/profile → returns the FlowProfile for the compiled flow
-//   - DELETE /flows/{name}       → removes an orphaned flow (one with no API pointing to it)
+//   - GET  /flows/{name}/profile â†’ returns the FlowProfile for the compiled flow
+//   - DELETE /flows/{name}       â†’ removes an orphaned flow (one with no API pointing to it)
 func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract flow name from path: /flows/{name}[/profile]
 	path := strings.TrimPrefix(r.URL.Path, "/flows/")
@@ -1300,7 +1300,7 @@ func (s *ManagementServer) deleteFlowHandler(w http.ResponseWriter, name string)
 		return
 	}
 	if inUseBy != "" {
-		http.Error(w, fmt.Sprintf("flow %q is in use by API %q — remove the API first", name, inUseBy), http.StatusConflict)
+		http.Error(w, fmt.Sprintf("flow %q is in use by API %q â€” remove the API first", name, inUseBy), http.StatusConflict)
 		return
 	}
 

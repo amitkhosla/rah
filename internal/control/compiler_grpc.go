@@ -1,11 +1,11 @@
-package control
+﻿package control
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileGrpcCall compiles a "grpc_call" step into a GrpcCallInstruction.
@@ -69,7 +69,7 @@ func (c *Compiler) compileGrpcCall(step StepConfig) error {
 		}
 	}
 
-	// Parse static metadata literals: metadata_0="key=value", metadata_1="key=value", …
+	// Parse static metadata literals: metadata_0="key=value", metadata_1="key=value", â€¦
 	for i := 0; ; i++ {
 		raw := strings.TrimSpace(step.Input[fmt.Sprintf("metadata_%d", i)])
 		if raw == "" {
@@ -116,7 +116,7 @@ func (c *Compiler) compileGrpcCall(step StepConfig) error {
 	// Wired fully in S10 (main.go). For now, profile stays nil if not resolved.
 	// URL-scheme-based TLS selection in pool.go handles the common case.
 
-	// ── mTLS client certificate (opt-in, bake-time) ────────────────────────────
+	// â”€â”€ mTLS client certificate (opt-in, bake-time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
 		if c.SecretsMgr == nil {
 			return fmt.Errorf("grpc_call: tls_client_cert_ref requires a secrets manager to be configured")

@@ -1,20 +1,20 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/config"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileMCPListTools resolves and appends the mcp_list_tools instruction.
 //
 // Step fields:
-//   - step.Input["server"]     → MCP server alias (required)
-//   - step.Input["mode"]       → MCPLoadMode: "names", "brief", or "full" (default "full")
-//   - step.Input["timeout_ms"] → int milliseconds (default 5000)
-//   - step.As                  → result slot name (required)
+//   - step.Input["server"]     â†’ MCP server alias (required)
+//   - step.Input["mode"]       â†’ MCPLoadMode: "names", "brief", or "full" (default "full")
+//   - step.Input["timeout_ms"] â†’ int milliseconds (default 5000)
+//   - step.As                  â†’ result slot name (required)
 func (c *Compiler) compileMCPListTools(step StepConfig) error {
 	alias := step.Input["server"]
 	if alias == "" {
@@ -57,10 +57,10 @@ func (c *Compiler) compileMCPListTools(step StepConfig) error {
 // compileMCPFetchSchemas resolves and appends the mcp_fetch_schemas instruction.
 //
 // Step fields:
-//   - step.Input["server"]     → MCP server alias (required)
-//   - step.Input["timeout_ms"] → int milliseconds (default 5000)
-//   - step.KeyIdentifier       → slot name holding the JSON array of selected tool names
-//   - step.As                  → result slot name (output: full ToolDefinition array)
+//   - step.Input["server"]     â†’ MCP server alias (required)
+//   - step.Input["timeout_ms"] â†’ int milliseconds (default 5000)
+//   - step.KeyIdentifier       â†’ slot name holding the JSON array of selected tool names
+//   - step.As                  â†’ result slot name (output: full ToolDefinition array)
 func (c *Compiler) compileMCPFetchSchemas(step StepConfig) error {
 	alias := step.Input["server"]
 	if alias == "" {
@@ -113,11 +113,11 @@ func (c *Compiler) findMCPServer(alias string) (config.MCPServerConfig, error) {
 // compileMCPToolCall resolves and appends the call_mcp_tool instruction.
 //
 // Step fields:
-//   - step.Input["server"]     → MCP server alias (required)
-//   - step.Input["tool"]       → tool name to call (required, baked at compile time)
-//   - step.Input["timeout_ms"] → int milliseconds (default 10000)
-//   - step.KeyIdentifier       → slot name holding the JSON arguments object (optional)
-//   - step.As                  → result slot name (required)
+//   - step.Input["server"]     â†’ MCP server alias (required)
+//   - step.Input["tool"]       â†’ tool name to call (required, baked at compile time)
+//   - step.Input["timeout_ms"] â†’ int milliseconds (default 10000)
+//   - step.KeyIdentifier       â†’ slot name holding the JSON arguments object (optional)
+//   - step.As                  â†’ result slot name (required)
 func (c *Compiler) compileMCPToolCall(step StepConfig) error {
 	// Resolve server alias
 	alias := step.Input["server"]

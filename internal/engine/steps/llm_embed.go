@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/observability"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/observability"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // EmbedTextConfig is resolved at bake time and captured in the instruction closure.
@@ -53,7 +53,7 @@ const (
 )
 
 var (
-	embedClientCache sync.Map // key: endpoint string → *http.Client
+	embedClientCache sync.Map // key: endpoint string â†’ *http.Client
 	embedClientCount atomic.Int64
 )
 
@@ -217,7 +217,7 @@ func embedParseResponse(provider EmbedProvider, body []byte) ([]float64, error) 
 //  3. Builds provider-specific request body
 //  4. POSTs with retry on 429/5xx (up to cfg.MaxRetries)
 //  5. Parses response to extract []float64 vector
-//  6. Marshals vector as JSON float array → ctx.ByteSlots[cfg.ResultSlot]
+//  6. Marshals vector as JSON float array â†’ ctx.ByteSlots[cfg.ResultSlot]
 //  7. If DimSlot >= 0 and in range: writes int64(len(vector)) to ctx.IntSlots[cfg.DimSlot]
 //  8. Returns state.PC + 1
 //
@@ -234,7 +234,7 @@ func EmbedText(cfg EmbedTextConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.Provider, cfg.BaseURL, cfg.Model)
 	if endpoint == "" {
-		// Misconfiguration at bake time — return poisoned instruction.
+		// Misconfiguration at bake time â€” return poisoned instruction.
 		return engine.Instruction{
 			Name: "embed_text[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

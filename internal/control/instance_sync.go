@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // InstanceRecord is written to DomainGatewayInstances on every heartbeat.
@@ -120,7 +120,7 @@ func (s *InstanceSync) refreshInstanceCount(ctx context.Context) {
 		return
 	}
 	now := time.Now().Unix()
-	ttl := int64(s.cfg.HeartbeatIntervalS * 3) // 3× heartbeat = TTL
+	ttl := int64(s.cfg.HeartbeatIntervalS * 3) // 3Ã— heartbeat = TTL
 	alive := 0
 	for _, k := range keys {
 		data, ok, err := s.dsm.GetGlobal(ctx, config.DomainGatewayInstances, k)

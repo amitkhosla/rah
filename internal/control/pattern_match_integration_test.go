@@ -1,26 +1,26 @@
-package control
+﻿package control
 
-// pattern_match_integration_test.go — SESSION-3 integration tests.
+// pattern_match_integration_test.go â€” SESSION-3 integration tests.
 //
 // Tests that compile pattern_match flows and execute them end-to-end,
 // proving SESSION-1 (instruction) and SESSION-2 (compiler) work together.
 //
 // Coverage:
 //   - Compile flow with pattern_match step
-//   - Execute with matching header value → correct then-branch
-//   - Execute with non-matching header value → correct else-branch
+//   - Execute with matching header value â†’ correct then-branch
+//   - Execute with non-matching header value â†’ correct else-branch
 //   - Regex flags: case-insensitive matching
-//   - Invalid regex → compile-time error
+//   - Invalid regex â†’ compile-time error
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ─── Test 1: Compile and execute with match ──────────────────────────────────
+// â”€â”€â”€ Test 1: Compile and execute with match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternMatch proves end-to-end integration:
 // 1. Create a flow with pattern_match step
@@ -87,7 +87,7 @@ func TestCompileAndExecutePatternMatch(t *testing.T) {
 	}
 }
 
-// ─── Test 2: Compile and execute with no-match ───────────────────────────────
+// â”€â”€â”€ Test 2: Compile and execute with no-match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternNoMatch proves end-to-end integration:
 // 1. Same flow as Test 1
@@ -150,7 +150,7 @@ func TestCompileAndExecutePatternNoMatch(t *testing.T) {
 	}
 }
 
-// ─── Test 3: Pattern match with multiple values ────────────────────────────────
+// â”€â”€â”€ Test 3: Pattern match with multiple values â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternMultipleMatches verifies that the pattern
 // correctly matches multiple valid values.
@@ -228,7 +228,7 @@ func TestCompileAndExecutePatternMultipleMatches(t *testing.T) {
 	}
 }
 
-// ─── Test 4: Case-insensitive flag ───────────────────────────────────────────
+// â”€â”€â”€ Test 4: Case-insensitive flag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternCaseInsensitive verifies that the "i" flag
 // enables case-insensitive matching.
@@ -312,7 +312,7 @@ func TestCompileAndExecutePatternCaseInsensitive(t *testing.T) {
 	}
 }
 
-// ─── Test 5: Multiple flags combined ──────────────────────────────────────────
+// â”€â”€â”€ Test 5: Multiple flags combined â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternMultipleFlags verifies that multiple flags
 // can be combined (e.g., "i" + "m" for case-insensitive + multiline).
@@ -372,7 +372,7 @@ func TestCompileAndExecutePatternMultipleFlags(t *testing.T) {
 	}
 }
 
-// ─── Test 6: Empty header (no match) ──────────────────────────────────────────
+// â”€â”€â”€ Test 6: Empty header (no match) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternEmptyHeader verifies that a missing header
 // (empty slot) does not match, even with wildcards.
@@ -422,14 +422,14 @@ func TestCompileAndExecutePatternEmptyHeader(t *testing.T) {
 		},
 	})
 
-	// Execute with NO x-service header → empty slot → no match
+	// Execute with NO x-service header â†’ empty slot â†’ no match
 	ctx := runRequest(t, fm, http.MethodGet, "/pm", nil)
 	if ctx.ResponseStatus != 403 {
 		t.Errorf("no header with pattern .*: expected 403 (empty slot), got %d", ctx.ResponseStatus)
 	}
 }
 
-// ─── Test 7: Complex regex pattern ───────────────────────────────────────────
+// â”€â”€â”€ Test 7: Complex regex pattern â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternComplex verifies that complex regex patterns work
 // (multi-level grouping, anchors, character classes, quantifiers).
@@ -507,7 +507,7 @@ func TestCompileAndExecutePatternComplex(t *testing.T) {
 	}
 }
 
-// ─── Test 8: Invalid regex compile error ─────────────────────────────────────
+// â”€â”€â”€ Test 8: Invalid regex compile error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternInvalidRegex verifies that an invalid regex
 // is caught at compile time and produces a clear error.
@@ -520,7 +520,7 @@ func TestCompileAndExecutePatternInvalidRegex(t *testing.T) {
 			Action: "pattern_match",
 			Source: "header.x-service",
 			Input: map[string]string{
-				"pattern": `[invalid`, // unclosed bracket — invalid regex
+				"pattern": `[invalid`, // unclosed bracket â€” invalid regex
 			},
 			Then: "matchFlow",
 			Else: "noMatchFlow",
@@ -539,7 +539,7 @@ func TestCompileAndExecutePatternInvalidRegex(t *testing.T) {
 	}
 }
 
-// ─── Test 9: Missing source compile error ────────────────────────────────────
+// â”€â”€â”€ Test 9: Missing source compile error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternMissingSource verifies that omitting 'source'
 // is caught at compile time.
@@ -569,7 +569,7 @@ func TestCompileAndExecutePatternMissingSource(t *testing.T) {
 	}
 }
 
-// ─── Test 10: Missing pattern compile error ──────────────────────────────────
+// â”€â”€â”€ Test 10: Missing pattern compile error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternMissingPattern verifies that omitting 'pattern'
 // is caught at compile time.
@@ -597,7 +597,7 @@ func TestCompileAndExecutePatternMissingPattern(t *testing.T) {
 	}
 }
 
-// ─── Test 11: Pattern with special regex characters ──────────────────────────
+// â”€â”€â”€ Test 11: Pattern with special regex characters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternSpecialChars verifies that special regex characters
 // are properly handled (not escaped, part of the regex semantics).
@@ -674,7 +674,7 @@ func TestCompileAndExecutePatternSpecialChars(t *testing.T) {
 	}
 }
 
-// ─── Test 12: Multiple pattern_match steps in sequence ──────────────────────
+// â”€â”€â”€ Test 12: Multiple pattern_match steps in sequence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecuteMultiplePatternSteps verifies that multiple pattern_match
 // steps can be chained together.
@@ -777,7 +777,7 @@ func TestCompileAndExecuteMultiplePatternSteps(t *testing.T) {
 	}
 }
 
-// ─── Test 13: Anchored patterns ──────────────────────────────────────────────
+// â”€â”€â”€ Test 13: Anchored patterns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternAnchors verifies that ^ (start) and $ (end)
 // anchors work correctly.
@@ -851,7 +851,7 @@ func TestCompileAndExecutePatternAnchors(t *testing.T) {
 	}
 }
 
-// ─── Test 14: Dotall flag (. matches newline) ───────────────────────────────
+// â”€â”€â”€ Test 14: Dotall flag (. matches newline) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestCompileAndExecutePatternDotAll verifies that the "s" flag makes "."
 // match newlines.
@@ -911,7 +911,7 @@ func TestCompileAndExecutePatternDotAll(t *testing.T) {
 	}
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // contains checks if s contains the substring sub.
 func contains(s, sub string) bool {

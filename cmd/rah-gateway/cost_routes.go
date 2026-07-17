@@ -1,11 +1,11 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
 	"net/http"
 	"strings"
 
-	"rah/internal/quota"
+	"github.com/amitkhosla/rah/internal/quota"
 )
 
 // RegisterCostRoutes registers HTTP endpoints for cost quota inspection.

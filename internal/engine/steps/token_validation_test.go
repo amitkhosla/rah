@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"crypto"
@@ -10,9 +10,9 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"strings"
 	"testing"
 	"time"

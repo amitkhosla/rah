@@ -1,19 +1,19 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileParseMessageFormat resolves slots and appends the parse_message_format instruction.
 //
 // Slot mapping:
-//   - key_identifier → bodySlot (input: raw JSON request body)
-//   - as             → messagesSlot (output: JSON-encoded []CanonicalMessage)
-//   - input["system_slot"]       → systemSlot (optional; default -1)
-//   - input["detected_fmt_slot"] → detectedFmtSlot (optional; default -1)
+//   - key_identifier â†’ bodySlot (input: raw JSON request body)
+//   - as             â†’ messagesSlot (output: JSON-encoded []CanonicalMessage)
+//   - input["system_slot"]       â†’ systemSlot (optional; default -1)
+//   - input["detected_fmt_slot"] â†’ detectedFmtSlot (optional; default -1)
 func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 	bodySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -84,18 +84,18 @@ func (c *Compiler) compileParseMessageFormat(step StepConfig) error {
 // compileFormatResponse resolves slots and appends the format_response instruction.
 //
 // Slot mapping:
-//   - key_identifier            → contentSlot (input: LLM response content text)
-//   - as                        → resultSlot  (output: formatted JSON response body)
+//   - key_identifier            â†’ contentSlot (input: LLM response content text)
+//   - as                        â†’ resultSlot  (output: formatted JSON response body)
 //
 // Optional input keys:
 //
-//	format_slot        → ByteSlot: caller's detected format (from detect_message_format / parse_message_format)
-//	format             → static format string "anthropic"|"openai"|"gemini" (bake time; overridden by format_slot)
-//	stop_reason_slot   → ByteSlot: stop reason written by llm_call
-//	model              → static model slug (bake time)
-//	model_slot         → ByteSlot: runtime model slug override
-//	input_tokens_slot  → IntSlot index (integer string, e.g. "0")
-//	output_tokens_slot → IntSlot index (integer string, e.g. "1")
+//	format_slot        â†’ ByteSlot: caller's detected format (from detect_message_format / parse_message_format)
+//	format             â†’ static format string "anthropic"|"openai"|"gemini" (bake time; overridden by format_slot)
+//	stop_reason_slot   â†’ ByteSlot: stop reason written by llm_call
+//	model              â†’ static model slug (bake time)
+//	model_slot         â†’ ByteSlot: runtime model slug override
+//	input_tokens_slot  â†’ IntSlot index (integer string, e.g. "0")
+//	output_tokens_slot â†’ IntSlot index (integer string, e.g. "1")
 func (c *Compiler) compileFormatResponse(step StepConfig) error {
 	contentSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

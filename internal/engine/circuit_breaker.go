@@ -1,21 +1,21 @@
-package engine
+﻿package engine
 
 import (
 	"fmt"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"sync/atomic"
 	"time"
 )
 
 // Circuit breaker states (stored atomically in CircuitState.state).
 const (
-	CBStateClosed   int32 = 0 // normal — all requests pass through
-	CBStateOpen     int32 = 1 // tripped — requests are rejected
-	CBStateHalfOpen int32 = 2 // probe — limited requests allowed to test recovery
+	CBStateClosed   int32 = 0 // normal â€” all requests pass through
+	CBStateOpen     int32 = 1 // tripped â€” requests are rejected
+	CBStateHalfOpen int32 = 2 // probe â€” limited requests allowed to test recovery
 )
 
 // CircuitState is one named circuit breaker instance.
-// All mutable fields are accessed via sync/atomic — no mutex on the hot path.
+// All mutable fields are accessed via sync/atomic â€” no mutex on the hot path.
 // Config fields (failureThreshold, successThreshold, openDurationNs) are
 // written once at bake time and read-only thereafter.
 type CircuitState struct {
@@ -25,7 +25,7 @@ type CircuitState struct {
 	successCount int64 // consecutive successes while HalfOpen
 	lastTripNs   int64 // UnixNano when circuit last opened
 
-	// Config — immutable after Alloc().
+	// Config â€” immutable after Alloc().
 	failureThreshold int64
 	successThreshold int64
 	openDurationNs   int64 // how long to stay Open before probing
@@ -64,18 +64,18 @@ func (a *CircuitBreakerArena) Alloc(failureThresh, successThresh int64, openDura
 }
 
 // OutcomeFunc is the type for a runtime success/failure predicate.
-// It is identical in shape to steps.ConditionFunc — the compiler casts between
-// them without any wrapper to avoid an import cycle (engine ↛ steps).
+// It is identical in shape to steps.ConditionFunc â€” the compiler casts between
+// them without any wrapper to avoid an import cycle (engine â†› steps).
 type OutcomeFunc = func(ctx *rctx.Context) bool
 
 // CircuitBreakerGateStep returns an Instruction that checks whether requests
 // may proceed according to the circuit breaker state machine.
 //
-//   - Closed  → pass through.
-//   - Open    → if the open window has elapsed, transition to HalfOpen and allow
+//   - Closed  â†’ pass through.
+//   - Open    â†’ if the open window has elapsed, transition to HalfOpen and allow
 //     one probe request; otherwise: if fallbackFlowStart >= 0 jump to that flow;
 //     else set ctx.ResponseStatus = 503 and stop.
-//   - HalfOpen → pass through (one probe at a time; CAS ensures only one thread
+//   - HalfOpen â†’ pass through (one probe at a time; CAS ensures only one thread
 //     transitions the state).
 //
 // fallbackFlowStart is the absolute PC of the fallback flow's first instruction,
@@ -122,15 +122,15 @@ func CircuitBreakerGateStep(arena *CircuitBreakerArena, idx int, fallbackFlowSta
 // RecordCircuitOutcomeStep returns an Instruction that records the outcome of the
 // guarded work for the circuit breaker state machine.
 //
-//   - successFn nil  → always record as success.
-//   - successFn non-nil → call it; true = success, false = failure.
+//   - successFn nil  â†’ always record as success.
+//   - successFn non-nil â†’ call it; true = success, false = failure.
 //
 // State transitions:
 //
-//	Closed + failure count ≥ threshold  → Open (reset failure counter, store trip time).
-//	Closed + success                    → reset failure counter.
-//	HalfOpen + success count ≥ threshold → Closed (reset both counters).
-//	HalfOpen + failure                  → re-Open (store new trip time).
+//	Closed + failure count â‰¥ threshold  â†’ Open (reset failure counter, store trip time).
+//	Closed + success                    â†’ reset failure counter.
+//	HalfOpen + success count â‰¥ threshold â†’ Closed (reset both counters).
+//	HalfOpen + failure                  â†’ re-Open (store new trip time).
 func RecordCircuitOutcomeStep(arena *CircuitBreakerArena, idx int, successFn OutcomeFunc) Instruction {
 	return Instruction{
 		Name: "RECORD_CIRCUIT_OUTCOME",
@@ -166,7 +166,7 @@ func RecordCircuitOutcomeStep(arena *CircuitBreakerArena, idx int, successFn Out
 						}
 					}
 				} else {
-					// Probe failed — re-open the circuit.
+					// Probe failed â€” re-open the circuit.
 					if atomic.CompareAndSwapInt32(&cs.state, CBStateHalfOpen, CBStateOpen) {
 						atomic.StoreInt64(&cs.lastTripNs, time.Now().UnixNano())
 						atomic.StoreInt64(&cs.failureCount, 0)

@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"rah/internal/sync"
+	"github.com/amitkhosla/rah/internal/sync"
 	"gopkg.in/yaml.v3"
 )
 
@@ -154,7 +154,7 @@ func lintCmd(args []string) int {
 		serverIssues, err := lintWithStudio(bundleDir, *studioURL)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Studio validation failed: %v\n", err)
-			// Don't exit—continue with local results only
+			// Don't exitâ€”continue with local results only
 		} else {
 			// Merge server-side issues into result
 			result.Issues = append(result.Issues, serverIssues...)

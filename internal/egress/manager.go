@@ -1,9 +1,9 @@
-package egress
+﻿package egress
 
 import (
 	"sync/atomic"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 const (
@@ -20,8 +20,8 @@ const (
 // All fields are safe for concurrent reads; Update() is the only writer.
 type EgressManager struct {
 	rules     atomic.Pointer[RuleSet]     // current immutable rule snapshot
-	codeCache atomic.Pointer[egressCache] // service-code → pid cache
-	hostCache atomic.Pointer[egressCache] // host string → pid cache
+	codeCache atomic.Pointer[egressCache] // service-code â†’ pid cache
+	hostCache atomic.Pointer[egressCache] // host string â†’ pid cache
 }
 
 // NewEgressManager creates a ready-to-use EgressManager with an empty rule set.
@@ -44,21 +44,21 @@ func NewEgressManager() *EgressManager {
 //
 // Resolution order:
 //  1. If serviceCode != "", check codeCache.
-//  2. Miss → binary-search ExactCodes → populate codeCache.
+//  2. Miss â†’ binary-search ExactCodes â†’ populate codeCache.
 //  3. If host != "", check hostCache.
-//  4. Miss → walk Patterns → populate hostCache.
+//  4. Miss â†’ walk Patterns â†’ populate hostCache.
 //  5. Default: return &rs.Profiles[0] (Auto).
 //
 // Never returns nil.
 func (m *EgressManager) Resolve(serviceCode, host string) *EgressProfile {
-	rs := m.rules.Load() // immutable snapshot — never modified
+	rs := m.rules.Load() // immutable snapshot â€” never modified
 
-	// ── Code resolution ──────────────────────────────────────────────────────
+	// â”€â”€ Code resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if serviceCode != "" {
 		cc := m.codeCache.Load()
 		if pid, found := cc.get(serviceCode); found {
 			if pid == pidNoMatch {
-				// Negative cache hit — skip to host resolution.
+				// Negative cache hit â€” skip to host resolution.
 				goto hostResolution
 			}
 			return &rs.Profiles[pid]
@@ -75,7 +75,7 @@ func (m *EgressManager) Resolve(serviceCode, host string) *EgressProfile {
 	}
 
 hostResolution:
-	// ── Host / pattern resolution ─────────────────────────────────────────────
+	// â”€â”€ Host / pattern resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if host != "" {
 		hc := m.hostCache.Load()
 		if pid, found := hc.get(host); found {
@@ -111,7 +111,7 @@ func (m *EgressManager) Update(cfg *config.EgressConfig) error {
 	// Swap rule set atomically.
 	m.rules.Store(newRS)
 
-	// Replace caches entirely — the whole rule set changed, so any cached
+	// Replace caches entirely â€” the whole rule set changed, so any cached
 	// pid values may map to stale profile IDs.
 	m.codeCache.Store(newEgressCache(64))
 	m.hostCache.Store(newEgressCache(256))

@@ -1,7 +1,7 @@
-package soap
+﻿package soap
 
 import (
-	"rah/internal/xml"
+	"github.com/amitkhosla/rah/internal/xml"
 	"testing"
 )
 
@@ -129,7 +129,7 @@ func TestAppendSOAP11Envelope_ZeroAlloc(t *testing.T) {
 	bodyXML := []byte(`<test>body</test>`)
 
 	// Run allocation check with pre-allocated destination to hit the hot path
-	// Pre-allocated buffer → append only, no internal re-allocations
+	// Pre-allocated buffer â†’ append only, no internal re-allocations
 	allocs := testing.AllocsPerRun(100, func() {
 		dst := make([]byte, 0, 2048)
 		_ = AppendSOAP11Envelope(dst, bodyXML)
@@ -137,7 +137,7 @@ func TestAppendSOAP11Envelope_ZeroAlloc(t *testing.T) {
 
 	// Should be at most 1 allocation for the dst slice initialization
 	if allocs > 1 {
-		t.Errorf("expected ≤1 allocation (dst buffer), got %v", allocs)
+		t.Errorf("expected â‰¤1 allocation (dst buffer), got %v", allocs)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestAppendSOAP12Envelope_ZeroAlloc(t *testing.T) {
 
 	// Should be at most 1 allocation for the dst slice initialization
 	if allocs > 1 {
-		t.Errorf("expected ≤1 allocation (dst buffer), got %v", allocs)
+		t.Errorf("expected â‰¤1 allocation (dst buffer), got %v", allocs)
 	}
 }
 

@@ -1,9 +1,9 @@
-package engine
+﻿package engine
 
 import (
 	"log"
 	"net/http"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // APIKeyResolver provides multi-level API key resolution with fallback chain.
@@ -14,8 +14,8 @@ import (
 // 4. Configured/baked key
 // 5. Empty string
 type APIKeyResolver struct {
-	// tenantKeys maps: "tenantID:modelAlias" → API key
-	// or "tenantID:default" → default key for tenant
+	// tenantKeys maps: "tenantID:modelAlias" â†’ API key
+	// or "tenantID:default" â†’ default key for tenant
 	tenantKeys map[string]string
 }
 

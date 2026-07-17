@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"rah/internal/avro"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/avro"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func TestAvroToJSONBasic(t *testing.T) {
@@ -289,7 +289,7 @@ func TestPoolCleanup(t *testing.T) {
 	slotMap := make(map[string]int)
 	prog, _ := avro.Compile(schema, slotMap)
 
-	// f="hello" → varint 10 + 5 bytes
+	// f="hello" â†’ varint 10 + 5 bytes
 	avroBin := []byte{10, 'h', 'e', 'l', 'l', 'o'}
 
 	instr, _ := NewAvroToJSONStep(0, 1, prog)

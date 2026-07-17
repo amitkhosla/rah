@@ -1,8 +1,8 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 	"sync"
 )
 

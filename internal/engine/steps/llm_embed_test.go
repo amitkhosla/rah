@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // makeEmbedCtx creates a minimal Context with enough slots for tests.

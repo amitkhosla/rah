@@ -1,9 +1,9 @@
-package ingest
+﻿package ingest
 
 import (
 	"fmt"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 func applyDefaults(cfg config.IngestConfig) config.IngestConfig {

@@ -1,20 +1,20 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/avro"
-	"rah/internal/engine/steps"
-	"rah/internal/xml"
+	"github.com/amitkhosla/rah/internal/avro"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/xml"
 )
 
 // compileAvroToJSON handles the "avro_to_json" step type.
 //
 // Step input keys:
 //
-//	src_slot  — var name whose ByteSlot contains Avro binary (required)
-//	schema    — Avro JSON schema string (required)
-//	dst_slot  — var name whose ByteSlot will receive JSON output (required)
+//	src_slot  â€” var name whose ByteSlot contains Avro binary (required)
+//	schema    â€” Avro JSON schema string (required)
+//	dst_slot  â€” var name whose ByteSlot will receive JSON output (required)
 func (c *Compiler) compileAvroToJSON(step StepConfig) error {
 	schemaJSON := step.Input["schema"]
 	if schemaJSON == "" {
@@ -56,9 +56,9 @@ func (c *Compiler) compileAvroToJSON(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot  — var name whose ByteSlot contains JSON (required)
-//	schema    — Avro JSON schema string (required)
-//	dst_slot  — var name whose ByteSlot will receive Avro binary (required)
+//	src_slot  â€” var name whose ByteSlot contains JSON (required)
+//	schema    â€” Avro JSON schema string (required)
+//	dst_slot  â€” var name whose ByteSlot will receive Avro binary (required)
 func (c *Compiler) compileJSONToAvro(step StepConfig) error {
 	schemaJSON := step.Input["schema"]
 	if schemaJSON == "" {
@@ -100,11 +100,11 @@ func (c *Compiler) compileJSONToAvro(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot   — var name whose ByteSlot contains Avro binary (required)
-//	schema     — Avro JSON schema string (required)
-//	path       — static dot-path to extract (use if path is known at bake time)
-//	path_slot  — var name whose ByteSlot holds the path at runtime (use for dynamic paths)
-//	dst_slot   — var name whose ByteSlot will receive the extracted value (required)
+//	src_slot   â€” var name whose ByteSlot contains Avro binary (required)
+//	schema     â€” Avro JSON schema string (required)
+//	path       â€” static dot-path to extract (use if path is known at bake time)
+//	path_slot  â€” var name whose ByteSlot holds the path at runtime (use for dynamic paths)
+//	dst_slot   â€” var name whose ByteSlot will receive the extracted value (required)
 //
 // Exactly one of 'path' or 'path_slot' must be set.
 func (c *Compiler) compileAvroGet(step StepConfig) error {
@@ -179,9 +179,9 @@ func (c *Compiler) compileAvroGet(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot     — var name whose ByteSlot contains Avro binary (required)
-//	avro_schema  — Avro JSON schema string (required)
-//	dst_slot     — var name whose ByteSlot will receive XML output (required)
+//	src_slot     â€” var name whose ByteSlot contains Avro binary (required)
+//	avro_schema  â€” Avro JSON schema string (required)
+//	dst_slot     â€” var name whose ByteSlot will receive XML output (required)
 //
 // XML structure is derived from the JSON intermediate via the default build program.
 func (c *Compiler) compileAvroToXML(step StepConfig) error {
@@ -229,9 +229,9 @@ func (c *Compiler) compileAvroToXML(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot     — var name whose ByteSlot contains XML (required)
-//	avro_schema  — Avro JSON schema string (required)
-//	dst_slot     — var name whose ByteSlot will receive Avro binary (required)
+//	src_slot     â€” var name whose ByteSlot contains XML (required)
+//	avro_schema  â€” Avro JSON schema string (required)
+//	dst_slot     â€” var name whose ByteSlot will receive Avro binary (required)
 //
 // XML is converted to JSON intermediate via the default scan program before encoding.
 func (c *Compiler) compileXMLToAvro(step StepConfig) error {

@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"net/http"
@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func TestGraphQLCallStaticQuery(t *testing.T) {
@@ -420,7 +420,7 @@ func TestAppendJSONEscapedStringNewlines(t *testing.T) {
 }
 
 func TestAppendJSONEscapedStringBackslash(t *testing.T) {
-	// Test: Escaping backslashes — input has 2 backslashes, output has 4; quotes also escaped.
+	// Test: Escaping backslashes â€” input has 2 backslashes, output has 4; quotes also escaped.
 	dst := []byte{}
 	result := AppendJSONEscapedString(dst, `query { pattern: "a\\b" }`)
 	expected := `query { pattern: \"a\\\\b\" }`

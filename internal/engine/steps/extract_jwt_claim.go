@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ExtractJWTClaimConfig configures the extract_jwt_claim instruction.
@@ -86,7 +86,7 @@ func ExtractJWTClaim(cfg ExtractJWTClaimConfig) engine.Instruction {
 			// Coerce to string representation.
 			var result string
 			if err := json.Unmarshal(rawClaim, &result); err != nil {
-				// Not a JSON string — use raw bytes (handles numbers, booleans).
+				// Not a JSON string â€” use raw bytes (handles numbers, booleans).
 				result = strings.Trim(string(rawClaim), `"`)
 			}
 

@@ -1,14 +1,14 @@
-package steps
+﻿package steps
 
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // RenderSeg is one segment of a pre-compiled render_template instruction.
 // Exactly one of Lit or SlotIdx is active per segment:
-//   - Lit != nil  → emit these literal bytes verbatim
-//   - SlotIdx >= 0 → emit ByteSlots[SlotIdx] at runtime
+//   - Lit != nil  â†’ emit these literal bytes verbatim
+//   - SlotIdx >= 0 â†’ emit ByteSlots[SlotIdx] at runtime
 type RenderSeg struct {
 	Lit     []byte // static literal bytes (nil when SlotIdx is used)
 	SlotIdx int    // -1 when Lit is used; otherwise index into ByteSlots
@@ -19,7 +19,7 @@ type RenderSeg struct {
 // markers (e.g. '{"userId":"${user_id}","plan":"${plan}"}').
 //
 // Hot-path cost: one pre-scan to total the length, one ctx.Alloc call, then
-// len(segs) copy operations.  Zero heap allocations for results ≤ 1 KB.
+// len(segs) copy operations.  Zero heap allocations for results â‰¤ 1 KB.
 func RenderTemplate(segs []RenderSeg, destSlot int) engine.Instruction {
 	return engine.Instruction{
 		Name: "RENDER_TEMPLATE",

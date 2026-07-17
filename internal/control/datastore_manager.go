@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"rah/internal/apikey"
-	"rah/internal/config"
-	"rah/internal/datastore"
-	"rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/secrets"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,7 +41,7 @@ type DataStoreManager struct {
 }
 
 // NewDataStoreManager builds a DataStoreManager from the given config.
-// resolver is optional (pass nil to skip credential resolution — suitable for
+// resolver is optional (pass nil to skip credential resolution â€” suitable for
 // tests and deployments where credentials are already in the config as literals).
 func NewDataStoreManager(ctx context.Context, initial config.DataStoreConfig, resolver secrets.Resolver) (*DataStoreManager, error) {
 	if err := initial.Validate(); err != nil {
@@ -212,8 +212,8 @@ func buildEncryptingStore(ctx context.Context, inner datastore.KeyValueStore, en
 
 // resolveEncryptionKey resolves an encryption key reference to raw 32-byte key material.
 // Supported schemes:
-//   - hex:<64 hex chars> — inline key, no resolver needed (dev/test)
-//   - anything else      — delegated to the secrets resolver (env:, vault://, gsm://, etc.)
+//   - hex:<64 hex chars> â€” inline key, no resolver needed (dev/test)
+//   - anything else      â€” delegated to the secrets resolver (env:, vault://, gsm://, etc.)
 //
 // Returns an error if the resolved value is not exactly 32 bytes.
 func resolveEncryptionKey(ctx context.Context, keyRef string, resolver secrets.Resolver) ([]byte, error) {
@@ -246,12 +246,12 @@ func resolveEncryptionKey(ctx context.Context, keyRef string, resolver secrets.R
 // through the secrets manager. All other fields are unchanged.
 //
 // Resolution order (highest precedence first):
-//  1. UsernameRef / PasswordRef — explicit secret references (env:, enc:, vault:, etc.)
+//  1. UsernameRef / PasswordRef â€” explicit secret references (env:, enc:, vault:, etc.)
 //     Resolved value is written into Username / Password.
-//  2. Username / Password — may themselves be secret references (same scheme support)
-//     or inline plaintext (no scheme prefix → passed through unchanged).
+//  2. Username / Password â€” may themselves be secret references (same scheme support)
+//     or inline plaintext (no scheme prefix â†’ passed through unchanged).
 func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, resolver secrets.Resolver) (config.StoreConfig, error) {
-	// Resolve UsernameRef first — overrides Username if set.
+	// Resolve UsernameRef first â€” overrides Username if set.
 	if storeCfg.Connection.UsernameRef != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.UsernameRef)
 		if err != nil {
@@ -268,7 +268,7 @@ func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, r
 		clear(val)
 	}
 
-	// Resolve PasswordRef first — overrides Password if set.
+	// Resolve PasswordRef first â€” overrides Password if set.
 	if storeCfg.Connection.PasswordRef != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.PasswordRef)
 		if err != nil {
@@ -471,7 +471,7 @@ func (m *DataStoreManager) ReadUpstreamServicesSnapshot(ctx context.Context) (ma
 	return m.ReadGlobalDomainSnapshot(ctx, config.DomainUpstreamServices)
 }
 
-// ─── RateLimitV2Datastore implementation (satisfies registry.RateLimitV2Datastore) ──
+// â”€â”€â”€ RateLimitV2Datastore implementation (satisfies registry.RateLimitV2Datastore) â”€â”€
 
 func (m *DataStoreManager) PutRateLimitConfigV2(ctx context.Context, name string, raw []byte) error {
 	if !m.IsConfigured(config.DomainRateLimitConfigsV2) {
@@ -584,7 +584,7 @@ func (m *DataStoreManager) DataStoreConfigHandler(w http.ResponseWriter, r *http
 	}
 }
 
-// ─── apikey.Store implementation ──────────────────────────────────────────────
+// â”€â”€â”€ apikey.Store implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (m *DataStoreManager) PutApp(ctx context.Context, appID uint32, raw []byte) error {
 	if !m.IsConfigured(config.DomainApps) {

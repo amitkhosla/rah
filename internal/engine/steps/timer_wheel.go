@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"context"
@@ -7,19 +7,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // Timer wheel constants. wheelSize is a power of 2 so slot index uses & instead of %.
-// Covers 4096 seconds (~68 min) at 1-second resolution — sufficient for all gateway timeouts.
+// Covers 4096 seconds (~68 min) at 1-second resolution â€” sufficient for all gateway timeouts.
 const (
 	wheelSize       = 4096
 	wheelMask       = wheelSize - 1
-	maxWheelEntries = 1 << 19 // 524288 — global entry pool; index 0 = nil sentinel
-	maxPerSlot      = 512     // max concurrent entries per slot; covers ~50K RPS × 10ms avg response
+	maxWheelEntries = 1 << 19 // 524288 â€” global entry pool; index 0 = nil sentinel
+	maxPerSlot      = 512     // max concurrent entries per slot; covers ~50K RPS Ã— 10ms avg response
 )
 
-// wheelEntry holds per-entry cancellation state. No next pointer — flat array replaces linked list.
+// wheelEntry holds per-entry cancellation state. No next pointer â€” flat array replaces linked list.
 type wheelEntry struct {
 	cancelled uint32 // atomic: 0=active, 1=cancelled
 }
@@ -165,7 +165,7 @@ type wheelSlot struct {
 	buf      [maxPerSlot]uint32 // entry indices; 0 = empty/cancelled
 }
 
-// Package-level wheel state — singleton, initialised by StartTimerWheel.
+// Package-level wheel state â€” singleton, initialised by StartTimerWheel.
 var (
 	wheelSlots    [wheelSize]wheelSlot
 	wheelEntries  [maxWheelEntries]wheelEntry
@@ -176,7 +176,7 @@ var (
 )
 
 // wheelHandle is returned by scheduleBody/scheduleCtx.
-// Zero value (idx==0) means "no timer scheduled" — all operations are safe no-ops.
+// Zero value (idx==0) means "no timer scheduled" â€” all operations are safe no-ops.
 type wheelHandle struct {
 	idx  uint32
 	slot uint16
@@ -184,7 +184,7 @@ type wheelHandle struct {
 }
 
 // cancel marks the entry as cancelled and immediately reclaims the fireRef and entry index.
-// The position (pos) is always recycled by tick — never by cancel — to avoid double-enqueue.
+// The position (pos) is always recycled by tick â€” never by cancel â€” to avoid double-enqueue.
 func (h wheelHandle) cancel() {
 	if h.idx == 0 {
 		return
@@ -192,10 +192,10 @@ func (h wheelHandle) cancel() {
 	atomic.StoreUint32(&wheelEntries[h.idx].cancelled, 1)
 	ref := wheelFire[h.idx].Swap(nil)
 	if ref == nil {
-		// tick already processed this entry — it will recycle pos via posRing.
+		// tick already processed this entry â€” it will recycle pos via posRing.
 		return
 	}
-	// We won the Swap race — we are responsible for ref and idx recycling.
+	// We won the Swap race â€” we are responsible for ref and idx recycling.
 	ref.kind, ref.body, ref.ctx, ref.gen = 0, nil, nil, 0
 	wheelFirePool.Put(ref)
 	// Zero buf[pos] so tick skips this position cleanly (tick still recycles pos to posRing).
@@ -238,7 +238,7 @@ func runWheelTicker(ctx context.Context) {
 // Temporal separation guarantees that no goroutine is concurrently writing to this slot
 // (entries for slot S were scheduled >= 1 second ago; new goroutines target future slots),
 // so writePos.Swap(0) is safe.
-// Tick ALWAYS recycles positions back to posRing — cancel() never does, preventing double-enqueue.
+// Tick ALWAYS recycles positions back to posRing â€” cancel() never does, preventing double-enqueue.
 func wheelTick(slot uint32) {
 	s := &wheelSlots[slot]
 	count := s.writePos.Swap(0)
@@ -247,7 +247,7 @@ func wheelTick(slot uint32) {
 		if idx != 0 {
 			ref := wheelFire[idx].Swap(nil)
 			if ref != nil {
-				// We got the ref — fire if not cancelled, then recycle ref and idx.
+				// We got the ref â€” fire if not cancelled, then recycle ref and idx.
 				if atomic.LoadUint32(&wheelEntries[idx].cancelled) == 0 {
 					switch ref.kind {
 					case wheelKindBody:
@@ -267,13 +267,13 @@ func wheelTick(slot uint32) {
 			}
 			// If ref==nil: cancel() already recycled idx and zeroed buf[i].
 		}
-		// Always recycle the position back to posRing — tick owns pos recycling.
+		// Always recycle the position back to posRing â€” tick owns pos recycling.
 		s.posRing.enqueue(i)
 	}
 }
 
 // scheduleBody schedules a resp.Body.Close() timer.
-// Returns a wheelHandle (idx==0 means pool/slot exhausted — caller falls back to time.AfterFunc).
+// Returns a wheelHandle (idx==0 means pool/slot exhausted â€” caller falls back to time.AfterFunc).
 func scheduleBody(body io.ReadCloser, dur time.Duration) wheelHandle {
 	idx, ok := wheelFreeRing.dequeue()
 	if !ok {
@@ -289,7 +289,7 @@ func scheduleBody(body io.ReadCloser, dur time.Duration) wheelHandle {
 	if !ok {
 		pos = s.writePos.Add(1) - 1
 		if pos >= maxPerSlot {
-			// Slot full — undo increment and return all resources.
+			// Slot full â€” undo increment and return all resources.
 			s.writePos.Add(^uint32(0))
 			wheelFreeRing.enqueue(idx)
 			return wheelHandle{}
@@ -309,7 +309,7 @@ func scheduleBody(body io.ReadCloser, dur time.Duration) wheelHandle {
 }
 
 // scheduleCtx schedules a ctx.CancelIfGeneration(gen, DeadlineExceeded) timer.
-// Returns a wheelHandle (idx==0 means pool/slot exhausted — caller falls back to time.AfterFunc).
+// Returns a wheelHandle (idx==0 means pool/slot exhausted â€” caller falls back to time.AfterFunc).
 func scheduleCtx(reqCtx *rctx.Context, gen uint64, dur time.Duration) wheelHandle {
 	idx, ok := wheelFreeRing.dequeue()
 	if !ok {

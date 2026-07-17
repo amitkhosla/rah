@@ -1,4 +1,4 @@
-// Command rah-schema generates a JSON Schema (draft-07) for the RAH unified sync bundle format.
+﻿// Command rah-schema generates a JSON Schema (draft-07) for the RAH unified sync bundle format.
 //
 // Usage:
 //   go run ./cmd/rah-schema
@@ -15,9 +15,9 @@
 //   - input: object with step-specific parameters (validated against step descriptor fields)
 //
 // Field type mapping:
-//   - Keys containing "timeout", "ttl", "max", "count", "retries", "port" → integer
-//   - Keys containing "enabled", "require", "generate", "skip", "include", "forward", "match" → boolean
-//   - All other fields → string
+//   - Keys containing "timeout", "ttl", "max", "count", "retries", "port" â†’ integer
+//   - Keys containing "enabled", "require", "generate", "skip", "include", "forward", "match" â†’ boolean
+//   - All other fields â†’ string
 //
 package main
 
@@ -30,8 +30,8 @@ import (
 	"sort"
 	"strings"
 
-	"rah/internal/control"
-	"rah/internal/sync"
+	"github.com/amitkhosla/rah/internal/control"
+	"github.com/amitkhosla/rah/internal/sync"
 )
 
 // JSONSchema represents a JSON Schema draft-07 document

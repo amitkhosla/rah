@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"sync"
@@ -9,9 +9,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"rah/internal/engine"
-	grpcutil "rah/internal/grpc"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	grpcutil "github.com/amitkhosla/rah/internal/grpc"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ProtoToJSONConfig configures a proto_to_json instruction.
@@ -42,11 +42,11 @@ type ProtoGetConfig struct {
 	PathSlot    int    // slot containing field path at runtime; -1 if static
 	MsgDesc     protoreflect.MessageDescriptor
 	MsgPool     *grpcutil.ProtoMsgPool
-	JSONBufPool *sync.Pool // for dynamic path: full unmarshal → protojson.Marshal → gjson
+	JSONBufPool *sync.Pool // for dynamic path: full unmarshal â†’ protojson.Marshal â†’ gjson
 }
 
 // XMLToProtoConfig configures an xml_to_proto instruction (multi-hop).
-// Uses GetPivot/PutPivot for XML→JSON intermediate.
+// Uses GetPivot/PutPivot for XMLâ†’JSON intermediate.
 type XMLToProtoConfig struct {
 	SrcSlot        int
 	DstSlot        int
@@ -56,7 +56,7 @@ type XMLToProtoConfig struct {
 }
 
 // ProtoToXMLConfig configures a proto_to_xml instruction (multi-hop).
-// Uses GetPivot/PutPivot for proto→JSON intermediate.
+// Uses GetPivot/PutPivot for protoâ†’JSON intermediate.
 type ProtoToXMLConfig struct {
 	SrcSlot int
 	DstSlot int
@@ -64,7 +64,7 @@ type ProtoToXMLConfig struct {
 	// XML encoder (placeholder; full implementation in S6)
 }
 
-// ProtoToJSONInstruction unmarshals proto binary → dynamicpb.Message → JSON.
+// ProtoToJSONInstruction unmarshals proto binary â†’ dynamicpb.Message â†’ JSON.
 func ProtoToJSONInstruction(cfg ProtoToJSONConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "PROTO_TO_JSON",
@@ -103,7 +103,7 @@ func ProtoToJSONInstruction(cfg ProtoToJSONConfig) engine.Instruction {
 	}
 }
 
-// JSONToProtoInstruction unmarshals JSON → dynamicpb.Message → proto binary.
+// JSONToProtoInstruction unmarshals JSON â†’ dynamicpb.Message â†’ proto binary.
 // Manages message lifecycle: Get from pool, Unmarshal, Marshal to binary, Put back.
 func JSONToProtoInstruction(cfg JSONToProtoConfig) engine.Instruction {
 	return engine.Instruction{
@@ -143,7 +143,7 @@ func JSONToProtoInstruction(cfg JSONToProtoConfig) engine.Instruction {
 
 // ProtoGetInstruction reads a field from proto binary (static or dynamic path).
 // Static path: walk descriptor chain at compile time, zero full decode.
-// Dynamic path: full unmarshal → protojson.Marshal → gjson.GetBytes.
+// Dynamic path: full unmarshal â†’ protojson.Marshal â†’ gjson.GetBytes.
 func ProtoGetInstruction(cfg ProtoGetConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "PROTO_GET",
@@ -203,7 +203,7 @@ func ProtoGetInstruction(cfg ProtoGetConfig) engine.Instruction {
 	}
 }
 
-// XMLToProtoInstruction converts XML → JSON (via pivot) → proto binary.
+// XMLToProtoInstruction converts XML â†’ JSON (via pivot) â†’ proto binary.
 // Uses transcode.GetPivot/PutPivot for intermediate buffer.
 // Placeholder: full XML parsing in S6.
 func XMLToProtoInstruction(cfg XMLToProtoConfig) engine.Instruction {
@@ -218,7 +218,7 @@ func XMLToProtoInstruction(cfg XMLToProtoConfig) engine.Instruction {
 	}
 }
 
-// ProtoToXMLInstruction converts proto binary → JSON (via pivot) → XML.
+// ProtoToXMLInstruction converts proto binary â†’ JSON (via pivot) â†’ XML.
 // Uses transcode.GetPivot/PutPivot for intermediate buffer.
 // Placeholder: full XML generation in S6.
 func ProtoToXMLInstruction(cfg ProtoToXMLConfig) engine.Instruction {
@@ -233,7 +233,7 @@ func ProtoToXMLInstruction(cfg ProtoToXMLConfig) engine.Instruction {
 	}
 }
 
-// ── Instruction factories (called from compiler) ────────────────────────────
+// â”€â”€ Instruction factories (called from compiler) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // NewProtoToJSONInstruction creates a proto_to_json instruction.
 func NewProtoToJSONInstruction(cfg ProtoToJSONConfig) engine.Instruction {

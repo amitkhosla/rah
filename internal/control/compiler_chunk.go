@@ -1,18 +1,18 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileChunkText resolves slots and appends the chunk_text instruction.
 //
 // Slot mapping:
-//   - key_identifier → inputSlot (text to chunk)
-//   - as             → outputSlot (JSON []string chunks)
-//   - input          → config JSON with chunk_size, overlap, count_slot
+//   - key_identifier â†’ inputSlot (text to chunk)
+//   - as             â†’ outputSlot (JSON []string chunks)
+//   - input          â†’ config JSON with chunk_size, overlap, count_slot
 func (c *Compiler) compileChunkText(step StepConfig) error {
 	inputSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

@@ -1,21 +1,21 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileMQTTPublish handles the "mqtt_publish" step type.
 //
 // Step input keys:
 //
-//	broker         — broker name (required; must exist in MQTTPool)
-//	topic          — static topic string (required if topic_slot not set)
-//	topic_slot     — var name whose slot holds the topic (use if topic is dynamic)
-//	payload_slot   — var name whose slot holds the message payload (required)
-//	qos            — quality of service: 0 or 1 (default: 0). QoS 2 is not supported.
-//	retained       — "true" to set the retained flag (default: false)
+//	broker         â€” broker name (required; must exist in MQTTPool)
+//	topic          â€” static topic string (required if topic_slot not set)
+//	topic_slot     â€” var name whose slot holds the topic (use if topic is dynamic)
+//	payload_slot   â€” var name whose slot holds the message payload (required)
+//	qos            â€” quality of service: 0 or 1 (default: 0). QoS 2 is not supported.
+//	retained       â€” "true" to set the retained flag (default: false)
 //
 // At bake time, either 'topic' or 'topic_slot' must be set. If topic_slot is set,
 // the compiler validates it exists; otherwise, the static topic string is baked.
@@ -90,16 +90,16 @@ func (c *Compiler) compileMQTTPublish(step StepConfig) error {
 //
 // Step input keys:
 //
-//	broker              — broker name (required; must exist in MQTTPool)
-//	topic               — static request topic (required if topic_slot not set)
-//	topic_slot          — var name whose slot holds the request topic (use if dynamic)
-//	payload_slot        — var name whose slot holds the request payload (required)
-//	reply_topic         — static reply topic (required if reply_topic_slot not set)
-//	reply_topic_slot    — var name whose slot holds the reply topic (use if dynamic)
-//	response_slot       — var name whose slot will store the reply payload (required)
-//	qos                 — quality of service: 0 or 1 (default: 0). QoS 2 is not supported.
-//	retained            — "true" to set the retained flag on the request (default: false)
-//	timeout_ms          — timeout in milliseconds for waiting for reply (default: 30000)
+//	broker              â€” broker name (required; must exist in MQTTPool)
+//	topic               â€” static request topic (required if topic_slot not set)
+//	topic_slot          â€” var name whose slot holds the request topic (use if dynamic)
+//	payload_slot        â€” var name whose slot holds the request payload (required)
+//	reply_topic         â€” static reply topic (required if reply_topic_slot not set)
+//	reply_topic_slot    â€” var name whose slot holds the reply topic (use if dynamic)
+//	response_slot       â€” var name whose slot will store the reply payload (required)
+//	qos                 â€” quality of service: 0 or 1 (default: 0). QoS 2 is not supported.
+//	retained            â€” "true" to set the retained flag on the request (default: false)
+//	timeout_ms          â€” timeout in milliseconds for waiting for reply (default: 30000)
 //
 // The instruction publishes to the request topic and subscribes to the reply topic,
 // waiting up to timeout_ms for a response. If a response arrives, it is copied into

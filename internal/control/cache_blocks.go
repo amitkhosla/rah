@@ -1,8 +1,8 @@
-package control
+﻿package control
 
 import (
-	"rah/internal/cache"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/cache"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func CacheLookup(ctx *rctx.Context, slabMgr *cache.CacheManager) bool {

@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"strings"
 
 	"github.com/tidwall/gjson"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ValidateRouteInstruction evaluates a list of CompiledRules against the current
@@ -39,7 +39,7 @@ func (v *ValidateRouteInstruction) Execute(ctx *rctx.Context, state *engine.Exec
 }
 
 // evalNode evaluates one node (And/Or/Leaf) in the flat pre-order tree.
-// depth is a safety limit; real flows are ≤4 deep so this is never hit.
+// depth is a safety limit; real flows are â‰¤4 deep so this is never hit.
 //
 // For composite nodes (And/Or), children are stored as subtrees in the flat array.
 // ChildStart points to the first child's root node. To find siblings, we must
@@ -315,7 +315,7 @@ func applyDest(ctx *rctx.Context, rule *CompiledRule, state *engine.ExecutionSta
 }
 
 // renderMsg builds the failure message from pre-split MsgParts into ctx.ScratchBuffer.
-// Reuses the scratch buffer — zero heap allocation in the common case.
+// Reuses the scratch buffer â€” zero heap allocation in the common case.
 func renderMsg(ctx *rctx.Context, rule *CompiledRule) []byte {
 	if len(rule.MsgParts) == 0 {
 		return nil

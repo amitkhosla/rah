@@ -1,12 +1,12 @@
-package steps
+﻿package steps
 
 import (
 	"sync"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/transcode"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/transcode"
 )
 
 // Helper to create a simple test message descriptor.
@@ -56,7 +56,7 @@ func TestProtoToXMLMultiHop(t *testing.T) {
 	t.Skip("XML transcoding with pivot buffer requires full implementation")
 }
 
-// ── Basic pool behavior tests (no descriptor required) ────────────────────────
+// â”€â”€ Basic pool behavior tests (no descriptor required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestProtoMsgPoolBasic(t *testing.T) {
 	// Create a minimal test by using a dynamicpb descriptor.
@@ -84,7 +84,7 @@ func TestPivotBufferManagement(t *testing.T) {
 
 	transcode.PutPivot(pb1)
 
-	// Get again — should be reset
+	// Get again â€” should be reset
 	pb2 := transcode.GetPivot()
 	defer transcode.PutPivot(pb2)
 

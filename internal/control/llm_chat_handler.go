@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"bytes"
@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // llmChatRequest is the body for POST /ai/llm/chat.
@@ -38,7 +38,7 @@ type llmChatResponse struct {
 // llmChatModelHandler handles POST /ai/llm/chat.
 // It follows the same pattern as llmTestModelHandler: look up the model alias,
 // resolve its API key through the secrets manager, pick the right adapter,
-// and call the provider — no provider credentials are needed in Studio.
+// and call the provider â€” no provider credentials are needed in Studio.
 func llmChatModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.Manager, sm steps.SecretLoader) {
 	if r.Method != http.MethodPost {
 		writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -66,7 +66,7 @@ func llmChatModelHandler(w http.ResponseWriter, r *http.Request, cfgMgr *config.
 
 	model := findLLMModel(cfgMgr, req.Model)
 	if model == nil {
-		writeAIError(w, http.StatusNotFound, fmt.Sprintf("model %q not registered — add it in AI → Models", req.Model))
+		writeAIError(w, http.StatusNotFound, fmt.Sprintf("model %q not registered â€” add it in AI â†’ Models", req.Model))
 		return
 	}
 

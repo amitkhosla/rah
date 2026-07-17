@@ -1,10 +1,10 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strings"
 
-	registrypkg "rah/internal/registry"
+	registrypkg "github.com/amitkhosla/rah/internal/registry"
 )
 
 // rlConfigLookup is a narrow interface used by validation so it is testable
@@ -15,13 +15,13 @@ type rlConfigLookup interface {
 
 // validateRLPolicies runs the four advisory validation checks for one API's
 // rate limit policy table and returns any warnings found. Warnings are
-// non-blocking — the caller should still proceed with bake.
+// non-blocking â€” the caller should still proceed with bake.
 //
 // Checks performed:
-//  1. no_flow        — flow name empty or not found in flowCfgs
-//  2. not_enforced   — policies defined, skip=false, but flow tree has no RL step
-//  3. config_missing — named / dynamic entries reference a config that doesn't exist
-//  4. slot_unfilled  — count_by=slot or dynamic source=slot.<name>, but nothing
+//  1. no_flow        â€” flow name empty or not found in flowCfgs
+//  2. not_enforced   â€” policies defined, skip=false, but flow tree has no RL step
+//  3. config_missing â€” named / dynamic entries reference a config that doesn't exist
+//  4. slot_unfilled  â€” count_by=slot or dynamic source=slot.<name>, but nothing
 //     in the flow tree assigns that slot
 func validateRLPolicies(
 	apiName string,
@@ -34,7 +34,7 @@ func validateRLPolicies(
 
 	var warns []RateLimitWarning
 
-	// ── 1. no_flow ────────────────────────────────────────────────────────────
+	// â”€â”€ 1. no_flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if flowName == "" {
 		warns = append(warns, RateLimitWarning{
 			Code:    RLWarnNoFlow,
@@ -59,23 +59,23 @@ func validateRLPolicies(
 		return warns
 	}
 
-	// ── 2. not_enforced ───────────────────────────────────────────────────────
+	// â”€â”€ 2. not_enforced â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	if !flowHasRateLimitStep(flow, flowCfgs) {
 		warns = append(warns, RateLimitWarning{
 			Code: RLWarnNotEnforced,
 			Message: fmt.Sprintf(
-				"API %q has rate limit policies but flow %q contains no rate limit step — "+
+				"API %q has rate limit policies but flow %q contains no rate limit step â€” "+
 					"policies will be auto-injected at flow start",
 				apiName, flowName),
 			API: apiName,
 		})
 	}
 
-	// ── Per-entry checks (3 + 4) ───────────────────────────────────────────────
+	// â”€â”€ Per-entry checks (3 + 4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	for i, entry := range policies {
 		switch entry.Kind {
 		case RLEntryNamed:
-			// 3. config_missing — named config must exist in the registry
+			// 3. config_missing â€” named config must exist in the registry
 			if entry.Config != "" && reg != nil {
 				if reg.GetRateLimitConfigV2(entry.Config) == nil {
 					warns = append(warns, RateLimitWarning{
@@ -89,20 +89,20 @@ func validateRLPolicies(
 
 		case RLEntryDynamic:
 			if entry.Dynamic != nil {
-				// 3. config_missing — every mapped config must exist
+				// 3. config_missing â€” every mapped config must exist
 				for rtVal, cfgName := range entry.Dynamic.Mappings {
 					if reg != nil && reg.GetRateLimitConfigV2(cfgName) == nil {
 						warns = append(warns, RateLimitWarning{
 							Code: RLWarnConfigMissing,
 							Message: fmt.Sprintf(
-								"API %q entry %d: dynamic mapping key %q → config %q not found",
+								"API %q entry %d: dynamic mapping key %q â†’ config %q not found",
 								apiName, i, rtVal, cfgName),
 							API: apiName,
 							Row: i,
 						})
 					}
 				}
-				// 4. slot_unfilled — if source=slot.<name>, check flow fills it
+				// 4. slot_unfilled â€” if source=slot.<name>, check flow fills it
 				if strings.HasPrefix(entry.Dynamic.Source, "slot.") {
 					slotName := strings.TrimPrefix(entry.Dynamic.Source, "slot.")
 					if slotName != "" && !flowFillsSlot(flow, flowCfgs, slotName) {
@@ -120,10 +120,10 @@ func validateRLPolicies(
 			}
 
 		case RLEntryFixed:
-			// Fixed entries are self-contained inline config — nothing to validate externally.
+			// Fixed entries are self-contained inline config â€” nothing to validate externally.
 		}
 
-		// 4. slot_unfilled — count_by=slot must have a slot that is filled
+		// 4. slot_unfilled â€” count_by=slot must have a slot that is filled
 		if entry.CountBy == "slot" && entry.SlotSource != "" {
 			if !flowFillsSlot(flow, flowCfgs, entry.SlotSource) {
 				warns = append(warns, RateLimitWarning{

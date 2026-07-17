@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // mockAnthropicToolResponse returns a minimal Anthropic tool_use response body.

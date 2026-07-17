@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // RerankProvider identifies the rerank API provider.
@@ -39,7 +39,7 @@ type RerankConfig struct {
 // rerankClientCache holds per-(provider+baseURL) HTTP clients.
 var (
 	rerankClientOnce  sync.Once
-	rerankClientCache sync.Map // key: provider+"|"+baseURL → *http.Client
+	rerankClientCache sync.Map // key: provider+"|"+baseURL â†’ *http.Client
 )
 
 func getRerankClient(provider RerankProvider, baseURL string, timeoutMs int) *http.Client {
@@ -151,7 +151,7 @@ func Rerank(cfg RerankConfig) engine.Instruction {
 				query = string(ctx.ByteSlots[cfg.QuerySlot])
 			}
 			if query == "" {
-				// Empty query — leave result as empty array
+				// Empty query â€” leave result as empty array
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					emptyResult := []byte("[]")
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(emptyResult))

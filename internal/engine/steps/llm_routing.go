@@ -1,12 +1,12 @@
-package steps
+﻿package steps
 
 import (
 	"strconv"
 	"strings"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // RoutingRule is a single conditional rule that maps a condition to a model slug.
@@ -23,7 +23,7 @@ type RouteLLMConfig struct {
 	ResultSlot   int                              // ByteSlots index to write resolved model slug
 	TokenSlot    int                              // IntSlots index for token estimate (-1 if unused)
 	MetaSlot     int                              // ByteSlots index for tenant meta value (-1 if unused
-	ByteSlotMap  map[string]int                   // slot name → ByteSlots index for slot-value conditions
+	ByteSlotMap  map[string]int                   // slot name â†’ ByteSlots index for slot-value conditions
 	ModelCatalog map[string]config.LLMModelConfig // for validation only (write slug even if not in catalog)
 }
 
@@ -31,14 +31,14 @@ type RouteLLMConfig struct {
 // and writes the resolved model slug to ctx.ByteSlots[cfg.ResultSlot].
 //
 // Condition syntax (simple parser, no external deps):
-//   - "" or "true"           → always matches
-//   - "token_count > N"      → ctx.IntSlots[TokenSlot] > N  (requires TokenSlot >= 0)
-//   - "token_count < N"      → ctx.IntSlots[TokenSlot] < N
-//   - "token_count >= N"     → ctx.IntSlots[TokenSlot] >= N
-//   - "token_count <= N"     → ctx.IntSlots[TokenSlot] <= N
-//   - "meta == VALUE"        → string(ctx.ByteSlots[MetaSlot]) == VALUE  (requires MetaSlot >= 0)
-//   - "meta != VALUE"        → not equal
-//   - Unrecognized           → skip rule (no match)
+//   - "" or "true"           â†’ always matches
+//   - "token_count > N"      â†’ ctx.IntSlots[TokenSlot] > N  (requires TokenSlot >= 0)
+//   - "token_count < N"      â†’ ctx.IntSlots[TokenSlot] < N
+//   - "token_count >= N"     â†’ ctx.IntSlots[TokenSlot] >= N
+//   - "token_count <= N"     â†’ ctx.IntSlots[TokenSlot] <= N
+//   - "meta == VALUE"        â†’ string(ctx.ByteSlots[MetaSlot]) == VALUE  (requires MetaSlot >= 0)
+//   - "meta != VALUE"        â†’ not equal
+//   - Unrecognized           â†’ skip rule (no match)
 func RouteLLM(cfg RouteLLMConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "route_llm",
@@ -78,9 +78,9 @@ func RouteLLM(cfg RouteLLMConfig) engine.Instruction {
 // Returns true if the condition matches, false otherwise (including parse errors).
 //
 // Supported LHS tokens:
-//   - "token_count" → IntSlots[tokenSlot]  (requires tokenSlot >= 0)
-//   - "meta"        → ByteSlots[metaSlot]  (requires metaSlot >= 0)
-//   - any other     → looked up in byteSlotMap; uses that ByteSlot value for == / !=
+//   - "token_count" â†’ IntSlots[tokenSlot]  (requires tokenSlot >= 0)
+//   - "meta"        â†’ ByteSlots[metaSlot]  (requires metaSlot >= 0)
+//   - any other     â†’ looked up in byteSlotMap; uses that ByteSlot value for == / !=
 func evaluateRoutingCondition(cond string, ctx *rctx.Context, tokenSlot, metaSlot int, byteSlotMap map[string]int) bool {
 	cond = strings.TrimSpace(cond)
 	if cond == "" || cond == "true" {

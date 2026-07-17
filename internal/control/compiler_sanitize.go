@@ -1,18 +1,18 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 	"strings"
 
-	"rah/internal/config"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileEstimateTokens resolves and appends the estimate_tokens instruction.
 //
-// step.KeyIdentifier → sourceSlot (ByteSlots)
-// step.As            → destIntSlot (IntSlots — uses unified getSlot index)
+// step.KeyIdentifier â†’ sourceSlot (ByteSlots)
+// step.As            â†’ destIntSlot (IntSlots â€” uses unified getSlot index)
 func (c *Compiler) compileEstimateTokens(step StepConfig) error {
 	sourceSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -28,10 +28,10 @@ func (c *Compiler) compileEstimateTokens(step StepConfig) error {
 
 // compileSanitizePrompt resolves and appends the sanitize_prompt instruction.
 //
-// step.KeyIdentifier        → promptSlot (ByteSlots, in-place modification)
-// step.Input["rules"]       → comma-separated rule list (e.g. "pii,injection,max_tokens:4000")
-// step.Input["on_violation"] → "reject" | "strip" | "flag" (default "reject")
-// step.Input["flag_slot"]   → slot name for BoolSlots flag (-1 if not provided)
+// step.KeyIdentifier        â†’ promptSlot (ByteSlots, in-place modification)
+// step.Input["rules"]       â†’ comma-separated rule list (e.g. "pii,injection,max_tokens:4000")
+// step.Input["on_violation"] â†’ "reject" | "strip" | "flag" (default "reject")
+// step.Input["flag_slot"]   â†’ slot name for BoolSlots flag (-1 if not provided)
 func (c *Compiler) compileSanitizePrompt(step StepConfig) error {
 	promptSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -73,11 +73,11 @@ func (c *Compiler) compileSanitizePrompt(step StepConfig) error {
 
 // compileCompressPrompt resolves and appends the compress_prompt instruction.
 //
-// step.KeyIdentifier        → promptSlot (ByteSlots, in-place modification)
-// step.Input["model"]       → model slug (looked up in c.LLMCfg.Models)
-// step.Input["target_tokens"] → int (default 2000)
-// step.Input["timeout_ms"]  → int (default 30000)
-// step.Input["on_exceed"]   → "reject" (default)
+// step.KeyIdentifier        â†’ promptSlot (ByteSlots, in-place modification)
+// step.Input["model"]       â†’ model slug (looked up in c.LLMCfg.Models)
+// step.Input["target_tokens"] â†’ int (default 2000)
+// step.Input["timeout_ms"]  â†’ int (default 30000)
+// step.Input["on_exceed"]   â†’ "reject" (default)
 // API key resolved from step.Input["api_key"] or model catalog APIKeyRef.
 func (c *Compiler) compileCompressPrompt(step StepConfig) error {
 	promptSlot, err := c.getSlot(step.KeyIdentifier)

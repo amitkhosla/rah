@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/mcpreg"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/mcpreg"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── Type aliases from mcpreg ──────────────────────────────────────────────────
+// â”€â”€ Type aliases from mcpreg â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // These are direct references to mcpreg types; kept as aliases here so the
 // compiler file and any callers can reference steps.VirtualMCPLookup etc.
 
@@ -29,7 +29,7 @@ type VirtualMCPLookup func(tenantID uint16, name string) (mcpreg.VirtualMCPServe
 // MCP server config (URL, auth) by alias. Injected at bake time.
 type MCPServerLookup func(alias string) (config.MCPServerConfig, string, bool) // (cfg, resolvedAPIKey, found)
 
-// ── Copied JSON-RPC helpers from internal/mcp/server.go ──────────────────────
+// â”€â”€ Copied JSON-RPC helpers from internal/mcp/server.go â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // We copy rather than import to avoid a dependency on the internal/mcp package.
 
 const mcpServProtocolVersion = "2024-11-05"
@@ -118,10 +118,10 @@ func mcpServWriteToolResult(w http.ResponseWriter, id json.RawMessage, text stri
 	mcpServWriteResult(w, id, result)
 }
 
-// ── HTTP client pool for serve_mcp outbound calls ─────────────────────────────
+// â”€â”€ HTTP client pool for serve_mcp outbound calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 var (
-	mcpServeClientCache sync.Map // key: base URL → *http.Client
+	mcpServeClientCache sync.Map // key: base URL â†’ *http.Client
 )
 
 func getMCPServeClient(baseURL string, timeoutMs int) *http.Client {
@@ -137,14 +137,14 @@ func getMCPServeClient(baseURL string, timeoutMs int) *http.Client {
 	return actual.(*http.Client)
 }
 
-// ── tools/list cache for mcp_all sources ─────────────────────────────────────
+// â”€â”€ tools/list cache for mcp_all sources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type mcpServCachedTools struct {
 	tools     []mcpServRawTool
 	expiresAt time.Time
 }
 
-var mcpServeToolsCache sync.Map // key: serverAlias → *mcpServCachedTools
+var mcpServeToolsCache sync.Map // key: serverAlias â†’ *mcpServCachedTools
 
 // fetchExternalTools calls tools/list on an external MCP server, with 60s caching.
 func fetchExternalTools(alias, serverURL, apiKey string, timeoutMs int) ([]mcpServRawTool, error) {
@@ -214,7 +214,7 @@ func fetchExternalTools(alias, serverURL, apiKey string, timeoutMs int) ([]mcpSe
 	return tools, nil
 }
 
-// ── ServeMCPConfig ────────────────────────────────────────────────────────────
+// â”€â”€ ServeMCPConfig â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // ServeMCPConfig configures a serve_mcp instruction.
 type ServeMCPConfig struct {
@@ -239,12 +239,12 @@ type ServeMCPConfig struct {
 	TimeoutMs int
 }
 
-// ── ServeMCP instruction ──────────────────────────────────────────────────────
+// â”€â”€ ServeMCP instruction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // ServeMCP returns an engine.Instruction that implements the full MCP JSON-RPC
 // 2.0 server protocol for a named virtual MCP server.
 //
-// It always returns engine.StopPlan — the response is written directly to the
+// It always returns engine.StopPlan â€” the response is written directly to the
 // response writer and no further instructions should run.
 func ServeMCP(cfg ServeMCPConfig) engine.Instruction {
 	timeoutMs := cfg.TimeoutMs
@@ -338,7 +338,7 @@ func ServeMCP(cfg ServeMCPConfig) engine.Instruction {
 	}
 }
 
-// ── Handler functions ─────────────────────────────────────────────────────────
+// â”€â”€ Handler functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func mcpServHandleInitialize(w http.ResponseWriter, req mcpServRequest, def mcpreg.VirtualMCPServerDef) {
 	serverName := def.Name

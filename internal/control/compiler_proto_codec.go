@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"fmt"
@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"rah/internal/engine/steps"
-	grpcutil "rah/internal/grpc"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	grpcutil "github.com/amitkhosla/rah/internal/grpc"
 )
 
 // compileProtoToJSON compiles a "proto_to_json" step.

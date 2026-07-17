@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/ingest"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/ingest"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // EmitEventConfig is baked at compile time and captured in the instruction closure.
@@ -23,7 +23,7 @@ type EmitEventConfig struct {
 }
 
 // EmitEvent returns an engine.Instruction that fires an ingest event.
-// The instruction always returns state.PC+1 — it never stops the plan.
+// The instruction always returns state.PC+1 â€” it never stops the plan.
 // The actual channel write is non-blocking; dropped events are silently discarded.
 func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 	return engine.Instruction{
@@ -59,7 +59,7 @@ func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 				}
 			}
 
-			// Caller identity — always copy directly from context.
+			// Caller identity â€” always copy directly from context.
 			e.CallerID = ctx.CallerID
 			e.CallerKey = ctx.CallerKey
 
@@ -91,7 +91,7 @@ func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 					if numSinks == 0 {
 						numSinks = 1 // safety fallback
 					}
-					// SetPayload handles inline (≤128B) vs heap storage automatically.
+					// SetPayload handles inline (â‰¤128B) vs heap storage automatically.
 					// For heap storage, ref count is pre-set to numSinks.
 					e.SetPayload(raw, numSinks)
 				}

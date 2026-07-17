@@ -1,9 +1,9 @@
-package control
+﻿package control
 
 import (
 	"fmt"
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileSOAPCall compiles a soap_call step.
@@ -32,7 +32,7 @@ func (c *Compiler) compileSOAPCall(input StepConfig) (engine.Instruction, error)
 		cfg.URLSlot = -1
 	}
 
-	// Body slot (required) — use As field
+	// Body slot (required) â€” use As field
 	if input.As != "" {
 		var err error
 		cfg.BodySlot, err = c.getSlot(input.As)
@@ -95,8 +95,8 @@ func (c *Compiler) compileSOAPCall(input StepConfig) (engine.Instruction, error)
 // Config:
 //
 //	build_soap_envelope:
-//	  body_slot: xml_body_var    # required — slot holding XML body to wrap
-//	  output_slot: envelope_var  # required — slot to receive resulting SOAP envelope
+//	  body_slot: xml_body_var    # required â€” slot holding XML body to wrap
+//	  output_slot: envelope_var  # required â€” slot to receive resulting SOAP envelope
 //	  soap_version: 1            # optional, 1 = SOAP 1.1 (default), 2 = SOAP 1.2
 func (c *Compiler) compileBuildSOAPEnvelope(input StepConfig) (engine.Instruction, error) {
 	if input.Input == nil {

@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
-	"rah/internal/engine"
-	"rah/internal/observability"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/observability"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ClassifyLLMConfig configures the smart classification step.
@@ -62,7 +62,7 @@ func ClassifyLLM(cfg ClassifyLLMConfig) engine.Instruction {
 					full := string(classifyRaw)
 					snip := string(classifyRaw)
 					if len(snip) > 500 {
-						snip = snip[:500] + "…"
+						snip = snip[:500] + "â€¦"
 					}
 					state.AddTraceAttr("classifier_output", snip)
 					observability.WriteDetailLog(map[string]any{

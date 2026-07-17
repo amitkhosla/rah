@@ -1,9 +1,9 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 func newDragonFlyStore(ctx context.Context, cfg config.StoreConfig, domain string) (KeyValueStore, error) {

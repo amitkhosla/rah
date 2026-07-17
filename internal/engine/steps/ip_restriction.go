@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"errors"
@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // IPRestrictionConfig is bake-time configuration for ip_restriction.

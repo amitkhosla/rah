@@ -1,8 +1,8 @@
-package steps
+﻿package steps
 
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // EarlyReturn terminates flow execution immediately with a deliberate response.
@@ -61,7 +61,7 @@ func CaptureError(codeSlot int, msgSlot int) engine.Instruction {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			if codeSlot >= 0 && codeSlot < len(ctx.ByteSlots) {
 				code := ctx.ErrorCode
-				// Write decimal digits of code into arena — max 5 chars for int16
+				// Write decimal digits of code into arena â€” max 5 chars for int16
 				var buf [6]byte
 				n := 0
 				if code < 0 {
@@ -142,7 +142,7 @@ func WrapOnErrorJump(inner engine.Instruction, errFlowPC int16) engine.Instructi
 
 // WrapOnErrorStatus wraps an instruction so that if it signals failure,
 // the response is set to the given status + body and execution stops cleanly
-// (not as an error — Failed is cleared so observability doesn't log it as unhandled).
+// (not as an error â€” Failed is cleared so observability doesn't log it as unhandled).
 // Used by the compiler when a step has on_error: "status:<code>".
 func WrapOnErrorStatus(inner engine.Instruction, httpStatus int, body []byte) engine.Instruction {
 	return engine.Instruction{

@@ -1,4 +1,4 @@
-package geo
+﻿package geo
 
 import (
 	"archive/tar"
@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/oschwald/maxminddb-golang"
-	"rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/datastore"
 )
 
 const (
@@ -33,7 +33,7 @@ type countryRecord struct {
 
 type cacheShard struct {
 	mu sync.RWMutex
-	m  map[string]string // ip → country code
+	m  map[string]string // ip â†’ country code
 }
 
 // Manager holds the mmdb reader and update state.

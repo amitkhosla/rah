@@ -1,9 +1,9 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileLoadLLMKey resolves and appends the load_llm_key instruction.
@@ -13,13 +13,13 @@ import (
 // llm_call step can then reference that slot via api_key_slot for per-tenant
 // model access without embedding keys at bake time.
 //
-// step.KeyIdentifier → slot holding the credential name to look up (e.g. "anthropic_key")
-// step.As            → slot to write the resolved plaintext API key into
+// step.KeyIdentifier â†’ slot holding the credential name to look up (e.g. "anthropic_key")
+// step.As            â†’ slot to write the resolved plaintext API key into
 //
 // Requires CredMgr to be set on the Compiler (same interface used by load_credential).
 func (c *Compiler) compileLoadLLMKey(step StepConfig) error {
 	if c.CredMgr == nil {
-		return fmt.Errorf("load_llm_key step requires a credential registry — set CredMgr on the Compiler")
+		return fmt.Errorf("load_llm_key step requires a credential registry â€” set CredMgr on the Compiler")
 	}
 
 	credNameSlot, err := c.getSlot(step.KeyIdentifier)

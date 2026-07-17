@@ -1,9 +1,9 @@
-package engine
+﻿package engine
 
 import (
 	"testing"
 
-	"rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/registry"
 )
 
 // configMap is a simple lookup helper used across tests.
@@ -186,6 +186,6 @@ func TestUpstreamRegistry_GlobalAtomic(t *testing.T) {
 		t.Fatalf("expected configID=7, got id=%d found=%v", id, found)
 	}
 
-	// Clean up — restore nil so other tests start fresh.
+	// Clean up â€” restore nil so other tests start fresh.
 	globalUpstreamRegistry.Store(nil)
 }

@@ -1,15 +1,15 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
 	"time"
 
-	"rah/internal/config"
-	redistore "rah/internal/datastore/redis"
+	"github.com/amitkhosla/rah/internal/config"
+	redistore "github.com/amitkhosla/rah/internal/datastore/redis"
 )
 
 // redisAdapter wraps redistore.Store and implements KeyValueStore, BatchStore,
-// ExpiringStore, and DistributedStore by converting datastore.Tenant → string.
+// ExpiringStore, and DistributedStore by converting datastore.Tenant â†’ string.
 type redisAdapter struct {
 	s *redistore.Store
 }

@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"regexp"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // PatternMatchRegex creates an Instruction that matches a precompiled regex pattern

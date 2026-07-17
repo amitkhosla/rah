@@ -1,9 +1,9 @@
-package datastore
+﻿package datastore
 
 import (
 	"context"
 	"fmt"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // NewStore creates a KeyValueStore for the given config and domain.

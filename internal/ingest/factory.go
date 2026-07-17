@@ -1,4 +1,4 @@
-package ingest
+﻿package ingest
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // NewPipelineFromConfig builds and starts an ingestion pipeline from the gateway config.
@@ -66,7 +66,7 @@ func NewPipelineFromConfig(cfg config.IngestConfig) (*Pipeline, error) {
 			priority:  kc.Priority,
 			sinks:     sinks,
 		}
-		// All kinds get an overflow channel — drop is always a last resort.
+		// All kinds get an overflow channel â€” drop is always a last resort.
 		// For allowDrop=false: fanout blocks in overflow until timeout.
 		// For allowDrop=true: overflow is tried non-blocking; drop only if both ring and overflow are full.
 		kr.overflow = make(chan Event, kc.RingSize)

@@ -1,25 +1,25 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileEmbedText handles the "embed_text" step type.
 //
 // StepConfig fields:
-//   - key_identifier       → inputSlot (text to embed)
-//   - as                   → resultSlot (vector JSON output)
-//   - input["provider"]    → "openai" | "ollama" | "gemini" (required)
-//   - input["model"]       → model name (required)
-//   - input["base_url"]    → optional endpoint override
-//   - input["api_key_ref"] → literal API key or secret reference (resolved at bake time)
-//   - input["api_key_slot"]→ optional slot name for runtime key injection
-//   - input["dim_slot"]    → optional IntSlot index for dimension count output
-//   - input["timeout_ms"]  → optional timeout in milliseconds (default 10000)
-//   - input["max_retries"] → optional max retry count (default 2)
+//   - key_identifier       â†’ inputSlot (text to embed)
+//   - as                   â†’ resultSlot (vector JSON output)
+//   - input["provider"]    â†’ "openai" | "ollama" | "gemini" (required)
+//   - input["model"]       â†’ model name (required)
+//   - input["base_url"]    â†’ optional endpoint override
+//   - input["api_key_ref"] â†’ literal API key or secret reference (resolved at bake time)
+//   - input["api_key_slot"]â†’ optional slot name for runtime key injection
+//   - input["dim_slot"]    â†’ optional IntSlot index for dimension count output
+//   - input["timeout_ms"]  â†’ optional timeout in milliseconds (default 10000)
+//   - input["max_retries"] â†’ optional max retry count (default 2)
 func (c *Compiler) compileEmbedText(step StepConfig) error {
 	inputSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

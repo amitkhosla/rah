@@ -1,4 +1,4 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // weaviateStore implements VectorStore against the Weaviate REST API.
@@ -39,7 +39,7 @@ func (s *weaviateStore) Search(ctx context.Context, collection string, vector []
 		certaintyClause = fmt.Sprintf(", certainty: %g", minScore)
 	}
 
-	// GraphQL query — dynamically requests _additional { id certainty } and content
+	// GraphQL query â€” dynamically requests _additional { id certainty } and content
 	query := fmt.Sprintf(`{ Get { %s(nearVector: {vector: %s%s} limit: %d) { _additional { id certainty } content } } }`,
 		collection, vecStr, certaintyClause, topK)
 

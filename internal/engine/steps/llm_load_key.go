@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // LoadLLMKeyConfig configures the LoadLLMKey instruction.
@@ -28,10 +28,10 @@ type LoadLLMKeyConfig struct {
 //
 // Failure modes are all silent no-ops so the flow can fall back to the baked
 // key set on LLMCallConfig.APIKey:
-//   - Reg == nil            → no-op
-//   - CredNameSlot empty    → no-op
-//   - credential not found  → no-op
-//   - resolution error      → no-op
+//   - Reg == nil            â†’ no-op
+//   - CredNameSlot empty    â†’ no-op
+//   - credential not found  â†’ no-op
+//   - resolution error      â†’ no-op
 func LoadLLMKey(cfg LoadLLMKeyConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "load_llm_key",
@@ -53,7 +53,7 @@ func LoadLLMKey(cfg LoadLLMKeyConfig) engine.Instruction {
 			// Resolve: tenant-specific first, then global fallback.
 			plaintext, err := cfg.Reg.Resolve(context.Background(), string(credName), ctx.TenantKey)
 			if err != nil || len(plaintext) == 0 {
-				// Silent fallback — baked key will be used by llm_call.
+				// Silent fallback â€” baked key will be used by llm_call.
 				return state.PC + 1
 			}
 

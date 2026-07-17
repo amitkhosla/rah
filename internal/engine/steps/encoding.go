@@ -1,10 +1,10 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/base64"
 	"encoding/hex"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // urlQuerySafe is a lookup table for URL query-safe characters (RFC 3986 unreserved).
@@ -98,7 +98,7 @@ func HexDecodeStep(src, result int) engine.Instruction {
 }
 
 // URLEncodeStep percent-encodes ByteSlots[src] (RFC 3986 unreserved pass-through).
-// Two-pass: count encoded length, then write — avoids over-allocation.
+// Two-pass: count encoded length, then write â€” avoids over-allocation.
 func URLEncodeStep(src, result int) engine.Instruction {
 	return engine.Instruction{
 		Name: "URL_ENCODE",
@@ -157,7 +157,7 @@ func URLDecodeStep(src, result int) engine.Instruction {
 						i += 3
 						continue
 					}
-					// Invalid sequence — pass through verbatim.
+					// Invalid sequence â€” pass through verbatim.
 					out[pos] = b
 					pos++
 					i++

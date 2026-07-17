@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datastore"
 )
 
 func testStoreConfig(t *testing.T) config.DataStoreConfig {

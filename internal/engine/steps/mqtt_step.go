@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"fmt"
@@ -6,8 +6,8 @@ import (
 	"unsafe"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // MQTTPublishConfig holds bake-time configuration for an mqtt_publish instruction.

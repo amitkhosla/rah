@@ -1,13 +1,13 @@
-package steps
+﻿package steps
 
 import (
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/soap"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/soap"
 	"testing"
 	"time"
 )
@@ -132,7 +132,7 @@ func TestSOAPCall_MissingBody(t *testing.T) {
 		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
-	// Don't set ByteSlots[0] — leave it nil/empty
+	// Don't set ByteSlots[0] â€” leave it nil/empty
 
 	state := &engine.ExecutionState{PC: 0}
 	pc := instr.Action(ctx, state)

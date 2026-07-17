@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"unicode"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ChunkTextConfig is resolved at bake time and captured in the instruction closure.
@@ -29,7 +29,7 @@ type ChunkTextConfig struct {
 //  2. Splits text into chunks of cfg.ChunkSize chars with cfg.Overlap char overlap
 //  3. Works in rune slices for correctness; trims at word boundaries
 //  4. If text fits in one chunk, output is ["<full text>"]
-//  5. Marshals []string chunks to JSON → ctx.ByteSlots[cfg.OutputSlot]
+//  5. Marshals []string chunks to JSON â†’ ctx.ByteSlots[cfg.OutputSlot]
 //  6. If CountSlot >= 0 and in range: writes int64(len(chunks)) to ctx.IntSlots[cfg.CountSlot]
 //  7. Returns state.PC + 1
 //

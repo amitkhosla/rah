@@ -1,4 +1,4 @@
-package ingest
+﻿package ingest
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // EventHandler is called for each event read from a source.
@@ -25,7 +25,7 @@ func RunConsumer(ctx context.Context, src EventSource, handler EventHandler) {
 			return
 		}
 		if err != nil {
-			log.Printf("[ingest/consumer] read error: %v — retrying in 2s", err)
+			log.Printf("[ingest/consumer] read error: %v â€” retrying in 2s", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -47,7 +47,7 @@ func StartConsumers(ctx context.Context, cfg config.IngestConfig, handler EventH
 	for _, sc := range cfg.Sources {
 		src, err := newSourceFromConfig(sc)
 		if err != nil {
-			log.Printf("[ingest/consumer] source %q build error: %v — skipping", sc.Stream, err)
+			log.Printf("[ingest/consumer] source %q build error: %v â€” skipping", sc.Stream, err)
 			continue
 		}
 		go func(s EventSource) {
@@ -72,6 +72,6 @@ func newSourceFromConfig(sc config.IngestSourceConfig) (EventSource, error) {
 		client := goredis.NewClient(opt)
 		return NewRedisStreamSource(client, sc.Stream, sc.TimeoutMs, sc.Events), nil
 	default:
-		return nil, nil // unknown kind — caller skips
+		return nil, nil // unknown kind â€” caller skips
 	}
 }

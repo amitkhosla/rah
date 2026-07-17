@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // newTestContext creates a minimal rctx.Context suitable for unit tests.
@@ -97,7 +97,7 @@ func makePlanJSON(t *testing.T, steps []PlanStep) string {
 	return string(b)
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestExecutePlan_EmptyPlanSlot_Noop(t *testing.T) {
 	ctx := newTestContext()
@@ -110,7 +110,7 @@ func TestExecutePlan_EmptyPlanSlot_Noop(t *testing.T) {
 	}
 	instr := ExecutePlan(cfg)
 
-	// ByteSlots[0] is empty — should be a no-op.
+	// ByteSlots[0] is empty â€” should be a no-op.
 	next := instr.Action(ctx, state)
 	if next != state.PC+1 {
 		t.Fatalf("expected PC+1, got %d", next)
@@ -270,7 +270,7 @@ func TestExecutePlan_FanOut_LoopsOverParentList(t *testing.T) {
 		t.Fatalf("expected PC+1, got %d (error: %s)", next, readSlotStr(ctx, 2))
 	}
 
-	// process_item should have been called 3 times — once per list element.
+	// process_item should have been called 3 times â€” once per list element.
 	if len(callArgs) != 3 {
 		t.Fatalf("expected 3 fan-out calls, got %d", len(callArgs))
 	}
@@ -354,7 +354,7 @@ func TestExecutePlan_ContinueOnError_NoHalt(t *testing.T) {
 	instr := ExecutePlan(cfg)
 	next := instr.Action(ctx, state)
 
-	// Should NOT halt — stop_on_error is false.
+	// Should NOT halt â€” stop_on_error is false.
 	if next != state.PC+1 {
 		t.Fatalf("expected PC+1 (continue on error), got %d", next)
 	}
@@ -539,7 +539,7 @@ func TestExecutePlan_ResultSlot_HasAllStepResults(t *testing.T) {
 	}
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // copyArgs deep-copies a map[string]interface{} for later inspection.
 func copyArgs(args map[string]interface{}) map[string]interface{} {

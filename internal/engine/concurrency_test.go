@@ -1,4 +1,4 @@
-package engine
+﻿package engine
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // newTestFM returns a minimal FlowManager suitable for concurrency tests.
@@ -18,7 +18,7 @@ func newTestFM() *FlowManager {
 	return &FlowManager{}
 }
 
-// ── Test 1: StartController with Enabled=false ────────────────────────────────
+// â”€â”€ Test 1: StartController with Enabled=false â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestStartControllerDisabled(t *testing.T) {
 	fm := newTestFM()
@@ -34,7 +34,7 @@ func TestStartControllerDisabled(t *testing.T) {
 	// liveConfig.Load() must not panic and must return a typed value.
 	v := fm.liveConfig.Load()
 	if v == nil {
-		t.Fatal("liveConfig.Load() returned nil — should always hold a typed value after StartController")
+		t.Fatal("liveConfig.Load() returned nil â€” should always hold a typed value after StartController")
 	}
 	cfg, ok := v.(config.ConcurrencyConfig)
 	if !ok {
@@ -50,7 +50,7 @@ func TestStartControllerDisabled(t *testing.T) {
 	}
 }
 
-// ── Test 2: StartController with Enabled=true, explicit InitialLimit ─────────
+// â”€â”€ Test 2: StartController with Enabled=true, explicit InitialLimit â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestStartControllerEnabled(t *testing.T) {
 	fm := newTestFM()
@@ -72,7 +72,7 @@ func TestStartControllerEnabled(t *testing.T) {
 	}
 }
 
-// ── Test 3: StartController fills defaults when all fields are zero ───────────
+// â”€â”€ Test 3: StartController fills defaults when all fields are zero â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestStartControllerDefaults(t *testing.T) {
 	fm := newTestFM()
@@ -81,7 +81,7 @@ func TestStartControllerDefaults(t *testing.T) {
 
 	fm.StartController(ctx, config.ConcurrencyConfig{
 		Enabled: true,
-		// All other fields left at zero — should be filled with GOMAXPROCS-derived defaults.
+		// All other fields left at zero â€” should be filled with GOMAXPROCS-derived defaults.
 	})
 
 	if !fm.LimiterEnabled() {
@@ -93,7 +93,7 @@ func TestStartControllerDefaults(t *testing.T) {
 	}
 }
 
-// ── Test 4: ConcurrencyHandler GET returns valid JSON ─────────────────────────
+// â”€â”€ Test 4: ConcurrencyHandler GET returns valid JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestConcurrencyHandlerGet(t *testing.T) {
 	fm := newTestFM()
@@ -115,7 +115,7 @@ func TestConcurrencyHandlerGet(t *testing.T) {
 
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response is not valid JSON: %v — body: %s", err, rec.Body.String())
+		t.Fatalf("response is not valid JSON: %v â€” body: %s", err, rec.Body.String())
 	}
 
 	for _, field := range []string{"enabled", "limit", "active", "rejected", "adaptive"} {
@@ -125,7 +125,7 @@ func TestConcurrencyHandlerGet(t *testing.T) {
 	}
 }
 
-// ── Test 5: ConcurrencyHandler PATCH updates limit ───────────────────────────
+// â”€â”€ Test 5: ConcurrencyHandler PATCH updates limit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestConcurrencyHandlerPatch(t *testing.T) {
 	fm := newTestFM()
@@ -143,12 +143,12 @@ func TestConcurrencyHandlerPatch(t *testing.T) {
 	fm.ConcurrencyHandler(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d â€” body: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response is not valid JSON: %v — body: %s", err, rec.Body.String())
+		t.Fatalf("response is not valid JSON: %v â€” body: %s", err, rec.Body.String())
 	}
 
 	// JSON numbers unmarshal as float64.
@@ -161,7 +161,7 @@ func TestConcurrencyHandlerPatch(t *testing.T) {
 	}
 }
 
-// ── Test 6: ConcurrencyHandler PATCH with enabled=false disables limiter ─────
+// â”€â”€ Test 6: ConcurrencyHandler PATCH with enabled=false disables limiter â”€â”€â”€â”€â”€
 
 func TestConcurrencyHandlerPatchDisable(t *testing.T) {
 	fm := newTestFM()
@@ -183,7 +183,7 @@ func TestConcurrencyHandlerPatchDisable(t *testing.T) {
 	fm.ConcurrencyHandler(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d â€” body: %s", rec.Code, rec.Body.String())
 	}
 
 	if fm.LimiterEnabled() {
@@ -191,11 +191,11 @@ func TestConcurrencyHandlerPatchDisable(t *testing.T) {
 	}
 }
 
-// ── Test 7: ConcurrencyHandler PATCH with invalid JSON returns 400 ───────────
+// â”€â”€ Test 7: ConcurrencyHandler PATCH with invalid JSON returns 400 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestConcurrencyHandlerPatchInvalidJSON(t *testing.T) {
 	fm := newTestFM()
-	// StartController not required — handler reads liveConfig which may be nil,
+	// StartController not required â€” handler reads liveConfig which may be nil,
 	// but invalid JSON is rejected before any config read.
 	// Store a typed zero so liveConfig.Load() is safe if handler ever reaches it.
 	fm.liveConfig.Store(config.ConcurrencyConfig{})
@@ -210,7 +210,7 @@ func TestConcurrencyHandlerPatchInvalidJSON(t *testing.T) {
 	}
 }
 
-// ── Test 8: LimiterEnabled race detector test ─────────────────────────────────
+// â”€â”€ Test 8: LimiterEnabled race detector test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestLimiterEnabledRace(t *testing.T) {
 	fm := newTestFM()
@@ -238,7 +238,7 @@ func TestLimiterEnabledRace(t *testing.T) {
 	// Success = no data race detected, no panic.
 }
 
-// ── Test 9: liveConfig race detector test ────────────────────────────────────
+// â”€â”€ Test 9: liveConfig race detector test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestLiveConfigRace(t *testing.T) {
 	fm := newTestFM()

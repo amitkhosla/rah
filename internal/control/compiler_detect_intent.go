@@ -1,10 +1,10 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strings"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileDetectIntent resolves slots and appends the detect_intent instruction.

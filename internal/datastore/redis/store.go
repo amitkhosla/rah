@@ -1,4 +1,4 @@
-package redis
+﻿package redis
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // Store implements a Redis-backed key-value store for single, sentinel, and
@@ -110,7 +110,7 @@ func (s *Store) Get(ctx context.Context, tenant, key string) ([]byte, bool, erro
 		return nil, false, err
 	}
 
-	// Fast path: dedup layer hit — no Redis round-trip needed.
+	// Fast path: dedup layer hit â€” no Redis round-trip needed.
 	if s.dedup != nil {
 		if val, ok := s.dedup.Get(k); ok {
 			return val, val != nil, nil

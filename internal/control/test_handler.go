@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"bytes"
@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/cache"
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/cache"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestAssertion is one check applied to the execution result.
 type TestAssertion struct {
@@ -121,7 +121,7 @@ type TestRun struct {
 	Result      TestExecuteResponse `json:"result"`
 }
 
-// ── Mock ResponseWriter ────────────────────────────────────────────────────────
+// â”€â”€ Mock ResponseWriter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // mockResponseWriter satisfies rctx.ResponseWriter without touching the network.
 type mockResponseWriter struct {
@@ -149,7 +149,7 @@ func (m *mockResponseWriter) Write(p []byte) (int, error) {
 	return m.buf.Write(p)
 }
 
-// ── TestHandler ────────────────────────────────────────────────────────────────
+// â”€â”€ TestHandler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // TestHandler provides HTTP endpoints for flow test execution, test case
 // management, and test run history.
@@ -178,7 +178,7 @@ func RegisterTestRoutes(mux *http.ServeMux, dsm *DataStoreManager, ms *Managemen
 	mux.HandleFunc("/test/cases/", h.CaseHandler) // handles /test/cases/{id}
 	mux.HandleFunc("/test/runs", h.RunsHandler)
 
-	// Suite endpoints — require RegistryManager for test tenant isolation.
+	// Suite endpoints â€” require RegistryManager for test tenant isolation.
 	regMgr := ms.RegMgr
 	mux.HandleFunc("/test/suites", h.SuitesHandler)
 	mux.HandleFunc("/test/suites/", func(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +186,7 @@ func RegisterTestRoutes(mux *http.ServeMux, dsm *DataStoreManager, ms *Managemen
 	})
 }
 
-// ── ExecuteHandler ─────────────────────────────────────────────────────────────
+// â”€â”€ ExecuteHandler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // ExecuteHandler handles POST /test/execute.
 // It runs a named flow against a synthetic request and returns the execution
@@ -235,7 +235,7 @@ func (h *TestHandler) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build a synthetic context — not from the pool; test contexts are short-lived.
+	// Build a synthetic context â€” not from the pool; test contexts are short-lived.
 	ctx := &rctx.Context{}
 	ctx.InitSlots()
 	ctx.TestMode = true
@@ -342,7 +342,7 @@ func (h *TestHandler) resolveTable(mode, flowName string) ([]engine.Instruction,
 			return nil, fmt.Errorf("no draft loaded")
 		}
 	} else {
-		// "published" or empty → use live state.
+		// "published" or empty â†’ use live state.
 		state = h.fm.State.Load()
 		if state == nil {
 			return nil, fmt.Errorf("no published state loaded")
@@ -418,7 +418,7 @@ func evaluateAssertion(a TestAssertion, status int, body string, durationMs floa
 	return ar
 }
 
-// ── CasesHandler ──────────────────────────────────────────────────────────────
+// â”€â”€ CasesHandler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // CasesHandler handles GET /test/cases and POST /test/cases.
 func (h *TestHandler) CasesHandler(w http.ResponseWriter, r *http.Request) {
@@ -488,7 +488,7 @@ func (h *TestHandler) createCase(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, tc)
 }
 
-// ── CaseHandler ───────────────────────────────────────────────────────────────
+// â”€â”€ CaseHandler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // CaseHandler handles GET /test/cases/{id} and DELETE /test/cases/{id}.
 func (h *TestHandler) CaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -547,7 +547,7 @@ func (h *TestHandler) deleteCase(w http.ResponseWriter, r *http.Request, id stri
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ── RunsHandler ───────────────────────────────────────────────────────────────
+// â”€â”€ RunsHandler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // RunsHandler handles GET /test/runs.
 func (h *TestHandler) RunsHandler(w http.ResponseWriter, r *http.Request) {

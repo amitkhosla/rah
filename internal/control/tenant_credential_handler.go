@@ -1,18 +1,18 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
 	"net/http"
 	"strings"
 
-	"rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/secrets"
 )
 
 // TenantCredentialHandler handles per-tenant credential CRUD via tenant-path URLs.
 //
-//	GET    /tenants/{alias}/credentials            — list credential names (no values)
-//	PUT    /tenants/{alias}/credentials/{name}     — set/replace a credential value (encrypted at rest)
-//	DELETE /tenants/{alias}/credentials/{name}     — delete a credential
+//	GET    /tenants/{alias}/credentials            â€” list credential names (no values)
+//	PUT    /tenants/{alias}/credentials/{name}     â€” set/replace a credential value (encrypted at rest)
+//	DELETE /tenants/{alias}/credentials/{name}     â€” delete a credential
 //
 // Values are encrypted at rest using the Encryptor; the UI never receives plaintext.
 // The alias in the path is used directly as the tenant key in the CredentialStore
@@ -87,7 +87,7 @@ func (h *TenantCredentialHandler) dispatch(w http.ResponseWriter, r *http.Reques
 }
 
 // listCredentials handles GET /tenants/{alias}/credentials.
-// Returns credential names only — never plaintext values.
+// Returns credential names only â€” never plaintext values.
 func (h *TenantCredentialHandler) listCredentials(w http.ResponseWriter, r *http.Request, alias string) {
 	names, err := h.reg.List(r.Context(), alias)
 	if err != nil {

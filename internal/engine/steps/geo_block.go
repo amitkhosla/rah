@@ -1,6 +1,6 @@
-package steps
+﻿package steps
 
-// geo_block — Country-based request geo-blocking.
+// geo_block â€” Country-based request geo-blocking.
 //
 // Checks the client IP address against a per-tenant country allow/block list
 // using a MaxMind GeoLite2-Country database. Operates in two modes:
@@ -13,23 +13,23 @@ package steps
 //
 // Config keys:
 //
-//	geo.mode             — "block_list" (default) or "allow_list"
-//	geo.countries        — comma-separated ISO 3166-1 alpha-2 codes, e.g. "CN,RU,KP"
-//	geo.trusted_proxy    — "true" to trust X-Forwarded-For / X-Real-IP headers
-//	geo.allow_private    — "false" to block private/loopback IPs (default: true = allow)
-//	geo.failure_status   — HTTP status when blocked (default 403)
-//	geo.failure_body     — response body when blocked (default "access denied")
-//	geo.on_block         — "stop" (default) or "continue" (tag mode: write result to slot)
-//	geo.result_var       — slot name to write "blocked"/"allowed" into when on_block=continue
+//	geo.mode             â€” "block_list" (default) or "allow_list"
+//	geo.countries        â€” comma-separated ISO 3166-1 alpha-2 codes, e.g. "CN,RU,KP"
+//	geo.trusted_proxy    â€” "true" to trust X-Forwarded-For / X-Real-IP headers
+//	geo.allow_private    â€” "false" to block private/loopback IPs (default: true = allow)
+//	geo.failure_status   â€” HTTP status when blocked (default 403)
+//	geo.failure_body     â€” response body when blocked (default "access denied")
+//	geo.on_block         â€” "stop" (default) or "continue" (tag mode: write result to slot)
+//	geo.result_var       â€” slot name to write "blocked"/"allowed" into when on_block=continue
 
 import (
 	"net"
 	"net/http"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/geo"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/geo"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // GeoBlockConfig is the bake-time compiled config for geo_block.

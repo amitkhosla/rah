@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"regexp"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 func TestPatternMatchRegex_SimpleMatch(t *testing.T) {
@@ -210,7 +210,7 @@ func TestPatternMatchRegex_CaseInsensitive(t *testing.T) {
 }
 
 // TestPatternMatchRegex_ZeroAllocationHotPath verifies that matching is truly zero-allocation
-// in the success case. This is important for RAH's <5µs latency target.
+// in the success case. This is important for RAH's <5Âµs latency target.
 //
 // Note: This is a manual verification test. A formal benchmark would live in pattern_bench_test.go
 // (to be created in SESSION-9). For now, we just verify the logic is correct.

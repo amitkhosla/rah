@@ -1,4 +1,4 @@
-package observability
+﻿package observability
 
 import (
 	"crypto/rand"
@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/apikey"
-	"rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 type KV struct {
@@ -56,7 +56,7 @@ type CacheStat struct {
 	Name      string  `json:"name"`
 	Hits      uint64  `json:"hits"`
 	Misses    uint64  `json:"misses"`
-	HitRate   float64 `json:"hit_rate"`   // 0.0–1.0
+	HitRate   float64 `json:"hit_rate"`   // 0.0â€“1.0
 	AvgHitNs  uint64  `json:"avg_hit_ns"` // mean store latency on a hit
 	AvgMissNs uint64  `json:"avg_miss_ns"`// mean store latency on a miss
 }
@@ -141,7 +141,7 @@ type counter struct {
 }
 
 // cacheCounter tracks hit/miss counts and store-call latency per cache instruction name.
-// Kept under t.mu (same lock as instr) — reads are snapshot-only, no hot-path contention.
+// Kept under t.mu (same lock as instr) â€” reads are snapshot-only, no hot-path contention.
 type cacheCounter struct {
 	hits    uint64
 	misses  uint64
@@ -242,7 +242,7 @@ type Telemetry struct {
 
 	traceRing *TraceSlabRing // lock-free per-request trace writer
 
-	// Background goroutine lifecycle — Stop/Start are idempotent and safe to call
+	// Background goroutine lifecycle â€” Stop/Start are idempotent and safe to call
 	// concurrently. workerStop is closed to signal workers; data channels stay open.
 	lifecycleMu   sync.Mutex
 	workerRunning bool
@@ -270,11 +270,11 @@ type Telemetry struct {
 	Metrics *MetricsAggregator
 
 	// tenantTracer provides per-tenant trace sample rate overrides.
-	// Nil by default — call SetTenantTracer to wire in the registry manager.
+	// Nil by default â€” call SetTenantTracer to wire in the registry manager.
 	tenantTracer TenantTracer
 
-	// tenantNamer resolves TenantID → human-readable name in async workers.
-	// Nil by default — call SetTenantNamer to wire in the registry manager.
+	// tenantNamer resolves TenantID â†’ human-readable name in async workers.
+	// Nil by default â€” call SetTenantNamer to wire in the registry manager.
 	tenantNamer TenantNamer
 }
 
@@ -354,7 +354,7 @@ func New(cfg Config) *Telemetry {
 	}
 	// Seed trace counter from crypto/rand so IDs are unique per process instance
 	// and never collide with rows from a previous container run in Postgres.
-	// Same approach as rctx.TxIDGenerator — entropy-seeded, not time-based.
+	// Same approach as rctx.TxIDGenerator â€” entropy-seeded, not time-based.
 	var seed [8]byte
 	if _, err := rand.Read(seed[:]); err == nil {
 		t.traceID.Store(binary.LittleEndian.Uint64(seed[:]))
@@ -365,7 +365,7 @@ func New(cfg Config) *Telemetry {
 	t.phaseEnabled.Store(cfg.UpstreamPhaseTimingEnabled)
 	t.alwaysExport.Store(cfg.AlwaysExportSummary)
 	t.reqSummaryLog.Store(cfg.InfoLogEnabled)
-	// Pre-allocate 64 slots — covers most deployments without a single grow.
+	// Pre-allocate 64 slots â€” covers most deployments without a single grow.
 	initial := make([]apiStat, 64)
 	t.apiStats.Store(&initial)
 	t.workerStop = make(chan struct{})
@@ -378,7 +378,7 @@ func New(cfg Config) *Telemetry {
 }
 
 // Stop stops the TraceSlabRing drain goroutine and the three worker goroutines,
-// draining any pending items before returning. Idempotent — safe to call when
+// draining any pending items before returning. Idempotent â€” safe to call when
 // already stopped or never started.
 func (t *Telemetry) Stop() {
 	t.lifecycleMu.Lock()
@@ -393,7 +393,7 @@ func (t *Telemetry) Stop() {
 	t.workerDone.Wait()
 }
 
-// Start restarts the background goroutines after Stop(). Idempotent — safe to
+// Start restarts the background goroutines after Stop(). Idempotent â€” safe to
 // call when already running.
 func (t *Telemetry) Start() {
 	t.lifecycleMu.Lock()
@@ -536,7 +536,7 @@ func (t *Telemetry) runMetricWorker(stopCh <-chan struct{}) {
 var summaryBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 256); return &b }}
 
 // appendSummaryFields builds a logfmt-style key=value string into buf using
-// strconv.Append* — no fmt.Sprintf, no intermediate []string, no strings.Join.
+// strconv.Append* â€” no fmt.Sprintf, no intermediate []string, no strings.Join.
 func appendSummaryFields(buf []byte, fields []string, s RequestSummary, tenantName string) []byte {
 	first := true
 	for _, f := range fields {
@@ -624,7 +624,7 @@ type TenantNamer interface {
 	TenantName(tenantID uint16) string
 }
 
-// SetTenantNamer wires a TenantID → name resolver into Telemetry.
+// SetTenantNamer wires a TenantID â†’ name resolver into Telemetry.
 // Resolution happens in the async export/upstream workers, not the hot path.
 func (t *Telemetry) SetTenantNamer(tn TenantNamer) {
 	t.tenantNamer = tn
@@ -663,7 +663,7 @@ func (t *Telemetry) ShouldTraceTenant(tenantID uint16) bool {
 }
 
 // shouldSampleAt returns true if the request should be sampled at the given rate
-// (0.0–1.0). Uses the same time-modulo approach as ShouldTrace for consistency.
+// (0.0â€“1.0). Uses the same time-modulo approach as ShouldTrace for consistency.
 func (t *Telemetry) shouldSampleAt(rate float64) bool {
 	if rate <= 0 {
 		return false
@@ -746,7 +746,7 @@ func (t *Telemetry) RecordCacheOp(_ string, _ bool, _ int64) {}
 func (t *Telemetry) RecordInstruction(_ string, _ time.Duration) {}
 
 // RecordInstrTiming accumulates per-instruction-name timing for InstructionTopSlow.
-// Called from the instrSlabRing drain goroutine after PC→name resolution.
+// Called from the instrSlabRing drain goroutine after PCâ†’name resolution.
 // Safe to call concurrently; protected by t.mu (drain is single-threaded, but
 // Snapshot reads concurrently).
 func (t *Telemetry) RecordInstrTiming(name string, durationNs int64) {
@@ -821,7 +821,7 @@ func (t *Telemetry) FinishRequest(trace *RequestTrace, status int, total, gatewa
 	trace.Summary.ClientBytesSent = summary.ClientBytesSent
 	trace.Summary.UpstreamBytesTx = summary.UpstreamBytesTx
 	trace.Summary.UpstreamBytesRx = summary.UpstreamBytesRx
-	// Per-tenant/API status + latency — lock-free via MetricsAggregator COW map.
+	// Per-tenant/API status + latency â€” lock-free via MetricsAggregator COW map.
 	t.Metrics.Record(trace.Summary.TenantID, trace.Summary.ApiID, status, total.Nanoseconds())
 
 	// Lock-free write: claims 1 header slot (header-only mode, no instruction sub-slots).
@@ -853,7 +853,7 @@ func (t *Telemetry) AppendUpstreamEvent(trace *RequestTrace, e UpstreamEvent) {
 
 // RecordRequest records per-API request stats using atomic operations.
 // Called post-response (not on the critical latency path).
-// apiID is used as a direct slice index — no map, no string keys, no GC overhead.
+// apiID is used as a direct slice index â€” no map, no string keys, no GC overhead.
 func (t *Telemetry) RecordRequest(apiID uint32, totalNs, reqBytes, resBytes int64) {
 	if !t.Enabled() || apiID == 0 {
 		return
@@ -874,7 +874,7 @@ func (t *Telemetry) RecordRequest(apiID uint32, totalNs, reqBytes, resBytes int6
 		}
 		return
 	}
-	// Grow the slice — only triggered when a new higher-ID API is first seen (rare, at deploy time).
+	// Grow the slice â€” only triggered when a new higher-ID API is first seen (rare, at deploy time).
 	t.apiStatsMu.Lock()
 	defer t.apiStatsMu.Unlock()
 	s = t.apiStats.Load() // re-read under lock; another goroutine may have grown it
@@ -912,7 +912,7 @@ func (t *Telemetry) RecordRequest(apiID uint32, totalNs, reqBytes, resBytes int6
 }
 
 // APITop returns per-API request stats sorted by request count descending.
-// nameResolver maps ApiID → API name; entries where the resolver returns "" are skipped.
+// nameResolver maps ApiID â†’ API name; entries where the resolver returns "" are skipped.
 // Intended for infrequent snapshot reads (UI polling), not hot path.
 func (t *Telemetry) APITop(topN int, nameResolver func(uint32) string) []NameLatency {
 	if topN <= 0 {
@@ -1001,7 +1001,7 @@ func topNMetrics(m map[string]*metricCounter, n int) []MetricAgg {
 
 // tenantTopFromAgg builds per-tenant status counts from MetricsAggregator's COW map.
 // Groups by TenantID (aggregating across all APIs for that tenant), sorts by total
-// requests descending, returns top-n. No lock held — reads atomic pointer snapshot.
+// requests descending, returns top-n. No lock held â€” reads atomic pointer snapshot.
 func tenantTopFromAgg(agg *MetricsAggregator, n int) []TenantStatusCounts {
 	mp := agg.metrics.Load()
 	if mp == nil || len(*mp) == 0 {

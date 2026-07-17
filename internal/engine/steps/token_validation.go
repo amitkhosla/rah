@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"crypto"
@@ -15,8 +15,8 @@ import (
 	"io"
 	"math/big"
 	"net/http"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,19 +45,19 @@ const (
 )
 
 // TokenValidationSlots holds runtime slot indexes for token_validation.
-// -1 means "not configured — use static value from TokenValidationConfig".
+// -1 means "not configured â€” use static value from TokenValidationConfig".
 type TokenValidationSlots struct {
 	Token          int
 	JWKSURI        int
 	Algorithm      int
 	Leeway         int
-	ValidateSet    int // comma-sep string → parsed into ValidationSet at runtime
+	ValidateSet    int // comma-sep string â†’ parsed into ValidationSet at runtime
 	Issuer         int
 	Audience       int
-	RequiredScopes int // comma-sep string → split at runtime
+	RequiredScopes int // comma-sep string â†’ split at runtime
 	ScopeClaimKeys int
 	OnFailureMode  int // "stop" or "continue"
-	FailureStatus  int // string → parsed as int
+	FailureStatus  int // string â†’ parsed as int
 	FailureBody    int
 	ResultSuccess  int // value to write to Result slot on success
 	ResultFailure  int // value to write to Result slot on failure
@@ -66,7 +66,7 @@ type TokenValidationSlots struct {
 	Subject        int // where to write jwt "sub" claim on success
 	ClientID       int // where to write client_id / azp / appid claim on success
 	ScopesOut      int // where to write comma-sep parsed scopes on success
-	CustomClaimsVars map[string]int // per-claim key → slot for expected value
+	CustomClaimsVars map[string]int // per-claim key â†’ slot for expected value
 }
 
 // TokenValidationConfig is a typed, precompiled config for JWT verification.

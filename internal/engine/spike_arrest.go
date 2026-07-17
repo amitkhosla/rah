@@ -1,7 +1,7 @@
-package engine
+﻿package engine
 
 import (
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +18,7 @@ type spikeArrestKey struct {
 // SpikeArrestStore holds the last-allowed timestamps for all spike arrest instances.
 // sync.Map is used to avoid any global lock; per-key state is a single *int64.
 type SpikeArrestStore struct {
-	m sync.Map // spikeArrestKey → *int64 (unix ns of last allowed request)
+	m sync.Map // spikeArrestKey â†’ *int64 (unix ns of last allowed request)
 }
 
 // NewSpikeArrestStore allocates a ready-to-use SpikeArrestStore.
@@ -57,9 +57,9 @@ func fnv64a(b []byte) uint64 {
 // rate limit) policy.  At most one request per intervalNs is allowed through per
 // unique (flowID, tenantID [, keySlot-value]) tuple.
 //
-//   - flowID    — unique integer allocated by the compiler at bake time.
-//   - intervalNs — interval_ms * time.Millisecond, pre-computed at bake time.
-//   - keySlot   — index into ctx.ByteSlots used as an extra key dimension;
+//   - flowID    â€” unique integer allocated by the compiler at bake time.
+//   - intervalNs â€” interval_ms * time.Millisecond, pre-computed at bake time.
+//   - keySlot   â€” index into ctx.ByteSlots used as an extra key dimension;
 //     -1 means "tenant only" (no per-value bucketing).
 //
 // On rejection the step sets ctx.ResponseStatus = 429 and returns StopPlan.

@@ -1,28 +1,28 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileSemanticCacheGet handles the "semantic_cache_get" step type.
 //
 // StepConfig fields:
-//   - key_identifier       → querySlot (query text to embed and cache lookup)
-//   - as                   → resultSlot (cached response on hit)
-//   - input["hit_slot"]    → BoolSlot name for cache hit/miss flag
-//   - input["store"]       → vector store name (required)
-//   - input["collection"]  → collection name (optional, default "semantic_cache")
-//   - input["min_score"]   → minimum similarity threshold (default 0.92)
-//   - input["provider"]    → embedding provider (openai, ollama, gemini; required)
-//   - input["model"]       → embedding model name (required)
-//   - input["base_url"]    → optional embedding endpoint override
-//   - input["api_key_ref"] → embedding API key or secret reference
-//   - input["api_key_slot"]→ optional slot name for runtime key injection
-//   - input["timeout_ms"]  → optional timeout (default 10000)
-//   - input["max_retries"] → optional retry count (default 2)
+//   - key_identifier       â†’ querySlot (query text to embed and cache lookup)
+//   - as                   â†’ resultSlot (cached response on hit)
+//   - input["hit_slot"]    â†’ BoolSlot name for cache hit/miss flag
+//   - input["store"]       â†’ vector store name (required)
+//   - input["collection"]  â†’ collection name (optional, default "semantic_cache")
+//   - input["min_score"]   â†’ minimum similarity threshold (default 0.92)
+//   - input["provider"]    â†’ embedding provider (openai, ollama, gemini; required)
+//   - input["model"]       â†’ embedding model name (required)
+//   - input["base_url"]    â†’ optional embedding endpoint override
+//   - input["api_key_ref"] â†’ embedding API key or secret reference
+//   - input["api_key_slot"]â†’ optional slot name for runtime key injection
+//   - input["timeout_ms"]  â†’ optional timeout (default 10000)
+//   - input["max_retries"] â†’ optional retry count (default 2)
 func (c *Compiler) compileSemanticCacheGet(step StepConfig) error {
 	querySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {
@@ -142,17 +142,17 @@ func (c *Compiler) compileSemanticCacheGet(step StepConfig) error {
 // compileSemanticCachePut handles the "semantic_cache_put" step type.
 //
 // StepConfig fields:
-//   - key_identifier       → querySlot (query text to embed as cache key)
-//   - input["response"]    → responseSlot (response to cache)
-//   - input["store"]       → vector store name (required)
-//   - input["collection"]  → collection name (optional, default "semantic_cache")
-//   - input["provider"]    → embedding provider (openai, ollama, gemini; required)
-//   - input["model"]       → embedding model name (required)
-//   - input["base_url"]    → optional embedding endpoint override
-//   - input["api_key_ref"] → embedding API key or secret reference
-//   - input["api_key_slot"]→ optional slot name for runtime key injection
-//   - input["timeout_ms"]  → optional timeout (default 10000)
-//   - input["max_retries"] → optional retry count (default 2)
+//   - key_identifier       â†’ querySlot (query text to embed as cache key)
+//   - input["response"]    â†’ responseSlot (response to cache)
+//   - input["store"]       â†’ vector store name (required)
+//   - input["collection"]  â†’ collection name (optional, default "semantic_cache")
+//   - input["provider"]    â†’ embedding provider (openai, ollama, gemini; required)
+//   - input["model"]       â†’ embedding model name (required)
+//   - input["base_url"]    â†’ optional embedding endpoint override
+//   - input["api_key_ref"] â†’ embedding API key or secret reference
+//   - input["api_key_slot"]â†’ optional slot name for runtime key injection
+//   - input["timeout_ms"]  â†’ optional timeout (default 10000)
+//   - input["max_retries"] â†’ optional retry count (default 2)
 func (c *Compiler) compileSemanticCachePut(step StepConfig) error {
 	querySlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

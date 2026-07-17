@@ -1,7 +1,7 @@
-package soap
+﻿package soap
 
 import (
-	"rah/internal/xml"
+	"github.com/amitkhosla/rah/internal/xml"
 )
 
 // Pre-baked SOAP 1.1 namespace and tag bytes, allocated once at package init.

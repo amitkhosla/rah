@@ -1,14 +1,14 @@
-package steps
+﻿package steps
 
 import (
 	"strconv"
 	"sync"
 	"sync/atomic"
 
-	"rah/internal/engine"
-	"rah/internal/gatewaylog"
-	"rah/internal/ingest"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/ingest"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // flowLogPipeline is the optional ingest pipeline for KindFlowLog events.
@@ -42,7 +42,7 @@ type FlowLogConfig struct {
 	DynamicFields []DynamicLogField
 
 	// BufPool is a per-step pool of []byte pre-sized to hold the max payload.
-	// One pool per compiled log step — size is exact for this step's shape.
+	// One pool per compiled log step â€” size is exact for this step's shape.
 	BufPool *sync.Pool
 
 	// GatewayMsg is the plain message string used for gatewaylog.Default
@@ -52,9 +52,9 @@ type FlowLogConfig struct {
 
 // FlowLog returns an engine.Instruction that emits a structured log message from
 // within a flow. Routing:
-//   - debug/info → ingest pipeline only (not gatewaylog.Default, which would
+//   - debug/info â†’ ingest pipeline only (not gatewaylog.Default, which would
 //     silently drop them when the gateway log level is INFO or higher).
-//   - warn/error → ingest pipeline AND gatewaylog.Default (low frequency,
+//   - warn/error â†’ ingest pipeline AND gatewaylog.Default (low frequency,
 //     allocations acceptable).
 //
 // The hot path is zero-allocation: JSON payload is assembled from pre-built
@@ -69,10 +69,10 @@ func FlowLog(cfg FlowLogConfig) engine.Instruction {
 			} else if cfg.Level == gatewaylog.ERROR {
 				gatewaylog.Default.Error(cfg.GatewayMsg)
 			}
-			// debug/info intentionally not sent to gatewaylog.Default —
+			// debug/info intentionally not sent to gatewaylog.Default â€”
 			// they would be silently dropped when the gateway level is INFO+.
 
-			// Emit to ingest pipeline (always — not conditional on level).
+			// Emit to ingest pipeline (always â€” not conditional on level).
 			p := flowLogPipeline.Load()
 			if p == nil {
 				return state.PC + 1
@@ -116,7 +116,7 @@ func FlowLog(cfg FlowLogConfig) engine.Instruction {
 	}
 }
 
-// appendJSONBytes appends b as a JSON string value (without surrounding quotes —
+// appendJSONBytes appends b as a JSON string value (without surrounding quotes â€”
 // caller writes the opening quote via JSONKey and closing quote after this call).
 func appendJSONBytes(dst []byte, b []byte) []byte {
 	for _, c := range b {

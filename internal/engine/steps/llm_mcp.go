@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // MCPLoadMode controls how much tool detail is written to the output slot.
@@ -46,7 +46,7 @@ type MCPFetchSchemasConfig struct {
 	TimeoutMs    int
 }
 
-// ── JSON-RPC wire types ───────────────────────────────────────────────────────
+// â”€â”€ JSON-RPC wire types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type mcpRPCRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -77,10 +77,10 @@ type mcpRPCResponse struct {
 	Error   *mcpRPCError    `json:"error,omitempty"`
 }
 
-// ── HTTP client cache ─────────────────────────────────────────────────────────
+// â”€â”€ HTTP client cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 var (
-	mcpClientCache sync.Map // key: server URL string → *http.Client
+	mcpClientCache sync.Map // key: server URL string â†’ *http.Client
 	mcpClientCount atomic.Int64
 )
 
@@ -118,7 +118,7 @@ func getMCPClient(serverURL string, timeoutMs int) *http.Client {
 	return client
 }
 
-// ── shared fetch helper ───────────────────────────────────────────────────────
+// â”€â”€ shared fetch helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // mcpFetchTools issues a JSON-RPC tools/list call to the MCP server and returns
 // the raw tool list. On error it populates ctx error fields and returns nil.
@@ -216,7 +216,7 @@ func mcpFetchTools(ctx *rctx.Context, serverURL string, apiKey string, timeoutMs
 	return rpcResp.Result.Tools
 }
 
-// ── MCPListTools ──────────────────────────────────────────────────────────────
+// â”€â”€ MCPListTools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // MCPListTools returns an engine.Instruction that fetches the tool list from an
 // MCP server and writes the result (in the requested mode) to cfg.ResultSlot.
@@ -309,7 +309,7 @@ func MCPListTools(cfg MCPListToolsConfig) engine.Instruction {
 	}
 }
 
-// ── MCPFetchSchemas ───────────────────────────────────────────────────────────
+// â”€â”€ MCPFetchSchemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // MCPFetchSchemas returns an engine.Instruction that fetches full schemas for a
 // selected subset of tools from an MCP server, filtering by the tool names

@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 	mochiserver "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
-	mqttpool "rah/internal/mqtt"
+	mqttpool "github.com/amitkhosla/rah/internal/mqtt"
 )
 
 // setupTestMQTTBroker creates an in-process MQTT broker for testing.

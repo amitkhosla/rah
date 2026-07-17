@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
-	"rah/internal/egress"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // GraphQLCallConfig holds the bake-time configuration for a graphql_call instruction.

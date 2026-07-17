@@ -1,6 +1,6 @@
-package steps
+﻿package steps
 
-// bot_detection — User-Agent based bot/scraper/scanner detection.
+// bot_detection â€” User-Agent based bot/scraper/scanner detection.
 //
 // Checks the incoming request's User-Agent header against known bot, scraper,
 // and vulnerability-scanner patterns. Operates in two modes:
@@ -8,23 +8,23 @@ package steps
 //   - block (default): returns HTTP 403 (or configured status) and halts the flow.
 //   - tag: writes "true"/"false" into a slot and continues execution.
 //
-// All matching is case-insensitive substring matching — no regex, zero alloc.
+// All matching is case-insensitive substring matching â€” no regex, zero alloc.
 // Empty or missing User-Agent is treated as a bot.
 //
 // Config keys:
 //
-//	bot.mode             — "block" (default) or "tag"
-//	bot.tag_var          — slot name to write result into when mode=tag
-//	bot.failure_status   — HTTP status when blocked (default 403)
-//	bot.failure_body     — response body when blocked (default "access denied")
-//	bot.allow_crawlers   — "true" to allow known search engine crawlers
-//	bot.extra_patterns   — comma-separated additional UA substrings to block
+//	bot.mode             â€” "block" (default) or "tag"
+//	bot.tag_var          â€” slot name to write result into when mode=tag
+//	bot.failure_status   â€” HTTP status when blocked (default 403)
+//	bot.failure_body     â€” response body when blocked (default "access denied")
+//	bot.allow_crawlers   â€” "true" to allow known search engine crawlers
+//	bot.extra_patterns   â€” comma-separated additional UA substrings to block
 
 import (
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // builtinBotPatterns is the compile-time list of known bot/scraper/scanner UA substrings.
@@ -175,12 +175,12 @@ func ParseBotDetectionConfig(input map[string]string, tagSlot int) BotDetectionC
 //
 // Step config keys:
 //
-//	bot.mode             — "block" (default) or "tag"
-//	bot.tag_var          — slot name for result in tag mode
-//	bot.failure_status   — HTTP status when blocked (default 403)
-//	bot.failure_body     — response body when blocked (default "access denied")
-//	bot.allow_crawlers   — "true" to allow known search engine crawlers
-//	bot.extra_patterns   — comma-separated additional UA substrings to block
+//	bot.mode             â€” "block" (default) or "tag"
+//	bot.tag_var          â€” slot name for result in tag mode
+//	bot.failure_status   â€” HTTP status when blocked (default 403)
+//	bot.failure_body     â€” response body when blocked (default "access denied")
+//	bot.allow_crawlers   â€” "true" to allow known search engine crawlers
+//	bot.extra_patterns   â€” comma-separated additional UA substrings to block
 func DetectBot(cfg BotDetectionConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "DETECT_BOT",
@@ -204,7 +204,7 @@ func DetectBot(cfg BotDetectionConfig) engine.Instruction {
 			}
 			uaLower := strings.ToLower(ua)
 
-			// Empty / missing UA → treat as bot.
+			// Empty / missing UA â†’ treat as bot.
 			if uaLower == "" {
 				if cfg.ModeBlock {
 					return stopFail()
@@ -219,7 +219,7 @@ func DetectBot(cfg BotDetectionConfig) engine.Instruction {
 			if cfg.AllowCrawlers {
 				for _, p := range builtinCrawlerPatterns {
 					if strings.Contains(uaLower, p) {
-						// Legitimate crawler — skip bot check entirely.
+						// Legitimate crawler â€” skip bot check entirely.
 						if !cfg.ModeBlock && cfg.TagSlot >= 0 && cfg.TagSlot < len(ctx.ByteSlots) {
 							ctx.ByteSlots[cfg.TagSlot] = []byte("false")
 						}

@@ -1,4 +1,4 @@
-//go:build gsm
+﻿//go:build gsm
 
 package main
 
@@ -20,9 +20,9 @@ package main
 import (
 	"context"
 
-	"rah/internal/config"
-	"rah/internal/secrets"
-	"rah/internal/secrets/gsm"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/secrets/gsm"
 )
 
 func init() {
@@ -30,9 +30,9 @@ func init() {
 		func(ctx context.Context, cfg config.SecretsConfig, bootstrap secrets.Resolver) (secrets.Provider, error) {
 			p, err := gsm.New(ctx, cfg.GSM, bootstrap)
 			if err != nil || p == nil {
-				// nil, nil → not enabled; nil, err → misconfiguration.
+				// nil, nil â†’ not enabled; nil, err â†’ misconfiguration.
 				// In both cases return a nil interface (not a nil *gsm.Provider
-				// boxed in an interface — that would panic on method calls).
+				// boxed in an interface â€” that would panic on method calls).
 				return nil, err
 			}
 			return p, nil

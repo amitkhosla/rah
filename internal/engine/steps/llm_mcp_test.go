@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -6,12 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func mcpServerCfg(url string) config.MCPServerConfig {
 	return config.MCPServerConfig{
@@ -47,7 +47,7 @@ func writeMCPSuccessResp(w http.ResponseWriter, tools []map[string]any) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// ── TestMCPListTools_NamesMode ────────────────────────────────────────────────
+// â”€â”€ TestMCPListTools_NamesMode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPListTools_NamesMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +87,7 @@ func TestMCPListTools_NamesMode(t *testing.T) {
 	}
 }
 
-// ── TestMCPListTools_BriefMode ────────────────────────────────────────────────
+// â”€â”€ TestMCPListTools_BriefMode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPListTools_BriefMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +130,7 @@ func TestMCPListTools_BriefMode(t *testing.T) {
 	}
 }
 
-// ── TestMCPListTools_FullMode ─────────────────────────────────────────────────
+// â”€â”€ TestMCPListTools_FullMode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPListTools_FullMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +178,7 @@ func TestMCPListTools_FullMode(t *testing.T) {
 	}
 }
 
-// ── TestMCPListTools_ServerError_Returns502 ───────────────────────────────────
+// â”€â”€ TestMCPListTools_ServerError_Returns502 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPListTools_ServerError_Returns502(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +216,7 @@ func TestMCPListTools_ServerError_Returns502(t *testing.T) {
 	}
 }
 
-// ── TestMCPListTools_UnsupportedTransport_Returns501 ─────────────────────────
+// â”€â”€ TestMCPListTools_UnsupportedTransport_Returns501 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPListTools_UnsupportedTransport_Returns501(t *testing.T) {
 	ctx := newMCPTestContext()
@@ -244,7 +244,7 @@ func TestMCPListTools_UnsupportedTransport_Returns501(t *testing.T) {
 	}
 }
 
-// ── TestMCPFetchSchemas_FiltersToSelected ─────────────────────────────────────
+// â”€â”€ TestMCPFetchSchemas_FiltersToSelected â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPFetchSchemas_FiltersToSelected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -295,7 +295,7 @@ func TestMCPFetchSchemas_FiltersToSelected(t *testing.T) {
 	}
 }
 
-// ── TestMCPFetchSchemas_EmptySelected_Skips ───────────────────────────────────
+// â”€â”€ TestMCPFetchSchemas_EmptySelected_Skips â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPFetchSchemas_EmptySelected_Skips(t *testing.T) {
 	// Server should never be called when selected slot is empty.

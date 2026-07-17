@@ -1,6 +1,6 @@
-package steps
+﻿package steps
 
-// Token Introspection — RFC 7662.
+// Token Introspection â€” RFC 7662.
 //
 // Validates an opaque or JWT access token by calling an introspection endpoint.
 // This is necessary for tokens that cannot be verified locally (no JWKS), such as:
@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/datastore"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 const (
@@ -183,27 +183,27 @@ type introspectionResponse struct {
 //
 // Step config keys:
 //
-//	introspect.endpoint          — introspection endpoint URL (required)
-//	introspect.auth              — "basic", "bearer", or "none" (auto-detected from client_id/bearer_token)
-//	introspect.client_id         — client ID for Basic auth
-//	introspect.client_secret     — client secret for Basic auth
-//	introspect.bearer_token      — static bearer token for Bearer auth
-//	introspect.cache_ttl_seconds — cache TTL (default 30, set 0 to disable)
-//	introspect.required_scopes   — comma-sep required scopes
-//	introspect.on_failure        — "stop" (default) or "continue"
-//	introspect.failure_status    — HTTP status on failure (default 401)
-//	introspect.failure_body      — body on failure (default "unauthorized")
+//	introspect.endpoint          â€” introspection endpoint URL (required)
+//	introspect.auth              â€” "basic", "bearer", or "none" (auto-detected from client_id/bearer_token)
+//	introspect.client_id         â€” client ID for Basic auth
+//	introspect.client_secret     â€” client secret for Basic auth
+//	introspect.bearer_token      â€” static bearer token for Bearer auth
+//	introspect.cache_ttl_seconds â€” cache TTL (default 30, set 0 to disable)
+//	introspect.required_scopes   â€” comma-sep required scopes
+//	introspect.on_failure        â€” "stop" (default) or "continue"
+//	introspect.failure_status    â€” HTTP status on failure (default 401)
+//	introspect.failure_body      â€” body on failure (default "unauthorized")
 //
 // Slot config keys:
 //
-//	introspect.token_var         — slot holding the access token to introspect
-//	introspect.token_header      — request header name (e.g. "Authorization") — used if token_var not set
-//	introspect.bearer_token_var  — slot holding runtime bearer token for endpoint auth
-//	introspect.result_var        — slot to write "true"/"false" in continue mode
-//	introspect.claims_var        — slot to write full response JSON
-//	introspect.subject_var       — slot to write sub claim
-//	introspect.client_id_var     — slot to write client_id claim
-//	introspect.scopes_out_var    — slot to write comma-sep scopes
+//	introspect.token_var         â€” slot holding the access token to introspect
+//	introspect.token_header      â€” request header name (e.g. "Authorization") â€” used if token_var not set
+//	introspect.bearer_token_var  â€” slot holding runtime bearer token for endpoint auth
+//	introspect.result_var        â€” slot to write "true"/"false" in continue mode
+//	introspect.claims_var        â€” slot to write full response JSON
+//	introspect.subject_var       â€” slot to write sub claim
+//	introspect.client_id_var     â€” slot to write client_id claim
+//	introspect.scopes_out_var    â€” slot to write comma-sep scopes
 func ValidateTokenIntrospection(slots TokenIntrospectionSlots, cfg TokenIntrospectionConfig, store datastore.KeyValueStore) engine.Instruction {
 	httpClient := &http.Client{Timeout: cfg.Timeout}
 

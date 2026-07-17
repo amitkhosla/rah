@@ -1,9 +1,9 @@
-package sync
+﻿package sync
 
 import (
 	"strings"
 
-	"rah/internal/control"
+	"github.com/amitkhosla/rah/internal/control"
 )
 
 // UserFacingFields returns the subset of a step descriptor's Fields that
@@ -13,11 +13,11 @@ import (
 //
 //  1. Any field whose Key ends in "_slot" and has a known user-facing alias in
 //     the namedVarToSlotKey table is replaced with a renamed StepField using
-//     the alias key (e.g. body_slot → body_var). The Label, Description and
+//     the alias key (e.g. body_slot â†’ body_var). The Label, Description and
 //     Placeholder are preserved.
 //
 //  2. Any remaining field whose Key ends in "_slot" (i.e. has no alias) is
-//     suppressed entirely — it is an internal-only field that users should
+//     suppressed entirely â€” it is an internal-only field that users should
 //     never set directly.
 //
 // Fields that do not end in "_slot" are passed through unchanged.
@@ -25,7 +25,7 @@ import (
 // This function is used by the JSON Schema generator (S4) and the linter
 // (S5) so they only validate against user-visible fields.
 func UserFacingFields(descriptor control.StepDescriptor) []control.StepField {
-	// Build reverse lookup: internal slot key → user-facing key
+	// Build reverse lookup: internal slot key â†’ user-facing key
 	slotToUser := make(map[string]string, len(namedVarToSlotKey))
 	for userKey, slotKey := range namedVarToSlotKey {
 		slotToUser[slotKey] = userKey
@@ -46,7 +46,7 @@ func UserFacingFields(descriptor control.StepDescriptor) []control.StepField {
 				Placeholder: f.Placeholder,
 			})
 		}
-		// No alias → internal-only; suppress from user-facing view
+		// No alias â†’ internal-only; suppress from user-facing view
 	}
 	return out
 }

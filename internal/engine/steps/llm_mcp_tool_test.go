@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -6,12 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func makeMCPToolCallCtx() *rctx.Context {
 	ctx := &rctx.Context{}
@@ -26,7 +26,7 @@ func runMCPToolCallInstruction(instr engine.Instruction, ctx *rctx.Context) int1
 	return instr.Action(ctx, state)
 }
 
-// ── TestMCPToolCallSuccess ─────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallSuccess â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +70,7 @@ func TestMCPToolCallSuccess(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallMultiContent ────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallMultiContent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallMultiContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +111,7 @@ func TestMCPToolCallMultiContent(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallIsError ─────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallIsError â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallIsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +149,7 @@ func TestMCPToolCallIsError(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallRPCError ────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallRPCError â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallRPCError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +187,7 @@ func TestMCPToolCallRPCError(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallHTTP500 ─────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallHTTP500 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallHTTP500(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +216,7 @@ func TestMCPToolCallHTTP500(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallEmptyInput ──────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallEmptyInput â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallEmptyInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +253,7 @@ func TestMCPToolCallEmptyInput(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallNoAuth ──────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallNoAuth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallNoAuth(t *testing.T) {
 	hasAuthHeader := false
@@ -298,7 +298,7 @@ func TestMCPToolCallNoAuth(t *testing.T) {
 	}
 }
 
-// ── TestMCPToolCallWithAuth ────────────────────────────────────────────────────
+// â”€â”€ TestMCPToolCallWithAuth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestMCPToolCallWithAuth(t *testing.T) {
 	authHeaderValue := ""
@@ -341,7 +341,7 @@ func TestMCPToolCallWithAuth(t *testing.T) {
 	}
 }
 
-// ── helper to create mock server config ─────────────────────────────────────────
+// â”€â”€ helper to create mock server config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func mockMCPServerConfig(url string) config.MCPServerConfig {
 	return config.MCPServerConfig{

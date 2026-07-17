@@ -1,4 +1,4 @@
-package grpcutil
+﻿package grpcutil
 
 import (
 	"crypto/tls"
@@ -12,20 +12,20 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-	"rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/egress"
 )
 
 // connKey uniquely identifies a gRPC connection by its target address and the
 // egress profile that governs it. profileID=0 means no profile (default creds).
 type connKey struct {
-	addr      string // normalized "host:port" — no scheme
+	addr      string // normalized "host:port" â€” no scheme
 	profileID uint8
 	useTLS    bool // grpcs:// vs grpc://
 }
 
 // ConnPool maintains a pool of reusable *grpc.ClientConn instances keyed by
 // (normalizedAddr, profileID, useTLS). A single ClientConn handles thousands of
-// concurrent RPCs via HTTP/2 stream multiplexing — no per-request dialing.
+// concurrent RPCs via HTTP/2 stream multiplexing â€” no per-request dialing.
 //
 // ConnPool is safe for concurrent use.
 type ConnPool struct {
@@ -46,8 +46,8 @@ func NewConnPool() *ConnPool {
 // Get returns an existing ClientConn for the given URL and profile, creating one
 // if needed. The URL must use the grpc:// or grpcs:// scheme.
 //
-//   - grpc://host:port  → insecure (no TLS)
-//   - grpcs://host:port → TLS (system CA unless profile.TLSConfig is set)
+//   - grpc://host:port  â†’ insecure (no TLS)
+//   - grpcs://host:port â†’ TLS (system CA unless profile.TLSConfig is set)
 //
 // profile may be nil; in that case the scheme alone determines TLS use.
 func (p *ConnPool) Get(rawURL string, profile *egress.EgressProfile) (*grpc.ClientConn, error) {
@@ -193,7 +193,7 @@ func parseGRPCURL(rawURL string) (addr string, useTLS bool, err error) {
 	case strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://"):
 		return "", false, fmt.Errorf("grpc pool: URL %q must use grpc:// or grpcs:// scheme", rawURL)
 	default:
-		// Bare host:port — treat as insecure gRPC.
+		// Bare host:port â€” treat as insecure gRPC.
 		return rawURL, false, nil
 	}
 }

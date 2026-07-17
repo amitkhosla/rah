@@ -1,19 +1,19 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── mock CredentialLookup for LLM key tests ───────────────────────────────────
+// â”€â”€ mock CredentialLookup for LLM key tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // mockLLMCredLookup is a minimal in-memory CredentialLookup for testing LoadLLMKey.
 type mockLLMCredLookup struct {
-	// creds maps "tenant/name" or "__global__/name" → plaintext value.
+	// creds maps "tenant/name" or "__global__/name" â†’ plaintext value.
 	creds map[string]string
 	// resolveErr is returned by Resolve if set.
 	resolveErr error
@@ -48,7 +48,7 @@ func (m *mockLLMCredLookup) Resolve(_ context.Context, name, tenant string) ([]b
 	return nil, errors.New("credential not found")
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func newLoadLLMKeyCtx() *rctx.Context {
 	ctx := &rctx.Context{}
@@ -63,7 +63,7 @@ func runLoadLLMKeyInstr(instr engine.Instruction, ctx *rctx.Context) int16 {
 	return instr.Action(ctx, state)
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// â”€â”€ tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestLoadLLMKey_NilReg_Noop(t *testing.T) {
 	ctx := newLoadLLMKeyCtx()
@@ -90,7 +90,7 @@ func TestLoadLLMKey_EmptyCredNameSlot_Noop(t *testing.T) {
 	reg.set("anthropic_key", "", "sk-global-key")
 
 	ctx := newLoadLLMKeyCtx()
-	// slot 0 is empty — no credential name supplied
+	// slot 0 is empty â€” no credential name supplied
 
 	cfg := LoadLLMKeyConfig{
 		CredNameSlot: 0,
@@ -162,7 +162,7 @@ func TestLoadLLMKey_CredNotFound_Noop(t *testing.T) {
 
 	ctx := newLoadLLMKeyCtx()
 	ctx.ByteSlots[0] = []byte("missing_key")
-	ctx.ByteSlots[1] = []byte("original-value") // sentinel — must remain unchanged
+	ctx.ByteSlots[1] = []byte("original-value") // sentinel â€” must remain unchanged
 
 	cfg := LoadLLMKeyConfig{
 		CredNameSlot: 0,
@@ -175,7 +175,7 @@ func TestLoadLLMKey_CredNotFound_Noop(t *testing.T) {
 	if next != 1 {
 		t.Errorf("want PC+1, got %d", next)
 	}
-	// Instruction returns early on error without writing — sentinel is preserved.
+	// Instruction returns early on error without writing â€” sentinel is preserved.
 	if string(ctx.ByteSlots[1]) != "original-value" {
 		t.Errorf("OutSlot should be unchanged, got %q", ctx.ByteSlots[1])
 	}

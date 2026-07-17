@@ -1,4 +1,4 @@
-//go:build vault
+﻿//go:build vault
 
 package main
 
@@ -22,9 +22,9 @@ package main
 import (
 	"context"
 
-	"rah/internal/config"
-	"rah/internal/secrets"
-	"rah/internal/secrets/vault"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/secrets/vault"
 )
 
 func init() {

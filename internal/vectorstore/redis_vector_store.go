@@ -1,4 +1,4 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // redisVectorStore implements VectorStore against a Redis Stack instance

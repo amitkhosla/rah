@@ -1,4 +1,4 @@
-package redis
+﻿package redis
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 const (
@@ -77,7 +77,7 @@ type worker struct {
 
 // RedisExecutor fans submitted rctx.Batches across multiple worker goroutines.
 // Each worker opportunistically merges queued rctx.Batches into a single pipeline
-// exec — no timers, no artificial delays.
+// exec â€” no timers, no artificial delays.
 type RedisExecutor struct {
 	workers []worker
 	client  goredis.UniversalClient
@@ -126,7 +126,7 @@ func (e *RedisExecutor) Submit(batch rctx.Batch) {
 		}
 	}
 
-	// All workers busy — block on the original worker.
+	// All workers busy â€” block on the original worker.
 	// This is the natural back-pressure point; no sleep needed.
 	e.workers[idx].ch <- batch
 }
@@ -152,13 +152,13 @@ func (e *RedisExecutor) runWorker(ctx context.Context, w *worker) {
 				if acc.fits(incoming, &e.cfg) {
 					acc.add(incoming)
 				} else {
-					// Pipeline limits reached — exec current, restart with incoming.
+					// Pipeline limits reached â€” exec current, restart with incoming.
 					e.execBatch(ctx, acc)
 					acc = newAccum(incoming)
-					// Do not break — keep draining for the new pipeline.
+					// Do not break â€” keep draining for the new pipeline.
 				}
 			default:
-				// Channel empty — nothing waiting right now.
+				// Channel empty â€” nothing waiting right now.
 				break drain
 			}
 		}
@@ -248,11 +248,11 @@ func (e *RedisExecutor) execBatch(ctx context.Context, acc pipelineAccum) {
 		if err == nil {
 			acc.ops[entry.opIdx].Result = val
 		}
-		// On miss or error: Result stays nil — caller treats nil as cache miss.
+		// On miss or error: Result stays nil â€” caller treats nil as cache miss.
 	}
 
 	// Signal waiting callers only after all Results are populated.
-	// Done is nil for fire-and-forget (async PUT) batches — skip those.
+	// Done is nil for fire-and-forget (async PUT) batches â€” skip those.
 	for _, ch := range acc.doneChs {
 		close(ch)
 	}

@@ -1,10 +1,10 @@
-package observability
+﻿package observability
 
 import (
 	"testing"
 	"time"
 
-	"rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 func TestTelemetryRecordsInstructionAndRequest(t *testing.T) {

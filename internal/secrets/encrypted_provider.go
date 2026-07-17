@@ -1,4 +1,4 @@
-package secrets
+﻿package secrets
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // encryptedProvider resolves "enc:<base64url(nonce||ciphertext)>" references

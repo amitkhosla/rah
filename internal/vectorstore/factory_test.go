@@ -1,9 +1,9 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"testing"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 func TestNewVectorStore_UnknownKind_Error(t *testing.T) {

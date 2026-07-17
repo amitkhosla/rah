@@ -1,4 +1,4 @@
-package sync
+﻿package sync
 
 import (
 	"encoding/json"
@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-	"rah/internal/control"
-	registrypkg "rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/control"
+	registrypkg "github.com/amitkhosla/rah/internal/registry"
 )
 
 // LoadResult is the output of Load: the merged bundle plus source map and lint issues.
@@ -158,7 +158,7 @@ func parseAndMergeYAML(rawBytes []byte, filePath string, result *LoadResult) err
 	for {
 		// Decode to interface{} first, then re-encode as JSON so that the
 		// existing json struct tags on control.UnifiedSyncRequest are applied.
-		// This handles snake_case keys (e.g. flow_name → FlowName) that yaml.v3
+		// This handles snake_case keys (e.g. flow_name â†’ FlowName) that yaml.v3
 		// would not map correctly using its own lowercase-only field resolution.
 		var rawDoc interface{}
 		err := decoder.Decode(&rawDoc)
@@ -221,7 +221,7 @@ func compileDSLFlowsInPartial(partial *control.UnifiedSyncRequest) {
 // and merges the partial bundle.
 func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, result *LoadResult) {
 	// Track flow sources and detect duplicates.
-	// A flow name must be unique across the entire bundle — even with action:upsert,
+	// A flow name must be unique across the entire bundle â€” even with action:upsert,
 	// defining the same flow in multiple files leads to load-order-dependent behaviour
 	// and makes it impossible to know which definition is authoritative.
 	for _, flow := range partial.Flows {
@@ -232,7 +232,7 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 				Rule:       "duplicate_flow",
 				File:       filePath,
 				Line:       1,
-				Message:    fmt.Sprintf("flow %q is already defined in %s — each flow must appear in exactly one file", key, existing.File),
+				Message:    fmt.Sprintf("flow %q is already defined in %s â€” each flow must appear in exactly one file", key, existing.File),
 				Suggestion: fmt.Sprintf("Remove the duplicate definition from %s, or rename it if you need a distinct variation", filePath),
 			})
 		}
@@ -318,7 +318,7 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 				Rule:       "duplicate_tenant",
 				File:       filePath,
 				Line:       1,
-				Message:    fmt.Sprintf("tenant %q already defined in %s — last definition wins", t.Aliases[0], existing.File),
+				Message:    fmt.Sprintf("tenant %q already defined in %s â€” last definition wins", t.Aliases[0], existing.File),
 				Suggestion: "Remove the duplicate definition or consolidate into one file",
 			})
 		}
@@ -337,7 +337,7 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 				Rule:       "duplicate_cache_seed",
 				File:       filePath,
 				Line:       1,
-				Message:    fmt.Sprintf("cache seed %q already defined in %s — last definition wins", seed.Key, existing.File),
+				Message:    fmt.Sprintf("cache seed %q already defined in %s â€” last definition wins", seed.Key, existing.File),
 				Suggestion: "Remove the duplicate or consolidate into one file",
 			})
 		}
@@ -356,7 +356,7 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 				Rule:       "duplicate_api_key",
 				File:       filePath,
 				Line:       1,
-				Message:    fmt.Sprintf("api_key %q already defined in %s — last definition wins", k.Alias, existing.File),
+				Message:    fmt.Sprintf("api_key %q already defined in %s â€” last definition wins", k.Alias, existing.File),
 				Suggestion: "Remove the duplicate or consolidate into one file",
 			})
 		}

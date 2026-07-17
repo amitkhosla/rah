@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
 	"encoding/json"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // CanonicalToolCall is the provider-agnostic representation of a tool call
@@ -19,12 +19,12 @@ type CanonicalToolCall struct {
 // emptyToolCalls is the canonical JSON encoding of an empty tool call slice.
 var emptyToolCalls = []byte("[]")
 
-// ─── parse_tool_calls ─────────────────────────────────────────────────────────
+// â”€â”€â”€ parse_tool_calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // ParseToolCallsConfig holds the bake-time slot assignments for ParseToolCalls.
 type ParseToolCallsConfig struct {
 	// ResponseSlot: ByteSlot index holding the raw LLM response content string
-	// (as written by llm_call — plain text or JSON content array)
+	// (as written by llm_call â€” plain text or JSON content array)
 	ResponseSlot int
 	// ToolCallsSlot: ByteSlot index to write []CanonicalToolCall JSON (or [] if none)
 	ToolCallsSlot int
@@ -81,7 +81,7 @@ func ParseToolCalls(cfg ParseToolCallsConfig) engine.Instruction {
 			case "openai":
 				calls = parseOpenAIToolCalls(raw)
 			default:
-				// Plain text or unrecognised format — no tool calls.
+				// Plain text or unrecognised format â€” no tool calls.
 				calls = nil
 			}
 
@@ -222,7 +222,7 @@ func parseOpenAIToolCalls(raw []byte) []CanonicalToolCall {
 	var items []openAIToolCallItem
 
 	if trimmed[0] == '{' {
-		// Full response object — extract tool_calls field.
+		// Full response object â€” extract tool_calls field.
 		var resp openAIResponseWithToolCalls
 		if err := json.Unmarshal(trimmed, &resp); err != nil {
 			return nil
@@ -269,7 +269,7 @@ func writeBoolSlot(ctx *rctx.Context, slot int, val bool) {
 	}
 }
 
-// ─── append_tool_result ───────────────────────────────────────────────────────
+// â”€â”€â”€ append_tool_result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // AppendToolResultConfig holds the bake-time slot assignments for AppendToolResult.
 type AppendToolResultConfig struct {
@@ -279,7 +279,7 @@ type AppendToolResultConfig struct {
 	ToolCallIDSlot int
 	// ResultSlot: ByteSlot index holding the tool result content (plain text or JSON)
 	ResultSlot int
-	// TargetFormat: "anthropic" or "openai" — determines how to encode the tool result
+	// TargetFormat: "anthropic" or "openai" â€” determines how to encode the tool result
 	TargetFormat string
 }
 

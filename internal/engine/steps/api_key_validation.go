@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"crypto/sha256"
@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"rah/internal/apikey"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // APIKeySource indicates where the raw API key is extracted from in a request.
@@ -162,7 +162,7 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 				}
 			}
 
-			// Scope check — if key has scopes and required scopes are configured,
+			// Scope check â€” if key has scopes and required scopes are configured,
 			// the intersection must cover all required scopes.
 			if len(cfg.RequiredScopes) > 0 && len(entry.Scopes) > 0 {
 				scopeSet := make(map[string]struct{}, len(entry.Scopes))

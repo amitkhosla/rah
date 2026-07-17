@@ -1,11 +1,11 @@
-package vectorstore
+﻿package vectorstore
 
 import (
 	"context"
 	"fmt"
 	"net/http"
 
-	"rah/internal/config"
+	"github.com/amitkhosla/rah/internal/config"
 )
 
 // chromaStore implements VectorStore against the Chroma REST API v1.

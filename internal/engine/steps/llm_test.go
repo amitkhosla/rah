@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
@@ -7,12 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Note: newTestContext is defined in llm_execute_plan_test.go (uses InitSlots).
 
@@ -34,7 +34,7 @@ func modelConfig(adapter config.LLMProviderAdapter, baseURL string) config.LLMMo
 	}
 }
 
-// ── adapter marshal / unmarshal ───────────────────────────────────────────────
+// â”€â”€ adapter marshal / unmarshal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestAnthropicAdapter_Marshal(t *testing.T) {
 	a := &anthropicAdapter{}
@@ -112,7 +112,7 @@ func TestGeminiAdapter_Marshal(t *testing.T) {
 }
 
 func TestGeminiAdapter_Marshal_V1_SystemAsTurn(t *testing.T) {
-	// v1 stable API does not support system_instruction — injected as user/model turn pair.
+	// v1 stable API does not support system_instruction â€” injected as user/model turn pair.
 	a := &geminiAdapter{apiVersion: "v1"}
 	req := LLMRequest{
 		Messages:  []CanonicalMessage{{Role: RoleUser, Content: "Translate this"}},
@@ -127,9 +127,9 @@ func TestGeminiAdapter_Marshal_V1_SystemAsTurn(t *testing.T) {
 	var got map[string]any
 	json.Unmarshal(b, &got)
 	if got["system_instruction"] != nil {
-		t.Error("system_instruction must not be set for v1 — not supported by that API version")
+		t.Error("system_instruction must not be set for v1 â€” not supported by that API version")
 	}
-	// System prompt prepended as first user/model turn pair → 3 contents total
+	// System prompt prepended as first user/model turn pair â†’ 3 contents total
 	contents := got["contents"].([]any)
 	if len(contents) != 3 {
 		t.Errorf("contents len: want 3 (system-user + system-model + user), got %d", len(contents))
@@ -157,7 +157,7 @@ func TestOllamaAdapter_Marshal(t *testing.T) {
 	}
 }
 
-// ── adapter endpoints ─────────────────────────────────────────────────────────
+// â”€â”€ adapter endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestAdapterEndpoints(t *testing.T) {
 	cases := []struct {
@@ -166,9 +166,9 @@ func TestAdapterEndpoints(t *testing.T) {
 	}{
 		{&anthropicAdapter{}, "/v1/messages"},
 		{&openAIAdapter{}, "/v1/chat/completions"},
-		// Gemini default (v1beta — supports system_instruction, tools, thinking)
+		// Gemini default (v1beta â€” supports system_instruction, tools, thinking)
 		{&geminiAdapter{apiVersion: "v1beta"}, "/v1beta/models/my-model:generateContent"},
-		// Gemini v1 — stable but limited (no system_instruction, no tools)
+		// Gemini v1 â€” stable but limited (no system_instruction, no tools)
 		{&geminiAdapter{apiVersion: "v1"}, "/v1/models/my-model:generateContent"},
 		{&ollamaAdapter{}, "/api/chat"},
 	}
@@ -180,7 +180,7 @@ func TestAdapterEndpoints(t *testing.T) {
 	}
 }
 
-// ── LLMCall instruction ───────────────────────────────────────────────────────
+// â”€â”€ LLMCall instruction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func anthropicOKServer(t *testing.T, responseText string) *httptest.Server {
 	t.Helper()
@@ -223,7 +223,7 @@ func TestLLMCall_Success(t *testing.T) {
 
 func TestLLMCall_EmptyPrompt_Skips(t *testing.T) {
 	ctx := newTestContext()
-	// ByteSlots[0] is nil → empty prompt
+	// ByteSlots[0] is nil â†’ empty prompt
 	cfg := LLMCallConfig{
 		ModelConfig: modelConfig(config.AdapterAnthropic, "http://localhost:1"),
 		PromptSlot:  0,
@@ -240,7 +240,7 @@ func TestLLMCall_EmptyPrompt_Skips(t *testing.T) {
 
 func TestLLMCall_TokenLimitExceeded_Returns413(t *testing.T) {
 	ctx := newTestContext()
-	// ~4000 chars ≈ 1000 tokens; add maxTokens → exceeds 1100 limit
+	// ~4000 chars â‰ˆ 1000 tokens; add maxTokens â†’ exceeds 1100 limit
 	longPrompt := make([]byte, 4000)
 	for i := range longPrompt {
 		longPrompt[i] = 'a'
@@ -313,7 +313,7 @@ func TestLLMCall_RetryOn429(t *testing.T) {
 }
 
 func TestLLMCall_MissingAPIKey_StillCallsProvider(t *testing.T) {
-	// Provider returns 401 for missing key — verify we get StopPlan + non-200 status
+	// Provider returns 401 for missing key â€” verify we get StopPlan + non-200 status
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
@@ -507,7 +507,7 @@ func TestLLMCall_SystemSlot(t *testing.T) {
 	}
 }
 
-// ── token estimation ──────────────────────────────────────────────────────────
+// â”€â”€ token estimation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestEstimateTokens(t *testing.T) {
 	cases := []struct {
@@ -515,8 +515,8 @@ func TestEstimateTokens(t *testing.T) {
 		want  int // at least this many (rough lower bound)
 	}{
 		{"", 0},
-		{"hello", 2},                // 5 chars → 2 tokens
-		{"hello world foo bar", 5},  // 19 chars → 5 tokens
+		{"hello", 2},                // 5 chars â†’ 2 tokens
+		{"hello world foo bar", 5},  // 19 chars â†’ 5 tokens
 	}
 	for _, c := range cases {
 		got := estimateTokens(c.input)
@@ -526,7 +526,7 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
-// ── APIKeySlot and token slot tests ──────────────────────────────────────────
+// â”€â”€ APIKeySlot and token slot tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // captureAuthServer creates a test server that records the Authorization (or
 // x-api-key) header from the incoming request, then returns a minimal
@@ -586,7 +586,7 @@ func TestLLMCall_APIKeySlotEmpty_FallsBackToBakedKey(t *testing.T) {
 
 	ctx := newTestContext()
 	ctx.ByteSlots[0] = []byte("prompt")
-	// slot 3 is intentionally empty — should fall back to baked key
+	// slot 3 is intentionally empty â€” should fall back to baked key
 
 	cfg := LLMCallConfig{
 		ModelConfig:  modelConfig(config.AdapterAnthropic, srv.URL),

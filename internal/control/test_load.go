@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // LoadTestRequest is the body of POST /test/load/run.
@@ -168,7 +168,7 @@ func runLoadTest(req LoadTestRequest, table []engine.Instruction) ([]int64, int)
 			select {
 			case sem <- struct{}{}:
 			default:
-				// At capacity — skip this tick rather than queue unboundedly.
+				// At capacity â€” skip this tick rather than queue unboundedly.
 				continue
 			}
 

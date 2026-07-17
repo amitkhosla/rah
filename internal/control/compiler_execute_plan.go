@@ -1,24 +1,24 @@
-package control
+﻿package control
 
 import (
 	"fmt"
 	"strconv"
 
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileExecutePlan resolves and appends the execute_plan instruction.
 //
 // Step fields:
-//   - step.KeyIdentifier             → slot name holding the JSON execution plan from the LLM
-//   - step.As                        → result slot name (output: JSON map {step_id: result})
-//   - step.Input["error_slot"]       → slot name to write error messages into (-1 if absent)
-//   - step.Input["mcp_server"]       → MCP server alias (required)
-//   - step.Input["mcp_api_key_ref"]  → literal API key or key reference (optional, overrides server config)
-//   - step.Input["timeout_ms"]       → int milliseconds (default 30000)
-//   - step.Input["max_concurrent"]   → int (0 = sequential; default 0)
-//   - step.Input["skip_new_tool_required"] → "true"/"false" (default "false")
-//   - step.Input["messages_slot"]    → slot name holding []CanonicalMessage history; result appended as assistant turn (-1 if absent)
+//   - step.KeyIdentifier             â†’ slot name holding the JSON execution plan from the LLM
+//   - step.As                        â†’ result slot name (output: JSON map {step_id: result})
+//   - step.Input["error_slot"]       â†’ slot name to write error messages into (-1 if absent)
+//   - step.Input["mcp_server"]       â†’ MCP server alias (required)
+//   - step.Input["mcp_api_key_ref"]  â†’ literal API key or key reference (optional, overrides server config)
+//   - step.Input["timeout_ms"]       â†’ int milliseconds (default 30000)
+//   - step.Input["max_concurrent"]   â†’ int (0 = sequential; default 0)
+//   - step.Input["skip_new_tool_required"] â†’ "true"/"false" (default "false")
+//   - step.Input["messages_slot"]    â†’ slot name holding []CanonicalMessage history; result appended as assistant turn (-1 if absent)
 func (c *Compiler) compileExecutePlan(step StepConfig) error {
 	// Resolve MCP server.
 	alias := step.Input["mcp_server"]

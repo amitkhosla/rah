@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// Pre-baked security header name bytes — allocated once, zero cost at request time.
+// Pre-baked security header name bytes â€” allocated once, zero cost at request time.
 var (
 	secHdrHSTS             = []byte("Strict-Transport-Security")
 	secHdrFrameOptions     = []byte("X-Frame-Options")
@@ -18,7 +18,7 @@ var (
 // SecurityHeadersStep sets optional HTTP security response headers.
 //
 // All configuration is captured at compile time as pre-baked []byte values.
-// No allocations occur on the hot path — each enabled header is a single
+// No allocations occur on the hot path â€” each enabled header is a single
 // ctx.SetResponseHeader call with pre-computed name and value bytes.
 //
 // Every field is independently opt-in: omitting a field means that header is
@@ -26,11 +26,11 @@ var (
 //
 // Parameters (all pre-baked at compile time, nil/zero = disabled):
 //
-//	hstsValue          — value for Strict-Transport-Security (e.g. "max-age=31536000; includeSubDomains")
-//	frameOptions       — value for X-Frame-Options (e.g. "DENY" or "SAMEORIGIN")
-//	contentTypeOptions — if true, sets X-Content-Type-Options: nosniff
-//	referrerPolicy     — value for Referrer-Policy (e.g. "strict-origin-when-cross-origin")
-//	csp                — value for Content-Security-Policy
+//	hstsValue          â€” value for Strict-Transport-Security (e.g. "max-age=31536000; includeSubDomains")
+//	frameOptions       â€” value for X-Frame-Options (e.g. "DENY" or "SAMEORIGIN")
+//	contentTypeOptions â€” if true, sets X-Content-Type-Options: nosniff
+//	referrerPolicy     â€” value for Referrer-Policy (e.g. "strict-origin-when-cross-origin")
+//	csp                â€” value for Content-Security-Policy
 func SecurityHeadersStep(
 	hstsValue          []byte,
 	frameOptions       []byte,

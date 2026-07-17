@@ -1,11 +1,11 @@
-package steps
+﻿package steps
 
 import (
 	"bytes"
 	"encoding/json"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // DetectMessageFormatConfig holds the bake-time slot assignments for DetectMessageFormat.

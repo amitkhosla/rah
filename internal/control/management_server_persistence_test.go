@@ -1,12 +1,12 @@
-package control
+﻿package control
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
 
-	"rah/internal/config"
-	"rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
 )
 
 // diskOnlyStoreConfig creates a minimal DataStoreConfig backed by a temp directory,
@@ -225,7 +225,7 @@ func TestBootstrapFromDataStore(t *testing.T) {
 		t.Fatalf("seed api: %v", err)
 	}
 
-	// Bootstrap — must be called before SetDataStore to avoid redundant re-writes.
+	// Bootstrap â€” must be called before SetDataStore to avoid redundant re-writes.
 	s := newTestMS(t)
 	if err := s.Bootstrap(ctx, dsm); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -263,15 +263,15 @@ func TestBootstrapFromEmptyDataStoreIsNoop(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Incremental sync — datastore accumulates across partial calls
+// Incremental sync â€” datastore accumulates across partial calls
 // ---------------------------------------------------------------------------
 
 // TestIncrementalSyncAccumulates verifies the scenario:
 //
-//	call 1 → upsert 3 APIs  → datastore has 3
-//	call 2 → upsert 2 more  → datastore has 5
-//	call 3 → delete 1       → datastore has 4
-//	restart → bootstrap     → gateway sees 4 APIs
+//	call 1 â†’ upsert 3 APIs  â†’ datastore has 3
+//	call 2 â†’ upsert 2 more  â†’ datastore has 5
+//	call 3 â†’ delete 1       â†’ datastore has 4
+//	restart â†’ bootstrap     â†’ gateway sees 4 APIs
 func TestIncrementalSyncAccumulates(t *testing.T) {
 	dsm, err := NewDataStoreManager(context.Background(), diskOnlyStoreConfig(t), nil)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestIncrementalSyncAccumulates(t *testing.T) {
 		t.Fatalf("call 1 failed: %v", err)
 	}
 
-	// Call 2: 2 more flows + 2 more APIs (partial — no mention of a1/a2/a3)
+	// Call 2: 2 more flows + 2 more APIs (partial â€” no mention of a1/a2/a3)
 	if err := s.ApplyUnifiedSync(UnifiedSyncRequest{
 		Flows: []FlowUpdate{
 			{Name: "f4", Instructions: echoFlow(), Action: "upsert"},

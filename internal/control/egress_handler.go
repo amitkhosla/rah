@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -9,23 +9,23 @@ import (
 	"strconv"
 	"strings"
 
-	"rah/internal/config"
-	"rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/egress"
 )
 
 // EgressHandler exposes CRUD REST endpoints for egress profiles and rules.
 //
-//	GET    /egress/profiles              — list all profiles (JSON array)
-//	POST   /egress/profiles              — create/update profile (body: EgressProfileConfig)
-//	DELETE /egress/profiles/{name}       — delete profile by name
+//	GET    /egress/profiles              â€” list all profiles (JSON array)
+//	POST   /egress/profiles              â€” create/update profile (body: EgressProfileConfig)
+//	DELETE /egress/profiles/{name}       â€” delete profile by name
 //
-//	GET    /egress/rules/codes           — list code rules (JSON array)
-//	POST   /egress/rules/codes           — upsert code rule (body: EgressCodeRuleConfig)
-//	DELETE /egress/rules/codes/{code}    — delete code rule by service code
+//	GET    /egress/rules/codes           â€” list code rules (JSON array)
+//	POST   /egress/rules/codes           â€” upsert code rule (body: EgressCodeRuleConfig)
+//	DELETE /egress/rules/codes/{code}    â€” delete code rule by service code
 //
-//	GET    /egress/rules/patterns        — list pattern rules (JSON array, sorted by idx)
-//	POST   /egress/rules/patterns        — append pattern rule (body: EgressPatternRuleConfig)
-//	DELETE /egress/rules/patterns/{idx}  — delete pattern rule by idx string
+//	GET    /egress/rules/patterns        â€” list pattern rules (JSON array, sorted by idx)
+//	POST   /egress/rules/patterns        â€” append pattern rule (body: EgressPatternRuleConfig)
+//	DELETE /egress/rules/patterns/{idx}  â€” delete pattern rule by idx string
 type EgressHandler struct {
 	dsm    *DataStoreManager
 	egress *egress.EgressManager
@@ -46,7 +46,7 @@ func (h *EgressHandler) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/egress/rules/patterns/", h.patternsItemHandler)
 }
 
-// ─── Profile handlers ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Profile handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (h *EgressHandler) profilesCollectionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -143,7 +143,7 @@ func (h *EgressHandler) deleteProfile(w http.ResponseWriter, r *http.Request, na
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ─── Code rule handlers ───────────────────────────────────────────────────────
+// â”€â”€â”€ Code rule handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (h *EgressHandler) codesCollectionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -244,7 +244,7 @@ func (h *EgressHandler) deleteCodeRule(w http.ResponseWriter, r *http.Request, c
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ─── Pattern rule handlers ────────────────────────────────────────────────────
+// â”€â”€â”€ Pattern rule handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func (h *EgressHandler) patternsCollectionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -351,7 +351,7 @@ func (h *EgressHandler) deletePatternRule(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // formatPatternKey formats idx as "rule/pattern/000001".
 func formatPatternKey(idx string) string { return "rule/pattern/" + idx }
@@ -388,7 +388,7 @@ func (h *EgressHandler) reload(ctx context.Context) error {
 
 // loadConfig assembles a full *config.EgressConfig from the datastore.
 func (h *EgressHandler) loadConfig(ctx context.Context) (*config.EgressConfig, error) {
-	// ── Profiles ──────────────────────────────────────────────────────────────
+	// â”€â”€ Profiles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	profileKeys, err := h.dsm.ListKeysByDomain(ctx, config.DomainEgressProfiles, GlobalTenant, "profile/")
 	if err != nil {
 		return nil, err
@@ -409,7 +409,7 @@ func (h *EgressHandler) loadConfig(ctx context.Context) (*config.EgressConfig, e
 		profiles = append(profiles, p)
 	}
 
-	// ── Code rules ────────────────────────────────────────────────────────────
+	// â”€â”€ Code rules â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	codeKeys, err := h.dsm.ListKeysByDomain(ctx, config.DomainEgressProfiles, GlobalTenant, "rule/code/")
 	if err != nil {
 		return nil, err
@@ -430,7 +430,7 @@ func (h *EgressHandler) loadConfig(ctx context.Context) (*config.EgressConfig, e
 		codeRules = append(codeRules, cr)
 	}
 
-	// ── Pattern rules (sorted by key to preserve insertion order) ─────────────
+	// â”€â”€ Pattern rules (sorted by key to preserve insertion order) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	patternKeys, err := h.dsm.ListKeysByDomain(ctx, config.DomainEgressProfiles, GlobalTenant, "rule/pattern/")
 	if err != nil {
 		return nil, err
@@ -459,7 +459,7 @@ func (h *EgressHandler) loadConfig(ctx context.Context) (*config.EgressConfig, e
 	}, nil
 }
 
-// ─── Bootstrap + Route registration ──────────────────────────────────────────
+// â”€â”€â”€ Bootstrap + Route registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // BootstrapEgress reads all egress config from the datastore and loads it into em.
 // Returns nil if the domain is not configured (optional domain).

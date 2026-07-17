@@ -1,6 +1,6 @@
-package control
+﻿package control
 
-import "rah/internal/config"
+import "github.com/amitkhosla/rah/internal/config"
 
 // GatewayConfig is the root configuration object for the entire gateway.
 type GatewayConfig struct {

@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"rah/internal/config"
-	"rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
 )
 
 func TestGatewayIntegration_TokenValidationSignatureOnly(t *testing.T) {

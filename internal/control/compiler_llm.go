@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"encoding/json"
@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"rah/internal/config"
-	"rah/internal/engine"
-	"rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/engine/steps"
 )
 
 // compileLLMCall resolves and appends the llm_call instruction.
@@ -24,7 +24,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		return fmt.Errorf("llm_call: result slot: %w", err)
 	}
 
-	// Resolve model slug: step.Input["model"] → catalog default
+	// Resolve model slug: step.Input["model"] â†’ catalog default
 	modelSlug := step.Input["model"]
 	if modelSlug == "" {
 		modelSlug = c.LLMCfg.Default
@@ -68,7 +68,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		}
 	}
 
-	// max_tokens: step.Input → model default → 2000
+	// max_tokens: step.Input â†’ model default â†’ 2000
 	maxTokens := modelCfg.MaxTokens
 	if mt := step.Input["max_tokens"]; mt != "" {
 		if n, convErr := strconv.Atoi(mt); convErr == nil && n > 0 {
@@ -79,7 +79,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		maxTokens = 2000
 	}
 
-	// temperature: step.Input → 0.7
+	// temperature: step.Input â†’ 0.7
 	temperature := 0.7
 	if t := step.Input["temperature"]; t != "" {
 		if f, convErr := strconv.ParseFloat(t, 64); convErr == nil {
@@ -87,7 +87,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		}
 	}
 
-	// timeout_ms: step.Input → 30 000
+	// timeout_ms: step.Input â†’ 30 000
 	timeoutMs := 30_000
 	if t := step.Input["timeout_ms"]; t != "" {
 		if n, convErr := strconv.Atoi(t); convErr == nil && n > 0 {
@@ -111,13 +111,13 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		InputTokensSlot:  -1, // disabled by default
 		OutputTokensSlot: -1, // disabled by default
 		MessagesSlot:     -1, // disabled by default
-		// Tool / thinking slots — disabled by default
+		// Tool / thinking slots â€” disabled by default
 		ToolsSlot:       -1,
 		ToolChoiceSlot:  -1,
 		ThinkingSlot:    -1,
 		ToolUseSlot:     -1,
 		ThinkingOutSlot: -1,
-		// Prompt caching — disabled by default
+		// Prompt caching â€” disabled by default
 		PromptCacheEnabled: false,
 		PromptCacheUpTo:    -1,
 		CacheReadSlot:      -1,
@@ -169,8 +169,8 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 
 	// Resolve fallback chain.
 	// Supports two formats:
-	//   fallback_model: "alias"               → single-entry chain (backward compat)
-	//   fallback_chain: "alias1,alias2,..."   → ordered multi-hop chain
+	//   fallback_model: "alias"               â†’ single-entry chain (backward compat)
+	//   fallback_chain: "alias1,alias2,..."   â†’ ordered multi-hop chain
 	// Both can be combined; fallback_model is appended after fallback_chain entries.
 	var fallbackChain []steps.FallbackEntry
 
@@ -225,7 +225,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 
 	llmCfg.FallbackChain = fallbackChain
 
-	// fallback_by_model: optional JSON map of alias → []alias that provides per-model
+	// fallback_by_model: optional JSON map of alias â†’ []alias that provides per-model
 	// fallback chains when model_slot is used. Resolved at bake time so all API keys
 	// are available. At runtime, the selected model's chain overrides FallbackChain.
 	// Format: {"gpt-4o-mini":["gemini-flash","claude-haiku"],"claude-opus":["gpt-4o"]}

@@ -1,19 +1,19 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"strings"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // TransformMessagesConfig holds the bake-time configuration for TransformMessages.
 type TransformMessagesConfig struct {
 	// Input/output slots
-	HistorySlot  int // []CanonicalMessage JSON — read and write back
-	SystemSlot   int // system prompt text — read or write (-1 = unused)
-	ThinkingSlot int // extracted thinking text — write only (-1 = unused)
+	HistorySlot  int // []CanonicalMessage JSON â€” read and write back
+	SystemSlot   int // system prompt text â€” read or write (-1 = unused)
+	ThinkingSlot int // extracted thinking text â€” write only (-1 = unused)
 	FormatSlot   int // read source format string from slot (-1 = use SourceFormat field)
 
 	// Format config (used if FormatSlot < 0)
@@ -25,10 +25,10 @@ type TransformMessagesConfig struct {
 	// FlattenContent, AdaptRoles, NormalizeTools, InjectSystem.
 	StripThinking   bool // remove {type:"thinking"} content blocks from assistant messages
 	ExtractThinking bool // move thinking text to ThinkingSlot instead of stripping
-	ExtractSystem   bool // pull system-role messages out of history → SystemSlot
+	ExtractSystem   bool // pull system-role messages out of history â†’ SystemSlot
 	InjectSystem    bool // prepend SystemSlot content as system-role message into history
-	FlattenContent  bool // collapse [{type:"text",text:"x"}] arrays → plain string "x"
-	AdaptRoles      bool // map role names: "model"↔"assistant", normalize tool roles
+	FlattenContent  bool // collapse [{type:"text",text:"x"}] arrays â†’ plain string "x"
+	AdaptRoles      bool // map role names: "model"â†”"assistant", normalize tool roles
 	NormalizeTools  bool // rewrite tool_result messages for target format compatibility
 
 	// History truncation (applied after all content transforms above)
@@ -108,7 +108,7 @@ func applyStripOrExtractThinking(msgs []CanonicalMessage, ctx *rctx.Context, sta
 					if extract {
 						thinkingParts = append(thinkingParts, b.Text)
 					}
-					// Drop — do not include in kept.
+					// Drop â€” do not include in kept.
 				} else {
 					kept = append(kept, b)
 				}
@@ -129,7 +129,7 @@ func applyStripOrExtractThinking(msgs []CanonicalMessage, ctx *rctx.Context, sta
 				if extract {
 					thinkingParts = append(thinkingParts, b.Thinking)
 				}
-				// Skip — don't include in textBlocks
+				// Skip â€” don't include in textBlocks
 			} else {
 				textBlocks = append(textBlocks, b)
 			}
@@ -183,17 +183,17 @@ func applyAdaptRoles(msgs []CanonicalMessage, targetFormat string) []CanonicalMe
 	for i, m := range msgs {
 		switch string(m.Role) {
 		case "model":
-			// Gemini "model" → canonical "assistant" for non-Gemini targets
+			// Gemini "model" â†’ canonical "assistant" for non-Gemini targets
 			if targetFormat != "gemini" {
 				msgs[i].Role = RoleAssistant
 			}
 		case "assistant":
-			// canonical "assistant" → Gemini "model" for Gemini target
+			// canonical "assistant" â†’ Gemini "model" for Gemini target
 			if targetFormat == "gemini" {
 				msgs[i].Role = "model"
 			}
 		case "function":
-			// Old OpenAI function calling → new tool calling
+			// Old OpenAI function calling â†’ new tool calling
 			msgs[i].Role = "tool"
 		}
 	}
@@ -262,7 +262,7 @@ func TransformMessages(cfg TransformMessagesConfig) engine.Instruction {
 			if cfg.FormatSlot >= 0 {
 				if raw := ctx.ByteSlots[cfg.FormatSlot]; len(raw) > 0 {
 					// FormatSlot holds the source format; target is still cfg.TargetFormat.
-					// The FormatSlot value is the source format — it can be used for
+					// The FormatSlot value is the source format â€” it can be used for
 					// format-specific logic. Here we just use TargetFormat for transforms.
 					_ = string(raw) // source format available if needed in future
 				}
@@ -300,7 +300,7 @@ func TransformMessages(cfg TransformMessagesConfig) engine.Instruction {
 				msgs = applyInjectSystem(msgs, ctx, cfg.SystemSlot)
 			}
 
-			// ── Truncation ────────────────────────────────────────────────────────
+			// â”€â”€ Truncation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 			needsTruncation := cfg.MaxMessages > 0 || cfg.MaxTokens > 0
 
 			if needsTruncation && len(msgs) > 0 {
@@ -361,7 +361,7 @@ func TransformMessages(cfg TransformMessagesConfig) engine.Instruction {
 							if hasNonOrphan {
 								filtered = append(filtered, m)
 							}
-							// else: skip — all blocks are orphaned tool_results
+							// else: skip â€” all blocks are orphaned tool_results
 						} else {
 							filtered = append(filtered, m)
 						}

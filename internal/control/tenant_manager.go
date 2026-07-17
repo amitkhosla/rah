@@ -1,8 +1,8 @@
-package control
+﻿package control
 
 //In compiler side, we might not require this stuff added, as this is data and not api definition.
 import (
-	"rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/registry"
 )
 
 // TenantUpdate represents the incoming JSON command

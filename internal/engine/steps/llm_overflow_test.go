@@ -1,16 +1,16 @@
-package steps
+﻿package steps
 
 import (
 	"context"
 	"encoding/json"
 	"testing"
 
-	"rah/internal/datastore"
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// ─── helpers (mirrors llm_history_test.go; defined locally to avoid import) ──
+// â”€â”€â”€ helpers (mirrors llm_history_test.go; defined locally to avoid import) â”€â”€
 
 // overflowCtx creates a Context with numByteSlots byte slots and numIntSlots int slots.
 func overflowCtx(numByteSlots, numIntSlots int) (*rctx.Context, *engine.ExecutionState) {
@@ -45,7 +45,7 @@ func decodeOverflowSlot(t *testing.T, ctx *rctx.Context, slot int) []CanonicalMe
 	return msgs
 }
 
-// ─── in-memory store (duplicate of llm_history_test.go's memStore) ───────────
+// â”€â”€â”€ in-memory store (duplicate of llm_history_test.go's memStore) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type ovMemStore struct {
 	data   map[string][]byte
@@ -108,13 +108,13 @@ func buildTurns(n int) []CanonicalMessage {
 	return msgs
 }
 
-// ─── OverflowHistory tests ────────────────────────────────────────────────────
+// â”€â”€â”€ OverflowHistory tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// TestOverflowHistory_FitsWithinBudget: all turns fit → no overflow stored, history unchanged.
+// TestOverflowHistory_FitsWithinBudget: all turns fit â†’ no overflow stored, history unchanged.
 func TestOverflowHistory_FitsWithinBudget(t *testing.T) {
 	store := newOvMemStore("convs")
-	// 2 turns, each msg ~9 chars → ~6 tokens + 4 = 10 tokens per msg → 40 tokens for 4 msgs.
-	// Budget of 200 tokens → everything fits.
+	// 2 turns, each msg ~9 chars â†’ ~6 tokens + 4 = 10 tokens per msg â†’ 40 tokens for 4 msgs.
+	// Budget of 200 tokens â†’ everything fits.
 	msgs := buildTurns(2)
 	ctx, state := overflowCtx(4, 2)
 	ctx.ByteSlots[0] = marshalOverflowHistory(t, msgs)
@@ -149,7 +149,7 @@ func TestOverflowHistory_FitsWithinBudget(t *testing.T) {
 // TestOverflowHistory_ExceedsBudget: oldest turns moved to store, history trimmed.
 func TestOverflowHistory_ExceedsBudget(t *testing.T) {
 	store := newOvMemStore("convs")
-	// 5 turns = 10 messages; each ~9 chars → ~6 tok + 4 = 10 tok each → 100 tokens total.
+	// 5 turns = 10 messages; each ~9 chars â†’ ~6 tok + 4 = 10 tok each â†’ 100 tokens total.
 	// Keep only 2 turns (40 tokens); overflow = 3 turns (60 tokens).
 	msgs := buildTurns(5)
 	ctx, state := overflowCtx(4, 2)
@@ -178,7 +178,7 @@ func TestOverflowHistory_ExceedsBudget(t *testing.T) {
 	}
 }
 
-// TestOverflowHistory_NilStore_JustTrims: Store nil → trim in place, no panic.
+// TestOverflowHistory_NilStore_JustTrims: Store nil â†’ trim in place, no panic.
 func TestOverflowHistory_NilStore_JustTrims(t *testing.T) {
 	msgs := buildTurns(4)
 	ctx, state := overflowCtx(4, 2)
@@ -244,7 +244,7 @@ func TestOverflowHistory_OverflowSlotDriven(t *testing.T) {
 	ctx, state := overflowCtx(4, 4)
 	ctx.ByteSlots[0] = marshalOverflowHistory(t, msgs)
 	ctx.ByteSlots[1] = []byte("sess-slot")
-	ctx.IntSlots[2] = 9999 // very large → remove all messages
+	ctx.IntSlots[2] = 9999 // very large â†’ remove all messages
 
 	cfg := OverflowHistoryConfig{
 		HistorySlot:  0,
@@ -255,7 +255,7 @@ func TestOverflowHistory_OverflowSlotDriven(t *testing.T) {
 	}
 	OverflowHistory(cfg).Action(ctx, state)
 
-	// All messages moved to overflow → history slot is empty.
+	// All messages moved to overflow â†’ history slot is empty.
 	got := decodeOverflowSlot(t, ctx, 0)
 	if len(got) != 0 {
 		t.Fatalf("expected 0 remaining messages (all overflowed), got %d", len(got))
@@ -267,7 +267,7 @@ func TestOverflowHistory_OverflowSlotDriven(t *testing.T) {
 	}
 }
 
-// TestOverflowHistory_OverflowSlotZero_Noop: overflow slot value 0 → nothing to move.
+// TestOverflowHistory_OverflowSlotZero_Noop: overflow slot value 0 â†’ nothing to move.
 func TestOverflowHistory_OverflowSlotZero_Noop(t *testing.T) {
 	store := newOvMemStore("convs")
 	msgs := buildTurns(3)
@@ -296,9 +296,9 @@ func TestOverflowHistory_OverflowSlotZero_Noop(t *testing.T) {
 	}
 }
 
-// ─── LoadOverflowHistory tests ────────────────────────────────────────────────
+// â”€â”€â”€ LoadOverflowHistory tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-// TestLoadOverflowHistory_NoOverflow: overflow key not in store → history unchanged.
+// TestLoadOverflowHistory_NoOverflow: overflow key not in store â†’ history unchanged.
 func TestLoadOverflowHistory_NoOverflow(t *testing.T) {
 	store := newOvMemStore("convs")
 	msgs := buildTurns(2)
@@ -383,7 +383,7 @@ func TestLoadOverflowHistory_MaxTurns(t *testing.T) {
 	}
 }
 
-// TestLoadOverflowHistory_NilStore_Noop: nil store → noop, no panic.
+// TestLoadOverflowHistory_NilStore_Noop: nil store â†’ noop, no panic.
 func TestLoadOverflowHistory_NilStore_Noop(t *testing.T) {
 	msgs := buildTurns(2)
 	ctx, state := overflowCtx(4, 2)

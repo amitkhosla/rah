@@ -1,6 +1,6 @@
-package datastore
+﻿package datastore
 
-import "rah/internal/config"
+import "github.com/amitkhosla/rah/internal/config"
 
 func newDiskStore(cfg config.StoreConfig, domain string) (KeyValueStore, error) {
 	return newFileStore(cfg, domain)

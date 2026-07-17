@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/vectorstore"
 )
 
 // VectorSearchConfig is resolved at bake time and captured in the instruction closure.
@@ -90,7 +90,7 @@ func vectorRequestContext(ctx *rctx.Context) context.Context {
 //  3. Resolves collection: slot value if CollectionSlot >= 0 and non-empty, else DefaultCollection
 //  4. If no collection: sets ResponseStatus=400, Failed=true, returns StopPlan
 //  5. Calls cfg.Store.Search(...)
-//  6. Marshals results as JSON → ctx.ByteSlots[cfg.ResultSlot]
+//  6. Marshals results as JSON â†’ ctx.ByteSlots[cfg.ResultSlot]
 //  7. Writes int64(len(results)) to ctx.IntSlots[cfg.CountSlot] if CountSlot >= 0 and in bounds
 //  8. Returns state.PC + 1
 //
@@ -113,7 +113,7 @@ func VectorSearch(cfg VectorSearchConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// 2. Unmarshal []float64 → []float32
+			// 2. Unmarshal []float64 â†’ []float32
 			var vec64 []float64
 			if err := json.Unmarshal(raw, &vec64); err != nil {
 				ctx.ResponseStatus = 400
@@ -129,7 +129,7 @@ func VectorSearch(cfg VectorSearchConfig) engine.Instruction {
 			// 3. Resolve collection
 			collection, ok := resolveVectorCollection(ctx, cfg.CollectionSlot, cfg.DefaultCollection)
 			if !ok {
-				// 4. No collection name → 400
+				// 4. No collection name â†’ 400
 				ctx.ResponseStatus = 400
 				ctx.Failed = true
 				ctx.ErrorCode = 400
@@ -162,7 +162,7 @@ func VectorSearch(cfg VectorSearchConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 
-			// 6. Marshal results as JSON → ResultSlot
+			// 6. Marshal results as JSON â†’ ResultSlot
 			if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 				resultJSON, marshalErr := json.Marshal(results)
 				if marshalErr == nil {
@@ -187,8 +187,8 @@ func VectorSearch(cfg VectorSearchConfig) engine.Instruction {
 //
 // At runtime:
 //  1. Reads vector JSON from cfg.VectorSlot; if empty, returns PC+1 (no-op)
-//  2. Unmarshals []float64 → []float32
-//  3. Reads content from cfg.ContentSlot (may be empty — allowed)
+//  2. Unmarshals []float64 â†’ []float32
+//  3. Reads content from cfg.ContentSlot (may be empty â€” allowed)
 //  4. Resolves ID: slot value if IDSlot >= 0 and non-empty, else sha256(content)
 //  5. Resolves metadata: unmarshal from MetadataSlot if >= 0 and non-empty, else nil
 //  6. Resolves collection same as VectorSearch
@@ -208,7 +208,7 @@ func VectorUpsert(cfg VectorUpsertConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// 2. Unmarshal []float64 → []float32
+			// 2. Unmarshal []float64 â†’ []float32
 			var vec64 []float64
 			if err := json.Unmarshal(raw, &vec64); err != nil {
 				ctx.ResponseStatus = 400

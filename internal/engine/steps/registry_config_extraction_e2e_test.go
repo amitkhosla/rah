@@ -1,12 +1,12 @@
-package steps
+﻿package steps
 
 import (
 	"encoding/json"
 	"fmt"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // ============================================================================
@@ -76,7 +76,7 @@ func TestValidateCommerceTenanIdentifierPersistence(t *testing.T) {
 	for key, val := range ids {
 		if string(val) == "acme_nonprd_01" {
 			found = true
-			t.Logf("✓ Commerce tenant ID correctly persisted: key=%s, value=%s", key, string(val))
+			t.Logf("âœ“ Commerce tenant ID correctly persisted: key=%s, value=%s", key, string(val))
 			break
 		}
 	}
@@ -189,7 +189,7 @@ func TestValidateServiceURLsPerTenant(t *testing.T) {
 						if expectedPrefix != "unassigned" && len(actualVal) == 0 {
 							t.Errorf("expected URL for %s, got empty", expectedKey)
 						}
-						t.Logf("✓ %s: %s = %s", tc.tenant, key, actualVal)
+						t.Logf("âœ“ %s: %s = %s", tc.tenant, key, actualVal)
 						break
 					}
 				}
@@ -302,7 +302,7 @@ func TestValidateMultipleProductsWithDifferentTenantIDs(t *testing.T) {
 		} else if actual != expectedTenantID {
 			t.Errorf("product %s: expected tenant ID %s, got %s", product, expectedTenantID, actual)
 		} else {
-			t.Logf("✓ Product %s correctly mapped to tenant ID %s", product, actual)
+			t.Logf("âœ“ Product %s correctly mapped to tenant ID %s", product, actual)
 		}
 	}
 }
@@ -328,7 +328,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	if len(ctx.ByteSlots[1]) == 0 {
 		t.Fatal("Step 1 failed: response body not populated")
 	}
-	t.Log("✓ Step 1: HTTP fetch complete (response populated in slot 1)")
+	t.Log("âœ“ Step 1: HTTP fetch complete (response populated in slot 1)")
 
 	mockMgr := NewMockRegistryMutator()
 	ctx.MaxOps = 1000
@@ -369,7 +369,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	step2 := JSONForeachEmit(1, "products", step2Ops)
 	step2.Action(ctx, state)
 	processOps()
-	t.Log("✓ Step 2: Tenant identifiers extracted and stored")
+	t.Log("âœ“ Step 2: Tenant identifiers extracted and stored")
 
 	// Step 3: Extract service URLs
 	step3Ops := []ExtractOp{
@@ -385,7 +385,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	step3 := JSONForeachEmit(1, "products.0.serviceCategories.0.services", step3Ops)
 	step3.Action(ctx, state)
 	processOps()
-	t.Log("✓ Step 3: Service URLs extracted and stored")
+	t.Log("âœ“ Step 3: Service URLs extracted and stored")
 
 	// Step 4: Extract metadata (region, tier, etc.)
 	step4Ops := []ExtractOp{
@@ -417,7 +417,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	step4 := JSONExtractEmit(1, step4Ops)
 	step4.Action(ctx, state)
 	processOps()
-	t.Log("✓ Step 4: Metadata extracted and stored")
+	t.Log("âœ“ Step 4: Metadata extracted and stored")
 
 	// VALIDATION: Verify all data was correctly persisted
 	t.Log("\n=== VALIDATION RESULTS ===")
@@ -430,7 +430,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	foundTenantID := false
 	for key, val := range ids {
 		if string(val) == "acme_nonprd_01" {
-			t.Logf("✓ Tenant ID: key=%s, value=%s", key, string(val))
+			t.Logf("âœ“ Tenant ID: key=%s, value=%s", key, string(val))
 			foundTenantID = true
 		}
 	}
@@ -449,7 +449,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	}
 	for expectedKey := range expectedSvcs {
 		if _, found := urls[expectedKey]; found {
-			t.Logf("✓ Service URL stored: %s", expectedKey)
+			t.Logf("âœ“ Service URL stored: %s", expectedKey)
 		} else {
 			t.Errorf("Expected service URL not found: %s", expectedKey)
 		}
@@ -471,7 +471,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 	}
 	for expectedKey, expectedVal := range expectedMeta {
 		if val, found := meta[expectedKey]; found && string(val) == expectedVal {
-			t.Logf("✓ Metadata stored: %s=%s", expectedKey, expectedVal)
+			t.Logf("âœ“ Metadata stored: %s=%s", expectedKey, expectedVal)
 		} else {
 			actual := ""
 			if found {
@@ -481,7 +481,7 @@ func TestMultiStepExtractAndStoreFlow(t *testing.T) {
 		}
 	}
 
-	t.Log("\n✓ Multi-step extraction flow completed successfully!")
+	t.Log("\nâœ“ Multi-step extraction flow completed successfully!")
 }
 
 // TestCrossTenanIsolation validates that extracted data is properly isolated
@@ -556,7 +556,7 @@ func TestCrosTenanIsolation(t *testing.T) {
 		for key, val := range ids {
 			if string(val) == tenant.expected {
 				found = true
-				t.Logf("✓ Tenant %s: isolated identifier %s=%s", tenant.key, key, string(val))
+				t.Logf("âœ“ Tenant %s: isolated identifier %s=%s", tenant.key, key, string(val))
 				break
 			}
 		}
@@ -578,5 +578,5 @@ func TestCrosTenanIsolation(t *testing.T) {
 		}
 	}
 
-	t.Log("✓ Cross-tenant isolation validated")
+	t.Log("âœ“ Cross-tenant isolation validated")
 }

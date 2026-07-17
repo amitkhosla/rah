@@ -1,4 +1,4 @@
-package steps
+﻿package steps
 
 import (
 	"context"
@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"testing"
 
-	"rah/internal/engine"
-	"rah/internal/rctx"
-	"rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/vectorstore"
 )
 
-// ─── Mock VectorStore ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Mock VectorStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type mockVectorStore struct {
 	// SearchFn is called by Search; if nil, returns empty results.
@@ -49,7 +49,7 @@ func (m *mockVectorStore) Delete(ctx context.Context, collection string, ids []s
 func (m *mockVectorStore) Kind() string { return "mock" }
 func (m *mockVectorStore) Close() error { return nil }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func makeVectorCtx() *rctx.Context {
 	ctx := &rctx.Context{}
@@ -68,7 +68,7 @@ func encodeVec(vec []float64) []byte {
 	return b
 }
 
-// ─── VectorSearch Tests ───────────────────────────────────────────────────────
+// â”€â”€â”€ VectorSearch Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestVectorSearch_Success(t *testing.T) {
 	wantResults := []vectorstore.SearchResult{
@@ -124,7 +124,7 @@ func TestVectorSearch_Success(t *testing.T) {
 func TestVectorSearch_EmptyVectorSlot_Noop(t *testing.T) {
 	store := &mockVectorStore{}
 	ctx := makeVectorCtx()
-	// ByteSlots[0] is empty (nil) — no vector
+	// ByteSlots[0] is empty (nil) â€” no vector
 
 	cfg := VectorSearchConfig{
 		VectorSlot:        0,
@@ -290,7 +290,7 @@ func TestVectorSearch_NoCollection_StopsExecution(t *testing.T) {
 	}
 }
 
-// ─── VectorUpsert Tests ───────────────────────────────────────────────────────
+// â”€â”€â”€ VectorUpsert Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func TestVectorUpsert_Success(t *testing.T) {
 	store := &mockVectorStore{}
@@ -341,7 +341,7 @@ func TestVectorUpsert_Success(t *testing.T) {
 func TestVectorUpsert_EmptyVectorSlot_Noop(t *testing.T) {
 	store := &mockVectorStore{}
 	ctx := makeVectorCtx()
-	// ByteSlots[0] is empty (nil) — no vector
+	// ByteSlots[0] is empty (nil) â€” no vector
 
 	cfg := VectorUpsertConfig{
 		VectorSlot:        0,

@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"fmt"
@@ -7,21 +7,21 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"rah/internal/avro"
-	"rah/internal/engine/steps"
-	grpcutil "rah/internal/grpc"
+	"github.com/amitkhosla/rah/internal/avro"
+	"github.com/amitkhosla/rah/internal/engine/steps"
+	grpcutil "github.com/amitkhosla/rah/internal/grpc"
 )
 
 // compileAvroToProto handles the "avro_to_proto" step type.
-// Multi-hop: Avro binary → JSON (pivot) → Proto binary.
+// Multi-hop: Avro binary â†’ JSON (pivot) â†’ Proto binary.
 //
 // Step input keys:
 //
-//	src_slot        — var name whose ByteSlot contains Avro binary (required)
-//	dst_slot        — var name whose ByteSlot will receive Proto binary (required)
-//	avro_schema     — Avro JSON schema string for the source (required)
-//	descriptor_set  — name of the registered FileDescriptorSet (required)
-//	message         — fully-qualified Proto message name (required)
+//	src_slot        â€” var name whose ByteSlot contains Avro binary (required)
+//	dst_slot        â€” var name whose ByteSlot will receive Proto binary (required)
+//	avro_schema     â€” Avro JSON schema string for the source (required)
+//	descriptor_set  â€” name of the registered FileDescriptorSet (required)
+//	message         â€” fully-qualified Proto message name (required)
 func (c *Compiler) compileAvroToProto(step StepConfig) error {
 	schemaJSON := step.Input["avro_schema"]
 	if schemaJSON == "" {
@@ -85,15 +85,15 @@ func (c *Compiler) compileAvroToProto(step StepConfig) error {
 }
 
 // compileProtoToAvro handles the "proto_to_avro" step type.
-// Multi-hop: Proto binary → JSON (pivot) → Avro binary.
+// Multi-hop: Proto binary â†’ JSON (pivot) â†’ Avro binary.
 //
 // Step input keys:
 //
-//	src_slot        — var name whose ByteSlot contains Proto binary (required)
-//	dst_slot        — var name whose ByteSlot will receive Avro binary (required)
-//	descriptor_set  — name of the registered FileDescriptorSet (required)
-//	message         — fully-qualified Proto message name (required)
-//	avro_schema     — Avro JSON schema string for the destination (required)
+//	src_slot        â€” var name whose ByteSlot contains Proto binary (required)
+//	dst_slot        â€” var name whose ByteSlot will receive Avro binary (required)
+//	descriptor_set  â€” name of the registered FileDescriptorSet (required)
+//	message         â€” fully-qualified Proto message name (required)
+//	avro_schema     â€” Avro JSON schema string for the destination (required)
 func (c *Compiler) compileProtoToAvro(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {

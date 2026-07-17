@@ -1,18 +1,18 @@
-package engine
+﻿package engine
 
 import (
 	"sort"
 	"strings"
 	"sync/atomic"
 
-	"rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/registry"
 )
 
 // unmatchedPolicy controls behaviour when no URL pattern matches.
 type unmatchedPolicy uint8
 
 const (
-	policyFailOpen   unmatchedPolicy = 0 // no config — allow unlimited
+	policyFailOpen   unmatchedPolicy = 0 // no config â€” allow unlimited
 	policyFailClosed unmatchedPolicy = 1 // deny the request
 	policyDefault    unmatchedPolicy = 2 // apply defaultID config
 )
@@ -33,13 +33,13 @@ type UpstreamRegistry struct {
 	defaultID uint16 // used when unmatched == policyDefault
 }
 
-// NewUpstreamRegistry builds a registry from a list of (pattern, configName→configID) pairs.
+// NewUpstreamRegistry builds a registry from a list of (pattern, configNameâ†’configID) pairs.
 //
 // unmatchedStr must be one of:
 //
-//	"fail_open"      — allow all unmatched URLs with no rate limiting (configID=0)
-//	"fail_closed"    — deny all unmatched URLs
-//	"default_config" — apply defaultConfigID to all unmatched URLs
+//	"fail_open"      â€” allow all unmatched URLs with no rate limiting (configID=0)
+//	"fail_closed"    â€” deny all unmatched URLs
+//	"default_config" â€” apply defaultConfigID to all unmatched URLs
 //
 // defaultConfigID is ignored unless unmatchedStr == "default_config".
 func NewUpstreamRegistry(
@@ -64,7 +64,7 @@ func NewUpstreamRegistry(
 	for _, p := range patterns {
 		id, ok := configNameToID(p.ConfigName)
 		if !ok {
-			// Unknown config name — skip silently; the caller is responsible for
+			// Unknown config name â€” skip silently; the caller is responsible for
 			// ensuring config names are valid before building the registry.
 			continue
 		}
@@ -123,8 +123,8 @@ func (r *UpstreamRegistry) Match(url string) (configID uint16, found bool) {
 //
 // Return values:
 //
-//	configID — the rate-limit config to apply (0 means no limiting)
-//	allow    — false means deny the request immediately (fail_closed)
+//	configID â€” the rate-limit config to apply (0 means no limiting)
+//	allow    â€” false means deny the request immediately (fail_closed)
 func (r *UpstreamRegistry) MatchWithPolicy(url string) (configID uint16, allow bool) {
 	id, found := r.Match(url)
 	if found {
@@ -141,7 +141,7 @@ func (r *UpstreamRegistry) MatchWithPolicy(url string) (configID uint16, allow b
 	}
 }
 
-// ── Global atomic state ───────────────────────────────────────────────────────
+// â”€â”€ Global atomic state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 var globalUpstreamRegistry atomic.Pointer[UpstreamRegistry]
 
