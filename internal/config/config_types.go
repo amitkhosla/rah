@@ -507,6 +507,19 @@ type ConcurrencyConfig struct {
 	CooldownTicks int `json:"cooldown_ticks,omitempty" yaml:"cooldown_ticks,omitempty"`
 }
 
+// RegistryAuditConfig controls the registry audit consumer that polls the
+// registry_audit table for changes written by other gateway instances.
+type RegistryAuditConfig struct {
+	Enabled         bool `json:"enabled,omitempty"           yaml:"enabled,omitempty"`
+	PollIntervalSec int  `json:"poll_interval_sec,omitempty" yaml:"poll_interval_sec,omitempty"`
+	BatchSize       int  `json:"batch_size,omitempty"        yaml:"batch_size,omitempty"`
+}
+
+// RegistryConfig groups all registry-subsystem configuration knobs.
+type RegistryConfig struct {
+	Audit RegistryAuditConfig `json:"audit,omitempty" yaml:"audit,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout        GlobalLayout        `json:"layout"                   yaml:"layout"`
 	DataStore     DataStoreConfig     `json:"datastore"                yaml:"datastore"`
@@ -528,6 +541,7 @@ type GatewayConfig struct {
 	MQTT          MQTTConfig          `json:"mqtt,omitempty"           yaml:"mqtt,omitempty"`
 	XML           *XMLConfig          `json:"xml,omitempty"            yaml:"xml,omitempty"`
 	Avro          *AvroConfig         `json:"avro,omitempty"           yaml:"avro,omitempty"`
+	Registry      RegistryConfig      `json:"registry,omitempty"       yaml:"registry,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

@@ -164,6 +164,15 @@ type StoreConnection struct {
 	// Recommended: 200ms–1s. Do not use "0" — that means infinite in Redis convention.
 	IODedupWindow string `json:"io_dedup_window,omitempty" yaml:"io_dedup_window,omitempty"`
 
+	// BatchEnabled activates the PostgresBatchingStore wrapper for PostgreSQL stores.
+	// When true, concurrent Get/Put/Delete calls are coalesced into single
+	// MultiGet / MultiPut queries, reducing round-trips under high concurrency.
+	BatchEnabled bool `json:"batch_enabled,omitempty" yaml:"batch_enabled,omitempty"`
+
+	// BatchMaxKeys caps the number of keys coalesced into a single batch query.
+	// 0 = use default (256).
+	BatchMaxKeys int `json:"batch_max_keys,omitempty" yaml:"batch_max_keys,omitempty"`
+
 	// MaxRetries is the maximum number of retries on transient network/connection errors
 	// (e.g. Redis momentarily unreachable). Applied per Redis command.
 	// 0 = go-redis default (3 retries). -1 = disabled (no retries).

@@ -214,14 +214,6 @@ func decodeValue(dst, src []byte, prog *AvroProgram, opIdx int, op AvroOp, skip 
 	return dst, src, ErrBadWireData
 }
 
-// opsFromIndices builds a []AvroOp slice from a list of op indices.
-func opsFromIndices(prog *AvroProgram, indices []int) []AvroOp {
-	ops := make([]AvroOp, len(indices))
-	for i, idx := range indices {
-		ops[i] = prog.Ops[idx]
-	}
-	return ops
-}
 
 // decodeArray decodes an Avro array (block-encoded) into a JSON array.
 func decodeArray(dst, src []byte, prog *AvroProgram, arrayOpIdx int, skip bool,

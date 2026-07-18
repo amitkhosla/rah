@@ -39,6 +39,7 @@ import (
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
@@ -1247,6 +1248,10 @@ func main() {
 	ts.RLV2Store = dataStoreMgr
 	aks := apikey.NewServer(dataStoreMgr)
 
+	// snapshotSeq is the max seq in registry_audit at the time RestoreFromSnapshot
+	// completes; the audit consumer skips rows at or below this sequence.
+	var snapshotSeq int64
+
 	// Restore registry (tenants + rate limit configs) BEFORE bootstrapping
 	// flows/APIs so that named rate limit references resolve correctly when
 	// Bootstrap bakes the instruction tables.
@@ -1301,6 +1306,51 @@ func main() {
 				}
 			})
 			log.Printf("[Registry] cross-instance sync consumer started")
+		}
+	}
+
+	// Registry audit consumer: polls registry_audit for remote writes from other
+	// gateway instances and applies them to the local in-memory state.
+	// Enabled via gateway.yaml: registry.audit.enabled=true
+	// Requires the tenant_registry domain to be backed by a postgresql store.
+	if cfgMgr.Gateway().Registry.Audit.Enabled {
+		if regStoreCfg, resolveErr := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainTenantRegistry); resolveErr != nil {
+			log.Printf("[registry-audit] cannot resolve tenant_registry store: %v -- audit consumer disabled", resolveErr)
+		} else if regStoreCfg.Kind != config.StorePostgreSQL {
+			log.Printf("[registry-audit] tenant_registry store kind=%q is not postgresql -- audit consumer disabled", regStoreCfg.Kind)
+		} else {
+			auditDSN := buildObsDSN(regStoreCfg.Connection)
+			if auditDSN == "" {
+				log.Printf("[registry-audit] could not build DSN from tenant_registry store -- audit consumer disabled")
+			} else {
+				auditPoolCfg, auditPoolErr := pgxpool.ParseConfig(auditDSN)
+				if auditPoolErr != nil {
+					log.Printf("[registry-audit] DSN parse error: %v -- audit consumer disabled", auditPoolErr)
+				} else {
+					auditPool, auditPoolErr := pgxpool.NewWithConfig(gatewayCtx, auditPoolCfg)
+					if auditPoolErr != nil {
+						log.Printf("[registry-audit] pool connect error: %v -- audit consumer disabled", auditPoolErr)
+					} else {
+						defer auditPool.Close()
+						// Query the max seq already represented in the snapshot we restored.
+						// The consumer will skip rows at or below this seq.
+						row := auditPool.QueryRow(gatewayCtx, "SELECT COALESCE(MAX(seq),0) FROM registry_audit")
+						_ = row.Scan(&snapshotSeq) // ignore error; table may not exist yet
+						auditWriter := tenantregistry.NewAuditWriter(auditPool, instanceFingerprint)
+						if schemaErr := auditWriter.EnsureSchema(gatewayCtx); schemaErr != nil {
+							log.Printf("[registry-audit] schema setup failed: %v -- audit consumer disabled", schemaErr)
+						} else {
+							auditCfg := tenantregistry.AuditConsumerConfig{
+								PollInterval: time.Duration(cfgMgr.Gateway().Registry.Audit.PollIntervalSec) * time.Second,
+								BatchSize:    cfgMgr.Gateway().Registry.Audit.BatchSize,
+							}
+							consumer := tenantregistry.NewAuditConsumer(auditPool, instanceFingerprint, regMgr, auditWriter, auditCfg)
+							go consumer.Start(gatewayCtx, snapshotSeq)
+							log.Printf("[registry-audit] consumer started from seq=%d", snapshotSeq)
+						}
+					}
+				}
+			}
 		}
 	}
 

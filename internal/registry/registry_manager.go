@@ -559,7 +559,7 @@ func (m *RegistryManager) UpsertTenantState(
 	m.tenantData[tID] = existing
 
 	State.Active.Store(reg)
-	m.persistTenant(*existing)
+	m.persistTenantBatch(*existing)
 }
 
 // DeleteTenant removes all aliases and data for the tenant identified by alias.
@@ -1018,7 +1018,7 @@ func (m *RegistryManager) SetTenantDebug(alias string, enabled bool) error {
 		rec.LogLevel = ""
 		rec.TraceSampleRateOverride = 0
 	}
-	m.persistTenant(*rec)
+	m.persistTenantBatch(*rec)
 	return nil
 }
 
@@ -1045,7 +1045,7 @@ func (m *RegistryManager) SetTenantLogLevel(alias string, level string) error {
 	m.ensureTenantRecord(tID)
 	rec := m.tenantData[tID]
 	rec.LogLevel = level
-	m.persistTenant(*rec)
+	m.persistTenantBatch(*rec)
 	return nil
 }
 
@@ -1132,11 +1132,14 @@ func (m *RegistryManager) persistTenantBatch(rec TenantRecord) {
 		return
 	}
 	primary := rec.Aliases[0]
+	aliases := append([]string(nil), rec.Aliases...)
 	urls := copyStrMap(rec.ServiceURLs)
 	ids := copyStrMap(rec.Identifiers)
 	meta := copyStrMap(rec.Metadata)
 	go func() {
-		_ = s.PutBatch(context.Background(), primary, urls, ids, meta)
+		ctx := context.Background()
+		_ = s.PutTenantAliases(ctx, primary, aliases)
+		_ = s.PutBatch(ctx, primary, urls, ids, meta)
 	}()
 }
 

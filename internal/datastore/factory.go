@@ -20,7 +20,18 @@ func NewStore(ctx context.Context, cfg config.StoreConfig, domain config.DataDom
 	case config.StoreDragonFly:
 		return newDragonFlyStore(ctx, cfg, string(domain))
 	case config.StorePostgreSQL:
-		return newPostgreSQLStore(cfg, string(domain))
+		store, err := newPostgreSQLStore(cfg, string(domain))
+		if err != nil {
+			return nil, err
+		}
+		if cfg.Connection.BatchEnabled {
+			maxKeys := cfg.Connection.BatchMaxKeys
+			if maxKeys <= 0 {
+				maxKeys = 256
+			}
+			store = NewPostgresBatchingStore(ctx, store, maxKeys)
+		}
+		return store, nil
 	case config.StoreCassandra:
 		return newCassandraStore(cfg, string(domain)), nil
 	default:

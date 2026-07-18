@@ -217,6 +217,49 @@ func (s *postgresqlStore) MultiPut(ctx context.Context, tenant Tenant, kvs map[s
 	return err
 }
 
+// ExecTx runs fn inside a Postgres transaction. Rolls back on error.
+func (s *postgresqlStore) ExecTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// MultiPutTx upserts scoped key-value pairs inside the given transaction.
+// kvs must contain fully-scoped keys (full_key values ready for the DB).
+func (s *postgresqlStore) MultiPutTx(ctx context.Context, tx pgx.Tx, kvs map[string][]byte) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	fullKeys := make([]string, 0, len(kvs))
+	values := make([][]byte, 0, len(kvs))
+	for k, v := range kvs {
+		fullKeys = append(fullKeys, k)
+		values = append(values, v)
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO kv_entries(full_key, value)
+		 SELECT * FROM unnest($1::text[], $2::bytea[])
+		 ON CONFLICT(full_key) DO UPDATE SET value = EXCLUDED.value`,
+		fullKeys, values,
+	)
+	return err
+}
+
+// DeleteScopedKeyTx deletes a fully-scoped key inside the given transaction.
+func (s *postgresqlStore) DeleteScopedKeyTx(ctx context.Context, tx pgx.Tx, scopedKey string) error {
+	_, err := tx.Exec(ctx, `DELETE FROM kv_entries WHERE full_key=$1`, scopedKey)
+	return err
+}
+
+// Pool returns the underlying pgxpool for external use (e.g. audit writer).
+func (s *postgresqlStore) Pool() *pgxpool.Pool { return s.pool }
+
 func (s *postgresqlStore) Kind() string { return "postgresql" }
 func (s *postgresqlStore) Name() string { return s.name }
 

@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // RegistryStoreBackend is a minimal flat key-value interface, pre-scoped to
@@ -34,14 +36,27 @@ type RegistryStoreBackend interface {
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
 }
 
+// pgTxStore is the transaction interface subset needed for audit writes.
+// Implemented by an adapter in main.go that wraps the postgresqlStore and
+// applies tenant/domain scoping to keys before they reach the DB.
+type pgTxStore interface {
+	ExecTx(ctx context.Context, fn func(pgx.Tx) error) error
+	// MultiPutTx upserts registry-level key-value pairs inside the given transaction.
+	// The implementor is responsible for mapping registry keys to fully-scoped DB keys.
+	MultiPutTx(ctx context.Context, tx pgx.Tx, kvs map[string][]byte) error
+	// DeleteScopedKeyTx deletes a registry-level key inside the given transaction.
+	// The implementor is responsible for mapping the registry key to the fully-scoped DB key.
+	DeleteScopedKeyTx(ctx context.Context, tx pgx.Tx, registryKey string) error
+}
+
 const (
-	tenantKeyPrefix  = "tenant:"
-	aliasSuffix      = ":aliases"
-	urlPropPrefix    = ":url:"
-	idPropPrefix     = ":id:"
-	metaPropPrefix   = ":meta:"
-	rateLimitPrefix  = "rl:"
-	tenantIDSuffix   = ":tid" // used as: "tenant:{alias}:tid"
+	tenantKeyPrefix = "tenant:"
+	aliasSuffix     = ":aliases"
+	urlPropPrefix   = ":url:"
+	idPropPrefix    = ":id:"
+	metaPropPrefix  = ":meta:"
+	rateLimitPrefix = "rl:"
+	tenantIDSuffix  = ":tid" // used as: "tenant:{alias}:tid"
 )
 
 // tenantTIDKey returns the datastore key used to persist a tenant's stable TenantID.
@@ -57,11 +72,22 @@ func tenantTIDKey(alias string) string {
 // backend-specific implementation of RegistryDatastore.
 type TenantRegistryStore struct {
 	backend RegistryStoreBackend
+	audit   *AuditWriter
+	pgStore pgTxStore // nil when audit disabled
 }
 
 // NewTenantRegistryStore wraps any RegistryStoreBackend as a RegistryDatastore.
 func NewTenantRegistryStore(backend RegistryStoreBackend) *TenantRegistryStore {
 	return &TenantRegistryStore{backend: backend}
+}
+
+// EnableAudit wires audit into this store. Call after construction.
+// When enabled, every write method wraps its KV mutation and audit row in a
+// single Postgres transaction. If audit is nil, all existing behaviour is
+// unchanged — zero new code paths are executed.
+func (s *TenantRegistryStore) EnableAudit(audit *AuditWriter, pg pgTxStore) {
+	s.audit = audit
+	s.pgStore = pg
 }
 
 // ── Tenant: stable TenantID ──────────────────────────────────────────────────
@@ -99,25 +125,61 @@ func (s *TenantRegistryStore) PutTenantAliases(ctx context.Context, primaryAlias
 	if err != nil {
 		return err
 	}
-	return s.backend.Put(ctx, tenantKeyPrefix+primaryAlias+aliasSuffix, data)
+	k := tenantKeyPrefix + primaryAlias + aliasSuffix
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, data)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: data}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, data)
+	})
 }
 
 // ── Tenant: service URLs ─────────────────────────────────────────────────────
 
 func (s *TenantRegistryStore) PutServiceURL(ctx context.Context, primaryAlias, key, value string) error {
-	return s.backend.Put(ctx, tenantKeyPrefix+primaryAlias+urlPropPrefix+key, []byte(value))
+	k := tenantKeyPrefix + primaryAlias + urlPropPrefix + key
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, []byte(value))
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: []byte(value)}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, []byte(value))
+	})
 }
 
 // ── Tenant: identifiers ──────────────────────────────────────────────────────
 
 func (s *TenantRegistryStore) PutIdentifier(ctx context.Context, primaryAlias, key, value string) error {
-	return s.backend.Put(ctx, tenantKeyPrefix+primaryAlias+idPropPrefix+key, []byte(value))
+	k := tenantKeyPrefix + primaryAlias + idPropPrefix + key
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, []byte(value))
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: []byte(value)}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, []byte(value))
+	})
 }
 
 // ── Tenant: metadata ─────────────────────────────────────────────────────────
 
 func (s *TenantRegistryStore) PutMetadata(ctx context.Context, primaryAlias, key, value string) error {
-	return s.backend.Put(ctx, tenantKeyPrefix+primaryAlias+metaPropPrefix+key, []byte(value))
+	k := tenantKeyPrefix + primaryAlias + metaPropPrefix + key
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, []byte(value))
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: []byte(value)}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, []byte(value))
+	})
 }
 
 // ── Tenant: batch write ──────────────────────────────────────────────────────
@@ -140,7 +202,20 @@ func (s *TenantRegistryStore) PutBatch(ctx context.Context, primaryAlias string,
 	for k, v := range meta {
 		kvs[tenantKeyPrefix+primaryAlias+metaPropPrefix+k] = []byte(v)
 	}
-	return s.backend.MultiPut(ctx, kvs)
+	if s.audit == nil {
+		return s.backend.MultiPut(ctx, kvs)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, kvs); err != nil {
+			return err
+		}
+		for k, v := range kvs {
+			if err := s.audit.WritePut(ctx, tx, k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ── Tenant: lifecycle ────────────────────────────────────────────────────────
@@ -155,12 +230,26 @@ func (s *TenantRegistryStore) DeleteTenant(ctx context.Context, primaryAlias str
 	}
 	// Also delete the aliases key which uses the same prefix pattern.
 	keys = append(keys, tenantKeyPrefix+primaryAlias+aliasSuffix)
-	for _, k := range keys {
-		if err := s.backend.Delete(ctx, k); err != nil {
-			return err
+
+	if s.audit == nil {
+		for _, k := range keys {
+			if err := s.backend.Delete(ctx, k); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	return nil
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		for _, k := range keys {
+			if err := s.pgStore.DeleteScopedKeyTx(ctx, tx, k); err != nil {
+				return err
+			}
+			if err := s.audit.WriteDelete(ctx, tx, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ── Rate limit configurations ────────────────────────────────────────────────
@@ -181,11 +270,29 @@ func (s *TenantRegistryStore) PutRateLimitConfig(ctx context.Context, name strin
 	if err != nil {
 		return err
 	}
-	return s.backend.Put(ctx, rateLimitPrefix+name, data)
+	k := rateLimitPrefix + name
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, data)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: data}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, data)
+	})
 }
 
 func (s *TenantRegistryStore) DeleteRateLimitConfig(ctx context.Context, name string) error {
-	return s.backend.Delete(ctx, rateLimitPrefix+name)
+	k := rateLimitPrefix + name
+	if s.audit == nil {
+		return s.backend.Delete(ctx, k)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.DeleteScopedKeyTx(ctx, tx, k); err != nil {
+			return err
+		}
+		return s.audit.WriteDelete(ctx, tx, k)
+	})
 }
 
 // ── Startup restore ──────────────────────────────────────────────────────────
