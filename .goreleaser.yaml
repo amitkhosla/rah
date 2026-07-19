@@ -168,7 +168,7 @@ changelog:
 release:
   github:
     owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
-    name: rah-gateway
+    name: rah
   name_template: "v{{ .Version }}"
   header: |
     ## RAH Gateway {{ .Version }}
