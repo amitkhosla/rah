@@ -258,8 +258,8 @@
 │        "total_usd": 0.1077,                                                 │
 │        "model_pricing": {                                                   │
 │          "model": "gpt-4o-mini",                                            │
-│          "input_per_token": 0.00015,                                        │
-│          "output_per_token": 0.0006                                         │
+│          "cost_per_input_token": 0.00015,                                   │
+│          "cost_per_output_token": 0.0006                                    │
 │        }                                                                    │
 │      },                                                                     │
 │                                                                             │
@@ -313,6 +313,84 @@
 ║  Cost Savings: Used gpt-4o-mini ($0.011) instead of claude-opus ($0.150)  │
 ║               → Saved 92.6% by smart routing!                               │
 ╚════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## Supported Providers & Examples
+
+The router works with any LLM provider. Here are configuration examples for all supported providers:
+
+### OpenAI
+```yaml
+gpt-4o-mini:
+  provider: "openai"
+  adapter: "openai"
+  base_url: "https://api.openai.com/v1/chat/completions"
+  model_id: "gpt-4o-mini"
+  max_tokens: 4096
+  cost_per_input_token: 0.00015
+  cost_per_output_token: 0.0006
+```
+
+### Anthropic
+```yaml
+claude-opus:
+  provider: "anthropic"
+  adapter: "anthropic"
+  base_url: "https://api.anthropic.com/v1/messages"
+  model_id: "claude-opus-4-1"
+  max_tokens: 4096
+  cost_per_input_token: 0.015
+  cost_per_output_token: 0.075
+```
+
+### Google Gemini
+```yaml
+gemini-flash:
+  provider: "google"
+  adapter: "gemini"
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  model_id: "gemini-2.0-flash"
+  max_tokens: 4096
+  cost_per_input_token: 0.000075
+  cost_per_output_token: 0.0003
+```
+
+### Ollama (Local)
+```yaml
+local-llm:
+  provider: "ollama"
+  adapter: "ollama"
+  base_url: "http://localhost:11434"
+  model_id: "llama3.2"
+  max_tokens: 2048
+  cost_per_input_token: 0.0
+  cost_per_output_token: 0.0
+```
+
+### DeepSeek
+```yaml
+deepseek-chat:
+  provider: "deepseek"
+  adapter: "deepseek"
+  base_url: "https://api.deepseek.com"
+  model_id: "deepseek-chat"
+  max_tokens: 4096
+  cost_per_input_token: 0.0001
+  cost_per_output_token: 0.0002
+```
+
+### AWS Bedrock
+```yaml
+claude-bedrock:
+  provider: "anthropic"
+  adapter: "bedrock"
+  base_url: "us-east-1"  # AWS region
+  model_id: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  max_tokens: 4096
+  cost_per_input_token: 0.003
+  cost_per_output_token: 0.015
 ```
 
 ---

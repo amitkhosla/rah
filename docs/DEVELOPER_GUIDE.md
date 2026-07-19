@@ -3,7 +3,7 @@
 ## Getting Started
 
 ### Prerequisites
-- Go 1.19+ (for generics support)
+- Go 1.26+ (for generics support)
 - Git for version control
 - (Optional) Docker for running datastore backends
 

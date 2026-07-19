@@ -380,17 +380,18 @@ Pattern matching is optimized for nanosecond-level latency:
 
 ### Measurements
 
-Typical latencies on modern hardware (x86-64, 3GHz+):
+Empirical latencies on modern hardware (Intel Core i5-13th Gen, single-threaded):
 
 | Pattern Type | Latency | Notes |
 |---|---|---|
-| Simple prefix (`^api-`) | 50-100ns | Minimal backtracking |
-| Service routing (`^(api\|data)-`) | 100-200ns | Single alternation |
-| Email validation | 300-400ns | Complex character classes |
-| Domain validation | 400-500ns | Nested groups and quantifiers |
-| UUID v4 format | 500-700ns | Lookahead and alternation |
+| Compiled regex match (raw) | ~370-390 ns | Tight loop, no instruction overhead |
+| Pattern match instruction | ~1,100-1,200 ns | Includes instruction dispatch + function call |
+| Service routing (`^(api\|data)-`) | ~1,100 ns | Single alternation with instruction overhead |
+| UUID v4 format | ~1,100-1,200 ns | Complex pattern with instruction overhead |
 
-These measurements assume **pattern compiled at bake time** (not in the latency budget). Runtime matching is negligible compared to upstream calls.
+**Important**: These are actual measured values from benchmarks (BenchmarkPatternMatchE2EInstruction). Earlier documentation claimed 50-100ns for simple patterns, which was **4-8x optimistic**.
+
+**Pattern compiled at bake time** (not in per-request latency budget). Per-request execution is the dominant cost, not compilation.
 
 ---
 

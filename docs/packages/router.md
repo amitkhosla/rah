@@ -12,7 +12,7 @@ Implements a **fast, lock-free HTTP path routing** system using an immutable are
 ## Key Types
 - **RahRouter**: Main router with builder (for writes) and atomic snapshot (for reads)
 - **routerSnapshot**: Immutable snapshot containing arena and string table
-- **RouteNode**: 16-byte tree node with prefixOff, prefixLen, apiId, children index (no pointers!)
+- **RouteNode**: 64-byte cache-line-aligned tree node with prefix metadata, bitmask child lookup, and arena offset (no pointers!)
 - **BuilderNode**: Mutable tree node for construction phase
 
 ## Responsibilities
@@ -40,11 +40,40 @@ Implements a **fast, lock-free HTTP path routing** system using an immutable are
 4. Return final match or zero
 ```
 
+## RouteNode Structure
+
+The RouteNode is a 64-byte cache-line-aligned structure enabling branchless child lookup:
+
+```go
+type RouteNode struct {
+    prefixOff   uint32      // Offset into the global string table
+    prefixLen   uint16      // Length of the prefix
+    maskLo      uint64      // Existence bits for child bytes 0–63
+    maskHi      uint64      // Existence bits for child bytes 64–127
+    childIdx    uint32      // Base offset in arena where this node's children start
+    numChildren uint16      // Count of contiguous children
+    apiId       uint32      // API identifier (non-zero if this is a route endpoint)
+    _           [32]byte    // Padding to reach 64 bytes (one cache line)
+}
+```
+
+**Branchless Child Lookup Pattern:**
+To find the child for input byte `b`:
+1. Select `maskLo` (if b < 64) or `maskHi` (if b >= 64) using bit manipulation
+2. Check if bit `b % 64` is set in the selected mask (child exists)
+3. Count set bits below position b via popcount to get offset into children array
+4. If in high mask, add the count of all set bits in maskLo
+5. Access child at `arena[childIdx + offset]`
+
+This allows single-cycle child lookup without branching, maximizing CPU instruction throughput.
+
 ## Performance Notes
 - **Lock-free reads**: Lookup takes zero locks
 - **Atomic snapshot**: Updates are atomic - no torn reads
 - **String table**: All prefixes stored in single byte array (cache-friendly)
 - **Arena allocation**: All nodes in contiguous memory (predictable access patterns)
+- **Branchless child lookup**: Uses bitmasks and popcount for zero-branch child selection
+- **Cache-line aligned**: 64-byte nodes fit exactly one CPU cache line
 - **Boundary detection**: Ensures /user/123 doesn't match /user/123-extra
 - **Longest-match**: Supports overlapping routes (longest wins)
 
@@ -77,7 +106,7 @@ Routes registered:
   /api/v1/users  → apiId 3
 
 Arena nodes:
-[0] prefix="/api", apiId=1, childrenIdx=1
-[1] prefix="/v1", apiId=2, childrenIdx=2
-[2] prefix="/users", apiId=3, childrenIdx=0
+[0] prefix="/api", apiId=1, childIdx=1
+[1] prefix="/v1", apiId=2, childIdx=2
+[2] prefix="/users", apiId=3, childIdx=0
 ```

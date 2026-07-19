@@ -260,8 +260,8 @@ Flows can call other flows with `call`:
 
 ## See Also
 
-- `internal/control/UNIFIED_SYNC_FLOW.md` — sequence diagram of the sync pipeline
-- `internal/control/TOKEN_VALIDATION.md` — JWT validation step reference
-- `internal/control/CACHE_API.md` — caching step reference
-- `docs/packages/control.md` — compiler internals
-- `docs/packages/engine.md` — execution engine internals
+- [sequence diagram of the sync pipeline](../../internal/control/UNIFIED_SYNC_FLOW.md)
+- [JWT validation step reference](../../internal/control/TOKEN_VALIDATION.md)
+- [caching step reference](../../internal/control/CACHE_API.md)
+- [compiler internals](../packages/control.md)
+- [execution engine internals](../packages/engine.md)

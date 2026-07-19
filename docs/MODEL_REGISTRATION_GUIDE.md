@@ -20,138 +20,149 @@ models:
   # ═══ TIER 1: First-line defense (ultra-cheap, fast)
   gemma-7b:
     provider: "custom"
-    baseURL: "${GEMMA_BASE_URL}"        # e.g., http://localhost:8000
+    adapter: "custom"
+    base_url: "${GEMMA_BASE_URL}"        # e.g., http://localhost:8000
     alias: "gemma-7b"                   # for custom providers
-    contextWindow: 8192
-    maxTokens: 1024
-    pricing:
-      inputToken: 0.00001               # $0.01 per 1M tokens!
-      outputToken: 0.00002
+    capabilities:
+      max_context_tokens: 8192
+    max_tokens: 1024
+    cost_per_input_token: 0.00001        # $0.01 per 1M tokens!
+    cost_per_output_token: 0.00002
     timeout_ms: 5000
     max_retries: 1
 
   # ═══ TIER 2: Small models (cheap, flexible)
   gpt-4o-mini:
     provider: "openai"
-    baseURL: "https://api.openai.com"
-    modelId: "gpt-4o-mini"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.00015
-      outputToken: 0.0006
+    adapter: "openai"
+    base_url: "https://api.openai.com"
+    model_id: "gpt-4o-mini"
+    capabilities:
+      max_context_tokens: 128000
+    max_tokens: 4096
+    cost_per_input_token: 0.00015
+    cost_per_output_token: 0.0006
     timeout_ms: 15000
     max_retries: 2
 
   gpt-4-turbo-preview:  # More flexible than nano but still cheap
     provider: "openai"
-    baseURL: "https://api.openai.com"
-    modelId: "gpt-4-turbo-preview"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.003
-      outputToken: 0.006
+    adapter: "openai"
+    base_url: "https://api.openai.com"
+    model_id: "gpt-4-turbo-preview"
+    capabilities:
+      max_context_tokens: 128000
+    max_tokens: 4096
+    cost_per_input_token: 0.003
+    cost_per_output_token: 0.006
     timeout_ms: 20000
     max_retries: 2
 
   google-generative-ai-flash:
     provider: "google"
-    baseURL: "https://generativelanguage.googleapis.com/v1beta"
-    modelId: "gemini-2.0-flash"
-    contextWindow: 1000000              # 1M tokens!
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.000075
-      outputToken: 0.0003
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-2.0-flash"
+    capabilities:
+      max_context_tokens: 1000000              # 1M tokens!
+    max_tokens: 4096
+    cost_per_input_token: 0.000075
+    cost_per_output_token: 0.0003
     timeout_ms: 20000
     max_retries: 2
 
   google-generative-ai-mini:
     provider: "google"
-    baseURL: "https://generativelanguage.googleapis.com/v1beta"
-    modelId: "gemini-2.0-mini"
-    contextWindow: 1000000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.000032
-      outputToken: 0.00008
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-2.0-mini"
+    capabilities:
+      max_context_tokens: 1000000
+    max_tokens: 4096
+    cost_per_input_token: 0.000032
+    cost_per_output_token: 0.00008
     timeout_ms: 20000
     max_retries: 2
 
   # ═══ TIER 3: Mid-range (balanced quality/cost)
   claude-haiku:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-5-haiku-20241022"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.00008
-      outputToken: 0.0004
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-5-haiku-20241022"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.00008
+    cost_per_output_token: 0.0004
     timeout_ms: 25000
     max_retries: 2
 
   # ═══ TIER 4: Premium (high quality)
   claude-sonnet:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-5-sonnet-20241022"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.003
-      outputToken: 0.015
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-5-sonnet-20241022"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.003
+    cost_per_output_token: 0.015
     timeout_ms: 30000
     max_retries: 2
 
   gemini-pro:
     provider: "google"
-    baseURL: "https://generativelanguage.googleapis.com/v1beta"
-    modelId: "gemini-1.5-pro"
-    contextWindow: 2000000              # 2M tokens!
-    maxTokens: 8192
-    pricing:
-      inputToken: 0.000625
-      outputToken: 0.00125
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-1.5-pro"
+    capabilities:
+      max_context_tokens: 2000000              # 2M tokens!
+    max_tokens: 8192
+    cost_per_input_token: 0.000625
+    cost_per_output_token: 0.00125
     timeout_ms: 40000
     max_retries: 2
 
   # ═══ TIER 5: Ultra-premium (best quality, slowest)
   claude-opus:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-opus-20250219"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.015
-      outputToken: 0.075
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-opus-20250219"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.015
+    cost_per_output_token: 0.075
     timeout_ms: 50000
     max_retries: 2
 
   gpt-4o:
     provider: "openai"
-    baseURL: "https://api.openai.com"
-    modelId: "gpt-4o"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.005
-      outputToken: 0.015
+    adapter: "openai"
+    base_url: "https://api.openai.com"
+    model_id: "gpt-4o"
+    capabilities:
+      max_context_tokens: 128000
+    max_tokens: 4096
+    cost_per_input_token: 0.005
+    cost_per_output_token: 0.015
     timeout_ms: 30000
     max_retries: 2
 
   # ═══ TIER 6: Specialist (for specific tasks)
   o1-preview:                           # Reasoning model
     provider: "openai"
-    baseURL: "https://api.openai.com"
-    modelId: "o1-preview"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.015
-      outputToken: 0.06
+    adapter: "openai"
+    base_url: "https://api.openai.com"
+    model_id: "o1-preview"
+    capabilities:
+      max_context_tokens: 128000
+    max_tokens: 4096
+    cost_per_input_token: 0.015
+    cost_per_output_token: 0.06
     timeout_ms: 120000                  # Reasoning takes time
     max_retries: 1
 
@@ -543,14 +554,15 @@ curl -X POST http://localhost:8080/admin/models/register \
     "slug": "gemma-7b",
     "config": {
       "provider": "custom",
-      "baseURL": "http://localhost:8000",
+      "adapter": "custom",
+      "base_url": "http://localhost:8000",
       "alias": "gemma-7b",
-      "contextWindow": 8192,
-      "maxTokens": 1024,
-      "pricing": {
-        "inputToken": 0.00001,
-        "outputToken": 0.00002
-      }
+      "capabilities": {
+        "max_context_tokens": 8192
+      },
+      "max_tokens": 1024,
+      "cost_per_input_token": 0.00001,
+      "cost_per_output_token": 0.00002
     }
   }'
 
@@ -767,77 +779,84 @@ models:
   # Tier 1: Local LLM (Gemma)
   gemma-7b:
     provider: "custom"
-    baseURL: "http://localhost:8000"
+    adapter: "custom"
+    base_url: "http://localhost:8000"
     alias: "gemma-7b"
-    contextWindow: 8192
-    maxTokens: 1024
-    pricing:
-      inputToken: 0.00001
-      outputToken: 0.00002
+    capabilities:
+      max_context_tokens: 8192
+    max_tokens: 1024
+    cost_per_input_token: 0.00001
+    cost_per_output_token: 0.00002
 
   # Tier 2: Cheap & fast API models
   gpt-4o-mini:
     provider: "openai"
-    baseURL: "https://api.openai.com"
-    modelId: "gpt-4o-mini"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.00015
-      outputToken: 0.0006
+    adapter: "openai"
+    base_url: "https://api.openai.com"
+    model_id: "gpt-4o-mini"
+    capabilities:
+      max_context_tokens: 128000
+    max_tokens: 4096
+    cost_per_input_token: 0.00015
+    cost_per_output_token: 0.0006
 
   google-generative-ai-flash:
     provider: "google"
-    baseURL: "https://generativelanguage.googleapis.com/v1beta"
-    modelId: "gemini-2.0-flash"
-    contextWindow: 1000000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.000075
-      outputToken: 0.0003
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-2.0-flash"
+    capabilities:
+      max_context_tokens: 1000000
+    max_tokens: 4096
+    cost_per_input_token: 0.000075
+    cost_per_output_token: 0.0003
 
   # Tier 3: Mid-range (quality)
   claude-haiku:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-5-haiku-20241022"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.00008
-      outputToken: 0.0004
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-5-haiku-20241022"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.00008
+    cost_per_output_token: 0.0004
 
   # Tier 4: Premium
   claude-sonnet:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-5-sonnet-20241022"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.003
-      outputToken: 0.015
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-5-sonnet-20241022"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.003
+    cost_per_output_token: 0.015
 
   gemini-pro:
     provider: "google"
-    baseURL: "https://generativelanguage.googleapis.com/v1beta"
-    modelId: "gemini-1.5-pro"
-    contextWindow: 2000000
-    maxTokens: 8192
-    pricing:
-      inputToken: 0.000625
-      outputToken: 0.00125
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-1.5-pro"
+    capabilities:
+      max_context_tokens: 2000000
+    max_tokens: 8192
+    cost_per_input_token: 0.000625
+    cost_per_output_token: 0.00125
 
   # Tier 5: Ultra (best quality)
   claude-opus:
     provider: "anthropic"
-    baseURL: "https://api.anthropic.com"
-    modelId: "claude-3-opus-20250219"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.015
-      outputToken: 0.075
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com"
+    model_id: "claude-3-opus-20250219"
+    capabilities:
+      max_context_tokens: 200000
+    max_tokens: 4096
+    cost_per_input_token: 0.015
+    cost_per_output_token: 0.075
 
 flows:
   smart_chat:
@@ -932,6 +951,19 @@ flows:
 
 ---
 
+## Supported Providers
+
+This gateway supports the following LLM providers:
+
+- **OpenAI** — gpt-4o, gpt-4-turbo, gpt-4o-mini, o1 models
+- **Anthropic** — Claude Opus, Claude Sonnet, Claude Haiku
+- **Google** — Gemini Pro, Gemini Flash, Gemini Mini
+- **Ollama** — Local LLM hosting (Gemma, Llama, Mistral, etc.)
+- **DeepSeek** — DeepSeek API models
+- **AWS Bedrock** — Multi-model access via AWS
+
+---
+
 ## Reference: Model Providers & Setup
 
 ### OpenAI
@@ -965,5 +997,31 @@ BaseURL: "http://localhost:8000"
 No API key needed (or custom auth)
 Model: gemma-7b, gemma-13b
 Setup: ollama run gemma or vLLM
+```
+
+### Ollama
+```
+Provider: "ollama"
+BaseURL: "http://localhost:11434"
+No API key needed
+Models: Any model supported by Ollama (Gemma, Llama, Mistral, Neural Chat, etc.)
+Setup: ollama run <model_name>
+```
+
+### DeepSeek
+```
+Provider: "deepseek"
+BaseURL: "https://api.deepseek.com"
+API Key Env: DEEPSEEK_API_KEY
+Models: deepseek-chat, deepseek-coder
+```
+
+### AWS Bedrock
+```
+Provider: "bedrock"
+BaseURL: "https://bedrock-runtime.{region}.amazonaws.com"
+Credentials: AWS IAM (from environment or credentials file)
+Models: Claude (Anthropic), Llama (Meta), Titan (Amazon), Mistral, etc.
+Setup: Configure AWS credentials and region
 ```
 

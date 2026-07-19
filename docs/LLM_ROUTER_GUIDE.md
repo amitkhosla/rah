@@ -86,33 +86,80 @@ This guide shows how to set up RAH as a smart API gateway that:
 models:
   gpt-4o-mini:
     provider: "openai"
-    endpoint: "https://api.openai.com/v1/chat/completions"
-    modelId: "gpt-4o-mini"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.00015
-      outputToken: 0.0006
+    adapter: "openai"
+    base_url: "https://api.openai.com/v1/chat/completions"
+    model_id: "gpt-4o-mini"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 128000
+    cost_per_input_token: 0.00015
+    cost_per_output_token: 0.0006
 
   gpt-4o:
     provider: "openai"
-    endpoint: "https://api.openai.com/v1/chat/completions"
-    modelId: "gpt-4o"
-    contextWindow: 128000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.005
-      outputToken: 0.015
+    adapter: "openai"
+    base_url: "https://api.openai.com/v1/chat/completions"
+    model_id: "gpt-4o"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 128000
+    cost_per_input_token: 0.005
+    cost_per_output_token: 0.015
 
   claude-opus:
     provider: "anthropic"
-    endpoint: "https://api.anthropic.com/v1/messages"
-    modelId: "claude-opus-4-1"
-    contextWindow: 200000
-    maxTokens: 4096
-    pricing:
-      inputToken: 0.015
-      outputToken: 0.075
+    adapter: "anthropic"
+    base_url: "https://api.anthropic.com/v1/messages"
+    model_id: "claude-opus-4-1"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 200000
+    cost_per_input_token: 0.015
+    cost_per_output_token: 0.075
+
+  gemini-flash:
+    provider: "google"
+    adapter: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    model_id: "gemini-2.0-flash"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 1000000
+    cost_per_input_token: 0.000075
+    cost_per_output_token: 0.0003
+
+  local-llm:
+    provider: "ollama"
+    adapter: "ollama"
+    base_url: "http://localhost:11434"
+    model_id: "llama3.2"
+    max_tokens: 2048
+    capabilities:
+      max_context_tokens: 8192
+    cost_per_input_token: 0.0
+    cost_per_output_token: 0.0
+
+  deepseek-chat:
+    provider: "deepseek"
+    adapter: "deepseek"
+    base_url: "https://api.deepseek.com"
+    model_id: "deepseek-chat"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 32000
+    cost_per_input_token: 0.0001
+    cost_per_output_token: 0.0002
+
+  claude-bedrock:
+    provider: "anthropic"
+    adapter: "bedrock"
+    base_url: "us-east-1"
+    model_id: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    max_tokens: 4096
+    capabilities:
+      max_context_tokens: 200000
+    cost_per_input_token: 0.003
+    cost_per_output_token: 0.015
 
 # LLM Flow: Defines the routing logic
 flows:
@@ -726,6 +773,21 @@ rules:
   - condition: "is_peak == true AND meta == gold"
     model: "claude-opus"
 ```
+
+---
+
+## Supported Providers
+
+This router supports all major LLM providers:
+
+- **OpenAI** - gpt-4o, gpt-4o-mini, gpt-4-turbo, o1 models
+- **Anthropic** - Claude Opus, Claude Sonnet, Claude Haiku
+- **Google** - Gemini Flash, Gemini Pro, Gemini Mini
+- **Ollama** - Local LLM hosting (Gemma, Llama, Mistral, etc.)
+- **DeepSeek** - DeepSeek API models
+- **AWS Bedrock** - Multi-model access via Anthropic adapter
+
+All models are registered in the `models:` section of the config and referenced by slug in routing rules.
 
 ---
 
