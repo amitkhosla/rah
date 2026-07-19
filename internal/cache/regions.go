@@ -122,11 +122,18 @@ func (r *Region) grow(oldCount uint64) {
 
 // Write claims the next slot and stores the entry.
 // Grows at 70 % capacity during the linear phase; circular FIFO once maxCount.
+//
+// canRecycle is called in circular phase when the candidate slot was previously
+// written (h.Expiry > 0). It receives the slot's back-pointer (xSlotPtr) plus
+// the physOff and gen2b of the old entry so the caller can check the index.
+// Return true to allow recycling, false to abort (slot still live in index).
+// Pass nil to skip the check (e.g. in tests that do not use an index).
 func (r *Region) Write(
 	tenantID uint16,
 	keyMid uint8,
 	value []byte,
 	ttl uint32,
+	canRecycle func(sp xSlotPtr, physOff uint64, gen2b uint8) bool,
 ) (physOff uint64, gen uint8, old overwrittenEntry, hasOld bool, ok bool) {
 	if uint64(len(value)) > uint64(r.stride)-EntryHeaderSize {
 		return 0, 0, old, false, false
@@ -152,15 +159,28 @@ func (r *Region) Write(
 		physSlot = r.writeSlot
 		gen = 0
 	}
-	r.writeSlot++
 
 	physOff = physSlot * uint64(r.stride)
 
 	p := r.buf.Load()
 	buf := unsafe.Slice(p, cnt*uint64(r.stride))
-
-	// Capture the evicted entry for accounting (circular phase only).
 	h := headerAt(buf, physOff)
+
+	// Circular phase: verify the old occupant's index entry is tombstoned before
+	// recycling. If still live, abort without advancing writeSlot so the next
+	// caller retries the same slot (cleaner will tombstone it shortly).
+	if cnt >= r.maxCount && h.Expiry > 0 {
+		sp := xSlotPtrFrom6(h.XSlotPtrB)
+		if sp != 0 && canRecycle != nil && !canRecycle(sp, physOff, gen) {
+			r.mu.Unlock()
+			return 0, 0, old, false, false
+		}
+	}
+
+	// Slot is available — claim it.
+	r.writeSlot++
+
+	// Capture the evicted entry for accounting.
 	if h.Expiry > 0 {
 		hasOld = true
 		old = overwrittenEntry{

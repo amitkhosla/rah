@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // RateLimitV2Datastore is the minimal interface the TenantServer needs to
@@ -978,13 +980,21 @@ func (s *TenantServer) rateLimitStatusHandler(w http.ResponseWriter, r *http.Req
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		gatewaylog.Default.Warn("[Registry] JSON response encode failed",
+			gatewaylog.F("error", err.Error()),
+		)
+	}
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		gatewaylog.Default.Warn("[Registry] JSON error response encode failed",
+			gatewaylog.F("error", err.Error()),
+		)
+	}
 }
 
 // isCredentialsSubPath reports whether path is a /tenants/{alias}/credentials[/...]

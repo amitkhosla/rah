@@ -84,7 +84,9 @@ func TestLLMCallPassesToolsToAdapter(t *testing.T) {
 		t.Fatalf("captured body not valid JSON: %s", capturedBody)
 	}
 	var wire map[string]json.RawMessage
-	_ = json.Unmarshal(capturedBody, &wire) //nolint:errcheck
+	if err := json.Unmarshal(capturedBody, &wire); err != nil {
+		t.Fatalf("unmarshal captured body: %v", err)
+	}
 	if _, ok := wire["tools"]; !ok {
 		t.Error("tools field missing from wire request sent to adapter")
 	}
@@ -196,7 +198,9 @@ func TestLLMCallNoToolsWhenSlotEmpty(t *testing.T) {
 	instr.Action(ctx, state)
 
 	var wire map[string]json.RawMessage
-	json.Unmarshal(capturedBody, &wire)
+	if err := json.Unmarshal(capturedBody, &wire); err != nil {
+		t.Fatalf("unmarshal captured body: %v", err)
+	}
 	if _, ok := wire["tools"]; ok {
 		t.Error("tools field should NOT be in wire request when tools slot is empty")
 	}

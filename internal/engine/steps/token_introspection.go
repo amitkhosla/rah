@@ -34,6 +34,7 @@ import (
 
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -220,7 +221,9 @@ func ValidateTokenIntrospection(slots TokenIntrospectionSlots, cfg TokenIntrospe
 				status := cfg.OnFailureStatus
 				body := cfg.OnFailureBody
 				ctx.ResponseStatus = status
-				ctx.Write([]byte(body))
+				if _, err := ctx.Write([]byte(body)); err != nil {
+					RecordStepError(ctx, "[TokenIntrospection]", "response write failed", err)
+				}
 				ctx.Failed = true
 				ctx.ErrorCode = int16(status)
 				ctx.ErrorMsg = ctx.Alloc(len(body))
@@ -357,7 +360,13 @@ func callIntrospection(
 	if err != nil {
 		return introspectionResponse{}, nil, err
 	}
-	defer httpResp.Body.Close()
+	defer func() {
+		if err := httpResp.Body.Close(); err != nil {
+			gatewaylog.Default.Debug("[TokenIntrospection] response body close failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
+	}()
 
 	if httpResp.StatusCode != http.StatusOK {
 		return introspectionResponse{}, nil, fmt.Errorf("introspection endpoint returned %d", httpResp.StatusCode)

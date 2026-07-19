@@ -2677,16 +2677,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CacheIncr(c.CacheMgr, keySlot, resultSlot, delta, step.TTL))
 
-	case "cache_touch":
-		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_touch: no cache store configured")
-		}
-		keySlot, err := c.getSlot(step.Source)
-		if err != nil {
-			return fmt.Errorf("cache_touch: %w", err)
-		}
-		c.GlobalTable = append(c.GlobalTable, steps.CacheTouch(c.CacheMgr, keySlot, step.TTL))
-
 	case "batch_flush":
 		c.GlobalTable = append(c.GlobalTable, steps.BatchFlush())
 

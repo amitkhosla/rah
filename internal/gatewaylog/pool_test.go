@@ -50,7 +50,7 @@ func TestLogBufReset(t *testing.T) {
 	lb := &LogBuf{}
 
 	// Write some data
-	lb.Write([]byte("test data"))
+	_, _ = lb.Write([]byte("test data"))
 	originalCap := cap(lb.b)
 
 	if lb.Len() != 9 {
@@ -90,7 +90,7 @@ func TestBufPoolGetPut(t *testing.T) {
 	}
 
 	// Write some data
-	lb1.Write([]byte("test message"))
+	_, _ = lb1.Write([]byte("test message"))
 	originalCap := cap(lb1.b)
 
 	// Put it back

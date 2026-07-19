@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 var (
@@ -42,7 +44,13 @@ func doPost(ctx context.Context, client *http.Client, url string, headers map[st
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Debug("[VectorStore] response body close failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
+	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err
@@ -66,7 +74,13 @@ func doGet(ctx context.Context, client *http.Client, url string, headers map[str
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Debug("[VectorStore] response body close failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
+	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err
@@ -90,7 +104,13 @@ func doDelete(ctx context.Context, client *http.Client, url string, headers map[
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Debug("[VectorStore] response body close failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
+	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err

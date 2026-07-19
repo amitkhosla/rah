@@ -1,12 +1,14 @@
 ﻿package steps
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -118,7 +120,13 @@ func (p *workerPool) run() {
 		select {
 		case task := <-p.tasks:
 			func() {
-				defer func() { recover() }() // C4: absorb worker panics
+				defer func() {
+					if r := recover(); r != nil {
+						gatewaylog.Default.Error("[WorkerPool] task panicked",
+							gatewaylog.F("panic", fmt.Sprintf("%v", r)),
+						)
+					}
+				}() // C4: absorb worker panics
 				task()
 			}()
 			if !timer.Stop() {

@@ -1295,16 +1295,6 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("ttl", "TTL (seconds)", "Expiry for a newly created counter; 0 = no expiry", "3600"),
 			},
 		},
-		{
-			Type: "cache_touch", Title: "Cache Touch", Category: "cache", Capability: "write",
-			Description: "Refresh the TTL of an existing cache entry without reading or rewriting its value. No-op if the key does not exist.",
-			Defaults: map[string]string{"source": "var.cache_key"},
-			Fields: []StepField{
-				sf("source", "Key variable", "Variable containing the cache key to touch", "var.cache_key"),
-				sf("ttl", "New TTL (seconds)", "New expiry from now", "3600"),
-			},
-		},
-
 		// ── Batch / Extract ──────────────────────────────────────────────────────
 		{
 			Type: "batch_flush", Title: "Batch Flush", Category: "cache", Capability: "batch",

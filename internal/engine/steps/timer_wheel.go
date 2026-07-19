@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -252,7 +253,11 @@ func wheelTick(slot uint32) {
 					switch ref.kind {
 					case wheelKindBody:
 						if ref.body != nil {
-							ref.body.Close()
+							if err := ref.body.Close(); err != nil {
+								gatewaylog.Default.Debug("[TimerWheel] body close failed",
+									gatewaylog.F("error", err.Error()),
+								)
+							}
 						}
 					case wheelKindCtx:
 						if ref.ctx != nil {

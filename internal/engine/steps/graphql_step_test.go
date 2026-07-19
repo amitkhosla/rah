@@ -19,12 +19,12 @@ func TestGraphQLCallStaticQuery(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
 		capturedBody = make([]byte, r.ContentLength)
-		r.Body.Read(capturedBody)
-		r.Body.Close()
+		_, _ = r.Body.Read(capturedBody)
+		_ = r.Body.Close()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":{"user":{"id":"123","name":"Alice"}}}`))
+		_, _ = w.Write([]byte(`{"data":{"user":{"id":"123","name":"Alice"}}}`))
 	}))
 	defer ts.Close()
 
@@ -76,12 +76,12 @@ func TestGraphQLCallWithVariables(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody = make([]byte, r.ContentLength)
-		r.Body.Read(capturedBody)
-		r.Body.Close()
+		_, _ = r.Body.Read(capturedBody)
+		_ = r.Body.Close()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":{"user":{"id":"456"}}}`))
+		_, _ = w.Write([]byte(`{"data":{"user":{"id":"456"}}}`))
 	}))
 	defer ts.Close()
 
@@ -125,7 +125,7 @@ func TestGraphQLCallResponseErrors(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"errors":[{"message":"Invalid query"}],"data":null}`))
+		_, _ = w.Write([]byte(`{"errors":[{"message":"Invalid query"}],"data":null}`))
 	}))
 	defer ts.Close()
 
@@ -202,7 +202,7 @@ func TestGraphQLCallBodyAssemblyZeroAlloc(t *testing.T) {
 	// Test: Body assembly has zero allocations
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":{}}`))
+		_, _ = w.Write([]byte(`{"data":{}}`))
 	}))
 	defer ts.Close()
 
@@ -329,7 +329,7 @@ func TestGraphQLCallConcurrent(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":{"result":"ok"}}`))
+		_, _ = w.Write([]byte(`{"data":{"result":"ok"}}`))
 	}))
 	defer ts.Close()
 

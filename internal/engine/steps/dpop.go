@@ -151,7 +151,9 @@ func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore
 				status := cfg.OnFailureStatus
 				body := cfg.OnFailureBody
 				ctx.ResponseStatus = status
-				ctx.Write([]byte(body))
+				if _, err := ctx.Write([]byte(body)); err != nil {
+					RecordStepError(ctx, "[DPoP]", "response write failed", err)
+				}
 				ctx.Failed = true
 				ctx.ErrorCode = int16(status)
 				ctx.ErrorMsg = ctx.Alloc(len(body))

@@ -23,7 +23,7 @@ func newTestPool() *BufPool {
 // newMsg creates a LogBuf from the pool with the given content.
 func newMsg(pool *BufPool, content string) *LogBuf {
 	lb := pool.Get()
-	lb.WriteString(content)
+	_, _ = lb.WriteString(content)
 	return lb
 }
 
@@ -226,7 +226,7 @@ func TestAsyncWriterBlockOnFull(t *testing.T) {
 		t.Fatal("BlockOnFull Write did not unblock within 5s")
 	}
 
-	pw.Close()
+	_ = pw.Close()
 	w.Stop()
 }
 
@@ -249,7 +249,7 @@ func TestAsyncWriterDropCounter(t *testing.T) {
 	// Fill the ring completely (white-box: w.ring is accessible within package).
 	for i := 0; i < RingCap; i++ {
 		msg := pool.Get()
-		msg.WriteString("ring-fill")
+		_, _ = msg.WriteString("ring-fill")
 		if !w.ring.TryEnqueue(msg) {
 			t.Fatalf("ring should have capacity for slot %d", i)
 		}
@@ -257,7 +257,7 @@ func TestAsyncWriterDropCounter(t *testing.T) {
 
 	// Verify ring is full.
 	sentinel := pool.Get()
-	sentinel.WriteString("sentinel")
+	_, _ = sentinel.WriteString("sentinel")
 	if w.ring.TryEnqueue(sentinel) {
 		t.Fatal("ring should be full but TryEnqueue succeeded")
 	}
@@ -266,13 +266,13 @@ func TestAsyncWriterDropCounter(t *testing.T) {
 	// Fill the overflow channel completely.
 	for i := 0; i < overflowDepth; i++ {
 		msg := pool.Get()
-		msg.WriteString("overflow-fill")
+		_, _ = msg.WriteString("overflow-fill")
 		w.overflow <- msg
 	}
 
 	// Now call Write with DropSilently — both ring and overflow are full.
 	dropMsg := pool.Get()
-	dropMsg.WriteString("to-be-dropped")
+	_, _ = dropMsg.WriteString("to-be-dropped")
 	w.Write(dropMsg, DropSilently)
 
 	if w.Drops() != 1 {

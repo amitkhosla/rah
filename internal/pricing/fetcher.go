@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 const liteLLMPricingURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
@@ -220,7 +222,13 @@ func (f *PricingFetcher) fetchURLAsJSON(url string, target interface{}) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch from %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Debug("[Pricing] response body close failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)

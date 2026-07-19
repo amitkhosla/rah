@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // ─── Request / Response shapes ────────────────────────────────────────────────
@@ -536,7 +538,11 @@ func (s *Server) rotateKey(w http.ResponseWriter, r *http.Request, appID uint32,
 // jsonOK writes a 200 OK response with JSON-encoded body.
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		gatewaylog.Default.Warn("[APIKey] JSON response encode failed",
+			gatewaylog.F("error", err.Error()),
+		)
+	}
 }
 
 // parseID parses a path segment as uint32.

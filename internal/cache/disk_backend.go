@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // diskBackend is a CacheBackend that stores each cache entry as an individual
@@ -67,7 +69,11 @@ func (d *diskBackend) Get(tenantID uint16, key []byte) ([]byte, uint32, bool) {
 	expiry := binary.LittleEndian.Uint32(data[:4])
 	if expiry > 0 && expiry < uint32(time.Now().Unix()) {
 		// Lazy delete: expired entry.
-		os.Remove(path)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			gatewaylog.Default.Warn("[Cache] lazy delete failed",
+				gatewaylog.F("error", err.Error()),
+			)
+		}
 		return nil, 0, false
 	}
 	return data[4:], expiry, true
@@ -158,13 +164,21 @@ func (d *diskBackend) Sweep() int {
 		}
 		var expBuf [4]byte
 		n, err := f.Read(expBuf[:])
-		f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			gatewaylog.Default.Warn("[Cache] sweep file close failed",
+				gatewaylog.F("error", closeErr.Error()),
+			)
+		}
 		if err != nil || n < 4 {
 			return nil
 		}
 		expiry := binary.LittleEndian.Uint32(expBuf[:])
 		if expiry > 0 && expiry < now {
-			os.Remove(path)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				gatewaylog.Default.Warn("[Cache] sweep delete failed",
+					gatewaylog.F("error", err.Error()),
+				)
+			}
 			deleted++
 		}
 		return nil

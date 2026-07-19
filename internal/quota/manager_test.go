@@ -49,7 +49,9 @@ func TestQuotaManager(t *testing.T) {
 			}
 			// Record the cost if allowed to accumulate usage
 			if allowed {
-				_ = manager.RecordCost(tt.tenantID, tt.estimatedCost)
+				if err := manager.RecordCost(tt.tenantID, tt.estimatedCost); err != nil {
+					t.Fatalf("RecordCost: %v", err)
+				}
 			}
 		})
 	}
@@ -90,8 +92,12 @@ func TestGetQuotaStatus(t *testing.T) {
 	manager.RegisterQuota("startup-xyz", cfg)
 
 	// Record some costs
-	_ = manager.RecordCost("startup-xyz", 30.00)
-	_ = manager.RecordCost("startup-xyz", 15.50)
+	if err := manager.RecordCost("startup-xyz", 30.00); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
+	if err := manager.RecordCost("startup-xyz", 15.50); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
 
 	status := manager.GetQuotaStatus("startup-xyz")
 
@@ -152,8 +158,12 @@ func TestListAllQuotaStatus(t *testing.T) {
 	manager.RegisterQuota("tenant2", CostQuotaConfig{DailyCostLimit: 50.00, MonthlyCostLimit: 1000.00})
 
 	// Record costs
-	manager.RecordCost("tenant1", 10.00)
-	manager.RecordCost("tenant2", 5.00)
+	if err := manager.RecordCost("tenant1", 10.00); err != nil {
+		t.Fatalf("RecordCost tenant1: %v", err)
+	}
+	if err := manager.RecordCost("tenant2", 5.00); err != nil {
+		t.Fatalf("RecordCost tenant2: %v", err)
+	}
 
 	statuses := manager.ListAllQuotaStatus()
 
@@ -234,7 +244,9 @@ func TestFlexibleWindows(t *testing.T) {
 			}
 			// Record the cost if allowed to accumulate usage
 			if allowed {
-				manager.RecordCost(tt.tenantID, tt.estimatedCost)
+				if err := manager.RecordCost(tt.tenantID, tt.estimatedCost); err != nil {
+					t.Fatalf("RecordCost: %v", err)
+				}
 			}
 		})
 	}
@@ -260,8 +272,12 @@ func TestFlexibleWindowsStatus(t *testing.T) {
 	manager.RegisterQuota("test-tenant", cfg)
 
 	// Record some costs
-	manager.RecordCost("test-tenant", 25.00)
-	manager.RecordCost("test-tenant", 15.00)
+	if err := manager.RecordCost("test-tenant", 25.00); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
+	if err := manager.RecordCost("test-tenant", 15.00); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
 
 	status := manager.GetQuotaStatus("test-tenant")
 
@@ -312,7 +328,9 @@ func TestBackwardCompatibilityWithLegacyConfig(t *testing.T) {
 	}
 
 	// Record cost
-	manager.RecordCost("legacy-tenant", 50.00)
+	if err := manager.RecordCost("legacy-tenant", 50.00); err != nil {
+		t.Fatalf("RecordCost: %v", err)
+	}
 
 	// Should deny next request exceeding daily limit
 	allowed, reason, _ = manager.CanAfford("legacy-tenant", 60.00)
@@ -356,8 +374,12 @@ func TestMultipleTenantsWithDifferentConfigs(t *testing.T) {
 	}
 
 	// Record costs
-	manager.RecordCost("tenant-legacy", 50.00)
-	manager.RecordCost("tenant-flexible", 30.00)
+	if err := manager.RecordCost("tenant-legacy", 50.00); err != nil {
+		t.Fatalf("RecordCost tenant-legacy: %v", err)
+	}
+	if err := manager.RecordCost("tenant-flexible", 30.00); err != nil {
+		t.Fatalf("RecordCost tenant-flexible: %v", err)
+	}
 
 	// Check they maintain separate quotas
 	status1 := manager.GetQuotaStatus("tenant-legacy")

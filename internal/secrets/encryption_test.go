@@ -224,7 +224,9 @@ func TestLoadMasterKey_KeyPath(t *testing.T) {
 	if _, err := f.WriteString(encoded); err != nil {
 		t.Fatalf("writing key file: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("closing key file: %v", err)
+	}
 
 	enc, err := LoadMasterKey(MasterKeyConfig{
 		KeyPath:    f.Name(),

@@ -17,7 +17,6 @@ type CacheStore interface {
 	// Advanced operations.
 	Exists(tenantID uint16, key []byte) bool
 	Incr(tenantID uint16, key []byte, delta int64, ttl uint32) (int64, bool)
-	Touch(tenantID uint16, key []byte, ttl uint32) bool
 }
 
 // globalCacheTenantID is the tenant namespace for tenant-agnostic cache entries.
@@ -234,21 +233,6 @@ func CacheIncr(store CacheStore, keySlot, resultSlot int, staticDelta int64, ttl
 			newVal, ok := store.Incr(ctx.TenantID, key, staticDelta, ttl)
 			if ok {
 				ctx.IntSlots[resultSlot] = newVal
-			}
-			return s.PC + 1
-		},
-	}
-}
-
-// CacheTouch refreshes the TTL of an existing cache entry without reading or writing its value.
-// No-op if the key does not exist or is already expired.
-func CacheTouch(store CacheStore, keySlot int, ttl uint32) engine.Instruction {
-	return engine.Instruction{
-		Name: "cache_touch",
-		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-			key := ctx.ByteSlots[keySlot]
-			if len(key) > 0 {
-				store.Touch(ctx.TenantID, key, ttl)
 			}
 			return s.PC + 1
 		},

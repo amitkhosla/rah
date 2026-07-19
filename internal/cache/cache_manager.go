@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -169,7 +170,11 @@ func NewCacheManager(
 // Call once on shutdown.
 func (cm *CacheManager) Stop() {
 	close(cm.cleanerStop)
-	cm.backend.Close()
+	if err := cm.backend.Close(); err != nil {
+		gatewaylog.Default.Warn("[Cache] backend close failed",
+			gatewaylog.F("error", err.Error()),
+		)
+	}
 }
 
 func (cm *CacheManager) allocateRegions() {
@@ -359,15 +364,17 @@ func (cm *CacheManager) getTenantCounter(tenantID uint16) *tenantCounter {
 // â”€â”€ async backend write â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // enqueueWrite sends a backend write to the async queue.
-// If the queue is full it falls back to a synchronous write so that backend
-// persistence is never silently dropped (best-effort; errors are ignored).
-func (cm *CacheManager) enqueueWrite(tenantID uint16, key, value []byte, expiry uint32) {
+// Returns true if the write was successfully handed off (enqueued or written
+// synchronously). Returns false only when the queue is saturated AND the
+// synchronous fallback write also fails — meaning the data would be lost.
+func (cm *CacheManager) enqueueWrite(tenantID uint16, key, value []byte, expiry uint32) bool {
 	job := writeJob{tenantID: tenantID, key: key, value: value, expiry: expiry}
 	select {
 	case cm.asyncQueue <- job:
+		return true
 	default:
-		// Queue saturated â€” write synchronously rather than drop.
-		_ = cm.backend.Set(tenantID, key, value, expiry)
+		// Queue saturated — fall back to synchronous write and report the result.
+		return cm.backend.Set(tenantID, key, value, expiry) == nil
 	}
 }
 
@@ -504,7 +511,7 @@ func (cm *CacheManager) put(
 	if ttl == 0 {
 		expiry = now
 	}
-	cm.enqueueWrite(tenantID, key, value, expiry)
+	backendOK := cm.enqueueWrite(tenantID, key, value, expiry)
 
 	classID := cm.selectSizeClass(len(value))
 	tierID := cm.selectTTLTier(ttl)
@@ -516,15 +523,21 @@ func (cm *CacheManager) put(
 		keyMid = middleByte(key)
 	}
 
-	physOff, gen, old, hasOld, ok := region.Write(tenantID, keyMid, value, ttl)
-	if !ok {
-		// Internal cache write failed. Check if data is persisted in backend.
-		if cm.backend != nil {
-			// Data was enqueued to backend (line 507), so Put succeeds.
-			return 0, true
+	// canRecycle checks whether the slab slot's old index entry has been
+	// tombstoned by the cleaner. Called under region.mu — no expiry check here
+	// to avoid racing with sweepBatch which reads slab headers without region.mu.
+	canRecycle := func(sp xSlotPtr, slotPhysOff uint64, gen2b uint8) bool {
+		tag := sp.tagBits()
+		if sp.laneBit() == 0 {
+			return !cm.tinyIdx.IsLive(tag, slotPhysOff, gen2b)
 		}
-		// No backend available and internal cache failed: data would be lost.
-		return 0, false
+		return !cm.hashIdx.IsLive(tag, slotPhysOff, gen2b)
+	}
+
+	physOff, gen, old, hasOld, ok := region.Write(tenantID, keyMid, value, ttl, canRecycle)
+	if !ok {
+		// In-memory write failed. Succeed only if the backend accepted the write.
+		return 0, backendOK
 	}
 
 	// Eviction accounting: slot was occupied by a different (now-evicted) entry.
@@ -838,51 +851,4 @@ func (cm *CacheManager) Incr(tenantID uint16, key []byte, delta int64, ttl uint3
 		return 0, false
 	}
 	return delta, true
-}
-
-// Touch updates the expiry of an existing slab entry to now+ttl without
-// reading or rewriting the value. Returns true if the entry was found and updated.
-func (cm *CacheManager) Touch(tenantID uint16, key []byte, ttl uint32) bool {
-	hashLane := isHashLane(key)
-	var rawVal uint64
-	var found bool
-	if hashLane {
-		h1 := hashH1Only(tenantID, key)
-		h2 := uint64(hashLaneBig16(tenantID, key))
-		tag := (h1 & 0x0000FFFFFFFFFFFF) | (h2 << 48)
-		if tag == iEmpty {
-			tag |= 1 << 48
-		}
-		if tag == iTombstone {
-			tag ^= 1 << 48
-		}
-		rawVal, found = cm.hashIdx.GetTag(tag)
-	} else {
-		rawVal, found = cm.tinyIdx.GetTag(makeTagTiny(tenantID, key))
-	}
-	if !found {
-		return false
-	}
-	_, _, typ := Unpack(rawVal)
-	if typ != xValTypeSlabRAM {
-		return false
-	}
-	classID, tierID, physOff := UnpackSlab(rawVal)
-	if int(classID) >= len(cm.regions) || int(tierID) >= len(cm.regions[classID]) {
-		return false
-	}
-	region := cm.regions[classID][tierID]
-	region.mu.Lock()
-	cnt := region.count.Load()
-	rp := region.buf.Load()
-	rbuf := unsafe.Slice(rp, cnt*uint64(region.stride))
-	h := headerAt(rbuf, physOff)
-	now := cm.clock.now()
-	if h.Expiry == 0 || h.Expiry < now {
-		region.mu.Unlock()
-		return false // already expired
-	}
-	h.Expiry = now + ttl
-	region.mu.Unlock()
-	return true
 }

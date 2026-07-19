@@ -203,26 +203,26 @@ func formatLogLine(buf *strings.Builder, levelStr, msg string, fields []Field) {
 // formatIntoLogBuf writes the logfmt line directly into a *LogBuf (async path).
 // No allocation: appends to lb.b in place.
 func formatIntoLogBuf(lb *LogBuf, levelStr, msg string, fields []Field) {
-	lb.WriteString("level=")
-	lb.WriteString(levelStr)
-	lb.WriteString(" msg=")
+	_, _ = lb.WriteString("level=")
+	_, _ = lb.WriteString(levelStr)
+	_, _ = lb.WriteString(" msg=")
 	if strings.ContainsAny(msg, " ") {
-		lb.WriteString(`"`)
-		lb.WriteString(msg)
-		lb.WriteString(`"`)
+		_, _ = lb.WriteString(`"`)
+		_, _ = lb.WriteString(msg)
+		_, _ = lb.WriteString(`"`)
 	} else {
-		lb.WriteString(msg)
+		_, _ = lb.WriteString(msg)
 	}
 	for _, f := range fields {
-		lb.WriteString(" ")
-		lb.WriteString(f.Key)
-		lb.WriteString("=")
+		_, _ = lb.WriteString(" ")
+		_, _ = lb.WriteString(f.Key)
+		_, _ = lb.WriteString("=")
 		if strings.ContainsAny(f.Value, " =") {
-			lb.WriteString(`"`)
-			lb.WriteString(f.Value)
-			lb.WriteString(`"`)
+			_, _ = lb.WriteString(`"`)
+			_, _ = lb.WriteString(f.Value)
+			_, _ = lb.WriteString(`"`)
 		} else {
-			lb.WriteString(f.Value)
+			_, _ = lb.WriteString(f.Value)
 		}
 	}
 }

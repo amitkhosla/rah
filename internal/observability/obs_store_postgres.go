@@ -417,7 +417,11 @@ ON CONFLICT (trace_id) DO NOTHING`,
 	}
 
 	br := s.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() {
+		if err := br.Close(); err != nil {
+			log.Printf("obs postgres: batch results close error: %v", err)
+		}
+	}()
 
 	n := batch.Len()
 	for i := 0; i < n; i++ {

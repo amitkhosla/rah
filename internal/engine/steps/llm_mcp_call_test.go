@@ -150,7 +150,7 @@ func TestMCPCallTool_EmptyArgs_UsesEmptyObject(t *testing.T) {
 	var receivedArgs json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		params, _ := req["params"].(map[string]any)
 		argsBytes, _ := json.Marshal(params["arguments"])
 		receivedArgs = argsBytes

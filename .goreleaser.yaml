@@ -50,11 +50,33 @@ builds:
       - -X main.version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: rah-sync
+    main: ./cmd/rah-sync
+    binary: rah-sync
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+
 archives:
   - id: default
     builds:
       - rah-gateway
       - rah-studio
+      - rah-sync
     # .zip for Windows, .tar.gz for everything else
     format_overrides:
       - goos: windows

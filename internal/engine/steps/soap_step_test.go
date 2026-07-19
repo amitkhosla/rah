@@ -339,6 +339,8 @@ func isNetworkAvailable(t *testing.T) bool {
 		t.Skipf("network not available: %v", err)
 		return false
 	}
-	listener.Close()
+	if err := listener.Close(); err != nil {
+		t.Logf("listener close: %v", err)
+	}
 	return true
 }

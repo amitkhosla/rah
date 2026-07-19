@@ -126,7 +126,9 @@ func TestChunkText_OverlapPresent(t *testing.T) {
 	instruction.Action(ctx, state)
 
 	var chunks []string
-	json.Unmarshal(ctx.ByteSlots[1], &chunks)
+	if err := json.Unmarshal(ctx.ByteSlots[1], &chunks); err != nil {
+		t.Fatalf("unmarshal chunks: %v", err)
+	}
 
 	// With overlap, adjacent chunks should have some common text
 	if len(chunks) > 1 {
@@ -195,7 +197,9 @@ func TestChunkText_CountSlotWritten(t *testing.T) {
 
 	// Verify count matches actual chunks
 	var chunks []string
-	json.Unmarshal(ctx.ByteSlots[1], &chunks)
+	if err := json.Unmarshal(ctx.ByteSlots[1], &chunks); err != nil {
+		t.Fatalf("unmarshal chunks: %v", err)
+	}
 	if int64(len(chunks)) != count {
 		t.Fatalf("count mismatch: expected %d, got %d", len(chunks), count)
 	}
@@ -258,7 +262,9 @@ func TestChunkText_DefaultChunkSize(t *testing.T) {
 	}
 
 	var chunks []string
-	json.Unmarshal(ctx.ByteSlots[1], &chunks)
+	if err := json.Unmarshal(ctx.ByteSlots[1], &chunks); err != nil {
+		t.Fatalf("unmarshal chunks: %v", err)
+	}
 	if len(chunks) == 0 {
 		t.Fatalf("expected non-empty chunks with default chunk size")
 	}

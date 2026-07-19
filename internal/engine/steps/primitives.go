@@ -3,9 +3,11 @@
 import (
 	"io"
 	"net/http"
-	"github.com/amitkhosla/rah/internal/engine"
-	"github.com/amitkhosla/rah/internal/rctx"
 	"sync"
+
+	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 var client = GetClientFromPool()
@@ -58,7 +60,11 @@ func ProxyStep(targetUrl string) engine.Instruction {
 			}
 
 			ctx.FinalizeHeaders()
-			io.Copy(ctx.GetWriter(), resp.Body)
+			if _, err := io.Copy(ctx.GetWriter(), resp.Body); err != nil {
+				gatewaylog.Default.Debug("[Proxy] response copy failed",
+					gatewaylog.F("error", err.Error()),
+				)
+			}
 
 			return engine.StopPlan
 		},

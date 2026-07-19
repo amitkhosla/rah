@@ -242,6 +242,14 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	// 5. Plan Execution
 	Execute(ctx, endpoint.Plan, 0)
 
+	// 5b. Engine-level error fallback: if the plan ended with an unhandled failure
+	// and no step committed a >=400 response status, synthesize a generic 500.
+	// Steps that intentionally fail (dpop, geo_block, etc.) set ResponseStatus >= 400,
+	// so ctx.ResponseStatus < 400 prevents overriding their responses.
+	if ctx.Failed && ctx.ResponseStatus < 400 {
+		applyGenericError(ctx)
+	}
+
 	// 5a. Async instruction-timing aggregation: stamp into the lock-free slab ring.
 	// Nil-gated so it's zero-cost when the feature is not enabled.
 	if fm.InstrRing != nil && ctx.InstrCount > 0 {

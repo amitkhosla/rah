@@ -98,7 +98,9 @@ func GeoBlock(manager *geo.Manager, cfg GeoBlockConfig) engine.Instruction {
 					status := cfg.OnBlockStatus
 					body := cfg.OnBlockBody
 					ctx.ResponseStatus = status
-					ctx.Write([]byte(body))
+					if _, err := ctx.Write([]byte(body)); err != nil {
+						RecordStepError(ctx, "[GeoBlock]", "response write failed", err)
+					}
 					ctx.Failed = true
 					ctx.ErrorCode = int16(status)
 					ctx.ErrorMsg = ctx.Alloc(len(body))

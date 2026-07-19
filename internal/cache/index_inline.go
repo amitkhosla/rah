@@ -477,6 +477,41 @@ func (idx *InlineIndex) DeleteTag(tag uint64) bool {
 	return idx.Delete(tag)
 }
 
+// IsLive reports whether a live index entry still points to physOff/gen2b for
+// the given tag. Returns true only when the entry is found, is of type SlabRAM,
+// and still references the exact (physOff, gen2b) pair — meaning the slab slot
+// is still claimed by an active entry and must not be recycled.
+// Returns false if the entry is tombstoned, gone, or points elsewhere.
+func (idx *InlineIndex) IsLive(tag uint64, physOff uint64, gen2b uint8) bool {
+	sh := &idx.shards[tag&idx.shardMask]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	nodeIdx := sh.root
+	shift := idx.shardBits
+	for depth := 0; depth <= iMaxDepth; depth++ {
+		if nodeIdx == iNullChild {
+			return false
+		}
+		node := idx.pool.node(nodeIdx)
+		for i := range node.slots {
+			s := &node.slots[i]
+			if s.tag.Load() != tag {
+				continue
+			}
+			v := s.val.Load()
+			vGen2b, _, vTyp := Unpack(v)
+			_, _, vPhysOff := UnpackSlab(v)
+			if vTyp == xValTypeSlabRAM && vPhysOff == physOff && vGen2b == gen2b {
+				return true
+			}
+		}
+		branch := uint32((tag >> shift) & iMask)
+		nodeIdx = atomic.LoadUint32(&node.children[branch])
+		shift += iBits
+	}
+	return false
+}
+
 // TryTombstone performs a fresh trie traversal using the shard and tag routing
 // bits stored in the tag parameter, then tombstones the slot whose val still
 // references physOff/gen2b.
