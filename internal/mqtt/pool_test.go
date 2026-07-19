@@ -10,7 +10,7 @@ import (
 func TestNewBrokerPool(t *testing.T) {
 	pool := NewBrokerPool()
 	if pool == nil {
-		t.Errorf("NewBrokerPool returned nil")
+		t.Fatal("NewBrokerPool returned nil")
 	}
 	if len(pool.clients) != 0 {
 		t.Errorf("expected empty pool, got %d clients", len(pool.clients))

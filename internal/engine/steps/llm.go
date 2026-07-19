@@ -618,7 +618,6 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							ReqBytes:     body,
 							ResBytes:     sseAccumBuf.Bytes(),
 						})
-						llmSeq++
 						// Write token counts to slots even in streaming mode.
 						if cfg.InputTokensSlot >= 0 && cfg.InputTokensSlot < len(ctx.IntSlots) {
 							ctx.IntSlots[cfg.InputTokensSlot] = int64(inTok)
@@ -798,7 +797,6 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							ReqBytes:     body,
 							ResBytes:     respBody,
 						})
-						llmSeq++
 					}
 
 					return state.PC + 1
