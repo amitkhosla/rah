@@ -76,6 +76,18 @@ func pgConnDSN() string {
 // of special characters in the password. Pool size is capped at 2 so that
 // multiple parallel test runs don't exhaust the server's max_connections.
 func pgStoreConfig() config.DataStoreConfig {
+	pwd := pgPassword()
+	// If RAH_TEST_PG_DSN is set (e.g., in CI), extract password from it
+	if dsn := os.Getenv("RAH_TEST_PG_DSN"); dsn != "" {
+		_, pass, found := strings.Cut(dsn, "password=")
+		if found {
+			if endIdx := strings.IndexAny(pass, " \t"); endIdx != -1 {
+				pwd = pass[:endIdx]
+			} else {
+				pwd = pass
+			}
+		}
+	}
 	return config.DataStoreConfig{
 		Stores: map[string]config.StoreConfig{
 			"pg": {
@@ -86,7 +98,7 @@ func pgStoreConfig() config.DataStoreConfig {
 					Host:     "localhost",
 					Port:     5432,
 					Username: "postgres",
-					Password: pgPassword(),
+					Password: pwd,
 					Database: "gateway",
 					Params:   map[string]string{"pool_max_open": "2"},
 				},
