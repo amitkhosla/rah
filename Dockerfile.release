@@ -1,0 +1,11 @@
+# Minimal runtime image for GoReleaser — uses the pre-built binary from the
+# GoReleaser build stage. CA certs and timezone data come from distroless/base.
+FROM gcr.io/distroless/base-debian12:nonroot
+
+COPY rah-gateway /usr/local/bin/rah-gateway
+
+EXPOSE 8080 8081
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/rah-gateway"]
+CMD ["-port", "8080", "-mport", "8081", "-config", "/app/gateway.yaml"]

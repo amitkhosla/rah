@@ -102,7 +102,7 @@ dockers:
     image_templates:
       - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/rah-gateway:{{ .Version }}-amd64"
       - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/rah-gateway:latest-amd64"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.release
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -120,7 +120,7 @@ dockers:
     image_templates:
       - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/rah-gateway:{{ .Version }}-arm64"
       - "ghcr.io/{{ .Env.GITHUB_REPOSITORY_OWNER }}/rah-gateway:latest-arm64"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.release
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
