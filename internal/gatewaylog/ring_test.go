@@ -4,7 +4,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // TestRingEnqueueDequeue verifies basic enqueue/dequeue operations in a single goroutine.
@@ -106,17 +105,42 @@ func TestRingMPSC(t *testing.T) {
 	itemsPerProducer := 200
 	totalItems := numProducers * itemsPerProducer
 
-	var dequeueWg sync.WaitGroup
 	var produceWg sync.WaitGroup
-
-	// Counter for dequeued items and dropped items
 	var dequeuedCount atomic.Uint64
 	var droppedCount atomic.Uint64
+	var stopped atomic.Bool
+
+	// Single consumer goroutine — Dequeue must never be called from two goroutines
+	// concurrently; r.tail is a plain uint64 (correct for MPSC, not safe for MPMC).
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		for !stopped.Load() {
+			if msg := r.Dequeue(); msg != nil {
+				if string(msg.b) != "mpsc" {
+					t.Errorf("MPSC: expected 'mpsc', got %s", string(msg.b))
+				}
+				dequeuedCount.Add(1)
+			}
+		}
+		// Final drain: consume anything enqueued between the last loop iteration
+		// and stopped being set.
+		for {
+			msg := r.Dequeue()
+			if msg == nil {
+				return
+			}
+			if string(msg.b) != "mpsc" {
+				t.Errorf("MPSC: expected 'mpsc', got %s", string(msg.b))
+			}
+			dequeuedCount.Add(1)
+		}
+	}()
 
 	// Producer goroutines
 	produceWg.Add(numProducers)
 	for p := 0; p < numProducers; p++ {
-		go func(producerID int) {
+		go func() {
 			defer produceWg.Done()
 			for i := 0; i < itemsPerProducer; i++ {
 				msg := &LogBuf{b: []byte("mpsc")}
@@ -124,47 +148,14 @@ func TestRingMPSC(t *testing.T) {
 					droppedCount.Add(1)
 				}
 			}
-		}(p)
+		}()
 	}
 
-	// Consumer goroutine (single reader)
-	dequeueWg.Add(1)
-	go func() {
-		defer dequeueWg.Done()
-		for {
-			msg := r.Dequeue()
-			if msg != nil {
-				if string(msg.b) != "mpsc" {
-					t.Errorf("MPSC: expected 'mpsc', got %s", string(msg.b))
-				}
-				dequeuedCount.Add(1)
-			} else {
-				// Ring is empty, check if producers are done
-				if produceWg == (sync.WaitGroup{}) {
-					// This check won't work as intended, so we'll use a time-based check
-					time.Sleep(1 * time.Millisecond)
-				}
-			}
-		}
-	}()
-
-	// Wait for all producers to finish
+	// Wait for all producers, then stop and drain the consumer.
 	produceWg.Wait()
+	stopped.Store(true)
+	<-consumerDone
 
-	// Give consumer time to drain the ring (retry for a bit)
-	for i := 0; i < 1000; i++ {
-		msg := r.Dequeue()
-		if msg != nil {
-			if string(msg.b) != "mpsc" {
-				t.Errorf("MPSC: expected 'mpsc', got %s", string(msg.b))
-			}
-			dequeuedCount.Add(1)
-		} else {
-			time.Sleep(100 * time.Microsecond)
-		}
-	}
-
-	// Verify totals
 	dequeued := dequeuedCount.Load()
 	dropped := droppedCount.Load()
 	received := dequeued + dropped
@@ -173,18 +164,12 @@ func TestRingMPSC(t *testing.T) {
 		t.Errorf("MPSC: sent %d items, received %d (dequeued %d + dropped %d)",
 			totalItems, received, dequeued, dropped)
 	}
-
 	if dequeued == 0 {
 		t.Error("MPSC: no items were dequeued")
 	}
-
-	// Verify dequeue count doesn't exceed enqueued count
 	if dequeued > uint64(totalItems) {
 		t.Errorf("MPSC: dequeued %d items but only sent %d", dequeued, totalItems)
 	}
-
-	// Note: We signal the consumer goroutine to stop by not waiting on dequeueWg
-	// In a real implementation, there would be a shutdown mechanism
 }
 
 // TestRingDequeueEmpty verifies that Dequeue returns nil immediately on an empty ring.
