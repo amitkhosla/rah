@@ -1,4 +1,4 @@
-# RAH — Reconfigurable API & AI Handler
+# RAH — Reconfigurable API & AI Handler 
 
 **A high-performance API execution platform for Go.**
 
