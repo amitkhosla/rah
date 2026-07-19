@@ -92,7 +92,6 @@ less internal/control/compiler.go
 ### 2. Running Tests
 
 ```bash
-# Note: Tests may be failing - skip rather than fix
 go test -skip=. ./internal/...
 
 # Run specific package tests (if not skipping)
@@ -482,7 +481,7 @@ go build -o bin/rah-gateway ./cmd/rah-gateway/
 
 ### Docker Build
 ```dockerfile
-FROM golang:1.19-alpine
+FROM golang:1.26-alpine
 
 WORKDIR /app
 COPY . .

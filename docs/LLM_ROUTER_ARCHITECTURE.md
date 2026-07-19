@@ -185,10 +185,10 @@
 │    - Stop Reason: ByteSlots[13] = "stop"                                   │
 │    - Was Truncated: ByteSlots[15] = "" (false)                             │
 │                                                                             │
-│  Calculate Cost:                                                            │
-│    Input Cost: 118 × $0.00015 = $0.0177                                    │
-│    Output Cost: 150 × $0.0006 = $0.0900                                    │
-│    Total: $0.01077                                                          │
+│  Calculate Cost (cost_per_X_token is per-million-token price):             │
+│    Input Cost: (118 / 1,000,000) × $0.15 = $0.0000177                     │
+│    Output Cost: (150 / 1,000,000) × $0.60 = $0.0000900                    │
+│    Total: $0.0001077                                                        │
 │                                                                             │
 │  Build Response:                                                            │
 │    {                                                                        │
@@ -199,7 +199,7 @@
 │        "output_tokens": 150,                                                │
 │        "stop_reason": "stop",                                               │
 │        "was_truncated": false,                                              │
-│        "cost_usd": 0.01077,                                                 │
+│        "cost_usd": 0.0001077,                                                 │
 │        "latency_ms": 810                                                    │
 │      }                                                                      │
 │    }                                                                        │
@@ -253,9 +253,9 @@
 │      },                                                                     │
 │                                                                             │
 │      "cost": {                                                              │
-│        "input_cost": 0.0177,                                                │
-│        "output_cost": 0.0900,                                               │
-│        "total_usd": 0.1077,                                                 │
+│        "input_cost": 0.0000177,                                             │
+│        "output_cost": 0.0000900,                                            │
+│        "total_usd": 0.0001077,                                              │
 │        "model_pricing": {                                                   │
 │          "model": "gpt-4o-mini",                                            │
 │          "cost_per_input_token": 0.00015,                                   │
@@ -449,19 +449,19 @@ START
 ```
 SCENARIO: 120-token prompt from premium user
 
-OPTION A: Always use claude-opus
-  Cost = (118 × $0.015) + (150 × $0.075) = $1.77 + $11.25 = $13.02
+OPTION A: Always use claude-opus  ($15.00/$75.00 per 1M tokens)
+  Cost = (118/1,000,000 × $15.00) + (150/1,000,000 × $75.00) = $0.00177 + $0.01125 = $0.01302
 
-OPTION B: Smart routing → gpt-4o-mini
-  Cost = (118 × $0.00015) + (150 × $0.0006) = $0.018 + $0.09 = $0.11
+OPTION B: Smart routing → gpt-4o-mini  ($0.15/$0.60 per 1M tokens)
+  Cost = (118/1,000,000 × $0.15) + (150/1,000,000 × $0.60) = $0.0000177 + $0.0000900 = $0.0001077
 
-SAVINGS: $13.02 - $0.11 = $12.91 per request
+SAVINGS: $0.01302 - $0.0001077 = $0.0129 per request
 PERCENTAGE: 99.2% cheaper!
 
 AT 10,000 REQUESTS/DAY:
-  Always opus:     $130,200/day
-  Smart routing:   $1,100/day
-  Daily savings:   $129,100
+  Always opus:     $130.20/day
+  Smart routing:   $1.08/day
+  Daily savings:   $129.12
   Annual savings:  $47,126,500
 ```
 

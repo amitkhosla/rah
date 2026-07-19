@@ -270,6 +270,31 @@ Pricing is sourced from explicit config → per-model config → LiteLLM communi
 (auto-refreshed hourly) → hardcoded defaults. A daily learning job tracks estimated vs.
 actual token counts and adjusts future estimates automatically.
 
+**Resilient routing & automatic fallback** — configure an ordered fallback chain per
+model; the gateway promotes to the next provider automatically on 429 rate limits,
+provider errors, or timeouts:
+
+```yaml
+llm:
+  models:
+    - alias: primary-claude
+      adapter: anthropic
+      model_id: claude-opus-4-5
+      api_key_ref: env:ANTHROPIC_API_KEY
+      fallback_chain:
+        - model: claude-haiku         # promoted to on 429 or any failure
+        - model: my-gpt4o             # cross-provider final fallback
+```
+
+`circuit_breaker` bypasses a degraded model for a configurable recovery window;
+`check_upstream_rate_limit` honours provider `Retry-After` headers automatically.
+No code changes required — routing adjusts at runtime based on live provider health.
+
+**Intelligent model selection** — `route_llm` evaluates each request at runtime against
+your rules (token count, tenant tier, cost budget, content classification) and selects
+the best registered model. Define the selection logic once in YAML; every flow that uses
+`route_llm` benefits automatically without explicit branching per flow.
+
 ---
 
 ## Protocol & Format Translation
@@ -558,8 +583,15 @@ definitions on disk.
 | PostgreSQL | `postgresql` | Audit log, access log, observability, management-plane data |
 
 Redis and Dragonfly share the same adapter (Dragonfly is wire-compatible with Redis).
-PostgreSQL includes a concurrent batching wrapper that coalesces reads and writes under
-load for high-throughput access-log workloads.
+
+**Smart coalescing** — both backends batch datastore operations to reduce round-trips
+under load:
+- **Redis / Dragonfly** — concurrent cache writes are pipelined; multiple operations in
+  the same request window are sent as a single batch
+- **PostgreSQL** — a batching wrapper coalesces concurrent reads and writes into
+  `MultiGet` / `MultiPut` queries with a read-your-writes guarantee; high-concurrency
+  observability workloads generate far fewer database round-trips than request volume
+  would suggest
 
 ### Domain Bindings
 
