@@ -374,6 +374,48 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
   }
 }
 
+// ── Operator expression parser ───────────────────────────────────────────────
+// Parses "left OP right" with required spaces around the operator.
+// +→concat, -→sub, *→mul, /→div. Both operands can be identifiers or quoted strings.
+// Returns FlowStep[] or null if not an operator expression.
+const isIdent = (s: string) => /^[A-Za-z_]\w*$/.test(s)
+function parseOperatorExpr(rhs: string, as_: string): FlowStep[] | null {
+  const mk = (o: object) => o as unknown as FlowStep
+  const ops: Array<{ token: string; action: string }> = [
+    { token: ' + ', action: 'concat' },
+    { token: ' - ', action: 'sub' },
+    { token: ' * ', action: 'mul' },
+    { token: ' / ', action: 'div' },
+  ]
+  for (const op of ops) {
+    const idx = rhs.lastIndexOf(op.token)
+    if (idx < 0) continue
+    const left = rhs.slice(0, idx).trim()
+    const right = rhs.slice(idx + op.token.length).trim()
+    if (!left || !right) continue
+
+    const preamble: FlowStep[] = []
+    let leftSlot: string, rightSlot: string
+
+    if (isIdent(left)) {
+      leftSlot = left
+    } else if (left.startsWith('"') || left.startsWith("'")) {
+      leftSlot = tpl()
+      preamble.push(mk({ action: 'set_const', value: unquote(left), as: leftSlot }))
+    } else { continue }
+
+    if (isIdent(right)) {
+      rightSlot = right
+    } else if (right.startsWith('"') || right.startsWith("'")) {
+      rightSlot = tpl()
+      preamble.push(mk({ action: 'set_const', value: unquote(right), as: rightSlot }))
+    } else { continue }
+
+    return [...preamble, mk({ action: op.action, key_identifier: leftSlot, source: rightSlot, as: as_ })]
+  }
+  return null
+}
+
 // ── Block parser (recursive) ─────────────────────────────────────────────────
 interface BR { steps: FlowStep[]; next: number }
 function parseBlock(lines: string[], start: number): BR {
@@ -474,6 +516,9 @@ function parseBlock(lines: string[], start: number): BR {
       }
       // var = action.call(params)
       if (fn) { steps.push(...actionSteps(fn.action, fn.rawParams, slot)); i++; continue }
+      // var = left OP right  (operator expression: +→concat, -→sub, *→mul, /→div)
+      const opResult = parseOperatorExpr(r, slot)
+      if (opResult) { steps.push(...opResult); i++; continue }
       // var = bareWord → set_const with string value
       steps.push({ action: 'set_const', value: r, as: slot } as unknown as FlowStep)
       i++; continue

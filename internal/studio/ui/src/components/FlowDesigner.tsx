@@ -2854,6 +2854,15 @@ export default function FlowDesigner({
           )}
           {viewMode === 'code' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>Flow name</span>
+                <input
+                  value={flowName}
+                  onChange={e => setFlowName(e.target.value)}
+                  placeholder="my_flow_name"
+                  style={{ flex: 1, fontSize: 13, fontFamily: 'monospace', padding: '4px 10px', background: 'rgba(0,0,0,0.28)', color: 'var(--fg)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, outline: 'none' }}
+                />
+              </div>
               <textarea
                 spellCheck={false}
                 value={dslText}

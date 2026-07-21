@@ -168,6 +168,10 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
             lines.push(`${I}${as_} = "${(lPart + rPart).replace(/\\/g,'\\\\').replace(/"/g,'\\"')}"`)
             break
           }
+          // Both operands are plain identifiers → use operator shorthand
+          if (left && !left.startsWith('__t') && right && !right.startsWith('__t')) {
+            lines.push(`${I}${as_} = ${left} + ${right}`); break
+          }
         }
         if (as_) lines.push(`${I}${as_} = concat(${left}, ${right})`)
         else lines.push(`${I}concat(${left}, ${right})`)
@@ -182,7 +186,8 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       // ── math ─────────────────────────────────────────────────────────────
       case 'add': case 'sub': case 'mul': case 'div': {
         const l = str(step['key_identifier']); const r = src
-        if (as_) lines.push(`${I}${as_} = ${a}(${l}, ${r})`)
+        const opSymbol: Record<string, string> = { add: '+', sub: '-', mul: '*', div: '/' }
+        if (as_) lines.push(`${I}${as_} = ${l} ${opSymbol[a]} ${r}`)
         else lines.push(`${I}${a}(${l}, ${r})`)
         break
       }

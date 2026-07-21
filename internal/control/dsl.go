@@ -467,6 +467,64 @@ func dslIsIdent(s string) bool {
 	return true
 }
 
+// dslParseOperatorExpr checks if rhs matches "left OP right" with spaces.
+// Returns generated steps or nil if not an operator expression.
+// Supported operators: + → concat, - → sub, * → mul, / → div.
+// Both operands may be identifiers or quoted string literals.
+// Only binary expressions (two operands, one operator) are handled.
+func (p *dslParser) dslParseOperatorExpr(rhs, as_ string) []StepConfig {
+	type opEntry struct {
+		token  string
+		action string
+	}
+	ops := []opEntry{
+		{" + ", "concat"},
+		{" - ", "sub"},
+		{" * ", "mul"},
+		{" / ", "div"},
+	}
+
+	for _, op := range ops {
+		idx := strings.LastIndex(rhs, op.token)
+		if idx < 0 {
+			continue
+		}
+		left := strings.TrimSpace(rhs[:idx])
+		right := strings.TrimSpace(rhs[idx+len(op.token):])
+
+		if left == "" || right == "" {
+			continue
+		}
+
+		var preamble []StepConfig
+		var leftSlot, rightSlot string
+
+		// Resolve left operand
+		if dslIsIdent(left) {
+			leftSlot = left
+		} else if dslIsQuoted(left) {
+			leftSlot = p.tpl()
+			preamble = append(preamble, StepConfig{Action: "set_const", Value: dslUnquote(left), As: leftSlot})
+		} else {
+			continue // not a valid operand; try next operator
+		}
+
+		// Resolve right operand
+		if dslIsIdent(right) {
+			rightSlot = right
+		} else if dslIsQuoted(right) {
+			rightSlot = p.tpl()
+			preamble = append(preamble, StepConfig{Action: "set_const", Value: dslUnquote(right), As: rightSlot})
+		} else {
+			continue // not a valid operand; try next operator
+		}
+
+		opStep := StepConfig{Action: op.action, KeyIdentifier: leftSlot, Source: rightSlot, As: as_}
+		return append(preamble, opStep)
+	}
+	return nil
+}
+
 // dslTplSteps builds a set_const + concat chain for a template string.
 // Returns (steps, finalSlot).
 func (p *dslParser) dslTplSteps(tmpl string) ([]StepConfig, string) {
@@ -1413,6 +1471,13 @@ func (p *dslParser) parseBlockR(lines []string, start int) (steps []StepConfig, 
 				// var = action.call(params)
 				if fn, args, ok := dslSplitFuncCall(rhs); ok {
 					steps = append(steps, p.dslActionSteps(fn, args, potentialSlot)...)
+					i++
+					continue
+				}
+
+				// var = left OP right  (operator expression: +→concat, -→sub, *→mul, /→div)
+				if opSteps := p.dslParseOperatorExpr(rhs, potentialSlot); len(opSteps) > 0 {
+					steps = append(steps, opSteps...)
 					i++
 					continue
 				}
