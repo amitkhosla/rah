@@ -215,20 +215,15 @@ textarea.input {
   font-size: 12px;
 }
 
-.input + .input,
-.input + .btn,
-.btn + .btn,
-.btn + .input {
-  margin-top: 7px;
-}
-
 select.input { cursor: pointer; }
 
 /* ── Buttons ────────────────────────────────────────────────────── */
 .btn {
-  display: block;
-  width: 100%;
-  padding: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  padding: 6px 12px;
   border-radius: 8px;
   border: none;
   background: var(--accent);
@@ -237,6 +232,7 @@ select.input { cursor: pointer; }
   font-size: 13px;
   cursor: pointer;
   transition: opacity 0.15s;
+  white-space: nowrap;
 }
 .btn:hover { opacity: 0.88; }
 .btn.muted {

@@ -548,8 +548,16 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   // ── Remove handlers ────────────────────────────────────────────────────────
 
   function handleRemoveApi(apiId: string) {
+    const api = apis.find(a => a.id === apiId)
     setApis(apis.filter(a => a.id !== apiId))
     if (selectedApiId === apiId) { setSelectedApiId(null); setSelectedEndpointId(null) }
+    if (api?.name) {
+      syncFlows({
+        sync_uuid: crypto.randomUUID(),
+        flows: [],
+        apis: [{ name: api.name, path: api.basePath, flow_name: api.defaultFlow ?? '', action: 'delete' }],
+      }).catch(() => {})
+    }
   }
 
   function handleRemoveEndpoint(apiId: string, endpointId: string) {
@@ -697,6 +705,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
   }
 
   async function syncThisApi(api: ApiDef) {
+    console.log('[syncThisApi] endpoints being synced:', api.endpoints.map(e => `${e.method} ${e.subPath}`))
     setSyncStatus('syncing')
     const flowNamesSet = new Set<string>([
       api.defaultFlow,
@@ -2929,6 +2938,16 @@ function ApiDetailPanel({
                 placeholder="search or select a flow…"
               />
             </div>
+            {api.defaultFlow && flowNames.includes(api.defaultFlow) && (
+              <button
+                className="btn muted"
+                style={{ width: 'auto', padding: '3px 10px', marginTop: 0, fontSize: 11, flexShrink: 0 }}
+                onClick={() => onNavigateToDesigner(api.defaultFlow)}
+                title="Open this flow in the designer"
+              >
+                Open →
+              </button>
+            )}
           </div>
           {api.defaultFlow && !flowNames.includes(api.defaultFlow) && (
             <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 6 }}>
@@ -3006,8 +3025,19 @@ function ApiDetailPanel({
                     <td style={{ padding: '7px 8px 7px 0', fontFamily: 'monospace', color: 'var(--text)' }}>
                       {ep.subPath}
                     </td>
-                    <td style={{ padding: '7px 8px 7px 0', color: 'var(--muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {resolvedFn || <span style={{ color: '#ef4444' }}>(none)</span>}
+                    <td style={{ padding: '7px 8px 7px 0', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {resolvedFn
+                        ? (
+                          <span
+                            style={{ color: 'var(--muted)', cursor: flowNames.includes(resolvedFn) ? 'pointer' : 'default', textDecoration: flowNames.includes(resolvedFn) ? 'underline' : 'none' }}
+                            title={flowNames.includes(resolvedFn) ? `Open "${resolvedFn}" in designer` : undefined}
+                            onClick={e => { if (flowNames.includes(resolvedFn)) { e.stopPropagation(); onNavigateToDesigner(resolvedFn) } }}
+                          >
+                            {resolvedFn}
+                          </span>
+                        )
+                        : <span style={{ color: '#ef4444' }}>(none)</span>
+                      }
                     </td>
                     <td style={{ padding: '7px 0 7px 0', color: ep.flowName ? '#fbbf24' : 'var(--muted)' }}>
                       {ep.flowName ? '★ yes' : '—'}

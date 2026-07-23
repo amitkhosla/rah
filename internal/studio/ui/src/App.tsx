@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchSchema } from './api'
+import { fetchSchema, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
 export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'tenants' | 'apps' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'settings'
@@ -567,7 +567,10 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
             impactMap={impactMap}
             onNavigateToApis={() => setTab('apis')}
             onOpenFlow={(name) => navigateToDesigner(name, false)}
-            onDeleteFlow={(name) => setSavedFlows(prev => prev.filter(f => f.name !== name))}
+            onDeleteFlow={(name) => {
+              setSavedFlows(prev => prev.filter(f => f.name !== name))
+              syncFlows({ sync_uuid: crypto.randomUUID(), flows: [{ name, instructions: [], action: 'delete' }], apis: [] }).catch(() => {})
+            }}
           />
         </div>
         <div style={{ display: tab === 'apis' ? 'contents' : 'none' }}>
@@ -601,7 +604,12 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
                 savedFlows={savedFlows}
                 currentFlow={flowName}
                 onNavigate={name => navigateToDesigner(name, false)}
-                onDeleteFlows={names => setSavedFlows(prev => prev.filter(f => !names.includes(f.name)))}
+                onDeleteFlows={names => {
+                  setSavedFlows(prev => prev.filter(f => !names.includes(f.name)))
+                  if (names.length > 0) {
+                    syncFlows({ sync_uuid: crypto.randomUUID(), flows: names.map(n => ({ name: n, instructions: [], action: 'delete' as const })), apis: [] }).catch(() => {})
+                  }
+                }}
               />
             ) : (
               <FlowGraph

@@ -347,12 +347,12 @@ export interface SyncStep {
 
 export interface SyncPayload {
   sync_uuid: string
-  flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' }>
+  flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' | 'delete' }>
   apis: Array<{
     name: string
     path: string
     flow_name: string
-    action: 'upsert'
+    action: 'upsert' | 'delete'
     rate_limit?: string
     alias_paths?: string[]
     rl_count_by?: string
@@ -444,6 +444,7 @@ const BOOL_STEP_FIELDS = new Set(['generate_if_missing', 'trace_capture'])
 function normalizeStep(step: Record<string, unknown>): SyncStep {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(step)) {
+    if (k === 'then_steps' || k === 'else_steps') continue  // handled by flattenBranches
     if (NUMERIC_STEP_FIELDS.has(k) && typeof v === 'string' && v !== '') {
       const n = Number(v)
       out[k] = Number.isFinite(n) ? n : v
@@ -456,15 +457,64 @@ function normalizeStep(step: Record<string, unknown>): SyncStep {
   return out as SyncStep
 }
 
+// Converts FlowStep[] that may have inline then_steps/else_steps into flat SyncStep[] for the
+// main flow plus anonymous sub-flow entries for each branch, mirroring what the Go DSL parser does.
+function flattenBranches(
+  steps: Record<string, unknown>[],
+  counter: { n: number },
+): { mainSteps: SyncStep[]; extraFlows: Array<{ name: string; instructions: SyncStep[] }> } {
+  const mainSteps: SyncStep[] = []
+  const extraFlows: Array<{ name: string; instructions: SyncStep[] }> = []
+
+  for (const step of steps) {
+    const thenSteps = step['then_steps'] as Record<string, unknown>[] | undefined
+    const elseSteps = step['else_steps'] as Record<string, unknown>[] | undefined
+
+    if (step['action'] === 'if' && (thenSteps?.length || elseSteps?.length)) {
+      const flat: Record<string, unknown> = { ...step }
+      delete flat['then_steps']
+      delete flat['else_steps']
+
+      if (thenSteps?.length) {
+        const thenName = `__dsl_then_${counter.n++}`
+        flat['then'] = thenName
+        const { mainSteps: ts, extraFlows: te } = flattenBranches(thenSteps, counter)
+        extraFlows.push(...te, { name: thenName, instructions: ts })
+      }
+      if (elseSteps?.length) {
+        const elseName = `__dsl_else_${counter.n++}`
+        flat['else'] = elseName
+        const { mainSteps: es, extraFlows: ee } = flattenBranches(elseSteps, counter)
+        extraFlows.push(...ee, { name: elseName, instructions: es })
+      }
+
+      mainSteps.push(normalizeStep(flat))
+    } else {
+      mainSteps.push(normalizeStep(step))
+    }
+  }
+
+  return { mainSteps, extraFlows }
+}
+
 export interface SyncResponse {
   status: string
   rate_limit_warnings?: RateLimitWarning[]
 }
 
 export async function syncFlows(payload: SyncPayload): Promise<SyncResponse> {
+  const expandedFlows: SyncPayload['flows'] = []
+  for (const f of payload.flows) {
+    if (f.action === 'delete') { expandedFlows.push(f); continue }
+    const { mainSteps, extraFlows } = flattenBranches(f.instructions as unknown as Record<string, unknown>[], { n: 0 })
+    for (const ef of extraFlows) {
+      expandedFlows.push({ name: ef.name, instructions: ef.instructions, action: 'upsert' })
+    }
+    expandedFlows.push({ ...f, instructions: mainSteps })
+  }
   const normalized: SyncPayload = {
     ...payload,
-    flows: payload.flows.map(f => ({ ...f, instructions: f.instructions.map(normalizeStep) })),
+    flows: expandedFlows,
   }
   const res = await fetch('/api/sync', {
     method: 'POST',
@@ -657,7 +707,7 @@ export function deleteCacheEntry(tenant: string, key: string): Promise<void> {
 // ─── Apps ────────────────────────────────────────────────────────────────────
 
 export function listApps(): Promise<App[]> {
-  return request<App[]>('/api/apps')
+  return request<{ items: App[]; count: number }>('/api/apps').then(r => r.items ?? [])
 }
 
 export function createApp(body: { name: string; description: string; labels?: Record<string, string> }): Promise<App> {
@@ -683,7 +733,7 @@ export function deleteApp(id: number): Promise<void> {
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
 export function listKeys(appId: number): Promise<APIKeyView[]> {
-  return request<APIKeyView[]>(`/api/apps/${appId}/keys`)
+  return request<{ items: APIKeyView[]; count: number }>(`/api/apps/${appId}/keys`).then(r => r.items ?? [])
 }
 
 export function generateKey(appId: number, body: { alias: string; allowed_tenants?: number[] }): Promise<APIKeyCreateResponse> {

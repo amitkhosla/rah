@@ -9,7 +9,7 @@ import PatternConditionBuilder from './PatternConditionBuilder'
 import TemplatePatternBuilder from './TemplatePatternBuilder'
 import ValidateRouteBuilder from './ValidateRouteBuilder'
 import { isPatternCondition } from '../types'
-import { listLLMModels } from '../api'
+import { listLLMModels, syncFlows } from '../api'
 
 interface Props {
   blocks: PaletteBlock[]
@@ -261,7 +261,10 @@ export default function FlowDesigner({
   const [dragOver, setDragOver]         = useState(false)
   const [expanded, setExpanded]         = useState<Set<number>>(new Set())
   const [justSaved, setJustSaved]       = useState(false)
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+  const [syncStatus, setSyncStatus]     = useState<'idle' | 'syncing' | 'ok' | 'err'>('idle')
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
+    () => new Set(['My Flows', ...VISUAL_GROUPS.map(g => g.label)])
+  )
   const [nestedExpanded, setNestedExpanded] = useState<Set<string>>(new Set())
   const [dragOverBranch, setDragOverBranch] = useState<string | null>(null)
   const [dropTargetIdx, setDropTargetIdx]   = useState<number | null>(null)
@@ -662,6 +665,23 @@ export default function FlowDesigner({
     onSaveFlow()
     setJustSaved(true)
     setTimeout(() => setJustSaved(false), 1800)
+  }
+
+  async function handleSync() {
+    if (!flowName.trim() || steps.length === 0) return
+    setSyncStatus('syncing')
+    try {
+      await syncFlows({
+        sync_uuid: crypto.randomUUID(),
+        flows: [{ name: flowName, instructions: steps as any, action: 'upsert' }],
+        apis: [],
+      })
+      setSyncStatus('ok')
+      setTimeout(() => setSyncStatus('idle'), 2000)
+    } catch {
+      setSyncStatus('err')
+      setTimeout(() => setSyncStatus('idle'), 3000)
+    }
   }
 
   function extractSubFlow() {
@@ -3193,6 +3213,15 @@ export default function FlowDesigner({
               onClick={handleSave}
             >
               {justSaved ? '✓ Saved to palette' : 'Save to My Flows'}
+            </button>
+            <button
+              className={`btn${canSave ? '' : ' muted'}`}
+              style={{ flex: 1 }}
+              disabled={!canSave || syncStatus === 'syncing'}
+              title={!flowName.trim() ? 'Enter a flow name first' : steps.length === 0 ? 'Add at least one step' : 'Sync this flow to the gateway'}
+              onClick={handleSync}
+            >
+              {syncStatus === 'syncing' ? 'Syncing…' : syncStatus === 'ok' ? '✓ Synced' : syncStatus === 'err' ? '✗ Sync failed' : '↑ Sync to Gateway'}
             </button>
             <button
               className="btn muted"

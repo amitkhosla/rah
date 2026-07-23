@@ -67,6 +67,9 @@ func tokenize(expr string) ([]token, error) {
 		case ch == '=' && i+1 < len(expr) && expr[i+1] == '=':
 			out = append(out, token{tkEq, "=="})
 			i += 2
+		case ch == '=':
+			out = append(out, token{tkEq, "=="})
+			i++
 		case ch == '<' && i+1 < len(expr) && expr[i+1] == '=':
 			out = append(out, token{tkLe, "<="})
 			i += 2
