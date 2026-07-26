@@ -3,9 +3,11 @@
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // qdrantStore implements VectorStore against the Qdrant REST API.
@@ -134,7 +136,14 @@ func (s *qdrantStore) Upsert(ctx context.Context, collection string, items []Vec
 	if err != nil {
 		return fmt.Errorf("qdrant: upsert: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Error("qdrant: failed to close response body",
+				gatewaylog.F("err", err.Error()),
+			)
+		}
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("qdrant: upsert HTTP %d", resp.StatusCode)
 	}

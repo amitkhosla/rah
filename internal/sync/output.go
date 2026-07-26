@@ -90,12 +90,12 @@ func FormatText(result LintResult, w io.Writer) {
 		_, _ = fmt.Fprintf(w, "Errors: %d  ", result.ErrorCount)
 	}
 	if result.WarningCount > 0 {
-		fmt.Fprintf(w, "Warnings: %d  ", result.WarningCount)
+		_, _ = fmt.Fprintf(w, "Warnings: %d  ", result.WarningCount)
 	}
 	if result.InfoCount > 0 {
-		fmt.Fprintf(w, "Info: %d  ", result.InfoCount)
+		_, _ = fmt.Fprintf(w, "Info: %d  ", result.InfoCount)
 	}
-	fmt.Fprintf(w, "\n")
+	_, _ = fmt.Fprintf(w, "\n")
 }
 
 // formatTextIssue formats a single issue in text format.

@@ -40,6 +40,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"unicode"
+
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 // ── Public result type ────────────────────────────────────────────────────────
@@ -1272,7 +1274,13 @@ func (p *dslParser) parseBlockR(lines []string, start int) (steps []StepConfig, 
 				pos := dslPositionals(args, 2)
 				status := 500
 				if len(pos) > 0 {
-					fmt.Sscanf(pos[0], "%d", &status)
+					if _, err := fmt.Sscanf(pos[0], "%d", &status); err != nil {
+						gatewaylog.Default.Error("dsl: failed to parse fail() status code",
+							gatewaylog.F("err", err.Error()),
+							gatewaylog.F("input", pos[0]),
+						)
+						status = 500
+					}
 				}
 				body, as := "", ""
 				if len(pos) > 1 {

@@ -444,7 +444,9 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		f, err := h.fsys.Open(r.URL.Path)
 		if err == nil {
-			f.Close()
+			if err := f.Close(); err != nil {
+				log.Printf("studio: failed to close file: %v", err)
+			}
 			http.FileServer(h.fsys).ServeHTTP(w, r)
 			return
 		}
@@ -457,7 +459,11 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.StatusServiceUnavailable)
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("studio: failed to close index.html: %v", err)
+		}
+	}()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.Copy(w, f)
 }

@@ -63,7 +63,9 @@ func TestEmbedText_OpenAI_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(openAIEmbedResponse(wantVec))
+		if _, err := w.Write(openAIEmbedResponse(wantVec)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer srv.Close()
 
@@ -119,7 +121,9 @@ func TestEmbedText_Ollama_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(ollamaEmbedResponse(wantVec))
+		if _, err := w.Write(ollamaEmbedResponse(wantVec)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer srv.Close()
 
@@ -163,7 +167,9 @@ func TestEmbedText_Gemini_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(geminiEmbedResponse(wantVec))
+		if _, err := w.Write(geminiEmbedResponse(wantVec)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer srv.Close()
 
@@ -235,7 +241,9 @@ func TestEmbedText_APIKeyFromSlot(t *testing.T) {
 		gotAuthHeader = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(openAIEmbedResponse([]float64{1.0, 2.0}))
+		if _, err := w.Write(openAIEmbedResponse([]float64{1.0, 2.0})); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer srv.Close()
 

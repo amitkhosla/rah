@@ -358,13 +358,15 @@ func (fm *FlowManager) ConcurrencyHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	cfg := fm.liveConfig.Load().(config.ConcurrencyConfig)
-	fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(w,
 		`{"enabled":%v,"limit":%d,"active":%d,"rejected":%d,"adaptive":%v,`+
 			`"target_overhead_ms":%d,"min_limit":%d,"max_limit":%d,"add_step":%d,"cut_factor":%.3f}`,
 		fm.limiterEnabled.Load(),
 		fm.Limiter.Limit(), fm.Limiter.Active(), fm.Limiter.Rejected(),
 		!cfg.Disabled,
 		cfg.TargetOverheadMs, cfg.MinLimit, cfg.MaxLimit, cfg.AddStep, cfg.CutFactor,
-	)
+	); err != nil {
+		log.Printf("[concurrency] handler write error: %v", err)
+	}
 }
 

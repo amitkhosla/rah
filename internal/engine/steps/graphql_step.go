@@ -9,6 +9,8 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/amitkhosla/rah/internal/egress"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -179,7 +181,17 @@ func GraphQLCallFromConfig(cfg GraphQLCallConfig) engine.Instruction {
 			respBodyBuf.Reset()
 
 			_, err = respBodyBuf.ReadFrom(resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				gatewaylog.Default.Error("graphql_call: failed to close upstream response body",
+					gatewaylog.F("err", closeErr.Error()),
+				)
+				if ctx.Trace != nil && ctx.Obs != nil {
+					ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+						Err: "graphql_call: body close: " + closeErr.Error(),
+					})
+				}
+			}
 
 			if err != nil {
 				ctx.ResponseStatus = 502

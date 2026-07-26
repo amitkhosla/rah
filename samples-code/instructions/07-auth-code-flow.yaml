@@ -1,0 +1,120 @@
+# ─── OAuth2 Authorization Code Flow ──────────────────────────────────────────
+#
+# Full OAuth2 Authorization Code Flow implemented entirely in gateway DSL.
+# No application code required — the gateway handles the redirect, code
+# exchange, token caching, and session cookie lifecycle.
+#
+# Flow map:
+#
+#   auth_code_profile_flow  (entry: GET /v1/profile)
+#     ├─ bind Cookie header → session_cookie
+#     ├─ extract session= value → session_id
+#     ├─ shared_cache.get(session_id) → cached_token
+#     └─ if (cached_token == "")
+#          then → auth_profile_redirect   (unauthenticated: 302 → IdP)
+#          else → auth_profile_serve      (authenticated: call upstream)
+#
+#   auth_profile_redirect  (sub-flow: no session)
+#     ├─ set Location: <IdP authorize URL>
+#     └─ return 302
+#
+#   auth_profile_serve  (sub-flow: session exists)
+#     ├─ build "Bearer <cached_token>"
+#     ├─ set Authorization header on outbound request
+#     ├─ http_call upstream → resp
+#     └─ return 200, resp
+#
+#   auth_code_callback_flow  (entry: GET /callback?code=...)
+#     ├─ bind ?code query param
+#     ├─ build form body (grant_type=authorization_code&code=...&redirect_uri=...&client_id=...&client_secret=...)
+#     ├─ http_call POST /oauth/token → token_resp
+#     ├─ extract access_token from JSON response
+#     ├─ bind/generate correlation-id → session_id
+#     ├─ cache_put_global(session_id → access_token, ttl=3600)
+#     ├─ set Set-Cookie: session=<session_id>; HttpOnly; Path=/
+#     ├─ set Location: http://localhost:5050/v1/profile
+#     └─ return 302
+#
+# Prerequisites:
+#   - OAuth2 server at http://localhost:9401
+#       POST /oauth/token  — token endpoint
+#       GET  /oauth/authorize — authorization endpoint
+#     client_id:     bench-client-001
+#     client_secret: bench-secret-001
+#   - Protected upstream at http://localhost:9301 (accepts Bearer token)
+#   - Gateway running at http://localhost:5050
+#   - Gateway cache enabled
+#
+# Test sequence:
+#   1. curl http://localhost:5050/v1/profile
+#      → 302 Location: http://localhost:9401/oauth/authorize?...
+#   2. Browser / auth server completes login → 302 to /callback?code=<code>
+#   3. curl http://localhost:5050/callback?code=<code>
+#      → 302 Location: /v1/profile  +  Set-Cookie: session=<uuid>
+#   4. curl -H "Cookie: session=<uuid>" http://localhost:5050/v1/profile
+#      → 200 <upstream body>
+#   5. Repeat step 4 with same cookie → 200 (token served from cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+flows:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUB-FLOW: unauthenticated path — redirect to IdP
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: auth_profile_redirect
+    action: upsert
+    code: |
+      auth_url = "http://localhost:9401/oauth/authorize?response_type=code&client_id=bench-client-001&redirect_uri=http://localhost:5050/callback&scope=openid"
+      output.header("Location") = auth_url
+      return(302)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUB-FLOW: authenticated path — forward to upstream with Bearer token
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: auth_profile_serve
+    action: upsert
+    code: |
+      bearer_val = "Bearer {cached_token}"
+      set_upstream_header("Authorization", bearer_val)
+      resp = http.get(url: "http://localhost:9301/", timeout: 3000)
+      return(200, resp)
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINT 1: protected resource
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: auth_code_profile_flow
+    action: upsert
+    code: |
+      session_cookie = header("Cookie")
+      session_id = extract(session_cookie, "session=(session_id)")
+      cached_token = shared_cache.get(session_id)
+      if (cached_token == "") {
+        call auth_profile_redirect
+      } else {
+        call auth_profile_serve
+      }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ENTRY POINT 2: OAuth2 redirect_uri — code → token → session cookie
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: auth_code_callback_flow
+    action: upsert
+    code: |
+      code = query("code")
+      form_body = "grant_type=authorization_code&code={code}&redirect_uri=http://localhost:5050/callback&client_id=bench-client-001&client_secret=bench-secret-001"
+      token_resp = http.post(url: "http://localhost:9401/oauth/token",
+        body: form_body,
+        content_type: "application/x-www-form-urlencoded",
+        timeout: 5000)
+      access_token = extract(token_resp, "\"access_token\":\"(access_token)\"")
+      session_id = correlation_id("X-Correlation-ID", generate_if_missing: true)
+      shared_cache.set(session_id, access_token, ttl: 3600)
+      cookie_str = "session={session_id}; HttpOnly; Path=/"
+      output.header("Set-Cookie") = cookie_str
+      profile_url = "http://localhost:5050/v1/profile"
+      output.header("Location") = profile_url
+      return(302)

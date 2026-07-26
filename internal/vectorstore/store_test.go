@@ -46,7 +46,10 @@ func setupHTTPVectorServer(t *testing.T, records *[]recordedRequest) *httptest.S
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
 	mux.HandleFunc("/upsert", func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +60,10 @@ func setupHTTPVectorServer(t *testing.T, records *[]recordedRequest) *httptest.S
 		}
 		*records = append(*records, recordedRequest{method: r.Method, path: r.URL.Path, body: body})
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
 	mux.HandleFunc("/delete", func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +74,10 @@ func setupHTTPVectorServer(t *testing.T, records *[]recordedRequest) *httptest.S
 		}
 		*records = append(*records, recordedRequest{method: r.Method, path: r.URL.Path, body: body})
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"deleted": 2})
+		if err := json.NewEncoder(w).Encode(map[string]any{"deleted": 2}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
 	return httptest.NewServer(mux)
@@ -248,7 +257,10 @@ func TestHTTPVectorStore_Delete(t *testing.T) {
 // TestHTTPVectorStore_Search_EmptyResults verifies an empty result list is returned (not nil).
 func TestHTTPVectorStore_Search_EmptyResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"results": []any{}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"results": []any{}}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer srv.Close()
 
