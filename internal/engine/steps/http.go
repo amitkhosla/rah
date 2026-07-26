@@ -79,7 +79,7 @@ type HttpActionConfig struct {
 type URLPolicy uint8
 
 const (
-	// URLPolicyPassthrough skips all URL checks â€” transport errors surface as-is.
+	// URLPolicyPassthrough skips all URL checks â€" transport errors surface as-is.
 	URLPolicyPassthrough URLPolicy = 0
 	// URLPolicyCorrect trims whitespace and lowercases the scheme before the call.
 	// If the URL is still invalid after correction, the call fails with 502.
@@ -206,8 +206,8 @@ func flowBool(flowInput map[string]string, key string, fallback bool) bool {
 	return fallback
 }
 
-// statusBitset covers HTTP status codes 400â€“655 (256 bits = 4Ã—uint64, 32 bytes).
-// Replaces map[int]struct{} in httpClientConfig â€” value type, no heap, no GC, O(1) lookup.
+// statusBitset covers HTTP status codes 400â€"655 (256 bits = 4Ã—uint64, 32 bytes).
+// Replaces map[int]struct{} in httpClientConfig â€" value type, no heap, no GC, O(1) lookup.
 type statusBitset [4]uint64
 
 func (b *statusBitset) set(code int) {
@@ -241,7 +241,7 @@ type httpClientConfig struct {
 	RequestTimeout        time.Duration
 	// ResponseBodyTimeout caps the body-read phase only (after headers arrive).
 	// 0 = no separate body deadline (total RequestTimeout covers everything).
-	// On expiry: resp.Body.Close() is called â€” HTTP/1 drops the TCP connection
+	// On expiry: resp.Body.Close() is called â€" HTTP/1 drops the TCP connection
 	// (partial read, not returned to pool); HTTP/2 sends RST_STREAM.
 	ResponseBodyTimeout   time.Duration
 	RetryMaxAttempts      int
@@ -274,7 +274,7 @@ type transportShard struct {
 }
 
 // release signals a connection was returned to this shard's pool.
-// Only call when the shard was obtained via acquire() â€” never on the MTLS path.
+// Only call when the shard was obtained via acquire() â€" never on the MTLS path.
 func (s *transportShard) release() {
 	if s.available.Load() < s.max {
 		s.available.Add(1)
@@ -309,7 +309,7 @@ func (p *upstreamTransportPool) acquire() (*http.Client, *transportShard) {
 			return s.client, s
 		}
 	}
-	// All candidates appear exhausted â€” use base shard; counter may go briefly
+	// All candidates appear exhausted â€" use base shard; counter may go briefly
 	// negative and self-corrects as release() calls come in.
 	s := &p.shards[base&p.mask]
 	s.available.Add(-1)
@@ -448,7 +448,7 @@ func buildTransportPool(profile *egress.EgressProfile, cfg httpClientConfig) *up
 	n = max(n, 2)
 	shardCfg := cfg
 	// Divide global idle cap so total memory across all shards stays bounded.
-	// Per-host limit is NOT divided â€” each shard keeps the full value so connections
+	// Per-host limit is NOT divided â€" each shard keeps the full value so connections
 	// are reused under burst load (dividing it was the root cause of the large-payload
 	// regression: burst completions evicted connections because the per-shard pool was tiny).
 	if shardCfg.MaxIdleConns > 0 {
@@ -567,7 +567,7 @@ func flowDurationMs(flowInput map[string]string, key string, fallback time.Durat
 func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string) httpClientConfig {
 	_ = upstreamHost
 	base := getDefaultHTTPConfig()
-	cfg := base // statusBitset copies by value â€” no allocation
+	cfg := base // statusBitset copies by value â€" no allocation
 
 	cfg.MaxIdleConns = flowInt(flowInput, "http.max_idle_conns", cfg.MaxIdleConns)
 	cfg.MaxIdleConnsPerHost = flowInt(flowInput, "http.max_idle_conns_per_host", cfg.MaxIdleConnsPerHost)
@@ -592,7 +592,7 @@ func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string
 }
 
 func configFingerprint(cfg httpClientConfig) string {
-	// statusBitset encoded as 4 hex words â€” no sorting needed, deterministic.
+	// statusBitset encoded as 4 hex words â€" no sorting needed, deterministic.
 	statusKey := strconv.FormatUint(cfg.RetryOnStatuses[0], 16) + "," +
 		strconv.FormatUint(cfg.RetryOnStatuses[1], 16) + "," +
 		strconv.FormatUint(cfg.RetryOnStatuses[2], 16) + "," +
@@ -710,7 +710,7 @@ func GetClientFromPool() *http.Client {
 }
 
 func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition string, maxRetries int, flowInput map[string]string) engine.Instruction {
-	// Pre-compute at bake time â€” flowInput is fixed, so cfg and fingerprint never change.
+	// Pre-compute at bake time â€" flowInput is fixed, so cfg and fingerprint never change.
 	bakedCfg := resolveHTTPConfigForTarget("", flowInput)
 	bakedFingerprint := configFingerprint(bakedCfg)
 	bakedMaxCacheEntries := flowInt(flowInput, "http.max_client_cache_entries", 2048)
@@ -723,7 +723,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 		staticPool = p.Pool
 	}
 
-	// Bake-time timeout flags â€” see HttpActionFromConfig for full design notes.
+	// Bake-time timeout flags â€" see HttpActionFromConfig for full design notes.
 	haActionTotalMs := timeout
 	if haActionTotalMs == 0 && bakedCfg.RequestTimeout > 0 {
 		haActionTotalMs = uint32(bakedCfg.RequestTimeout / time.Millisecond)
@@ -785,13 +785,13 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
-				// Detect client disconnect before each attempt â€” avoids hitting
+				// Detect client disconnect before each attempt â€" avoids hitting
 				// the upstream on behalf of an already-gone caller.
 				if pc, stop := StopIfCancelled(ctx); stop {
 					return pc
 				}
 
-				// Total timeout (bake-time flag: haActionHasTotal) â€” single bool check.
+				// Total timeout (bake-time flag: haActionHasTotal) â€" single bool check.
 				var deadlineTimer wheelHandle
 				if haActionHasTotal {
 					capturedGen := ctx.SetUpstreamTimeout(haActionTotalDur)
@@ -875,7 +875,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 
 				resp, err := httpClient.Do(req)
-				// Stop timer â€” if it already fired, Cancel was already called (fine;
+				// Stop timer â€" if it already fired, Cancel was already called (fine;
 				// the request was aborted). If it hasn't fired yet, stop it from firing
 				// after ctx is returned to the pool. Unlike context.WithTimeout.cancel(),
 				// stopping our timer never marks the connection as broken.
@@ -893,7 +893,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
-					// Client disconnected during upstream call â€” mark and stop cleanly.
+					// Client disconnected during upstream call â€" mark and stop cleanly.
 					if errors.Is(err, context.Canceled) {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
 						return engine.StopCancelled
@@ -993,7 +993,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					if bundle.Cfg.HonorRetryAfter {
 						if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
 							if ra > bundle.Cfg.RetryAfterMaxWait {
-								// Upstream wants us to wait longer than we allow â€” mark cooldown and stop.
+								// Upstream wants us to wait longer than we allow â€" mark cooldown and stop.
 								if bundle.Cfg.UpstreamCooldown {
 									markCooldown(upstreamHost, time.Now().Add(ra))
 								}
@@ -1033,7 +1033,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 	flowInput := cfg.FlowInput
 
-	// â”€â”€ HTTP config resolved once at bake time â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ HTTP config resolved once at bake time â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// flowInput is fixed; resolveHTTPConfigForTarget ignores upstreamHost entirely.
 	// configFingerprint, retry budget, and (for static URLs) the full *http.Client
 	// are all computed here so the per-request hot path carries zero config work.
@@ -1049,7 +1049,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		bakedAttempts = 1
 	}
 
-	// For static URLs the upstream host is known â€” build and cache the *upstreamTransportPool
+	// For static URLs the upstream host is known â€" build and cache the *upstreamTransportPool
 	// once here. Per-request cost becomes a single pool.get() call from the closure.
 	// Also validate static URLs at bake time so mis-configured flows surface immediately.
 	if cfg.StaticURL != "" && cfg.URLSlot < 0 && cfg.URLPolicy != URLPolicyPassthrough {
@@ -1082,7 +1082,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		staticPool = getClientForBakedConfig(effectiveProfile, extractUpstreamHost(effectiveURL), bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool
 	}
 
-	// â”€â”€ Bake-time timeout flags â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Bake-time timeout flags â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// Pre-computed once here so the per-request hot path is a single bool check,
 	// matching the hadUpstreamTimeout gate pattern in context.go.
 	//
@@ -1104,7 +1104,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 	bakedBodyDur := bakedCfg.ResponseBodyTimeout
 	hasBodyTimeout := bakedBodyDur > 0
 
-	// â”€â”€ Parse mTLS client certificate at bake time â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Parse mTLS client certificate at bake time â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// tls.X509KeyPair is called once here, not per request. If parsing fails we
 	// return an instruction that always fails with a clear 500 error so the
 	// operator sees it immediately rather than at runtime.
@@ -1159,7 +1159,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ResponseHeaderTimeout: bakedCfg.ResponseHeaderTimeout,
 					ExpectContinueTimeout: bakedCfg.ExpectContinueTimeout,
 				},
-				// Timeout: 0 â€” per-request timeout managed via ctx.SetUpstreamTimeout.
+				// Timeout: 0 â€" per-request timeout managed via ctx.SetUpstreamTimeout.
 			}
 		})
 		return mtlsClient
@@ -1168,12 +1168,12 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "HTTP_CALL",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// â”€â”€ Resolve URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Resolve URL â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			rawUpstream := cfg.StaticURL
 			if cfg.URLSlot >= 0 && cfg.URLSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.URLSlot]) > 0 {
 				rawUpstream = string(ctx.ByteSlots[cfg.URLSlot])
 			}
-			// â”€â”€ URL policy pre-flight (before resolution to catch null-like values) â”€
+			// â"€â"€ URL policy pre-flight (before resolution to catch null-like values) â"€
 			if cfg.URLPolicy != URLPolicyPassthrough {
 				corrected, errMsg := validateURL(rawUpstream, cfg.URLPolicy)
 				if errMsg != "" {
@@ -1197,7 +1197,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 
-			// â”€â”€ Egress profile + h2c scheme rewriting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Egress profile + h2c scheme rewriting â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			profile := cfg.EgressProfile
 			if strings.HasPrefix(url, "h2c://") {
 				// Rewrite h2c:// â†’ http:// so net/http can parse it.
@@ -1210,11 +1210,11 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 
 			upstreamHost := extractUpstreamHost(url)
 
-			// â”€â”€ Select HTTP client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Select HTTP client â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			// mTLS: dedicated client (lazy sync.Once). Static URL: pool baked at
 			// instruction creation. Dynamic URL: sync.Map.Load with baked fingerprint.
 			var httpClient *http.Client
-			var activeShard *transportShard // nil on MTLS path â€” no pool tracking there
+			var activeShard *transportShard // nil on MTLS path â€" no pool tracking there
 			if mtlsCert != nil {
 				httpClient = getMTLSClient()
 			} else if hasStaticURL {
@@ -1223,10 +1223,10 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				httpClient, activeShard = getClientForBakedConfig(profile, upstreamHost, bakedCfg, bakedFingerprint, bakedMaxCacheEntries).Pool.acquire()
 			}
 
-			// â”€â”€ Retry budget (baked at instruction creation time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Retry budget (baked at instruction creation time) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			attempts := bakedAttempts
 
-			// â”€â”€ Method â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Method â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			method := cfg.StaticMethod
 			if method == "" {
 				method = "GET"
@@ -1236,7 +1236,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			}
 
 			for attempt := 1; attempt <= attempts; attempt++ {
-				// â”€â”€ Cooldown guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Cooldown guard â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if bakedCfg.UpstreamCooldown {
 					if cooling, _ := inCooldown(upstreamHost); cooling {
 						ctx.ResponseStatus = 503
@@ -1249,7 +1249,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Disconnect check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Disconnect check â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if pc, stop := StopIfCancelled(ctx); stop {
 					return pc
 				}
@@ -1257,8 +1257,8 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				upstreamStart := time.Now()
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 
-				// â”€â”€ Total timeout (bake-time flag: hasTotalTimeout) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-				// Single bool check â€” no per-request conditional evaluation.
+				// â"€â"€ Total timeout (bake-time flag: hasTotalTimeout) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+				// Single bool check â€" no per-request conditional evaluation.
 				// Covers the full request: dial + TLS + headers + body.
 				// Replaces http.Client.Timeout (now 0): avoids the cancelCtx alloc
 				// + prepareTransportCancel goroutine that http.Client creates per call.
@@ -1274,7 +1274,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Resolve body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Resolve body â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				// Priority: StagedRequestBody > BodySlot > nil (no body)
 				var bodyBytes []byte
 				if len(ctx.StagedRequestBody) > 0 {
@@ -1283,7 +1283,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					bodyBytes = ctx.ByteSlots[cfg.BodySlot]
 				}
 
-				// â”€â”€ Resolve Content-Type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Resolve Content-Type â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				contentType := cfg.StaticContentType
 				if len(ctx.StagedContentType) > 0 {
 					contentType = string(ctx.StagedContentType)
@@ -1291,7 +1291,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					contentType = string(ctx.ByteSlots[cfg.ContentTypeSlot])
 				}
 
-				// â”€â”€ Build http.Request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Build http.Request â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				var req *http.Request
 				var pooledReader *bytes.Reader // tracked so we can return it to pool
 				if len(bodyBytes) > 0 {
@@ -1326,7 +1326,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Forward incoming headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Forward incoming headers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if cfg.ForwardIncomingHeaders && ctx.Request != nil {
 					for key, vals := range ctx.Request.Header {
 						if _, skip := hopByHopHeaders[key]; skip {
@@ -1341,7 +1341,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Apply MutationLog (BUG FIX: was never applied to http_call) â”€â”€
+				// â"€â"€ Apply MutationLog (BUG FIX: was never applied to http_call) â"€â"€
 				for i := 0; i < ctx.MutationCount; i++ {
 					m := ctx.MutationLog[i]
 					if m.Op == 1 {
@@ -1351,19 +1351,19 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Block headers override (explicit block list) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Block headers override (explicit block list) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if cfg.BlockHeadersMap != nil {
 					for key := range cfg.BlockHeadersMap {
 						req.Header.Del(key)
 					}
 				}
 
-				// â”€â”€ Content-Type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Content-Type â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if contentType != "" && len(bodyBytes) > 0 {
 					req.Header.Set("Content-Type", contentType)
 				}
 
-				// â”€â”€ Tracing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Tracing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 				if ctx.Trace != nil {
 					req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
@@ -1402,7 +1402,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				reqBytesSent := req.ContentLength
 				reqBytesSent = max(reqBytesSent, 0)
 
-				// â”€â”€ Capture outgoing request headers for tracing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Capture outgoing request headers for tracing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if ctx.Trace != nil && len(req.Header) > 0 {
 					hdrs := make(map[string]string, len(req.Header))
 					for k, vals := range req.Header {
@@ -1421,7 +1421,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				resp, doErr := httpClient.Do(req)
-				// Stop timer immediately â€” unlike context.WithTimeout.cancel(), stopping
+				// Stop timer immediately â€" unlike context.WithTimeout.cancel(), stopping
 				// our timer never marks the connection as broken, preserving connection reuse.
 				deadlineTimer.cancel()
 				deadlineTimer = wheelHandle{}
@@ -1476,7 +1476,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					return engine.StopPlan
 				}
 
-				// â”€â”€ Capture response headers for tracing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Capture response headers for tracing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if ctx.Trace != nil && len(resp.Header) > 0 {
 					hdrs := make(map[string]string, len(resp.Header))
 					for k, vals := range resp.Header {
@@ -1487,7 +1487,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					event.ResponseHeaders = hdrs
 				}
 
-				// â”€â”€ Capture response header slots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Capture response header slots â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				for _, hsb := range cfg.ResponseHeaderSlots {
 					val := resp.Header.Get(hsb.HeaderName)
 					if val != "" && hsb.Slot >= 0 && hsb.Slot < len(ctx.ByteSlots) {
@@ -1497,7 +1497,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Forward upstream response headers to client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Forward upstream response headers to client â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if cfg.ForwardResponseHeaders {
 					for name, vals := range resp.Header {
 						if _, skip := hopByHopHeaders[name]; skip {
@@ -1518,13 +1518,13 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Body timeout (bake-time flag: hasBodyTimeout) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Body timeout (bake-time flag: hasBodyTimeout) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				// Fires if the upstream stalls after sending headers.
 				// Closes resp.Body to unblock the read:
 				//   HTTP/1  â†’ partial read â†’ connection NOT returned to pool â†’ TCP closed.
 				//   HTTP/2  â†’ RST_STREAM sent; TCP connection stays alive for other streams.
 				//   gRPC    â†’ RST_STREAM; server-side handler receives cancellation.
-				// The total timer (above) was stopped after Do() returned â€” this is the
+				// The total timer (above) was stopped after Do() returned â€" this is the
 				// only timeout protecting the body-read phase when hasBodyTimeout is true.
 				var bodyTimer wheelHandle
 				if hasBodyTimeout {
@@ -1535,7 +1535,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// â”€â”€ Read response body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Read response body â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				// Compiler sets StreamResponseBody=true when the body needs no slot
 				// capture (no response_body_var, or only used in respond/return).
 				// In that case: pipe directly to client, track bytes only.
@@ -1555,18 +1555,26 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					n, _ := io.CopyBuffer(ctx, resp.Body, *copyBuf)
 					streamCopyPool.Put(copyBuf)
 					respBytes += n
-					resp.Body.Close()
+					if closeErr := resp.Body.Close(); closeErr != nil {
+						gatewaylog.Default.Error("http_call: failed to close upstream response body",
+							gatewaylog.F("err", closeErr.Error()),
+						)
+					}
 					if activeShard != nil {
 						activeShard.release()
 					}
 				} else if cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots) {
 					cl := resp.ContentLength
 					if cl > 0 {
-						// Fast path: known Content-Length â€” allocate exactly.
+						// Fast path: known Content-Length â€" allocate exactly.
 						bodyBuf := ctx.Alloc(int(cl))
 						n, readErr := io.ReadFull(resp.Body, bodyBuf)
 						respBytes = int64(n)
-						resp.Body.Close()
+						if closeErr := resp.Body.Close(); closeErr != nil {
+							gatewaylog.Default.Error("http_call: failed to close upstream response body",
+								gatewaylog.F("err", closeErr.Error()),
+							)
+						}
 						if activeShard != nil {
 							activeShard.release()
 						}
@@ -1587,7 +1595,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						}
 						ctx.ByteSlots[cfg.ResponseBodySlot] = bodyBuf[:n]
 					} else {
-						// Unknown Content-Length â€” use pool buffer.
+						// Unknown Content-Length â€" use pool buffer.
 						buf := responseBodyPool.Get().(*bytes.Buffer)
 						buf.Reset()
 						var bodyPreview []byte
@@ -1598,7 +1606,11 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						} else {
 							_, _ = io.Copy(buf, resp.Body)
 						}
-						resp.Body.Close()
+						if closeErr := resp.Body.Close(); closeErr != nil {
+							gatewaylog.Default.Error("http_call: failed to close upstream response body",
+								gatewaylog.F("err", closeErr.Error()),
+							)
+						}
 						if activeShard != nil {
 							activeShard.release()
 						}
@@ -1628,7 +1640,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// Stop body timer â€” if it already fired, resp.Body is already closed
+				// Stop body timer â€" if it already fired, resp.Body is already closed
 				// (idempotent); the body read returned an error and we're on the error path.
 				bodyTimer.cancel()
 				bodyTimer = wheelHandle{}
@@ -1641,7 +1653,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ctx.Obs.RecordUpstream(upstreamHost, totalUpstream, reqBytesSent, respBytes)
 				}
 
-				// â”€â”€ Set response status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Set response status â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				// Streaming path and the slot-less fallback path both set status before
 				// the body copy (headers must go first). Only the slot-capture path waits
 				// until after the full body is read.
@@ -1650,7 +1662,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 				event.Status = resp.StatusCode
 
-				// â”€â”€ Capture response status into slot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Capture response status into slot â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if cfg.ResponseStatusSlot >= 0 && cfg.ResponseStatusSlot < len(ctx.IntSlots) {
 					ctx.IntSlots[cfg.ResponseStatusSlot] = int64(resp.StatusCode)
 				}
@@ -1662,7 +1674,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ctx.Obs.LogUpstream(ctx.ApiId, ctx.TenantID, event)
 				}
 
-				// â”€â”€ Structured upstream log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Structured upstream log â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if gatewaylog.Default.ShouldLog(gatewaylog.INFO) {
 					info := gatewaylog.UpstreamCallInfo{
 						Method:       method,
@@ -1680,7 +1692,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					gatewaylog.Default.Info("[upstream] call completed", fields...)
 				}
 
-				// â”€â”€ Retry condition â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+				// â"€â"€ Retry condition â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if attempt < attempts {
 					// Config-level retry-on-status
 					doStatusRetry := isRetryableStatus(resp.StatusCode, bakedCfg)

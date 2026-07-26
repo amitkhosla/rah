@@ -570,11 +570,13 @@ func (l *AccessLogger) ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		fields, ins := l.GetConfig()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"extra_fields": fields,
 			"insights":     ins,
 			"dropped":      l.DroppedCount(),
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 
 	case http.MethodPost:
 		var payload struct {

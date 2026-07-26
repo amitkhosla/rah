@@ -647,7 +647,16 @@ func resolveJWKSURI(ctx *rctx.Context, cfg TokenValidationConfig) (string, error
 
 func rejectUnauthorized(ctx *rctx.Context) int16 {
 	ctx.ResponseStatus = http.StatusUnauthorized
-	ctx.Write([]byte("unauthorized"))
+	if _, err := ctx.Write([]byte("unauthorized")); err != nil {
+		gatewaylog.Default.Error("token_validation: failed to write failure response",
+			gatewaylog.F("err", err.Error()),
+		)
+		if ctx.Trace != nil && ctx.Obs != nil {
+			ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+				Err: "token_validation: write response: " + err.Error(),
+			})
+		}
+	}
 	ctx.Failed = true
 	ctx.ErrorCode = 401
 	ctx.ErrorMsg = ctx.Alloc(len("unauthorized"))

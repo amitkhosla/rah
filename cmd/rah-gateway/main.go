@@ -1734,7 +1734,9 @@ func main() {
 		runtime.SetBlockProfileRate(blockRate)
 		runtime.SetMutexProfileFraction(mutexRate)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"block_rate":%d,"mutex_rate":%d}`, blockRate, mutexRate)
+		if _, err := fmt.Fprintf(w, `{"block_rate":%d,"mutex_rate":%d}`, blockRate, mutexRate); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
