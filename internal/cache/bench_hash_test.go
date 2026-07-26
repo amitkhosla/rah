@@ -3,8 +3,8 @@
 package cache
 
 import (
+	"crypto/rand"
 	"encoding/binary"
-	"math/rand"
 	"testing"
 )
 
@@ -17,7 +17,9 @@ import (
 
 func BenchmarkHashH1OnlyAndBig16_12B(b *testing.B) {
 	key := make([]byte, 12)
-	rand.Read(key)
+	if _, err := rand.Read(key); err != nil {
+		b.Fatal(err)
+	}
 	binary.LittleEndian.PutUint16(key[0:2], 42)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -31,7 +33,9 @@ func BenchmarkHashH1OnlyAndBig16_12B(b *testing.B) {
 
 func BenchmarkHash128_12B(b *testing.B) {
 	key := make([]byte, 12)
-	rand.Read(key)
+	if _, err := rand.Read(key); err != nil {
+		b.Fatal(err)
+	}
 	binary.LittleEndian.PutUint16(key[0:2], 42)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -49,7 +53,9 @@ func BenchmarkHash128_12B(b *testing.B) {
 
 func BenchmarkHashH1OnlyAndBig16_32B(b *testing.B) {
 	key := make([]byte, 32)
-	rand.Read(key)
+	if _, err := rand.Read(key); err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -62,7 +68,9 @@ func BenchmarkHashH1OnlyAndBig16_32B(b *testing.B) {
 
 func BenchmarkHash128_32B(b *testing.B) {
 	key := make([]byte, 32)
-	rand.Read(key)
+	if _, err := rand.Read(key); err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

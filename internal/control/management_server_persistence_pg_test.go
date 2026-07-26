@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,7 +45,9 @@ func init() {
 					_ = os.Setenv(k, v)
 				}
 			}
-			f.Close()
+			if err := f.Close(); err != nil {
+				log.Printf("failed to close .env file: %v", err)
+			}
 			break
 		}
 		parent := filepath.Dir(dir)

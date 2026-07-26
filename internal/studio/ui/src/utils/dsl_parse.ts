@@ -237,11 +237,11 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       const keySlot = p['key'] ?? ''
       const groups = p['groups'] ?? ''
       if (scope === 'ip') {
-        const input = JSON.stringify({ scope: 'ip', ip_slot: ipSlot })
+        const input = { scope: 'ip', ip_slot: ipSlot }
         return [mk({ action: 'check_rate_limit', input })]
       }
       if (scope === 'slot') {
-        const input = JSON.stringify({ scope: 'slot', key_slot: keySlot })
+        const input = { scope: 'slot', key_slot: keySlot }
         return [mk({ action: 'check_rate_limit', input })]
       }
       if (groups) return [mk({ action: 'check_rate_limit', input: groups })]
@@ -301,7 +301,7 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       if (p['model'])      cfg['model']      = p['model']
       if (p['max_tokens']) cfg['max_tokens'] = p['max_tokens']
       if (p['temperature']) cfg['temperature'] = p['temperature']
-      const input = Object.keys(cfg).length ? JSON.stringify(cfg) : ''
+      const input = Object.keys(cfg).length ? cfg : null
       const historyField = p['history'] ? { history_slot: p['history'] } : {}
       return [mk({ action: 'llm_call', key_identifier: pos[0] ?? '', ...(input ? { input } : {}), ...historyField, ...withAs })]
     }
@@ -314,8 +314,8 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       const cidrs  = pos.join(',') || p['cidrs'] || ''
       const status = p['on_violation'] ?? '403'
       const src    = p['source'] ?? 'header.X-Forwarded-For'
-      const cfg    = JSON.stringify({ mode, cidrs, source: src,
-                       on_violation_status: status, on_violation_body: 'ip not allowed' })
+      const cfg    = { mode, cidrs, source: src,
+                       on_violation_status: status, on_violation_body: 'ip not allowed' }
       const ipField = p['ip'] ? { key_identifier: p['ip'] } : {}
       return [mk({ action: 'ip_restriction', input: cfg, ...ipField })]
     }
@@ -332,7 +332,7 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
     case 'byte_length': return [mk({ action: 'byte_length', source: positional(1)[0] ?? '', ...withAs })]
     case 'substring': {
       const src = positional(1)[0] ?? ''
-      return [mk({ action: 'substring', source: src, input: JSON.stringify({ start: p['start'] ?? '0', length: p['length'] ?? '' }), ...withAs })]
+      return [mk({ action: 'substring', source: src, input: { start: p['start'] ?? '0', length: p['length'] ?? '' }, ...withAs })]
     }
     case 'concat': {
       const pos = positional(2)
@@ -343,7 +343,7 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       return [mk({
         action: 'validate_pattern',
         source: unquote(pos[0] ?? ''),
-        input: JSON.stringify({ pattern: unquote(pos[1] ?? '') }),
+        input: { pattern: unquote(pos[1] ?? '') },
         ...withAs,
       })]
     }
@@ -353,7 +353,7 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       return [mk({
         action: 'extract_pattern',
         source: unquote(pos[0] ?? ''),
-        input: JSON.stringify({ pattern: unquote(pos[1] ?? '') }),
+        input: { pattern: unquote(pos[1] ?? '') },
       })]
     }
     case 'to_int': return [mk({ action: 'to_int', source: positional(1)[0] ?? '', ...withAs })]
@@ -432,8 +432,17 @@ function parseBlock(lines: string[], start: number): BR {
     if (line === 'return') { steps.push(mk({ action: 'return', status: '200' })); i++; continue }
     const retM = line.match(/^return\((\d+)(?:,\s*(.+?))?\)$/)
     if (retM) {
-      const body = retM[2] ? unquote(retM[2]) : ''
-      steps.push(mk({ action: 'return', status: retM[1], ...(body ? { body } : {}) })); i++; continue
+      const raw2 = retM[2]
+      if (!raw2) {
+        steps.push(mk({ action: 'return', status: retM[1] }))
+      } else if (raw2.startsWith('"') || raw2.startsWith("'")) {
+        const body = unquote(raw2)
+        steps.push(mk({ action: 'return', status: retM[1], ...(body ? { body } : {}) }))
+      } else {
+        // Unquoted identifier → dynamic body from slot
+        steps.push(mk({ action: 'return', status: retM[1], as: raw2 }))
+      }
+      i++; continue
     }
     const failM = line.match(/^fail\((\d+)(?:,\s*(.+?))?\)$/)
     if (failM) {

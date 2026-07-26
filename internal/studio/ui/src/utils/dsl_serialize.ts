@@ -17,6 +17,14 @@ function params(step: FlowStep, skip: Set<string>): string {
 
 const str = (v: unknown) => String(v ?? '')
 
+/** Parse the step `input` field regardless of whether the gateway returned it
+ *  as a plain object or as a JSON-encoded string (Studio internal format). */
+function parseInput(input: unknown): Record<string, string> {
+  if (!input) return {}
+  if (typeof input === 'object') return input as Record<string, string>
+  try { return JSON.parse(String(input)) } catch { return {} }
+}
+
 /** Serialize a PatternCondition object back to DSL object format.
  *  Returns object with type, source, pattern, and optional fields.
  *  Only includes optional fields if they are set (keeps DSL clean).
@@ -252,9 +260,8 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
 
       // ── rate limiting ─────────────────────────────────────────────────────
       case 'check_rate_limit': {
+        const cfg = parseInput(step['input'])
         const inputStr = str(step['input'])
-        let cfg: Record<string, string> = {}
-        try { cfg = JSON.parse(inputStr) } catch { /**/ }
         if (cfg['scope'] === 'ip') {
           const ipPart = cfg['ip_slot'] ? `, ip: ${cfg['ip_slot']}` : ''
           lines.push(`${I}rate_limit(scope: ip${ipPart})`); break
@@ -315,8 +322,7 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       // ── LLM ───────────────────────────────────────────────────────────────
       case 'llm_call': {
         const ki = str(step['key_identifier'])
-        let cfg: Record<string, string> = {}
-        try { cfg = JSON.parse(str(step['input'])) } catch { /**/ }
+        const cfg = parseInput(step['input'])
         const parts: string[] = []
         if (cfg['model'])       parts.push(`model: ${q(cfg['model'])}`)
         if (cfg['max_tokens'])  parts.push(`max_tokens: ${cfg['max_tokens']}`)
@@ -329,8 +335,7 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
 
       // ── IP restriction ────────────────────────────────────────────────────
       case 'ip_restriction': {
-        let cfg: Record<string, string> = {}
-        try { cfg = JSON.parse(str(step['input'])) } catch { /**/ }
+        const cfg = parseInput(step['input'])
         const mode  = cfg['mode'] ?? 'allow'
         const cidrs = cfg['cidrs'] ?? ''
         const fn    = mode === 'allow' ? 'ip_allow' : 'ip_deny'
@@ -348,7 +353,7 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       // ── template pattern matching ─────────────────────────────────────────
       case 'validate_pattern': {
         const src = str(step['source'])
-        const pat = str(JSON.parse(str(step['input'] || '{}')).pattern ?? '')
+        const pat = str(parseInput(step['input']).pattern ?? '')
         const as_ = str(step['as'])
         const lhs = as_ ? `${as_} = ` : ''
         lines.push(`${I}${lhs}validatePattern(${src}, '${pat}')`)
@@ -356,7 +361,7 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       }
       case 'extract_pattern': {
         const src = str(step['source'])
-        const pat = str(JSON.parse(str(step['input'] || '{}')).pattern ?? '')
+        const pat = str(parseInput(step['input']).pattern ?? '')
         lines.push(`${I}extract(${src}, '${pat}')`)
         break
       }

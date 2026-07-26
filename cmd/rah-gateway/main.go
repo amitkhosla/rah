@@ -40,9 +40,6 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-
 	"go.opentelemetry.io/otel"
 	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otlptracegrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -1185,10 +1182,6 @@ func main() {
 		if cfgMgr.Gateway().Admin.RequireGatewayAuth {
 			gwHandler = adminUserStore.Middleware(handler)
 		}
-		// Wrap with h2c handler to support inbound HTTP/2 cleartext alongside
-		// HTTP/1.1. h2c.NewHandler peeks at the connection preface and routes
-		// accordingly â€” HTTP/1.1 clients are unaffected. TLS listeners use ALPN.
-		gwHandler = h2c.NewHandler(gwHandler, &http2.Server{})
 		// Use http.Server with ConnContext to capture TCP accept time for connection
 		// setup latency tracking. Zero overhead on the hot path â€” runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
@@ -1200,9 +1193,13 @@ func main() {
 		if limits.IdleTimeoutMs > 0 {
 			idleTimeout = time.Duration(limits.IdleTimeoutMs) * time.Millisecond
 		}
+		var protos http.Protocols
+		protos.SetHTTP1(true)
+		protos.SetUnencryptedHTTP2(true)
 		srv := &http.Server{
 			Addr:              addr,
 			Handler:           gwHandler,
+			Protocols:         &protos,
 			MaxHeaderBytes:    limits.MaxHeaderSize,
 			ReadHeaderTimeout: readHeaderTimeout,
 			IdleTimeout:       idleTimeout,
@@ -1529,7 +1526,9 @@ func main() {
 	}
 	mux.HandleFunc("/debug/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops())
+		if _, err := fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops()); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/debug/rl_v2", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1569,14 +1568,16 @@ func main() {
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
 		// Reports cumulative overflow counts since process start.
 		// Non-zero ArenaOverflows indicates ArenaInlineSize needs tuning.
-		fmt.Fprintf(w,
+		if _, err := fmt.Fprintf(w,
 			`{"arena_overflows":%d,"arena_inline_size":%d,"arena_block_size":%d,"base_byte_slots":%d,"slot_value_threshold":%d}`,
 			fm.Metrics.ArenaOverflows.Load(),
 			rctx.ArenaInlineSize,
 			rctx.ArenaBlockSize,
 			rctx.BaseByteSlots,
 			rctx.SlotValueThreshold,
-		)
+		); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/debug/registry", func(w http.ResponseWriter, _ *http.Request) {
 		// Dumps PropStore matrix state: keyIDs, stride, value pool, per-tenant values.
@@ -1584,7 +1585,9 @@ func main() {
 		reg := tenantregistry.State.Active.Load()
 		w.Header().Set("Content-Type", "application/json")
 		if reg == nil {
-			fmt.Fprint(w, `{"error":"no active registry"}`)
+			if _, err := fmt.Fprint(w, `{"error":"no active registry"}`); err != nil {
+				gatewaylog.Default.Error("failed to write registry error response", gatewaylog.F("error", err.Error()))
+			}
 			return
 		}
 		type propRow struct {
@@ -1657,7 +1660,7 @@ func main() {
 			lastPauseUs = int64(ms.PauseNs[(ms.NumGC+255)%256]) / 1000
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w,
+		if _, err := fmt.Fprintf(w,
 			`{"goroutines":%d,"heap_alloc_mb":%.1f,"heap_sys_mb":%.1f,"heap_objects":%d,`+
 				`"stack_inuse_mb":%.1f,"gc_num":%d,"last_gc_pause_us":%d,"next_gc_mb":%.1f,`+
 				`"gc_cpu_fraction":%.4f,"arena_overflows":%d,"dropped_access_logs":%d,`+
@@ -1676,7 +1679,9 @@ func main() {
 			fm.Limiter.Limit(),
 			fm.Limiter.Active(),
 			fm.Limiter.Rejected(),
-		)
+		); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/admin/gc", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1686,7 +1691,9 @@ func main() {
 		runtime.GC()          // immediate GC cycle
 		debug.FreeOSMemory()  // return freed pages to OS immediately (Go normally defers this)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"gc":"done"}`)
+		if _, err := fmt.Fprint(w, `{"gc":"done"}`); err != nil {
+			gatewaylog.Default.Error("failed to write gc response", gatewaylog.F("error", err.Error()))
+		}
 	})
 	// pprof endpoints â€” registered explicitly on the management mux (not DefaultServeMux).
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -1713,15 +1720,23 @@ func main() {
 		blockRate := 0
 		mutexRate := 0
 		if v := r.URL.Query().Get("block"); v != "" {
-			fmt.Sscan(v, &blockRate)
+			if _, err := fmt.Sscan(v, &blockRate); err != nil {
+				http.Error(w, "invalid blockRate", http.StatusBadRequest)
+				return
+			}
 		}
 		if v := r.URL.Query().Get("mutex"); v != "" {
-			fmt.Sscan(v, &mutexRate)
+			if _, err := fmt.Sscan(v, &mutexRate); err != nil {
+				http.Error(w, "invalid mutexRate", http.StatusBadRequest)
+				return
+			}
 		}
 		runtime.SetBlockProfileRate(blockRate)
 		runtime.SetMutexProfileFraction(mutexRate)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"block_rate":%d,"mutex_rate":%d}`, blockRate, mutexRate)
+		if _, err := fmt.Fprintf(w, `{"block_rate":%d,"mutex_rate":%d}`, blockRate, mutexRate); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)

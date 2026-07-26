@@ -36,7 +36,10 @@ func TestCohereRerank(t *testing.T) {
 		// Return results in reverse order (reranked)
 		respBody := `{"results":[{"index":1,"relevance_score":0.95,"document":{"text":"doc2"}},{"index":0,"relevance_score":0.80,"document":{"text":"doc1"}}]}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(respBody))
+		if _, err := w.Write([]byte(respBody)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer server.Close()
 
@@ -105,7 +108,10 @@ func TestJinaRerank(t *testing.T) {
 
 		respBody := `{"results":[{"index":2,"relevance_score":0.92,"document":{"text":"doc3"}},{"index":0,"relevance_score":0.85,"document":{"text":"doc1"}}]}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(respBody))
+		if _, err := w.Write([]byte(respBody)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer server.Close()
 

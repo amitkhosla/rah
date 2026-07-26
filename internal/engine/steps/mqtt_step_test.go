@@ -265,7 +265,11 @@ func TestMQTTCallRequestReply(t *testing.T) {
 	// Note: Verify no goroutine leaks in production code
 
 	brokerURL, broker := setupTestBroker(t)
-	defer broker.Close()
+	defer func() {
+		if err := broker.Close(); err != nil {
+			t.Logf("broker close: %v", err)
+		}
+	}()
 
 	pool := createTestPool(t, brokerURL)
 	defer pool.DisconnectAll(250)
@@ -336,7 +340,11 @@ func TestMQTTCallTimeout(t *testing.T) {
 	// Note: Verify no goroutine leaks in production code
 
 	brokerURL, broker := setupTestBroker(t)
-	defer broker.Close()
+	defer func() {
+		if err := broker.Close(); err != nil {
+			t.Logf("broker close: %v", err)
+		}
+	}()
 
 	pool := createTestPool(t, brokerURL)
 	defer pool.DisconnectAll(250)
@@ -381,7 +389,11 @@ func TestBrokerPoolGetUnknownBroker(t *testing.T) {
 	// Note: Verify no goroutine leaks in production code
 
 	brokerURL, broker := setupTestBroker(t)
-	defer broker.Close()
+	defer func() {
+		if err := broker.Close(); err != nil {
+			t.Logf("broker close: %v", err)
+		}
+	}()
 
 	pool := createTestPool(t, brokerURL)
 
@@ -426,7 +438,11 @@ func TestConcurrentMQTTPublishes(t *testing.T) {
 	// Note: Verify no goroutine leaks in production code
 
 	brokerURL, broker := setupTestBroker(t)
-	defer broker.Close()
+	defer func() {
+		if err := broker.Close(); err != nil {
+			t.Logf("broker close: %v", err)
+		}
+	}()
 
 	pool := createTestPool(t, brokerURL)
 	defer pool.DisconnectAll(250)

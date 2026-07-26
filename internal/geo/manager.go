@@ -15,6 +15,7 @@ import (
 
 	"github.com/oschwald/maxminddb-golang"
 	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
 const (
@@ -231,7 +232,14 @@ func (m *Manager) downloadFromMaxMind() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			gatewaylog.Default.Error("geo: failed to close maxmind response body",
+				gatewaylog.F("err", err.Error()),
+			)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("maxmind download: HTTP %d", resp.StatusCode)
 	}

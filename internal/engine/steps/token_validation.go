@@ -2,6 +2,7 @@
 
 import (
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -16,6 +17,8 @@ import (
 	"math/big"
 	"net/http"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/rctx"
 	"sort"
 	"strconv"
@@ -424,7 +427,16 @@ func TokenValidation(slots TokenValidationSlots, cfg TokenValidationConfig) engi
 					emptyBody = v
 				}
 				ctx.ResponseStatus = emptyStatus
-				ctx.Write([]byte(emptyBody))
+				if _, err := ctx.Write([]byte(emptyBody)); err != nil {
+					gatewaylog.Default.Error("token_validation: failed to write failure response",
+						gatewaylog.F("err", err.Error()),
+					)
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+							Err: "token_validation: write response: " + err.Error(),
+						})
+					}
+				}
 				ctx.Failed = true
 				ctx.ErrorCode = int16(emptyStatus)
 				ctx.ErrorMsg = ctx.Alloc(len(emptyBody))
@@ -533,7 +545,16 @@ func TokenValidation(slots TokenValidationSlots, cfg TokenValidationConfig) engi
 					return s.PC + 1
 				}
 				ctx.ResponseStatus = failureStatus
-				ctx.Write([]byte(failureBody))
+				if _, err := ctx.Write([]byte(failureBody)); err != nil {
+					gatewaylog.Default.Error("token_validation: failed to write failure response",
+						gatewaylog.F("err", err.Error()),
+					)
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+							Err: "token_validation: write response: " + err.Error(),
+						})
+					}
+				}
 				ctx.Failed = true
 				ctx.ErrorCode = int16(failureStatus)
 				ctx.ErrorMsg = ctx.Alloc(len(failureBody))
@@ -626,7 +647,16 @@ func resolveJWKSURI(ctx *rctx.Context, cfg TokenValidationConfig) (string, error
 
 func rejectUnauthorized(ctx *rctx.Context) int16 {
 	ctx.ResponseStatus = http.StatusUnauthorized
-	ctx.Write([]byte("unauthorized"))
+	if _, err := ctx.Write([]byte("unauthorized")); err != nil {
+		gatewaylog.Default.Error("token_validation: failed to write failure response",
+			gatewaylog.F("err", err.Error()),
+		)
+		if ctx.Trace != nil && ctx.Obs != nil {
+			ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+				Err: "token_validation: write response: " + err.Error(),
+			})
+		}
+	}
 	ctx.Failed = true
 	ctx.ErrorCode = 401
 	ctx.ErrorMsg = ctx.Alloc(len("unauthorized"))
@@ -941,11 +971,25 @@ func buildECPublicKey(crv, xB64, yB64 string) (*ecdsa.PublicKey, error) {
 	}
 	x := new(big.Int).SetBytes(xBytes)
 	y := new(big.Int).SetBytes(yBytes)
-	pub := &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
-	if !curve.IsOnCurve(x, y) {
+	// Validate point is on the curve using crypto/ecdh (IsOnCurve is deprecated since Go 1.21)
+	coordLen := (curve.Params().BitSize + 7) / 8
+	uncompressed := make([]byte, 1+2*coordLen)
+	uncompressed[0] = 0x04
+	x.FillBytes(uncompressed[1 : 1+coordLen])
+	y.FillBytes(uncompressed[1+coordLen:])
+	var ecdhCurve ecdh.Curve
+	switch strings.ToUpper(crv) {
+	case "P-256":
+		ecdhCurve = ecdh.P256()
+	case "P-384":
+		ecdhCurve = ecdh.P384()
+	case "P-521":
+		ecdhCurve = ecdh.P521()
+	}
+	if _, err := ecdhCurve.NewPublicKey(uncompressed); err != nil {
 		return nil, errors.New("ec point not on curve")
 	}
-	return pub, nil
+	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
 func buildEdDSAPublicKey(xB64 string) (ed25519.PublicKey, error) {
@@ -1074,12 +1118,13 @@ func JWKThumbprintSHA256(pub crypto.PublicKey) (string, error) {
 			return "", errors.New("unsupported ec curve for thumbprint")
 		}
 		byteLen := (k.Curve.Params().BitSize + 7) / 8
-		xBytes := make([]byte, byteLen)
-		yBytes := make([]byte, byteLen)
-		k.X.FillBytes(xBytes)
-		k.Y.FillBytes(yBytes)
-		xB64 := base64.RawURLEncoding.EncodeToString(xBytes)
-		yB64 := base64.RawURLEncoding.EncodeToString(yBytes)
+		ecdhKey, err := k.ECDH()
+		if err != nil {
+			return "", fmt.Errorf("ecdsa key export: %w", err)
+		}
+		raw := ecdhKey.Bytes() // 0x04 || x || y, each coordinate padded to byteLen
+		xB64 := base64.RawURLEncoding.EncodeToString(raw[1 : 1+byteLen])
+		yB64 := base64.RawURLEncoding.EncodeToString(raw[1+byteLen:])
 		// Lexicographic order: crv, kty, x, y
 		members = fmt.Sprintf(`{"crv":%q,"kty":"EC","x":%q,"y":%q}`, crv, xB64, yB64)
 	case ed25519.PublicKey:

@@ -397,8 +397,10 @@ func newTestRegMgr(t *testing.T, dsm *DataStoreManager) (*tenantregistry.Registr
 	return mgr, store
 }
 
-// waitForTenantPersisted polls the store until alias is visible or times out.
-// Required because persistTenantBatch writes via a background goroutine.
+// waitForTenantPersisted polls the store until alias is visible AND its
+// properties (ServiceURLs and Identifiers) have been written. Required because
+// persistTenantBatch issues PutTenantAliases then PutBatch in a background
+// goroutine — the alias can appear before PutBatch completes.
 func waitForTenantPersisted(t *testing.T, store *tenantregistry.TenantRegistryStore, alias string) {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -406,14 +408,14 @@ func waitForTenantPersisted(t *testing.T, store *tenantregistry.TenantRegistrySt
 		snap, _ := store.LoadAll(context.Background())
 		for _, rec := range snap.Tenants {
 			for _, a := range rec.Aliases {
-				if a == alias {
+				if a == alias && (len(rec.ServiceURLs) > 0 || len(rec.Identifiers) > 0) {
 					return
 				}
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for tenant %q to be persisted to disk", alias)
+	t.Fatalf("timed out waiting for tenant %q (with properties) to be persisted to disk", alias)
 }
 
 // tenantRecordByAlias scans the manager's tenant list to find the record whose

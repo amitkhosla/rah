@@ -136,7 +136,10 @@ func TestBufPoolConcurrent(t *testing.T) {
 				}
 
 				// Write some data
-				lb.WriteString("msg")
+				if _, err := lb.WriteString("msg"); err != nil {
+					t.Errorf("WriteString failed: %v", err)
+					return
+				}
 				if lb.Len() == 0 {
 					t.Errorf("WriteString failed at iteration %d", j)
 					return

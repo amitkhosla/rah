@@ -1,0 +1,31 @@
+# ─── OAuth2 Authorization Code Flow APIs ──────────────────────────────────────
+#
+# Two API endpoints that implement the OAuth2 Authorization Code Flow:
+#
+#   GET /v1/profile     — protected resource; redirects to IdP when not logged in
+#   GET /callback       — OAuth2 redirect_uri; exchanges code for token, sets cookie
+#
+# Flows are defined in instructions/07-auth-code-flow.yaml.
+#
+# Prerequisites:
+#   - An OAuth2 authorization server running at http://localhost:9401
+#     (client_id: bench-client-001, client_secret: bench-secret-001)
+#   - A protected upstream running at http://localhost:9301
+#   - Gateway cache enabled (used for session token storage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apis:
+
+  - name: sample-auth-code-profile
+    path: /v1/profile
+    method: GET
+    flow_name: auth_code_profile_flow
+    action: upsert
+    skip_rate_limit: true
+
+  - name: sample-auth-code-callback
+    path: /callback
+    method: GET
+    flow_name: auth_code_callback_flow
+    action: upsert
+    skip_rate_limit: true

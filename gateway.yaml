@@ -5,9 +5,10 @@ datastore:
       kind: disk
       enabled: true
       connection:
-        path: /tmp/rah-data
+        path: ./rah-data
   bindings:
     api_definitions: local
     flows: local
     tenant_data: local
     cache: local
+    credentials: local

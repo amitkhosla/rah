@@ -1314,5 +1314,10 @@ func (s *ManagementServer) deleteFlowHandler(w http.ResponseWriter, name string)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"deleted":%q}`, name)
+	if _, err := fmt.Fprintf(w, `{"deleted":%q}`, name); err != nil {
+		gatewaylog.Default.Error("management: failed to write delete response",
+			gatewaylog.F("err", err.Error()),
+			gatewaylog.F("name", name),
+		)
+	}
 }

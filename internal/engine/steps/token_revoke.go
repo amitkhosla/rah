@@ -20,6 +20,8 @@ import (
 
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
@@ -100,7 +102,16 @@ func CheckTokenRevoked(ds datastore.KeyValueStore, slots TokenRevokeSlots, cfg T
 				status := cfg.OnFailureStatus
 				body := cfg.OnFailureBody
 				ctx.ResponseStatus = status
-				ctx.Write([]byte(body))
+				if _, err := ctx.Write([]byte(body)); err != nil {
+					gatewaylog.Default.Error("token_revoke: failed to write failure response",
+						gatewaylog.F("err", err.Error()),
+					)
+					if ctx.Trace != nil && ctx.Obs != nil {
+						ctx.Obs.AppendUpstreamEvent(ctx.Trace, observability.UpstreamEvent{
+							Err: "token_revoke: write response: " + err.Error(),
+						})
+					}
+				}
 				ctx.Failed = true
 				ctx.ErrorCode = int16(status)
 				ctx.ErrorMsg = ctx.Alloc(len(body))

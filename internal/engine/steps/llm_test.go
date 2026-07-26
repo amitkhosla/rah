@@ -75,7 +75,9 @@ func TestOpenAIAdapter_Marshal(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(b, &got)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	msgs := got["messages"].([]any)
 	// system prepended as first message
 	if len(msgs) != 2 {
@@ -101,7 +103,9 @@ func TestGeminiAdapter_Marshal(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(b, &got)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	// Gemini REST API uses snake_case: system_instruction
 	if got["system_instruction"] == nil {
 		t.Error("system_instruction missing")
@@ -125,7 +129,9 @@ func TestGeminiAdapter_Marshal_V1_SystemAsTurn(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(b, &got)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if got["system_instruction"] != nil {
 		t.Error("system_instruction must not be set for v1 â€” not supported by that API version")
 	}
@@ -151,7 +157,9 @@ func TestOllamaAdapter_Marshal(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	var got map[string]any
-	json.Unmarshal(b, &got)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if got["stream"] != false {
 		t.Errorf("stream should be false, got %v", got["stream"])
 	}
@@ -501,7 +509,9 @@ func TestLLMCall_SystemSlot(t *testing.T) {
 	runInstruction(instr, ctx)
 
 	var body map[string]any
-	json.Unmarshal(capturedBody, &body)
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if body["system"] != "you are a test assistant" {
 		t.Errorf("system prompt not sent: %v", body["system"])
 	}
