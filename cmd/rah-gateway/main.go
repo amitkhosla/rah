@@ -1526,7 +1526,9 @@ func main() {
 	}
 	mux.HandleFunc("/debug/log", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops())
+		if _, err := fmt.Fprintf(w, `{"async_log_drops":%d}`, asyncLog.Drops()); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/debug/rl_v2", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1566,14 +1568,16 @@ func main() {
 	mux.HandleFunc("/debug/arena", func(w http.ResponseWriter, _ *http.Request) {
 		// Reports cumulative overflow counts since process start.
 		// Non-zero ArenaOverflows indicates ArenaInlineSize needs tuning.
-		fmt.Fprintf(w,
+		if _, err := fmt.Fprintf(w,
 			`{"arena_overflows":%d,"arena_inline_size":%d,"arena_block_size":%d,"base_byte_slots":%d,"slot_value_threshold":%d}`,
 			fm.Metrics.ArenaOverflows.Load(),
 			rctx.ArenaInlineSize,
 			rctx.ArenaBlockSize,
 			rctx.BaseByteSlots,
 			rctx.SlotValueThreshold,
-		)
+		); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/debug/registry", func(w http.ResponseWriter, _ *http.Request) {
 		// Dumps PropStore matrix state: keyIDs, stride, value pool, per-tenant values.
@@ -1656,7 +1660,7 @@ func main() {
 			lastPauseUs = int64(ms.PauseNs[(ms.NumGC+255)%256]) / 1000
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w,
+		if _, err := fmt.Fprintf(w,
 			`{"goroutines":%d,"heap_alloc_mb":%.1f,"heap_sys_mb":%.1f,"heap_objects":%d,`+
 				`"stack_inuse_mb":%.1f,"gc_num":%d,"last_gc_pause_us":%d,"next_gc_mb":%.1f,`+
 				`"gc_cpu_fraction":%.4f,"arena_overflows":%d,"dropped_access_logs":%d,`+
@@ -1675,7 +1679,9 @@ func main() {
 			fm.Limiter.Limit(),
 			fm.Limiter.Active(),
 			fm.Limiter.Rejected(),
-		)
+		); err != nil {
+			gatewaylog.Default.Error("debug: failed to write response", gatewaylog.F("err", err.Error()))
+		}
 	})
 	mux.HandleFunc("/admin/gc", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

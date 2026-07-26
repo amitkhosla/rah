@@ -942,12 +942,16 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				if haActionHasBody {
 					bodyTimer = scheduleBody(resp.Body, haActionBodyDur)
 					if bodyTimer.idx == 0 {
-						t := time.AfterFunc(haActionBodyDur, func() { resp.Body.Close() })
+						t := time.AfterFunc(haActionBodyDur, func() { _ = resp.Body.Close() })
 						defer t.Stop()
 					}
 				}
 				respBytes, copyErr := io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					gatewaylog.Default.Error("http_call: failed to close upstream response body",
+						gatewaylog.F("err", closeErr.Error()),
+					)
+				}
 				activeShard.release()
 				bodyTimer.cancel()
 				bodyTimer = wheelHandle{}
@@ -1526,7 +1530,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				if hasBodyTimeout {
 					bodyTimer = scheduleBody(resp.Body, bakedBodyDur)
 					if bodyTimer.idx == 0 {
-						t := time.AfterFunc(bakedBodyDur, func() { resp.Body.Close() })
+						t := time.AfterFunc(bakedBodyDur, func() { _ = resp.Body.Close() })
 						defer t.Stop()
 					}
 				}

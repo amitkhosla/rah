@@ -80,7 +80,10 @@ func buildMCPServer(t *testing.T, handler func(toolName string, args map[string]
 			"result":  map[string]interface{}{"content": json.RawMessage(contentBytes)},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv

@@ -279,7 +279,7 @@ func TestEmbedText_APIKeyFromSlot(t *testing.T) {
 func TestEmbedText_ServerError_StopsExecution(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":{"message":"server error"}}`))
+		_, _ = w.Write([]byte(`{"error":{"message":"server error"}}`))
 	}))
 	defer srv.Close()
 
@@ -321,12 +321,15 @@ func TestEmbedText_Retry_On429(t *testing.T) {
 		n := callCount.Add(1)
 		if n == 1 {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(openAIEmbedResponse(wantVec))
+		if _, err := w.Write(openAIEmbedResponse(wantVec)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer srv.Close()
 

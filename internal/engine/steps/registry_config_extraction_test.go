@@ -545,7 +545,9 @@ func TestExtractServiceURLsFromMultipleProducts(t *testing.T) {
 	// Collect all service codes across all products and their service categories
 	var allServices []string
 	var resp ConfigResponse
-	json.Unmarshal(ctx.ByteSlots[1], &resp)
+	if err := json.Unmarshal(ctx.ByteSlots[1], &resp); err != nil {
+		t.Fatalf("unmarshal config response: %v", err)
+	}
 
 	for _, product := range resp.Products {
 		for _, category := range product.ServiceCategories {
@@ -599,7 +601,9 @@ func TestExtractOnlyAssignedServices(t *testing.T) {
 	ctx.ByteSlots[1] = configJSON
 
 	var resp ConfigResponse
-	json.Unmarshal(ctx.ByteSlots[1], &resp)
+	if err := json.Unmarshal(ctx.ByteSlots[1], &resp); err != nil {
+		t.Fatalf("unmarshal config response: %v", err)
+	}
 
 	// Count assigned (not "unassigned") services
 	assignedCount := 0
