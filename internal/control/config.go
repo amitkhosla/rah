@@ -12,4 +12,6 @@ type GatewayConfig struct {
 	DataStores config.DataStoreConfig `json:"data_stores"`
 	// LLM configures the model catalog used by llm_call steps.
 	LLM config.LLMConfig `json:"llm,omitempty"`
+	// UpstreamDefaults configures default upstream passthrough behavior for all HTTP steps.
+	UpstreamDefaults *UpstreamPassthroughConfig `json:"upstream_defaults,omitempty"`
 }

@@ -45,6 +45,105 @@ type validateRouteJump struct {
 	flowName string // target flow name to resolve
 }
 
+// resolveUpstreamPassthrough resolves the effective upstream passthrough config
+// for a single http_call step by cascading step → API → gateway → false.
+// All resolution happens at bake time; the returned values are stored in
+// HttpActionConfig closures with zero per-request overhead.
+func resolveUpstreamPassthrough(
+	step StepConfig,
+	apiDefaults *UpstreamPassthroughConfig,
+	gwDefaults *UpstreamPassthroughConfig,
+) (forwardHeaders, forwardRespHeaders, forwardQuery, forwardPath bool, blockMap map[string]struct{}, txIDHeader string) {
+
+	resolveBool := func(stepVal *bool, apiVal *bool, gwVal *bool, legacyFlat bool, legacyFlatSet bool) bool {
+		if stepVal != nil {
+			return *stepVal
+		}
+		if legacyFlatSet {
+			return legacyFlat
+		}
+		if apiVal != nil {
+			return *apiVal
+		}
+		if gwVal != nil {
+			return *gwVal
+		}
+		return false
+	}
+
+	// step.Upstream fields take priority; fall back through API then gateway then false.
+	var sUp, aUp, gUp *UpstreamPassthroughConfig
+	if step.Upstream != nil {
+		sUp = step.Upstream
+	}
+	if apiDefaults != nil {
+		aUp = apiDefaults
+	}
+	if gwDefaults != nil {
+		gUp = gwDefaults
+	}
+
+	var sFIH, aFIH, gFIH *bool
+	var sFRH, aFRH, gFRH *bool
+	var sFQP, aFQP, gFQP *bool
+	var sFPS, aFPS, gFPS *bool
+	if sUp != nil { sFIH = sUp.ForwardIncomingHeaders; sFRH = sUp.ForwardResponseHeaders; sFQP = sUp.ForwardQueryParams; sFPS = sUp.ForwardPathSuffix }
+	if aUp != nil { aFIH = aUp.ForwardIncomingHeaders; aFRH = aUp.ForwardResponseHeaders; aFQP = aUp.ForwardQueryParams; aFPS = aUp.ForwardPathSuffix }
+	if gUp != nil { gFIH = gUp.ForwardIncomingHeaders; gFRH = gUp.ForwardResponseHeaders; gFQP = gUp.ForwardQueryParams; gFPS = gUp.ForwardPathSuffix }
+
+	// Flat bool fields on StepConfig (legacy) act as step-level override when Upstream is nil.
+	legacyFIHSet := step.Upstream == nil && step.ForwardIncomingHeaders
+	legacyFRHSet := step.Upstream == nil && step.ForwardResponseHeaders
+
+	forwardHeaders = resolveBool(sFIH, aFIH, gFIH, step.ForwardIncomingHeaders, legacyFIHSet)
+	forwardRespHeaders = resolveBool(sFRH, aFRH, gFRH, step.ForwardResponseHeaders, legacyFRHSet)
+	forwardQuery = resolveBool(sFQP, aFQP, gFQP, false, false)
+	forwardPath = resolveBool(sFPS, aFPS, gFPS, false, false)
+
+	// BlockHeaders: nil = inherit; non-nil (even empty) = replace.
+	var blockSrc []string
+	switch {
+	case sUp != nil && sUp.BlockHeaders != nil:
+		blockSrc = sUp.BlockHeaders
+	case step.Upstream == nil && len(step.BlockHeaders) > 0:
+		blockSrc = step.BlockHeaders
+	case aUp != nil && aUp.BlockHeaders != nil:
+		blockSrc = aUp.BlockHeaders
+	case gUp != nil && gUp.BlockHeaders != nil:
+		blockSrc = gUp.BlockHeaders
+	}
+	if len(blockSrc) > 0 {
+		blockMap = make(map[string]struct{}, len(blockSrc))
+		for _, h := range blockSrc {
+			blockMap[http.CanonicalHeaderKey(h)] = struct{}{}
+		}
+	}
+
+	// InjectTxIDHeader: "" = inherit; "-" = disable; other = header name.
+	resolveTxID := func(s, a, g string) string {
+		if s != "" {
+			if s == "-" { return "" }
+			return http.CanonicalHeaderKey(s)
+		}
+		if a != "" {
+			if a == "-" { return "" }
+			return http.CanonicalHeaderKey(a)
+		}
+		if g != "" {
+			if g == "-" { return "" }
+			return http.CanonicalHeaderKey(g)
+		}
+		return ""
+	}
+	var sTx, aTx, gTx string
+	if sUp != nil { sTx = sUp.InjectTxIDHeader }
+	if aUp != nil { aTx = aUp.InjectTxIDHeader }
+	if gUp != nil { gTx = gUp.InjectTxIDHeader }
+	txIDHeader = resolveTxID(sTx, aTx, gTx)
+
+	return
+}
+
 type Compiler struct {
 	slotMap   map[string]int
 	freeSlots []int // slots freed by liveness analysis, available for reuse
@@ -89,6 +188,13 @@ type Compiler struct {
 	// currentAPISkipRL suppresses auto-injection and "api_rate_limits" marker
 	// expansion when true. Set alongside currentAPIPolicies.
 	currentAPISkipRL bool
+	// currentAPIUpstreamDefaults holds the UpstreamPassthroughConfig for the API
+	// currently being compiled. Set by BakeAll and BakeAPI before compiling steps.
+	// Used for cascade resolution of upstream passthrough settings.
+	currentAPIUpstreamDefaults *UpstreamPassthroughConfig
+	// gatewayUpstreamDefaults holds the global-level UpstreamPassthroughConfig.
+	// Set by BakeAll before compiling flows/APIs.
+	gatewayUpstreamDefaults *UpstreamPassthroughConfig
 }
 
 // resolveAPIKey resolves a credential reference (e.g. "env:OPENAI_KEY", "file:///run/secrets/key")
@@ -125,6 +231,7 @@ func NewCompiler(fm *engine.FlowManager) *Compiler {
 // BakeAll flattens Fragments and APIs into a single Instruction Table.
 func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 	c.LLMCfg = cfg.LLM
+	c.gatewayUpstreamDefaults = cfg.UpstreamDefaults
 	// 1. Map Fragments (Subflows)
 	for name, flow := range cfg.Flows {
 		c.FragmentMap[name] = int16(len(c.GlobalTable))
@@ -141,6 +248,7 @@ func (c *Compiler) BakeAll(cfg GatewayConfig) error {
 	// 2. Bake APIs
 	for _, api := range cfg.Apis {
 		c.resetSlots()
+		c.currentAPIUpstreamDefaults = api.UpstreamDefaults
 
 		// AUTO-BINDING: Discover what headers/query params this flow needs
 		deps := c.discoverDependencies(cfg.Flows[api.FlowName])
@@ -253,6 +361,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.linkBreaks(exitID)
 
 	case "http_call":
+		// Resolve upstream passthrough config with cascade: step → API → gateway → false
+		fwdHdr, fwdRespHdr, fwdQuery, fwdPath, blockMap, txIDHdr := resolveUpstreamPassthrough(step, c.currentAPIUpstreamDefaults, c.gatewayUpstreamDefaults)
+
 		cfg := steps.HttpActionConfig{
 			StaticURL:              step.URL,
 			StaticMethod:           step.Method,
@@ -264,9 +375,13 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			ResponseStatusSlot:     -1,
 			Timeout:                step.Timeout,
 			MaxRetries:             step.MaxRetries,
-			ForwardIncomingHeaders: step.ForwardIncomingHeaders,
-			ForwardResponseHeaders: step.ForwardResponseHeaders,
+			ForwardIncomingHeaders: fwdHdr,
+			ForwardResponseHeaders: fwdRespHdr,
+			BlockHeadersMap:        blockMap,
 			FlowInput:              step.Input,
+			ForwardQueryParams:     fwdQuery,
+			ForwardPathSuffix:      fwdPath,
+			TxIDHeaderName:         txIDHdr,
 		}
 		if step.UrlVar != "" {
 			s, err := c.getSlot(step.UrlVar)
@@ -302,12 +417,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				return fmt.Errorf("http_call response_header_vars[%s]: %w", hdrName, err)
 			}
 			cfg.ResponseHeaderSlots = append(cfg.ResponseHeaderSlots, steps.HeaderSlotBinding{HeaderName: hdrName, Slot: s})
-		}
-		if len(step.BlockHeaders) > 0 {
-			cfg.BlockHeadersMap = make(map[string]struct{}, len(step.BlockHeaders))
-			for _, h := range step.BlockHeaders {
-				cfg.BlockHeadersMap[http.CanonicalHeaderKey(h)] = struct{}{}
-			}
 		}
 		if step.RetryCondition != "" {
 			cf, compErr := steps.CompileCondition(step.RetryCondition, c.slotMap)

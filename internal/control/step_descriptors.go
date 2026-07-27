@@ -599,6 +599,21 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("forward_incoming_headers", "Forward incoming headers", "When true, all non-hop-by-hop incoming request headers are forwarded upstream before applying block_headers.", "false"),
 				sf("forward_response_headers", "Forward response headers", "When true, all non-hop-by-hop upstream response headers are forwarded to the client, excluding any in block_headers.", "false"),
 				sf("block_headers", "Block headers (JSON array)", `JSON array of header names to suppress from the upstream request. e.g. ["Authorization","Cookie"]`, `["Authorization"]`),
+				sf("forward_query_params", "Forward query params",
+					"When true, the raw incoming query string is appended to the upstream URL. "+
+						"Uses '?' if the upstream URL has no query, '&' otherwise. "+
+						"No allocation when false or when the incoming request has no query string.",
+					"false"),
+				sf("forward_path_suffix", "Forward path suffix",
+					"When true, the incoming request path is appended to the upstream base URL. "+
+						"Combines with forward_query_params when both are set (single arena alloc). "+
+						"No allocation when false or when the incoming request has no path.",
+					"false"),
+				sf("inject_tx_id_header", "Inject transaction ID header",
+					"Header name to inject the gateway-generated transaction ID (InternalTxID) into every upstream call. "+
+						"Empty string inherits from API or gateway upstream_defaults. "+
+						"Set to \"-\" to explicitly disable even when a parent level has this configured.",
+					""),
 				sf("timeout", "Timeout (ms)", "Max wait in milliseconds before the request is aborted.", "5000"),
 				sf("retry_condition", "Retry condition", "Boolean expression evaluated after each attempt; retried when true (e.g. status >= 500).", "status >= 500"),
 				sf("max_retries", "Max retries", "Maximum retry attempts (0 = no retries).", "3"),

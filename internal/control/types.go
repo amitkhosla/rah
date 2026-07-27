@@ -2,6 +2,19 @@
 
 import registrypkg "github.com/amitkhosla/rah/internal/registry"
 
+// UpstreamPassthroughConfig controls what is forwarded on every upstream http_call.
+// *bool fields: nil = inherit from parent level (step → API → gateway → false).
+// BlockHeaders: nil = inherit; non-nil (even empty slice) replaces entirely.
+// InjectTxIDHeader: "" = inherit; "-" = explicit disable; any other value = header name.
+type UpstreamPassthroughConfig struct {
+	ForwardIncomingHeaders *bool    `json:"forward_incoming_headers,omitempty"`
+	ForwardResponseHeaders *bool    `json:"forward_response_headers,omitempty"`
+	ForwardQueryParams     *bool    `json:"forward_query_params,omitempty"`
+	ForwardPathSuffix      *bool    `json:"forward_path_suffix,omitempty"`
+	BlockHeaders           []string `json:"block_headers,omitempty"`
+	InjectTxIDHeader       string   `json:"inject_tx_id_header,omitempty"`
+}
+
 // BranchConfig defines one named branch in a parallel step.
 type BranchConfig struct {
 	Name string       `json:"name"`
@@ -37,6 +50,7 @@ type StepConfig struct {
 	ForwardIncomingHeaders  bool     `json:"forward_incoming_headers,omitempty"`
 	ForwardResponseHeaders  bool     `json:"forward_response_headers,omitempty"`
 	BlockHeaders            []string `json:"block_headers,omitempty"`
+	Upstream                *UpstreamPassthroughConfig `json:"upstream,omitempty"`
 
 	// Logic & Branching
 	Condition string            `json:"condition,omitempty"` // String logic like "(header.Auth == 'y') && status"
@@ -262,6 +276,7 @@ type ApiConfig struct {
 	AliasPaths        []string            `json:"alias_paths,omitempty"`         // additional basepaths â†’ same ApiID
 	RateLimitPolicies []APIRateLimitEntry `json:"rate_limit_policies,omitempty"` // multi-entry RL policies (new model)
 	SkipRateLimit     bool                `json:"skip_rate_limit,omitempty"`     // suppress auto-injection and warnings
+	UpstreamDefaults  *UpstreamPassthroughConfig `json:"upstream_defaults,omitempty"`
 }
 
 type FlowUpdate struct {
