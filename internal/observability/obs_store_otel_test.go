@@ -270,6 +270,75 @@ func TestOTELObsStore_WriteTraceBatch_LLMChildren(t *testing.T) {
 	}
 }
 
+func TestOTELObsStore_ChildSpansParentedToRoot(t *testing.T) {
+	prevProvider := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prevProvider) })
+
+	exporter := &testSpanExporter{}
+	tp := newTestTracerProvider(exporter)
+	otel.SetTracerProvider(tp)
+
+	store := newOTELObsStore()
+
+	rec := TraceRecord{
+		TraceID:      99999,
+		Timestamp:    1700000000,
+		DurationNs:   50_000_000,
+		ApiName:      "parent-test",
+		Method:       "GET",
+		Status:       200,
+		TenantID:     1,
+		GatewayNs:    1_000_000,
+		UpstreamNs:   2_000_000,
+		ReqBytes:     64,
+		ResBytes:     128,
+		ApiVersionID: 1,
+		EndpointID:   1,
+		UpstreamCalls: 2,
+		InstrPCs:    []int16{10},
+		InstrDursNs: []int32{5_000_000},
+		LLMCalls: []LLMCallRow{
+			{PC: 10, Seq: 0, ModelName: "gpt-4o", Status: 200, DurationNs: 10_000_000},
+		},
+	}
+
+	if err := store.WriteTraceBatch(context.Background(), []TraceRecord{rec}); err != nil {
+		t.Fatalf("WriteTraceBatch: %v", err)
+	}
+
+	spans := exporter.snapshot()
+	// Expect 3 spans: root + 1 instr + 1 LLM
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 spans, got %d", len(spans))
+	}
+
+	// Identify root span (no rah.instr_pc, no "llm:" prefix)
+	var rootSpanID [8]byte
+	var rootFound bool
+	for _, s := range spans {
+		_, hasPC := findAttr(s.Attributes(), "rah.instr_pc")
+		if !hasPC && (len(s.Name()) < 4 || s.Name()[:4] != "llm:") {
+			rootSpanID = [8]byte(s.SpanContext().SpanID())
+			rootFound = true
+			break
+		}
+	}
+	if !rootFound {
+		t.Fatal("root span not found")
+	}
+
+	// All non-root spans must have root as parent
+	for _, s := range spans {
+		if [8]byte(s.SpanContext().SpanID()) == rootSpanID {
+			continue
+		}
+		parentID := [8]byte(s.Parent().SpanID())
+		if parentID != rootSpanID {
+			t.Errorf("span %q: parentSpanID %x != rootSpanID %x", s.Name(), parentID, rootSpanID)
+		}
+	}
+}
+
 func TestOTELObsStore_UpsertInstrSchema_NamesResolved(t *testing.T) {
 	// Save and restore global tracer provider
 	prevProvider := otel.GetTracerProvider()

@@ -81,21 +81,6 @@ func otelRootSpanID(traceID uint64) trace.SpanID {
 	return trace.SpanID(sid)
 }
 
-// otelChildSpanID derives a unique SpanID for a child span using XOR with the sequence.
-// seq must be < 256. The upper byte encodes the sequence; lower 7 bytes carry traceID bits.
-func otelChildSpanID(traceID uint64, seq uint8) trace.SpanID {
-	var sid [8]byte
-	binary.BigEndian.PutUint64(sid[:], traceID^(uint64(seq+1)<<56))
-	return trace.SpanID(sid)
-}
-
-// otelLLMSpanID derives a SpanID for an LLM child span distinct from instruction children.
-// Uses a different XOR mask (0x80 prefix in second byte) to avoid collisions with instruction spans.
-func otelLLMSpanID(traceID uint64, seq uint8) trace.SpanID {
-	var sid [8]byte
-	binary.BigEndian.PutUint64(sid[:], traceID^(uint64(seq+1)<<48|0xFF00000000000000))
-	return trace.SpanID(sid)
-}
 
 // WriteTraceBatch converts each TraceRecord into OTEL spans and submits them
 // to the configured TracerProvider. Called only from the drain goroutine.
@@ -156,7 +141,7 @@ func (o *OTELObsStore) emitSpans(tracer trace.Tracer, schema *map[int16]string, 
 	})
 	rootCtx := trace.ContextWithRemoteSpanContext(context.Background(), remoteSC)
 
-	_, rootSpan := tracer.Start(rootCtx, rec.ApiName,
+	rootCtx, rootSpan := tracer.Start(rootCtx, rec.ApiName,
 		trace.WithTimestamp(rootStart),
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(o.rootBuf[:n]...),
@@ -183,14 +168,7 @@ func (o *OTELObsStore) emitSpans(tracer trace.Tracer, schema *map[int16]string, 
 			o.instrBuf[k] = attribute.Int64("rah.duration_ns", durNs)
 			k++
 
-			childSC := trace.NewSpanContext(trace.SpanContextConfig{
-				TraceID:    traceID,
-				SpanID:     otelChildSpanID(rec.TraceID, uint8(j)), //nolint:gosec
-				TraceFlags: trace.FlagsSampled,
-				Remote:     false,
-			})
-			childCtx := trace.ContextWithSpanContext(rootCtx, childSC)
-			_, s := tracer.Start(childCtx, name,
+			_, s := tracer.Start(rootCtx, name,
 				trace.WithTimestamp(instrStart),
 				trace.WithSpanKind(trace.SpanKindInternal),
 				trace.WithAttributes(o.instrBuf[:k]...),
@@ -224,14 +202,7 @@ func (o *OTELObsStore) emitSpans(tracer trace.Tracer, schema *map[int16]string, 
 		o.llmBuf[k] = attribute.Int("rah.seq", int(llm.Seq))
 		k++
 
-		llmSC := trace.NewSpanContext(trace.SpanContextConfig{
-			TraceID:    traceID,
-			SpanID:     otelLLMSpanID(rec.TraceID, llm.Seq),
-			TraceFlags: trace.FlagsSampled,
-			Remote:     false,
-		})
-		llmCtx := trace.ContextWithSpanContext(rootCtx, llmSC)
-		_, s := tracer.Start(llmCtx, spanName,
+		_, s := tracer.Start(rootCtx, spanName,
 			trace.WithTimestamp(llmStart),
 			trace.WithSpanKind(trace.SpanKindClient),
 			trace.WithAttributes(o.llmBuf[:k]...),
