@@ -111,10 +111,13 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
-          OUTPUT=$(govulncheck ./... 2>&1); SCAN_EXIT=$?
+          set +e
+          OUTPUT=$(govulncheck ./... 2>&1)
+          SCAN_EXIT=$?
+          set -e
           echo "$OUTPUT"
 
-          [ "$SCAN_EXIT" -ne 3 ] && exit "$SCAN_EXIT"
+          if [ "$SCAN_EXIT" -ne 3 ]; then exit "$SCAN_EXIT"; fi
 
           # Modules whose go.mod line was added or version-bumped in this PR.
           git fetch origin main --quiet
