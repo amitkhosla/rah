@@ -161,7 +161,7 @@ func TestHttpPassthrough_IntegrationWithServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-URL", r.RequestURI)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(r.RequestURI))
+		_, _ = w.Write([]byte(r.RequestURI))
 	}))
 	defer ts.Close()
 
@@ -221,7 +221,7 @@ func TestHttpPassthrough_IntegrationWithServer(t *testing.T) {
 			if err != nil {
 				t.Fatalf("HTTP GET failed: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("expected status 200, got %d", resp.StatusCode)

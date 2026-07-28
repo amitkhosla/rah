@@ -25,11 +25,6 @@ func (e *testSpanExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadO
 
 func (e *testSpanExporter) Shutdown(_ context.Context) error { return nil }
 
-func (e *testSpanExporter) reset() {
-	e.mu.Lock()
-	e.spans = e.spans[:0]
-	e.mu.Unlock()
-}
 
 func (e *testSpanExporter) snapshot() []sdktrace.ReadOnlySpan {
 	e.mu.Lock()
