@@ -186,6 +186,7 @@ func main() {
 		MaxAccessLog: obsCfg.Store.MaxAccessLog,
 		MaxTraces:    obsCfg.Store.MaxTraces,
 	}
+	obsStoreParams.EnableOTEL = obsCfg.Export.OTEL.Enabled
 	// For postgres/redis: resolve connection from observability domain bindings.
 	// Try traces first, then access log as a fallback.
 	if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainObsTraces); err == nil {

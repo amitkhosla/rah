@@ -318,6 +318,7 @@ type ApiUpdate struct {
 	// Existing RateLimitName/RLConfig/etc. fields are kept for backwards compatibility.
 	RateLimitPolicies []APIRateLimitEntry `json:"rate_limit_policies,omitempty"`
 	SkipRateLimit     bool                `json:"skip_rate_limit,omitempty"`
+	UpstreamDefaults  *UpstreamPassthroughConfig `json:"upstream_defaults,omitempty"`
 }
 
 // TenantSyncDef declares a tenant to register at deploy time.

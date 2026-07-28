@@ -1993,6 +1993,17 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 
 	case "call":
+		// When the current API has upstream passthrough overrides, the pre-compiled
+		// fragment in FragmentMap was baked with gateway defaults — its http_call steps
+		// have the wrong baked passthrough booleans. Inline the fragment body instead
+		// so compileStep sees currentAPIUpstreamDefaults for every http_call inside it.
+		// bakeFlowRaw calls compileStep per step, so nested call steps in the fragment
+		// also propagate the override transitively — no separate recursion needed.
+		if c.currentAPIUpstreamDefaults != nil && fragments != nil {
+			if called, exists := fragments[step.FlowName]; exists {
+				return c.bakeFlowRaw(called, fragments)
+			}
+		}
 		if targetID, ok := c.FragmentMap[step.FlowName]; ok {
 			c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 				Name:   "CALL",

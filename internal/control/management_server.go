@@ -925,6 +925,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				AliasPaths:        a.AliasPaths,
 				RateLimitPolicies: a.RateLimitPolicies,
 				SkipRateLimit:     a.SkipRateLimit,
+				UpstreamDefaults:  a.UpstreamDefaults,
 			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
