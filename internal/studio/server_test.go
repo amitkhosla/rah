@@ -170,3 +170,127 @@ func TestProxyPreservesPathPrefix(t *testing.T) {
 		t.Fatalf("expected /gw/getAllApis path, got %s", seenPath)
 	}
 }
+
+func TestSyncProxySandboxRouting(t *testing.T) {
+	const syncBody = `{"sync_uuid":"test-123","flows":[],"apis":[]}`
+
+	t.Run("no sandbox configured routes to default", func(t *testing.T) {
+		seenPath := ""
+		mgmt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seenPath = r.URL.Path
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer mgmt.Close()
+
+		s, err := NewServer(mgmt.URL, ServerConfig{})
+		if err != nil {
+			t.Fatalf("new server: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/sync", strings.NewReader(syncBody)))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if seenPath != "/sync" {
+			t.Fatalf("expected default gateway to receive /sync, got %s", seenPath)
+		}
+	})
+
+	t.Run("sandbox configured routes to sandbox target only", func(t *testing.T) {
+		var defaultCalled, sandboxCalled bool
+
+		defaultGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defaultCalled = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer defaultGW.Close()
+
+		sandboxGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sandboxCalled = true
+			if r.URL.Path != "/sync" {
+				t.Errorf("sandbox expected /sync, got %s", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		defer sandboxGW.Close()
+
+		s, err := NewServer(defaultGW.URL, ServerConfig{
+			SandboxDeployment: "dev-sandbox",
+			Deployments: []Deployment{
+				{Name: "dev-sandbox", Targets: []string{sandboxGW.URL}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("new server: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/sync", strings.NewReader(syncBody)))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !sandboxCalled {
+			t.Fatal("sandbox gateway was not called")
+		}
+		if defaultCalled {
+			t.Fatal("default gateway should not have been called when sandbox is configured")
+		}
+	})
+
+	t.Run("sandbox deployment name not in config returns 500", func(t *testing.T) {
+		dummy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer dummy.Close()
+		s, err := NewServer(dummy.URL, ServerConfig{
+			SandboxDeployment: "missing-sandbox",
+			Deployments:       []Deployment{{Name: "other", Targets: []string{dummy.URL}}},
+		})
+		if err != nil {
+			t.Fatalf("new server: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/sync", strings.NewReader(syncBody)))
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "missing-sandbox") {
+			t.Fatalf("error message should mention deployment name, got: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("sandbox deployment with no targets returns 500", func(t *testing.T) {
+		dummy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer dummy.Close()
+		s, err := NewServer(dummy.URL, ServerConfig{
+			SandboxDeployment: "empty-sandbox",
+			Deployments:       []Deployment{{Name: "empty-sandbox", Targets: []string{}}},
+		})
+		if err != nil {
+			t.Fatalf("new server: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/sync", strings.NewReader(syncBody)))
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", rr.Code)
+		}
+	})
+
+	t.Run("wrong method returns 405", func(t *testing.T) {
+		dummy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer dummy.Close()
+		s, err := NewServer(dummy.URL, ServerConfig{})
+		if err != nil {
+			t.Fatalf("new server: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/sync", nil))
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", rr.Code)
+		}
+	})
+}

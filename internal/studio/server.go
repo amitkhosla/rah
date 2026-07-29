@@ -46,7 +46,17 @@ type ServerConfig struct {
 	AuthUsers     []StudioSeedUser `json:"auth_users,omitempty"`      // config-file seed users (bcrypt hashes)
 	AuthStorePath string           `json:"auth_store_path,omitempty"` // path to encrypted user file; empty = memory only
 	MCPSecret     string           `json:"mcp_secret,omitempty"`
+
+	// Deployments lists named gateway clusters (topology-agnostic).
+	Deployments []Deployment `json:"deployments,omitempty" yaml:"deployments,omitempty"`
+	// Environments defines ordered promotion stages with gates and rollout plans.
+	Environments []EnvironmentConfig `json:"environments,omitempty" yaml:"environments,omitempty"`
+	// SandboxDeployment names the entry in Deployments[] that the sync button
+	// always routes to. Empty = legacy behaviour (proxy to default gateway).
+	SandboxDeployment string `json:"sandbox_deployment,omitempty" yaml:"sandbox_deployment,omitempty"`
 }
+
+
 
 type DeployRequest struct {
 	ReleaseID             string            `json:"release_id,omitempty"`
@@ -86,39 +96,62 @@ type ReleaseDeployResult struct {
 }
 
 type EnvDeployment struct {
-	DeployedAt time.Time             `json:"deployed_at"`
-	Status     string                `json:"status"`
-	ByUser     string                `json:"by_user"`
-	Results    []ReleaseDeployResult `json:"results,omitempty"`
+	DeployedAt      time.Time             `json:"deployed_at"`
+	Status          string                `json:"status"`
+	ByUser          string                `json:"by_user"`
+	Results         []ReleaseDeployResult `json:"results,omitempty"`
+	VersionID       string                `json:"version_id,omitempty"`
+	CurrentPhase    int                   `json:"current_phase,omitempty"`
+	ApprovalStatus  string                `json:"approval_status,omitempty"` // "pending" | "approved" | "expired"
+	ApprovalRequired bool                 `json:"approval_required,omitempty"`
+	ApprovedBy      string                `json:"approved_by,omitempty"`
+	ApprovedAt      *time.Time            `json:"approved_at,omitempty"`
 }
 
 type ReleaseRecord struct {
-	ReleaseID             string                    `json:"release_id"`
-	CreatedAt             timeJSON                  `json:"created_at"`
-	InstructionSetVersion string                    `json:"instruction_set_version,omitempty"`
-	APIVersions           map[string]string         `json:"api_versions,omitempty"`
-	Payload               json.RawMessage           `json:"payload"`
-	BundleHash            string                    `json:"bundle_hash,omitempty"`
-	GitCommit             string                    `json:"git_commit,omitempty"`
-	GitBranch             string                    `json:"git_branch,omitempty"`
-	GitRepo               string                    `json:"git_repo,omitempty"`
-	SourcePath            string                    `json:"source_path,omitempty"`
-	Author                string                    `json:"author,omitempty"`
-	Tag                   string                    `json:"tag,omitempty"`
-	LintSummary           LintSummary               `json:"lint_summary,omitempty"`
-	Environments          map[string]EnvDeployment  `json:"environments,omitempty"`
+	ReleaseID             string                   `json:"release_id"`
+	CreatedAt             timeJSON                 `json:"created_at"`
+	InstructionSetVersion string                   `json:"instruction_set_version,omitempty"`
+	APIVersions           map[string]string        `json:"api_versions,omitempty"`
+	Payload               json.RawMessage          `json:"payload"`
+	BundleHash            string                   `json:"bundle_hash,omitempty"`
+	GitCommit             string                   `json:"git_commit,omitempty"`
+	GitBranch             string                   `json:"git_branch,omitempty"`
+	GitRepo               string                   `json:"git_repo,omitempty"`
+	SourcePath            string                   `json:"source_path,omitempty"`
+	Author                string                   `json:"author,omitempty"`
+	Tag                   string                   `json:"tag,omitempty"`
+	LintSummary           LintSummary              `json:"lint_summary,omitempty"`
+	Environments          map[string]EnvDeployment `json:"environments,omitempty"`
+	// Release management extensions.
+	Name            string        `json:"name,omitempty"`
+	Description     string        `json:"description,omitempty"`
+	Labels          []string      `json:"labels,omitempty"`
+	IncludeAll      *bool         `json:"include_all,omitempty"` // nil = true (all included by default)
+	Include         []ReleaseItem `json:"include,omitempty"`
+	Exclude         []ExcludeItem `json:"exclude,omitempty"`
+	BaseVersionID   string        `json:"base_version_id,omitempty"`
+	FlowBaselineTag string        `json:"flow_baseline_tag,omitempty"`
+	Status          string        `json:"status,omitempty"` // "draft" | "published" | "voided"
 }
 
 // bundleWrapper is the JSON envelope accepted by POST /api/releases when the
 // caller wants to include metadata alongside the bundle in a single JSON body.
 type bundleWrapper struct {
-	Bundle     *control.UnifiedSyncRequest `json:"bundle"`
-	Tag        string                      `json:"tag,omitempty"`
-	GitCommit  string                      `json:"git_commit,omitempty"`
-	GitBranch  string                      `json:"git_branch,omitempty"`
-	GitRepo    string                      `json:"git_repo,omitempty"`
-	SourcePath string                      `json:"source_path,omitempty"`
-	Author     string                      `json:"author,omitempty"`
+	Bundle          *control.UnifiedSyncRequest `json:"bundle"`
+	Tag             string                      `json:"tag,omitempty"`
+	Name            string                      `json:"name,omitempty"`
+	Description     string                      `json:"description,omitempty"`
+	Labels          []string                    `json:"labels,omitempty"`
+	GitCommit       string                      `json:"git_commit,omitempty"`
+	GitBranch       string                      `json:"git_branch,omitempty"`
+	GitRepo         string                      `json:"git_repo,omitempty"`
+	SourcePath      string                      `json:"source_path,omitempty"`
+	Author          string                      `json:"author,omitempty"`
+	IncludeAll      *bool                       `json:"include_all,omitempty"`
+	Include         []ReleaseItem               `json:"include,omitempty"`
+	Exclude         []ExcludeItem               `json:"exclude,omitempty"`
+	FlowBaselineTag string                      `json:"flow_baseline_tag,omitempty"`
 }
 
 // releaseMeta holds the non-bundle metadata fields for a release.
@@ -260,6 +293,9 @@ type Server struct {
 
 	obsHandler *observability.ObsHandler // nil if proxying to gateway
 	obsWriter  *observability.ObsWriter  // nil if proxying to gateway
+
+	baselineStore FlowBaselineStore
+	versionStore  VersionHistoryStore
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -299,6 +335,8 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		targets:           targets,
 		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
 		chatStore:         newChatHistoryStore(cfg.StoreKind, cfg.StorePath),
+		baselineStore:     newMemFlowBaselineStore(),
+		versionStore:      newMemVersionHistoryStore(),
 	}
 
 	if cfg.AuthEnabled {
@@ -344,6 +382,9 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/deploy", s.deployHandler)
 	apiMux.HandleFunc("/api/releases", s.releasesHandler)
 	apiMux.HandleFunc("/api/releases/", s.releaseByIDHandler)
+	apiMux.HandleFunc("/api/flow-baselines", s.flowBaselinesHandler)
+	apiMux.HandleFunc("/api/flow-baselines/", s.flowBaselineByTagHandler)
+	apiMux.HandleFunc("/api/environments/", s.environmentVersionsHandler)
 	apiMux.HandleFunc("/api/openapi/import", s.importOpenAPIHandler)
 	apiMux.HandleFunc("/api/getAllApis", s.getAllApisProxy)
 	apiMux.HandleFunc("/api/sync", s.syncProxy)
@@ -1533,7 +1574,74 @@ func (s *Server) flowsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyToDefault(w, r, http.MethodPost, "/sync")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := s.config.SandboxDeployment
+	if name == "" {
+		s.proxyToDefault(w, r, http.MethodPost, "/sync")
+		return
+	}
+	dep := findDeployment(s.config.Deployments, name)
+	if dep == nil {
+		http.Error(w, "sandbox_deployment '"+name+"' not found in deployments config", http.StatusInternalServerError)
+		return
+	}
+	if len(dep.Targets) == 0 {
+		http.Error(w, "sandbox deployment '"+name+"' has no targets configured", http.StatusInternalServerError)
+		return
+	}
+	s.proxyToSandbox(w, r, dep.Targets)
+}
+
+// proxyToSandbox forwards POST /api/sync to every target in the sandbox deployment.
+// All targets must succeed; the first non-2xx response short-circuits and is returned as-is.
+func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets []string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+	var lastStatus int
+	var lastBody []byte
+	for _, raw := range targets {
+		targetURL, err := buildTargetURL(raw, "/sync", r.URL.RawQuery)
+		if err != nil {
+			http.Error(w, "invalid sandbox target url: "+raw, http.StatusBadGateway)
+			return
+		}
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(body))
+		if err != nil {
+			http.Error(w, "failed to build sandbox request", http.StatusInternalServerError)
+			return
+		}
+		req.Header = r.Header.Clone()
+		if s.gatewayBasicCred != "" {
+			req.Header.Set("Authorization", "Basic "+s.gatewayBasicCred)
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			http.Error(w, "sandbox target unreachable: "+raw, http.StatusBadGateway)
+			return
+		}
+		lastBody, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastStatus = resp.StatusCode
+		if lastStatus >= 300 {
+			for k, vals := range resp.Header {
+				for _, v := range vals {
+					w.Header().Add(k, v)
+				}
+			}
+			w.WriteHeader(lastStatus)
+			_, _ = w.Write(lastBody)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(lastStatus)
+	_, _ = w.Write(lastBody)
 }
 
 // tenantsMgmtProxy forwards /api/tenants[/...] â†’ /tenants[/...] on the management server.
@@ -1780,12 +1888,24 @@ func (s *Server) releaseByIDHandler(w http.ResponseWriter, r *http.Request) {
 		case "deploy":
 			s.releaseDeployHandler(w, r, id)
 			return
+		case "approve":
+			s.releaseApproveHandler(w, r, id)
+			return
 		case "diff":
 			if len(parts) < 3 || parts[2] == "" {
 				http.Error(w, "other release ID required", http.StatusBadRequest)
 				return
 			}
 			s.releaseDiffHandler(w, r, id, parts[2])
+			return
+		case "merge":
+			s.releaseMergeHandler(w, r)
+			return
+		case "cherry-pick":
+			s.releaseCherryPickHandler(w, r)
+			return
+		case "branch":
+			s.releaseBranchHandler(w, r)
 			return
 		default:
 			http.NotFound(w, r)
@@ -1805,99 +1925,6 @@ func (s *Server) releaseByIDHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rec)
-}
-
-// releaseDeployHandler handles POST /api/releases/:id/deploy.
-// Promotes a release to an environment, records deployment status, and fans out to gateways.
-func (s *Server) releaseDeployHandler(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		Env    string `json:"env"`
-		ByUser string `json:"by_user"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	if req.Env == "" {
-		http.Error(w, "env is required", http.StatusBadRequest)
-		return
-	}
-
-	// Get the release record
-	rec, err := s.store.Get(r.Context(), id)
-	if err != nil {
-		http.Error(w, "release not found", http.StatusNotFound)
-		return
-	}
-
-	// Select all targets (no level/name filtering)
-	selected := s.selectTargets(nil, nil)
-	if len(selected) == 0 {
-		http.Error(w, "no targets available", http.StatusInternalServerError)
-		return
-	}
-
-	// Deploy to all targets
-	results := make([]ReleaseDeployResult, 0)
-	for _, t := range selected {
-		for _, raw := range t.URLs {
-			s.preSyncDeploy(r.Context(), raw, rec.Payload)
-			targetURL, err := buildTargetURL(raw, "/sync", "")
-			if err != nil {
-				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
-				continue
-			}
-			hReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(rec.Payload))
-			if err != nil {
-				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
-				continue
-			}
-			hReq.Header.Set("Content-Type", "application/json")
-			resp, err := s.httpClient.Do(hReq)
-			if err != nil {
-				results = append(results, ReleaseDeployResult{Target: t.Name, Success: false, Message: err.Error()})
-				continue
-			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			success := resp.StatusCode >= 200 && resp.StatusCode < 300
-			msg := ""
-			if !success {
-				msg = "HTTP " + strconv.Itoa(resp.StatusCode)
-			}
-			results = append(results, ReleaseDeployResult{Target: t.Name, Success: success, Message: msg})
-		}
-	}
-
-	// Update ReleaseRecord.Environments[env]
-	if rec.Environments == nil {
-		rec.Environments = make(map[string]EnvDeployment)
-	}
-	rec.Environments[req.Env] = EnvDeployment{
-		DeployedAt: time.Now(),
-		Status:     "deployed",
-		ByUser:     req.ByUser,
-		Results:    results,
-	}
-
-	// Save updated record
-	if err := s.store.Put(context.Background(), rec); err != nil {
-		http.Error(w, "failed to save deployment record", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"release_id": rec.ReleaseID,
-		"env":        req.Env,
-		"results":    results,
-	})
 }
 
 // releaseDiffHandler handles GET /api/releases/:id/diff/:other_id.
