@@ -282,3 +282,145 @@ func newChatHistoryStore(kind, path string) ChatHistoryStore {
 	}
 	return NewInMemoryChatHistoryStore()
 }
+
+// ── FlowBaselineStore ─────────────────────────────────────────────────────────
+
+// FlowBaselineStore persists tagged flow baseline snapshots.
+type FlowBaselineStore interface {
+	GetBaseline(tag string) (*FlowBaselineRecord, error)
+	ListBaselines() ([]*FlowBaselineRecord, error)
+	SaveBaseline(rec *FlowBaselineRecord) error
+	DeleteBaseline(tag string) error
+	PromoteBaseline(fromTag, toTag string) error
+}
+
+type memFlowBaselineStore struct {
+	mu        sync.RWMutex
+	baselines map[string]*FlowBaselineRecord
+}
+
+func newMemFlowBaselineStore() *memFlowBaselineStore {
+	return &memFlowBaselineStore{baselines: make(map[string]*FlowBaselineRecord)}
+}
+
+func (s *memFlowBaselineStore) GetBaseline(tag string) (*FlowBaselineRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.baselines[tag]
+	if !ok {
+		return nil, errors.New("baseline not found: " + tag)
+	}
+	cp := *rec
+	return &cp, nil
+}
+
+func (s *memFlowBaselineStore) ListBaselines() ([]*FlowBaselineRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*FlowBaselineRecord, 0, len(s.baselines))
+	for _, rec := range s.baselines {
+		cp := *rec
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Tag < out[j].Tag })
+	return out, nil
+}
+
+func (s *memFlowBaselineStore) SaveBaseline(rec *FlowBaselineRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *rec
+	s.baselines[rec.Tag] = &cp
+	return nil
+}
+
+func (s *memFlowBaselineStore) DeleteBaseline(tag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.baselines, tag)
+	return nil
+}
+
+func (s *memFlowBaselineStore) PromoteBaseline(fromTag, toTag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, ok := s.baselines[fromTag]
+	if !ok {
+		return errors.New("baseline not found: " + fromTag)
+	}
+	cp := *src
+	cp.Tag = toTag
+	cp.CreatedAt = nowUTC()
+	s.baselines[toTag] = &cp
+	return nil
+}
+
+// ── VersionHistoryStore ───────────────────────────────────────────────────────
+
+// VersionHistoryStore persists the deployment version history per environment.
+type VersionHistoryStore interface {
+	AppendVersion(envID string, rec *VersionRecord) error
+	ListVersions(envID string) ([]*VersionRecord, error)
+	GetVersion(envID, versionID string) (*VersionRecord, error)
+	VoidVersion(envID, versionID, voidedBy, reason string) error
+}
+
+type memVersionHistoryStore struct {
+	mu       sync.RWMutex
+	versions map[string][]*VersionRecord // envID → ordered list
+}
+
+func newMemVersionHistoryStore() *memVersionHistoryStore {
+	return &memVersionHistoryStore{versions: make(map[string][]*VersionRecord)}
+}
+
+func (s *memVersionHistoryStore) AppendVersion(envID string, rec *VersionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *rec
+	s.versions[envID] = append(s.versions[envID], &cp)
+	return nil
+}
+
+func (s *memVersionHistoryStore) ListVersions(envID string) ([]*VersionRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	src := s.versions[envID]
+	out := make([]*VersionRecord, len(src))
+	for i, r := range src {
+		cp := *r
+		out[i] = &cp
+	}
+	// Newest first.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+func (s *memVersionHistoryStore) GetVersion(envID, versionID string) (*VersionRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.versions[envID] {
+		if r.VersionID == versionID {
+			cp := *r
+			return &cp, nil
+		}
+	}
+	return nil, errors.New("version not found: " + versionID)
+}
+
+func (s *memVersionHistoryStore) VoidVersion(envID, versionID, voidedBy, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.versions[envID] {
+		if r.VersionID == versionID {
+			r.Status = "voided"
+			r.VoidedBy = voidedBy
+			r.VoidedAt = time.Now().Unix()
+			r.VoidReason = reason
+			return nil
+		}
+	}
+	return errors.New("version not found: " + versionID)
+}
