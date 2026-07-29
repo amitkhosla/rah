@@ -3,6 +3,7 @@ version: "2"
 run:
   timeout: 5m
 
-issues:
-  exclude-dirs:
-    - internal/studio/ui
+linters:
+  exclusions:
+    paths:
+      - internal/studio/ui
