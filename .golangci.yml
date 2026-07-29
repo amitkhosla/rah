@@ -2,5 +2,7 @@ version: "2"
 
 run:
   timeout: 5m
+
+issues:
   exclude-dirs:
     - internal/studio/ui
