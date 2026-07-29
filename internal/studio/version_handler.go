@@ -140,42 +140,29 @@ func (s *Server) rollbackVersion(w http.ResponseWriter, r *http.Request, env, ve
 		return
 	}
 
-	// 3. Re-deploy: select all targets matching env and POST payload to each
-	targets := s.selectTargets(nil, nil)
-	if len(targets) == 0 {
-		http.Error(w, "no targets available", http.StatusInternalServerError)
+	// 3. Re-deploy: resolve targets for this specific environment only.
+	targetURLs, err := s.resolveTargetURLs(env)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(targetURLs) == 0 {
+		http.Error(w, "no targets available for env: "+env, http.StatusInternalServerError)
 		return
 	}
 
-	results := make([]map[string]interface{}, 0, len(targets))
-	for _, target := range targets {
-		for _, url := range target.URLs {
-			syncURL, err := buildTargetURL(url, "/sync", "")
-			if err != nil {
-				results = append(results, map[string]interface{}{
-					"target": target.Name,
-					"url":    url,
-					"error":  err.Error(),
-				})
-				continue
-			}
-
-			_, status, err := s.gatewayCall(r.Context(), "POST", syncURL, release.Payload)
-			if err != nil {
-				results = append(results, map[string]interface{}{
-					"target": target.Name,
-					"url":    url,
-					"status": status,
-					"error":  err.Error(),
-				})
-			} else {
-				results = append(results, map[string]interface{}{
-					"target": target.Name,
-					"url":    url,
-					"status": status,
-					"error":  nil,
-				})
-			}
+	results := make([]map[string]interface{}, 0, len(targetURLs))
+	for _, rawURL := range targetURLs {
+		syncURL, err := buildTargetURL(rawURL, "/sync", "")
+		if err != nil {
+			results = append(results, map[string]interface{}{"url": rawURL, "error": err.Error()})
+			continue
+		}
+		_, status, err := s.gatewayCall(r.Context(), "POST", syncURL, release.Payload)
+		if err != nil {
+			results = append(results, map[string]interface{}{"url": rawURL, "status": status, "error": err.Error()})
+		} else {
+			results = append(results, map[string]interface{}{"url": rawURL, "status": status})
 		}
 	}
 

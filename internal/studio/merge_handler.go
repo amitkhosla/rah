@@ -58,6 +58,15 @@ func (s *Server) releaseMergeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block mutation of a release that has already been deployed — rollback integrity
+	// depends on the payload being immutable after deployment.
+	for _, dep := range targetRec.Environments {
+		if dep.Status == "deployed" || dep.Status == "partial" {
+			http.Error(w, "cannot merge into a release that has already been deployed; create a new release instead", http.StatusConflict)
+			return
+		}
+	}
+
 	// Parse both payloads as UnifiedSyncRequest.
 	var targetReq control.UnifiedSyncRequest
 	if len(targetRec.Payload) > 0 {
@@ -229,6 +238,14 @@ func (s *Server) releaseCherryPickHandler(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		http.Error(w, "source release not found", http.StatusNotFound)
 		return
+	}
+
+	// Block mutation of a deployed release — same invariant as merge.
+	for _, dep := range targetRec.Environments {
+		if dep.Status == "deployed" || dep.Status == "partial" {
+			http.Error(w, "cannot cherry-pick into a release that has already been deployed; create a new release instead", http.StatusConflict)
+			return
+		}
 	}
 
 	// Parse source payload.

@@ -103,27 +103,16 @@ func (s *Server) releaseDeployHandler(w http.ResponseWriter, r *http.Request, id
 	var results []ReleaseDeployResult
 
 	if envCfg != nil && envCfg.Rollout.Strategy == "phased" {
-		results, err = s.executePhasedRollout(ctx, w, r, rec, req.Env, req.ByUser, envCfg)
+		results, err = s.executePhasedRollout(ctx, w, r, rec, req.Env, req.ByUser, envCfg, 0)
 		if err != nil {
 			// err == errPausedForApproval means we already wrote the 202 response.
 			return
 		}
 	} else {
-		// "all" strategy (default): deploy to every available target.
-		var targetURLs []string
-		if envCfg != nil && len(envCfg.Rollout.Deployments) > 0 {
-			for _, dName := range envCfg.Rollout.Deployments {
-				dep := findDeployment(s.config.Deployments, dName)
-				if dep != nil {
-					targetURLs = append(targetURLs, dep.Targets...)
-				}
-			}
-		}
-		if len(targetURLs) == 0 {
-			// Fall back to all registered targets.
-			for _, t := range s.selectTargets(nil, nil) {
-				targetURLs = append(targetURLs, t.URLs...)
-			}
+		targetURLs, resolveErr := s.resolveTargetURLs(req.Env)
+		if resolveErr != nil {
+			http.Error(w, resolveErr.Error(), http.StatusInternalServerError)
+			return
 		}
 		results = s.deployToURLs(ctx, rec.Payload, targetURLs)
 	}
@@ -219,24 +208,27 @@ func (s *Server) releaseApproveHandler(w http.ResponseWriter, r *http.Request, i
 	_ = s.store.Put(ctx, rec)
 
 	// Trigger actual deployment now that approval is granted.
-	// Select targets the same way the deploy handler does.
 	envCfg := findEnvironment(s.config.Environments, req.Env)
-	var targetURLs []string
-	if envCfg != nil && len(envCfg.Rollout.Deployments) > 0 {
-		for _, dName := range envCfg.Rollout.Deployments {
-			d := findDeployment(s.config.Deployments, dName)
-			if d != nil {
-				targetURLs = append(targetURLs, d.Targets...)
-			}
-		}
-	}
-	if len(targetURLs) == 0 {
-		for _, t := range s.selectTargets(nil, nil) {
-			targetURLs = append(targetURLs, t.URLs...)
-		}
-	}
 
-	results := s.deployToURLs(ctx, rec.Payload, targetURLs)
+	var results []ReleaseDeployResult
+	if envCfg != nil && envCfg.Rollout.Strategy == "phased" {
+		// Resume phased rollout from the phase that paused for approval.
+		// dep.CurrentPhase is 1-indexed (phases completed), so next phase is at that index.
+		startPhase := dep.CurrentPhase
+		var rolloutErr error
+		results, rolloutErr = s.executePhasedRollout(ctx, w, r, rec, req.Env, req.ApprovedBy, envCfg, startPhase)
+		if rolloutErr != nil {
+			// errPausedForApproval: another phase boundary was hit, response already written.
+			return
+		}
+	} else {
+		targetURLs, resolveErr := s.resolveTargetURLs(req.Env)
+		if resolveErr != nil {
+			http.Error(w, resolveErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		results = s.deployToURLs(ctx, rec.Payload, targetURLs)
+	}
 
 	allSuccess := true
 	for _, res := range results {
@@ -276,15 +268,17 @@ func (s *Server) releaseApproveHandler(w http.ResponseWriter, r *http.Request, i
 // that a 202 response has already been written and the function should return.
 var errPausedForApproval = fmt.Errorf("paused for phase approval")
 
-// executePhasedRollout deploys phase by phase.
+// executePhasedRollout deploys phase by phase starting at startPhase (0-indexed).
+// startPhase=0 begins a fresh rollout; higher values resume after an approval pause.
 // If a phase has RequireApprovalAfter, it writes a 202 and returns errPausedForApproval.
 func (s *Server) executePhasedRollout(
 	ctx context.Context, w http.ResponseWriter, r *http.Request,
-	rec ReleaseRecord, env, byUser string, envCfg *EnvironmentConfig,
+	rec ReleaseRecord, env, byUser string, envCfg *EnvironmentConfig, startPhase int,
 ) ([]ReleaseDeployResult, error) {
 	var allResults []ReleaseDeployResult
 
-	for phaseIdx, phase := range envCfg.Rollout.Phases {
+	for phaseIdx := startPhase; phaseIdx < len(envCfg.Rollout.Phases); phaseIdx++ {
+		phase := envCfg.Rollout.Phases[phaseIdx]
 		var phaseURLs []string
 		for _, dName := range phase.Deployments {
 			dep := findDeployment(s.config.Deployments, dName)
@@ -455,4 +449,31 @@ func (s *Server) appendVersionRecord(ctx context.Context, rec ReleaseRecord, env
 	if err := s.versionStore.AppendVersion(envID, vr); err != nil {
 		log.Printf("[Studio] appendVersionRecord: store error: %v", err)
 	}
+}
+
+// resolveTargetURLs returns the gateway URLs to deploy to for the given environment.
+// If the environment has an explicit Rollout.Deployments list, only those are used;
+// an error is returned when none resolve rather than silently falling back to all targets.
+// When no environment config exists the full registered target list is returned.
+func (s *Server) resolveTargetURLs(env string) ([]string, error) {
+	envCfg := findEnvironment(s.config.Environments, env)
+	if envCfg != nil && len(envCfg.Rollout.Deployments) > 0 {
+		var urls []string
+		for _, dName := range envCfg.Rollout.Deployments {
+			dep := findDeployment(s.config.Deployments, dName)
+			if dep != nil {
+				urls = append(urls, dep.Targets...)
+			}
+		}
+		if len(urls) == 0 {
+			return nil, fmt.Errorf("env %q: rollout.deployments is configured but none of the named deployments resolved to targets; check deployment names in config", env)
+		}
+		return urls, nil
+	}
+	// No env config or no explicit deployment list — use all registered targets.
+	var urls []string
+	for _, t := range s.selectTargets(nil, nil) {
+		urls = append(urls, t.URLs...)
+	}
+	return urls, nil
 }
