@@ -35,6 +35,7 @@ package control
 //	set_upstream_header("X-Key", slot)
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -43,6 +44,57 @@ import (
 
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
+
+// ── Upstream passthrough parsing helper ──────────────────────────────────────
+
+// parseUpstreamPassthrough converts a map to UpstreamPassthroughConfig.
+// Returns nil if the map is empty, signaling "inherit from parent".
+func parseUpstreamPassthrough(m map[string]any) *UpstreamPassthroughConfig {
+	if len(m) == 0 {
+		return nil
+	}
+	cfg := &UpstreamPassthroughConfig{}
+	if v, ok := m["forward_incoming_headers"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.ForwardIncomingHeaders = &b
+		}
+	}
+	if v, ok := m["forward_response_headers"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.ForwardResponseHeaders = &b
+		}
+	}
+	if v, ok := m["forward_query_params"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.ForwardQueryParams = &b
+		}
+	}
+	if v, ok := m["forward_path_suffix"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.ForwardPathSuffix = &b
+		}
+	}
+	if v, ok := m["block_headers"]; ok {
+		switch bh := v.(type) {
+		case []any:
+			headers := make([]string, 0, len(bh))
+			for _, h := range bh {
+				if s, ok := h.(string); ok {
+					headers = append(headers, s)
+				}
+			}
+			cfg.BlockHeaders = headers
+		case []string:
+			cfg.BlockHeaders = bh
+		}
+	}
+	if v, ok := m["inject_tx_id_header"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.InjectTxIDHeader = s
+		}
+	}
+	return cfg
+}
 
 // ── Public result type ────────────────────────────────────────────────────────
 
@@ -1016,6 +1068,12 @@ func (p *dslParser) dslActionSteps(action, rawParams string, as_ string) []StepC
 			var ms uint32
 			_, _ = fmt.Sscanf(v, "%d", &ms)
 			step.Timeout = ms
+		}
+		if v, ok := params["upstream"]; ok {
+			var upstreamMap map[string]any
+			if err := json.Unmarshal([]byte(v), &upstreamMap); err == nil {
+				step.Upstream = parseUpstreamPassthrough(upstreamMap)
+			}
 		}
 		if as_ != "" {
 			// LHS var (e.g. body = http.get(...)) → store response body there.

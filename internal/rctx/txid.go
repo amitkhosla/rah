@@ -55,6 +55,23 @@ func FormatTxID(id [2]uint64) string {
 	return fmt.Sprintf("%016x%016x", id[0], id[1])
 }
 
+// FormatTxIDInto writes the 32-char hex representation of id into dst.
+// dst must be at least 32 bytes. Zero allocation — caller provides the buffer
+// (use ctx.Alloc(32) for the arena-backed, pool-reused path).
+func FormatTxIDInto(dst []byte, id [2]uint64) {
+	const hx = "0123456789abcdef"
+	v := id[0]
+	for i := 15; i >= 0; i-- {
+		dst[i] = hx[v&0xf]
+		v >>= 4
+	}
+	v = id[1]
+	for i := 31; i >= 16; i-- {
+		dst[i] = hx[v&0xf]
+		v >>= 4
+	}
+}
+
 // Fingerprint returns the hex-encoded instance fingerprint for startup logging.
 func (g *TxIDGenerator) Fingerprint() string {
 	return fmt.Sprintf("%016x%016x", g.fingerprint[0], g.fingerprint[1])

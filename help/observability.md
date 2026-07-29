@@ -543,23 +543,98 @@ scrape_configs:
 
 ## OpenTelemetry Export
 
-Send traces and metrics to any OTEL-compatible backend (Jaeger, Tempo, Honeycomb, DataDog, etc.):
+Send traces to any OTEL-compatible backend (Jaeger, Grafana Tempo, Honeycomb, Datadog, etc.) with no database required.
 
 ```yaml
 observability:
+  store:
+    type: memory          # no postgres needed
+    max_traces: 1000      # Studio UI ring buffer
+
   export:
     otel:
-      endpoint: http://otel-collector:4317
+      enabled: true
+      endpoint: localhost:4317   # OTEL collector address (gRPC)
+      insecure: true             # set false for TLS (production)
       service_name: rah-gateway
-      service_namespace: production
-      insecure: false
-      timeout_sec: 10
 ```
 
-**Exported signals**:
-- Traces: per-request spans with instruction-level detail
-- Metrics: request rate, latency, errors, cache performance
-- Logs: access logs with full context
+When `enabled: true`, the gateway fans out every completed trace to both the in-memory store (for the Studio UI) and the OTEL exporter — the two are independent. Studio browsing, `/observability/traces`, and the access log all continue to work exactly as before.
+
+### How it works
+
+Trace export is **fully async and zero-cost on the hot path**. The request goroutine writes into a lock-free slab ring and returns immediately. A background drain goroutine picks up completed traces in batches and calls the stores. The OTEL store sits alongside the memory store via a fan-out — no locks, no added latency to requests.
+
+```
+Request (hot path — unchanged)
+  PersistTrace() → lock-free ring enqueue → returns immediately
+
+Drain goroutine (async, existing)
+  WriteTraceBatch([]TraceRecord)
+    ├── MemObsStore    → Studio UI / REST API
+    └── OTELObsStore   → OTEL SDK → gRPC batch → Collector
+```
+
+### What gets exported as spans
+
+Each trace becomes a span tree in your backend:
+
+```
+[root span]  POST /api/chat   42ms
+  ├── validate_token           1.2ms   ← instruction span
+  ├── registry_lookup          0.1ms
+  ├── rate_limit_v2            0.1ms
+  ├── llm:gpt-4o              38ms    ← LLM call span
+  │     rah.model=gpt-4o
+  │     rah.input_tokens=512
+  │     rah.output_tokens=128
+  │     rah.cost_micro=420
+  └── http_call_upstream        2ms
+```
+
+**Root span attributes**: `http.method`, `http.status_code`, `rah.api_name`, `rah.tenant_id`, `rah.duration_ns`, `rah.gateway_ns`, `rah.upstream_ns`, `rah.upstream_calls`, `rah.req_bytes`, `rah.res_bytes`
+
+**Instruction child spans**: `rah.instr_name`, `rah.instr_pc`, `rah.duration_ns`
+
+**LLM child spans**: `rah.model`, `rah.llm_status`, `rah.input_tokens`, `rah.output_tokens`, `rah.cost_micro`, `rah.duration_ns`
+
+Instruction span names are resolved from the compiled API schema. If a schema is not yet loaded, names fall back to `instr_<pc>`.
+
+### Span timing
+
+Instruction start times are reconstructed as cumulative offsets from the root span start (durations are recorded precisely, start offsets are approximate). LLM call spans use the root start time with their exact duration.
+
+### Local development (zero infrastructure)
+
+Run a collector as a sidecar that prints spans to stdout — no Jaeger or Tempo needed:
+
+```bash
+docker run --rm -p 4317:4317 \
+  otel/opentelemetry-collector \
+  --config /etc/otel/config.yaml
+```
+
+Or use the [OTEL collector contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib) with a `logging` exporter to print spans directly to the terminal during development.
+
+### Production setup (Grafana Tempo example)
+
+```yaml
+observability:
+  store:
+    type: memory
+  export:
+    otel:
+      enabled: true
+      endpoint: tempo.internal:4317
+      insecure: false
+      service_name: rah-gateway
+```
+
+The gRPC connection is persistent and batched — spans are buffered by the OTEL SDK's `BatchSpanProcessor` (up to 512 spans, flushed every 5 seconds or when the buffer fills) before being sent over a single gRPC stream.
+
+### Note on distributed trace correlation
+
+RAH generates its own `TraceID` (a monotonic counter) for each request. If your clients send a W3C `traceparent` header, it is currently captured as request metadata but not used as the OTEL parent context — so RAH spans appear as independent trees in your backend rather than as children of the caller's trace. Cross-service correlation via `traceparent` is a planned future addition.
 
 ---
 

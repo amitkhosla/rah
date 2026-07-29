@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -26,7 +28,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
-          args: --timeout=5m --skip-dirs=internal/studio/ui --new-from-rev=origin/main
+          args: ${{ github.event_name == 'pull_request' && '--new-from-rev=origin/main' || '' }}
 
   # ── Build (verify it compiles on all target platforms) ────────────────────
   build:
@@ -99,6 +101,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -108,7 +112,34 @@ jobs:
       - name: Vulnerability scan
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+
+          set +e
+          OUTPUT=$(govulncheck ./... 2>&1)
+          SCAN_EXIT=$?
+          set -e
+          echo "$OUTPUT"
+
+          if [ "$SCAN_EXIT" -ne 3 ]; then exit "$SCAN_EXIT"; fi
+
+          # Modules whose go.mod line was added or version-bumped in this PR.
+          git fetch origin main --quiet
+          CHANGED=$(git diff origin/main -- go.mod | grep "^+" | grep -v "^+++" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9._/-]+/[a-zA-Z0-9._/-]+' | sort -u)
+
+          HAS_ERROR=0
+          while IFS= read -r module; do
+            FIXED=$(echo "$OUTPUT" | grep -A4 "Module: $module" | grep "Fixed in:" | head -1)
+            if echo "$FIXED" | grep -qv "Fixed in: N/A"; then
+              echo "::error::$module has a vulnerability with a fix available — upgrade"
+              HAS_ERROR=1
+            elif echo "$CHANGED" | grep -qF "$module"; then
+              echo "::error::$module was added or upgraded in this PR and has an unfixable vulnerability — review required"
+              HAS_ERROR=1
+            else
+              echo "::warning::$module has an unfixable vulnerability (pre-existing) — monitoring"
+            fi
+          done <<< "$(echo "$OUTPUT" | grep "Module:" | awk '{print $2}' | sort -u)"
+
+          exit "$HAS_ERROR"
 
       # Run tests; skip known pre-existing failures (observability, inlcache benchmarks)
       - name: Run tests

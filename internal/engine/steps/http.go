@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"unsafe"
 	"github.com/amitkhosla/rah/internal/egress"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
@@ -41,6 +42,11 @@ var streamCopyPool = sync.Pool{New: func() any {
 	return &b
 }}
 
+// txIDValSlicePool recycles single-element string slices for TX ID header injection.
+// IMPORTANT: must be returned to pool only AFTER httpClient.Do() — the transport reads
+// the backing array during Do(), so an earlier Put creates a data race.
+var txIDValSlicePool = sync.Pool{New: func() any { s := make([]string, 1); return &s }}
+
 // HttpActionConfig holds the bake-time configuration for an http_call instruction.
 // All slot indices use -1 to indicate "not set / use static value".
 type HttpActionConfig struct {
@@ -62,6 +68,9 @@ type HttpActionConfig struct {
 	BlockHeadersMap         map[string]struct{} // pre-built at bake time; nil = no blocking
 	// FlowInput carries http.* tuning keys forwarded from the step Input map.
 	FlowInput map[string]string
+	ForwardQueryParams bool   // append incoming raw query string to upstream URL; guarded - zero alloc when false
+	ForwardPathSuffix  bool   // append incoming request path to upstream URL; guarded - zero alloc when false
+	TxIDHeaderName     string // canonical header name for gateway TX ID injection; empty string = disabled
 	// EgressProfile selects the transport protocol for this call.
 	// nil = Auto (ForceAttemptHTTP2:true, same as legacy behavior).
 	EgressProfile *egress.EgressProfile
@@ -1208,6 +1217,48 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 			}
 
+			// URL enrichment (zero-alloc, guarded: skipped entirely when both flags are false)
+			if (cfg.ForwardPathSuffix && len(ctx.Path) > 0) || (cfg.ForwardQueryParams && len(ctx.RawQuery) > 0) {
+				// Locate any existing query separator so ForwardPathSuffix inserts ctx.Path
+				// before it rather than after the full URL string (which would corrupt the URL).
+				qpos := -1
+				for i := 0; i < len(url); i++ {
+					if url[i] == '?' {
+						qpos = i
+						break
+					}
+				}
+				sz := len(url)
+				if cfg.ForwardPathSuffix {
+					sz += len(ctx.Path)
+				}
+				if cfg.ForwardQueryParams && len(ctx.RawQuery) > 0 {
+					sz += 1 + len(ctx.RawQuery)
+				}
+				buf := ctx.Alloc(sz)
+				var n int
+				if cfg.ForwardPathSuffix && len(ctx.Path) > 0 && qpos >= 0 {
+					n = copy(buf, url[:qpos])
+					n += copy(buf[n:], ctx.Path)
+					n += copy(buf[n:], url[qpos:])
+				} else {
+					n = copy(buf, url)
+					if cfg.ForwardPathSuffix && len(ctx.Path) > 0 {
+						n += copy(buf[n:], ctx.Path)
+					}
+				}
+				if cfg.ForwardQueryParams && len(ctx.RawQuery) > 0 {
+					sep := byte('?')
+					if qpos >= 0 {
+						sep = '&'
+					}
+					buf[n] = sep
+					n++
+					n += copy(buf[n:], ctx.RawQuery)
+				}
+				url = unsafe.String(unsafe.SliceData(buf), n)
+			}
+
 			upstreamHost := extractUpstreamHost(url)
 
 			// â"€â"€ Select HTTP client â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -1358,6 +1409,17 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
+				// TX ID header injection (zero-alloc via pool, guarded: skipped when TxIDHeaderName=="")
+				// txSlicePtr is declared here so we can return it to the pool after Do().
+				var txSlicePtr *[]string
+				if cfg.TxIDHeaderName != "" {
+					txBuf := ctx.Alloc(32)
+					rctx.FormatTxIDInto(txBuf, ctx.InternalTxID)
+					txSlicePtr = txIDValSlicePool.Get().(*[]string)
+					(*txSlicePtr)[0] = unsafe.String(unsafe.SliceData(txBuf), 32)
+					req.Header[cfg.TxIDHeaderName] = *txSlicePtr
+				}
+
 				// â"€â"€ Content-Type â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 				if contentType != "" && len(bodyBytes) > 0 {
 					req.Header.Set("Content-Type", contentType)
@@ -1426,6 +1488,13 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				deadlineTimer.cancel()
 				deadlineTimer = wheelHandle{}
 				ctx.ClearUpstreamTimeout()
+
+				// Return TX ID slice to pool now that Do() has sent all request headers.
+				// Clear the string first to release the reference to arena memory.
+				if txSlicePtr != nil {
+					(*txSlicePtr)[0] = ""
+					txIDValSlicePool.Put(txSlicePtr)
+				}
 
 				// Return the bytes.Reader to pool now that Do() has consumed it.
 				if pooledReader != nil {

@@ -1,4 +1,4 @@
-﻿package observability
+package observability
 
 import (
 	"context"
@@ -24,11 +24,28 @@ type ObsStoreParams struct {
 	// Memory store sizing
 	MaxAccessLog int // default 10000
 	MaxTraces    int // default 500
+
+	// EnableOTEL wraps the primary store in a FanOutObsStore with an OTELObsStore
+	// when true. The OTELObsStore uses the global OTEL TracerProvider (set by main.go
+	// after S8 OTEL SDK init). No-op when false.
+	EnableOTEL bool
 }
 
 // NewObsStoreFromParams creates an ObsStore according to params.
 // Always returns a valid store (falls back to MemObsStore on error).
+// If EnableOTEL is true, wraps the primary store in a FanOutObsStore with an OTELObsStore.
 func NewObsStoreFromParams(ctx context.Context, p ObsStoreParams) ObsStore {
+	primary := newPrimaryObsStore(ctx, p)
+	if p.EnableOTEL {
+		otelStore := newOTELObsStore()
+		gatewaylog.Default.Info("obs store otel export enabled")
+		return NewFanOutObsStore(primary, otelStore)
+	}
+	return primary
+}
+
+// newPrimaryObsStore creates the primary ObsStore based on params.
+func newPrimaryObsStore(ctx context.Context, p ObsStoreParams) ObsStore {
 	storeType := strings.ToLower(strings.TrimSpace(p.Type))
 	if storeType == "" {
 		storeType = "memory"
