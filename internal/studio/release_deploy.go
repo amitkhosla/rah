@@ -401,7 +401,7 @@ func (s *Server) deployToURLs(ctx context.Context, payload []byte, rawURLs []str
 			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		success := resp.StatusCode >= 200 && resp.StatusCode < 300
 		msg := ""
 		if !success {

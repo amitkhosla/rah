@@ -1626,7 +1626,7 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 			return
 		}
 		lastBody, _ = io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		lastStatus = resp.StatusCode
 		if lastStatus >= 300 {
 			for k, vals := range resp.Header {

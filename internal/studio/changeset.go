@@ -56,8 +56,8 @@ func computeChangeset(oldPayload, newPayload json.RawMessage) (Changeset, error)
 
 	// Diff flows.
 	for _, f := range newReq.Flows {
-		switch {
-		case f.Action == "delete":
+		switch f.Action {
+		case "delete":
 			cs.FlowsDeleted = append(cs.FlowsDeleted, f.Name)
 		default:
 			if _, existed := oldFlowHash[f.Name]; !existed {
@@ -73,8 +73,8 @@ func computeChangeset(oldPayload, newPayload json.RawMessage) (Changeset, error)
 
 	// Diff APIs.
 	for _, a := range newReq.Apis {
-		switch {
-		case a.Action == "delete":
+		switch a.Action {
+		case "delete":
 			cs.APIsDeleted = append(cs.APIsDeleted, a.Name)
 		default:
 			b, _ := json.Marshal(a)
