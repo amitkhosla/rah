@@ -327,6 +327,11 @@ func (s *TenantServer) SetTenantModifierHandler(w http.ResponseWriter, r *http.R
 		flags |= TenantRLDisabled
 	}
 	s.mgr.SetTenantRateLimitModifier(tID, TenantRateLimitModifier{ScalePct: req.ScalePct, Flags: flags})
+	go s.mgr.PersistModifier(r.Context(), alias, TenantModifierRecord{
+		ScalePct:   req.ScalePct,
+		Blocked:    req.Blocked,
+		RLDisabled: req.RLDisabled,
+	})
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
@@ -453,6 +458,12 @@ func (s *TenantServer) UpsertTenantV2OverrideHandler(w http.ResponseWriter, r *h
 		ScaleOverridePct: req.ScaleOverridePct,
 		WindowLimits:     req.WindowLimits,
 	})
+	go s.mgr.PersistV2Override(r.Context(), alias, req.RateLimitV2Name, TenantV2OverrideRecord{
+		Blocked:          req.Blocked,
+		RLDisabled:       req.RLDisabled,
+		ScaleOverridePct: req.ScaleOverridePct,
+		WindowLimits:     req.WindowLimits,
+	})
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
@@ -492,6 +503,7 @@ func (s *TenantServer) DeleteTenantV2OverrideHandler(w http.ResponseWriter, r *h
 		return
 	}
 	s.mgr.DeleteTenantV2Override(tID, configID)
+	go s.mgr.DeleteV2Override(r.Context(), alias, configName)
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
@@ -877,6 +889,8 @@ func (s *TenantServer) tenantSubHandler(w http.ResponseWriter, r *http.Request) 
 		s.SetTenantModifierHandler(w, r)
 	case strings.HasSuffix(path, "/rate-limit-overrides") && r.Method == http.MethodPost:
 		s.UpsertTenantRateLimitOverrideHandler(w, r)
+	case path == "/tenants/rate-limit-v2-overrides" && r.Method == http.MethodGet:
+		s.GetAllV2OverridesHandler(w, r)
 	case strings.HasSuffix(path, "/rate-limit-v2-overrides") && r.Method == http.MethodPost:
 		s.UpsertTenantV2OverrideHandler(w, r)
 	case strings.Contains(path, "/rate-limit-v2-overrides/") && r.Method == http.MethodDelete:
@@ -1020,6 +1034,81 @@ func isCredentialsSubPath(path string) bool {
 
 // aliasFromPath strips prefix from path and returns the remainder.
 // e.g. aliasFromPath("/tenants/pepsi.api.com/modifier", "/tenants/") → "pepsi.api.com/modifier"
+// GetAllV2OverridesHandler handles GET /tenants/rate-limit-v2-overrides.
+// Returns every tenant that has V2 config-specific overrides or a non-default
+// global rate limit modifier (blocked, disabled, or scaled).
+func (s *TenantServer) GetAllV2OverridesHandler(w http.ResponseWriter, r *http.Request) {
+	reg := State.Active.Load()
+	if reg == nil {
+		http.Error(w, "registry not initialised", http.StatusServiceUnavailable)
+		return
+	}
+	idToName, idToAliases := s.mgr.OverrideResolutionData()
+
+	type v2OverrideEntry struct {
+		ConfigName       string   `json:"config_name"`
+		Blocked          bool     `json:"blocked"`
+		RLDisabled       bool     `json:"rl_disabled"`
+		ScaleOverridePct int16    `json:"scale_override_pct"`
+		WindowLimits     []uint32 `json:"window_limits,omitempty"`
+	}
+	type tenantOverrideRow struct {
+		TenantID         uint16           `json:"tenant_id"`
+		Alias            string           `json:"alias"`
+		GlobalBlocked    bool             `json:"global_blocked"`
+		GlobalRLDisabled bool             `json:"global_rl_disabled"`
+		GlobalScalePct   int16            `json:"global_scale_pct"`
+		Overrides        []v2OverrideEntry `json:"overrides"`
+	}
+
+	rows := make([]tenantOverrideRow, 0)
+	for tID := uint16(1); tID < reg.MaxTenants; tID++ {
+		var table *TenantV2OverrideTable
+		if int(tID) < len(reg.TenantV2Overrides) {
+			table = reg.TenantV2Overrides[tID]
+		}
+		var modifier TenantRateLimitModifier
+		if int(tID) < len(reg.TenantModifiers) {
+			modifier = reg.TenantModifiers[tID]
+		}
+
+		hasOverrides := table != nil && len(table.ConfigIDs) > 0
+		hasGlobalMod := modifier.ScalePct != 0 || modifier.Flags != 0
+		if !hasOverrides && !hasGlobalMod {
+			continue
+		}
+		aliases := idToAliases[tID]
+		if len(aliases) == 0 {
+			continue
+		}
+
+		entries := make([]v2OverrideEntry, 0)
+		if table != nil {
+			for i, configID := range table.ConfigIDs {
+				e := table.Entries[i]
+				entries = append(entries, v2OverrideEntry{
+					ConfigName:       idToName[configID],
+					Blocked:          e.Flags&V2ConfigBlocked != 0,
+					RLDisabled:       e.Flags&V2ConfigDisabled != 0,
+					ScaleOverridePct: e.ScaleOverridePct,
+					WindowLimits:     e.WindowLimits,
+				})
+			}
+		}
+		rows = append(rows, tenantOverrideRow{
+			TenantID:         tID,
+			Alias:            aliases[0],
+			GlobalBlocked:    modifier.Flags&TenantBlocked != 0,
+			GlobalRLDisabled: modifier.Flags&TenantRLDisabled != 0,
+			GlobalScalePct:   modifier.ScalePct,
+			Overrides:        entries,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
 func aliasFromPath(path, prefix string) string {
 	if !strings.HasPrefix(path, prefix) {
 		return ""

@@ -22,12 +22,23 @@ import (
 // PasswordHash is bcrypt — never stored in plaintext.
 // The entire record is AES-256-GCM encrypted before writing to disk.
 type StudioUser struct {
-	Username           string `json:"username"`
-	PasswordHash       string `json:"password_hash"`
-	Role               string `json:"role"`
-	MustChangePassword bool   `json:"must_change_password,omitempty"`
-	CreatedAt          int64  `json:"created_at"`
-	UpdatedAt          int64  `json:"updated_at"`
+	Username           string   `json:"username"`
+	PasswordHash       string   `json:"password_hash"`
+	Role               string   `json:"role"`
+	MustChangePassword bool     `json:"must_change_password,omitempty"`
+	CreatedAt          int64    `json:"created_at"`
+	UpdatedAt          int64    `json:"updated_at"`
+	AllowedEnvs        []string `json:"allowed_envs,omitempty"`
+
+	// SSO / OIDC identity fields.
+	SSOProvisioned bool   `json:"sso_provisioned,omitempty"`
+	SSOProvider    string `json:"sso_provider,omitempty"`
+	SSOEmail       string `json:"sso_email,omitempty"`
+
+	// SCIM provisioning fields.
+	SCIMId            string   `json:"scim_id,omitempty"`
+	SCIMGroups        []string `json:"scim_groups,omitempty"`
+	SCIMDeprovisioned bool     `json:"scim_deprovisioned,omitempty"`
 }
 
 // StudioSeedUser is the config-file representation: bcrypt hash, no plaintext password.
@@ -40,10 +51,11 @@ type StudioSeedUser struct {
 // StudioUserStore manages Studio users in memory with optional encrypted file persistence.
 // Thread-safe for concurrent reads and writes.
 type StudioUserStore struct {
-	mu       sync.RWMutex
-	users    map[string]*StudioUser // key: lower(username)
-	encKey   []byte                 // 32-byte AES-256 key; nil = store without encryption
-	filePath string                 // empty = memory only
+	mu                 sync.RWMutex
+	users              map[string]*StudioUser // key: lower(username)
+	encKey             []byte                 // 32-byte AES-256 key; nil = store without encryption
+	filePath           string                 // empty = memory only
+	sessionInvalidator func(username string)  // called after role/env changes to expire sessions
 }
 
 // newStudioUserStore creates a store, loads persisted users, seeds from config, then
@@ -267,6 +279,77 @@ func (s *StudioUserStore) Get(username string) (StudioUser, bool) {
 	safe := *u
 	safe.PasswordHash = ""
 	return safe, true
+}
+
+// GetByEmail returns the first user with a matching SSOEmail (case-insensitive).
+func (s *StudioUserStore) GetByEmail(email string) (*StudioUser, bool) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.users {
+		if strings.ToLower(u.SSOEmail) == email {
+			cp := *u
+			cp.PasswordHash = ""
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+// GetBySCIMId returns the user with the given SCIM external ID.
+func (s *StudioUserStore) GetBySCIMId(scimID string) (*StudioUser, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, u := range s.users {
+		if u.SCIMId == scimID {
+			cp := *u
+			cp.PasswordHash = ""
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+// UpsertSSO creates or updates a user that was provisioned via SSO/SCIM.
+// Unlike Upsert, it will NOT overwrite an existing PasswordHash (SSO users have no local password).
+func (s *StudioUserStore) UpsertSSO(u StudioUser) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(u.Username)
+	if existing, ok := s.users[key]; ok {
+		u.CreatedAt = existing.CreatedAt
+		if u.PasswordHash == "" {
+			u.PasswordHash = existing.PasswordHash
+		}
+	} else {
+		u.CreatedAt = time.Now().Unix()
+	}
+	u.UpdatedAt = time.Now().Unix()
+	s.users[key] = &u
+	return s.saveToFileLocked()
+}
+
+// SetAllowedEnvs replaces the environment allowlist for a user and persists.
+// Passing nil removes all restrictions (all environments allowed for that user's role).
+func (s *StudioUserStore) SetAllowedEnvs(username string, envs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(username)
+	u, ok := s.users[key]
+	if !ok {
+		return fmt.Errorf("user %q not found", username)
+	}
+	updated := *u
+	updated.AllowedEnvs = envs
+	updated.UpdatedAt = time.Now().Unix()
+	s.users[key] = &updated
+	if err := s.saveToFileLocked(); err != nil {
+		return err
+	}
+	if s.sessionInvalidator != nil {
+		s.sessionInvalidator(username)
+	}
+	return nil
 }
 
 // ── Encrypted file persistence ────────────────────────────────────────────────

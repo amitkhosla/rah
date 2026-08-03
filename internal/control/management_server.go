@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/mcpreg"
 	"github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/amitkhosla/rah/internal/observability"
@@ -35,6 +36,12 @@ type ManagementServer struct {
 	// when a central orchestrator owns persistence and RAH only reads on boot.
 	dataStore *DataStoreManager
 
+	// cfgMgr enables syncing of LLM models and MCP servers via the bundle pipeline.
+	cfgMgr *config.Manager
+
+	// mcpReg enables syncing of virtual MCP servers and API tools via the bundle pipeline.
+	mcpReg *mcpreg.Registry
+
 	// LLMProvider, if set, is called before each compile to refresh the
 	// compiler's model catalog. Wire this to cfgMgr.LLM so that models
 	// registered via the UI are visible to the compiler at sync time.
@@ -49,6 +56,14 @@ type ManagementServer struct {
 	// It receives the api name, endpoint ID, version hash, and all instruction
 	// schema rows derived from the compiled plan. Wire this to obsWriter.UpsertInstrSchema.
 	InstrSchemaHook func(apiName string, endpointID uint8, apiHash uint64, rows []observability.InstrSchemaRow)
+
+	// Schedule management callbacks - wired by the scheduler package (wave 3D).
+	OnScheduleUpsert func(name, cron, flowName, tenantAlias string, enabled bool, timeoutSec int, constants map[string]string) error
+	OnScheduleDelete func(name string) error
+	OnScheduleList   func() ([]ScheduleConfig, error)
+
+	// OnFlowRun is called to execute a named flow directly (MCP tool: run_flow).
+	OnFlowRun func(flowName, tenantAlias string, constants map[string]string) error
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -193,6 +208,18 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 // persistence calls are silently skipped.
 func (s *ManagementServer) SetDataStore(dsm *DataStoreManager) {
 	s.dataStore = dsm
+}
+
+// SetCfgMgr wires the config manager so LLM models and MCP servers in sync
+// bundles are applied to the live config and persisted.
+func (s *ManagementServer) SetCfgMgr(cfgMgr *config.Manager) {
+	s.cfgMgr = cfgMgr
+}
+
+// SetMCPReg wires the MCP registry so virtual MCP servers and API tools in
+// sync bundles are applied to the live registry and persisted.
+func (s *ManagementServer) SetMCPReg(reg *mcpreg.Registry) {
+	s.mcpReg = reg
 }
 
 // UnifiedSyncHandler is the primary entry point for configuration updates.
@@ -490,7 +517,8 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	for _, flowName := range deletedFlows {
 		for apiName, apiCfg := range newApiConfigs {
 			if apiCfg.FlowName == flowName {
-				return fmt.Errorf("cannot delete flow %q: still referenced by API %q â€” delete the API first", flowName, apiName)
+				msg := fmt.Sprintf(`cannot delete flow %s: still referenced by API %s - delete the API first`, flowName, apiName)
+				return fmt.Errorf(msg)
 			}
 		}
 	}
@@ -538,6 +566,46 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	// (stored in Postgres, not gateway.yaml) are visible during bake.
 	if s.LLMProvider != nil {
 		s.Compiler.LLMCfg = s.LLMProvider()
+	}
+
+	// Process LLM models before flows so aliases resolve at compile time.
+	if len(req.LLMModels) > 0 && s.cfgMgr != nil {
+		for _, m := range req.LLMModels {
+			s.cfgMgr.UpsertLLMModel(m)
+		}
+		if s.dataStore != nil {
+			persistAIModels(s.cfgMgr, s.dataStore)
+		}
+	}
+
+	// Process external MCP servers before flows.
+	if len(req.MCPServers) > 0 && s.cfgMgr != nil {
+		for _, srv := range req.MCPServers {
+			s.cfgMgr.UpsertMCPServer(srv)
+		}
+		if s.dataStore != nil {
+			persistAIMCPServers(s.cfgMgr, s.dataStore)
+		}
+	}
+
+	// Process virtual MCP servers.
+	if len(req.VirtualMCPServers) > 0 && s.mcpReg != nil {
+		for _, def := range req.VirtualMCPServers {
+			s.mcpReg.UpsertServer(def)
+		}
+		if s.dataStore != nil {
+			persistMCPTools(s.mcpReg, s.dataStore)
+		}
+	}
+
+	// Process API tools.
+	if len(req.APITools) > 0 && s.mcpReg != nil {
+		for _, tool := range req.APITools {
+			s.mcpReg.UpsertAPITool(tool)
+		}
+		if s.dataStore != nil {
+			persistMCPTools(s.mcpReg, s.dataStore)
+		}
 	}
 
 	// Apply V2 rate limit configs â€” store config + assign stable integer ID +
@@ -926,6 +994,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				RateLimitPolicies: a.RateLimitPolicies,
 				SkipRateLimit:     a.SkipRateLimit,
 				UpstreamDefaults:  a.UpstreamDefaults,
+				WebSocket:         a.WebSocket,
 			}
 			if data, err := json.Marshal(apiCfg); err == nil {
 				pendingPersist = append(pendingPersist, persistOp{kind: "api_upsert", name: a.Name, payload: data})
@@ -933,18 +1002,33 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		}
 	}
 
-	// 4. Flow reference safety: a flow may only be deleted if no remaining API uses it.
+	for idx := range req.Schedules {
+		sc := req.Schedules[idx]
+		if len(sc.Action) > 0 {
+			if sc.Action[0] == byte('u') {
+				if s.OnScheduleUpsert != nil {
+					s.OnScheduleUpsert(sc.Name, sc.Cron, sc.FlowName, sc.TenantAlias, sc.Enabled, sc.TimeoutSec, sc.Constants)
+				}
+			} else if sc.Action[0] == byte('d') {
+				if s.OnScheduleDelete != nil {
+					s.OnScheduleDelete(sc.Name)
+				}
+			}
+		}
+	}
+
+	// 5. Flow reference safety: a flow may only be deleted if no remaining API uses it.
 	// We check against newApiConfigs (which already reflects API deletions in this request),
 	// so deleting both an API and its flow in a single sync payload is allowed.
 	for _, flowName := range deletedFlows {
 		for apiName, apiCfg := range newApiConfigs {
 			if apiCfg.FlowName == flowName {
-				return fmt.Errorf("cannot delete flow %q: still referenced by API %q â€” delete the API first", flowName, apiName)
+				return fmt.Errorf(`cannot delete flow %s: still referenced by API %s - delete the API first`, flowName, apiName)
 			}
 		}
 	}
 
-	// 5. Atomic Router Rebuild
+	// 6. Atomic Router Rebuild
 	var finalRouter *router.RahRouter
 	if routerChanged {
 		finalRouter = router.New()
@@ -960,7 +1044,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		finalRouter = oldState.Router
 	}
 
-	// 6. Atomic Swap â€” live traffic sees new state immediately after this line.
+	// 7. Atomic Swap â€” live traffic sees new state immediately after this line.
 	s.FlowManager.SetState(&engine.EngineState{
 		Router:            finalRouter,
 		Definitions:       newDefs,
@@ -974,7 +1058,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	s.apiConfigs = newApiConfigs
 	s.mu.Unlock()
 
-	// 7. Persist changes to datastore (optional, best-effort).
+	// 8. Persist changes to datastore (optional, best-effort).
 	// Runs after the atomic swap so routing is never blocked by I/O.
 	// Errors are logged but do not roll back the in-memory state â€” the
 	// central orchestrator is the source of truth if a datastore is shared.
@@ -1254,11 +1338,14 @@ func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Requ
 //   - GET  /flows/{name}/profile â†’ returns the FlowProfile for the compiled flow
 //   - DELETE /flows/{name}       â†’ removes an orphaned flow (one with no API pointing to it)
 func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Request) {
-	// Extract flow name from path: /flows/{name}[/profile]
+	// Extract flow name from path: /flows/{name}[/profile|/run]
 	path := strings.TrimPrefix(r.URL.Path, "/flows/")
 	isProfile := strings.HasSuffix(path, "/profile")
+	isRun := strings.HasSuffix(path, "/run")
 	if isProfile {
 		path = strings.TrimSuffix(path, "/profile")
+	} else if isRun {
+		path = strings.TrimSuffix(path, "/run")
 	}
 	name := strings.TrimSpace(path)
 	if name == "" {
@@ -1270,6 +1357,10 @@ func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Req
 	case http.MethodDelete:
 		s.deleteFlowHandler(w, name)
 	case http.MethodGet:
+		if !isProfile {
+			http.Error(w, "GET /flows/{name} requires /profile suffix", http.StatusBadRequest)
+			return
+		}
 		profile, ok := s.Compiler.GetFlowProfile(name)
 		if !ok {
 			http.Error(w, fmt.Sprintf("flow %q not found", name), http.StatusNotFound)
@@ -1277,9 +1368,44 @@ func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Req
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(profile)
+	case http.MethodPost:
+		if !isRun {
+			http.Error(w, "POST /flows/{name} requires /run suffix", http.StatusBadRequest)
+			return
+		}
+		s.flowRunDirectHandler(w, r, name)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// flowRunDirectHandler executes a flow directly and is called from FlowProfileHandler.
+func (s *ManagementServer) flowRunDirectHandler(w http.ResponseWriter, r *http.Request, flowName string) {
+	if s.OnFlowRun == nil {
+		http.Error(w, "flow execution not available", http.StatusNotImplemented)
+		return
+	}
+
+	var payload struct {
+		TenantAlias string            `json:"tenant_alias,omitempty"`
+		Constants   map[string]string `json:"constants,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.OnFlowRun(flowName, payload.TenantAlias, payload.Constants); err != nil {
+		gatewaylog.Default.Warn("[Management] failed to run flow",
+			gatewaylog.F("flow", flowName),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to run flow: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "flow": flowName})
 }
 
 // deleteFlowHandler removes an orphaned flow (DELETE /flows/{name}).
@@ -1321,4 +1447,85 @@ func (s *ManagementServer) deleteFlowHandler(w http.ResponseWriter, name string)
 			gatewaylog.F("name", name),
 		)
 	}
+}
+
+// ScheduleRuntimeHandler handles POST /schedules/runtime (create/update runtime schedule)
+// and DELETE /schedules/runtime/{name} (delete runtime schedule).
+func (s *ManagementServer) ScheduleRuntimeHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/schedules/runtime")
+	path = strings.TrimSpace(path)
+
+	switch r.Method {
+	case http.MethodPost:
+		s.createRuntimeSchedule(w, r)
+	case http.MethodDelete:
+		if path == "" || path == "/" {
+			http.Error(w, "schedule name required", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimPrefix(path, "/")
+		s.deleteRuntimeSchedule(w, name)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// createRuntimeSchedule handles POST /schedules/runtime.
+func (s *ManagementServer) createRuntimeSchedule(w http.ResponseWriter, r *http.Request) {
+	var cfg ScheduleConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if cfg.Name == "" {
+		http.Error(w, "schedule name required", http.StatusBadRequest)
+		return
+	}
+	if cfg.Cron == "" {
+		http.Error(w, "cron expression required", http.StatusBadRequest)
+		return
+	}
+	if cfg.FlowName == "" {
+		http.Error(w, "flow_name required", http.StatusBadRequest)
+		return
+	}
+
+	// Create the schedule via the OnScheduleUpsert callback.
+	if s.OnScheduleUpsert == nil {
+		http.Error(w, "schedule management not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.OnScheduleUpsert(cfg.Name, cfg.Cron, cfg.FlowName, cfg.TenantAlias, cfg.Enabled, cfg.TimeoutSec, cfg.Constants); err != nil {
+		gatewaylog.Default.Warn("[Management] failed to create runtime schedule",
+			gatewaylog.F("name", cfg.Name),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to create schedule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": cfg.Name})
+}
+
+// deleteRuntimeSchedule handles DELETE /schedules/runtime/{name}.
+func (s *ManagementServer) deleteRuntimeSchedule(w http.ResponseWriter, name string) {
+	if s.OnScheduleDelete == nil {
+		http.Error(w, "schedule management not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.OnScheduleDelete(name); err != nil {
+		gatewaylog.Default.Warn("[Management] failed to delete runtime schedule",
+			gatewaylog.F("name", name),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to delete schedule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 }

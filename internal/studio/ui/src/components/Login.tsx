@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react'
+import { useState, FormEvent, useEffect } from 'react'
 
 interface LoginProps {
   onLogin: (user: { username: string; role?: string; mustChangePassword?: boolean }) => void
@@ -9,6 +9,26 @@ export default function Login({ onLogin }: LoginProps) {
   const [password, setPassword] = useState('')
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
+  const [oidcProviders, setOidcProviders] = useState<string[]>([])
+  const [loadingOidc, setLoadingOidc] = useState(true)
+
+  useEffect(() => {
+    async function loadOidcProviders() {
+      setLoadingOidc(true)
+      try {
+        const res = await fetch('/api/oidc/providers', { credentials: 'include' })
+        if (res.ok) {
+          const data = await res.json()
+          setOidcProviders(data.providers ?? [])
+        }
+      } catch {
+        // OIDC not configured, silently ignore
+      } finally {
+        setLoadingOidc(false)
+      }
+    }
+    void loadOidcProviders()
+  }, [])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -42,6 +62,10 @@ export default function Login({ onLogin }: LoginProps) {
     }
   }
 
+  function handleOidcLogin(provider: string) {
+    window.location.href = `/api/oidc/login?provider=${encodeURIComponent(provider)}`
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -64,6 +88,45 @@ export default function Login({ onLogin }: LoginProps) {
           <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--fg)' }}>RAH Studio</div>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>Sign in to continue</div>
         </div>
+
+        {/* OIDC Provider buttons */}
+        {!loadingOidc && oidcProviders.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+            {oidcProviders.map(provider => (
+              <button
+                key={provider}
+                type="button"
+                onClick={() => handleOidcLogin(provider)}
+                style={{
+                  padding: '10px 0',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--step-bg)',
+                  color: 'var(--fg)',
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  transition: 'background-color 0.15s',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLButtonElement
+                  el.style.background = 'var(--accent)'
+                  el.style.color = '#031427'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLButtonElement
+                  el.style.background = 'var(--step-bg)'
+                  el.style.color = 'var(--fg)'
+                }}
+              >
+                Sign in with {provider.charAt(0).toUpperCase() + provider.slice(1)}
+              </button>
+            ))}
+            <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, margin: '8px 0' }}>
+              or
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

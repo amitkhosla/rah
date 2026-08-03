@@ -8,9 +8,9 @@ import (
 	"github.com/amitkhosla/rah/internal/control"
 )
 
-// Lint runs Level 0â€“4 checks on the loaded bundle.
+// Lint runs Level 0—4 checks on the loaded bundle.
 // Issues already present in result.Issues (from the loader/parser) are included
-// unchanged at the front of the returned slice â€” the linter appends to, never
+// unchanged at the front of the returned slice — the linter appends to, never
 // replaces them.
 func Lint(result LoadResult) []LintIssue {
 	issues := make([]LintIssue, len(result.Issues), len(result.Issues)+256)
@@ -23,7 +23,7 @@ func Lint(result LoadResult) []LintIssue {
 	return issues
 }
 
-// â”€â”€â”€ Level 0: Structural checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 0: Structural checks â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func lintLevel0(result LoadResult) []LintIssue {
 	var issues []LintIssue
@@ -104,6 +104,41 @@ func lintLevel0(result LoadResult) []LintIssue {
 				Message:    fmt.Sprintf("API %s %q is missing an 'action' field", methodOrAny(api.Method), api.Path),
 				Suggestion: "set 'action' to 'upsert' or 'delete'",
 			})
+		}
+
+		// WebSocket configuration validation
+		if api.WebSocket != nil && api.WebSocket.Enabled {
+			wsCfg := api.WebSocket
+			if wsCfg.InboundFlow == "" {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "websocket_missing_inbound_flow",
+					File:       loc.File,
+					Line:       loc.Line,
+					Message:    fmt.Sprintf("API %s %q websocket: inbound_flow is required when enabled", methodOrAny(api.Method), api.Path),
+					Suggestion: "set 'inbound_flow' to the name of the flow to handle inbound messages",
+				})
+			}
+			if wsCfg.PingIntervalSec < 0 {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "websocket_invalid_ping_interval",
+					File:       loc.File,
+					Line:       loc.Line,
+					Message:    fmt.Sprintf("API %s %q websocket: ping_interval_sec must be >= 0, got %d", methodOrAny(api.Method), api.Path, wsCfg.PingIntervalSec),
+					Suggestion: "set 'ping_interval_sec' to a non-negative integer",
+				})
+			}
+			if wsCfg.PongTimeoutSec < 0 {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "websocket_invalid_pong_timeout",
+					File:       loc.File,
+					Line:       loc.Line,
+					Message:    fmt.Sprintf("API %s %q websocket: pong_timeout_sec must be >= 0, got %d", methodOrAny(api.Method), api.Path, wsCfg.PongTimeoutSec),
+					Suggestion: "set 'pong_timeout_sec' to a non-negative integer",
+				})
+			}
 		}
 	}
 
@@ -189,6 +224,161 @@ func lintLevel0(result LoadResult) []LintIssue {
 		}
 	}
 
+	// ── LLM Models ───────────────────────────────────────────────────────────────
+	for i, m := range b.LLMModels {
+		loc := fmt.Sprintf("llm_models[%d]", i)
+		if m.Alias == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "llm_model_missing_alias",
+				Message:    fmt.Sprintf("%s: alias is required", loc),
+				Suggestion: "Add an alias field to identify this LLM model",
+			})
+		}
+		if m.Provider == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "llm_model_missing_provider",
+				Message:    fmt.Sprintf("%s: provider is required", loc),
+				Suggestion: "Set provider to the model provider (e.g. anthropic, openai)",
+			})
+		}
+		validAdapters := map[string]bool{
+			"anthropic": true, "openai": true, "gemini": true,
+			"ollama": true, "deepseek": true, "custom": true, "bedrock": true,
+		}
+		if string(m.Adapter) != "" && !validAdapters[string(m.Adapter)] {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "llm_model_invalid_adapter",
+				Message:    fmt.Sprintf("%s: unknown adapter %q", loc, m.Adapter),
+				Suggestion: "Valid adapters: anthropic, openai, gemini, ollama, deepseek, custom, bedrock",
+			})
+		}
+	}
+
+	// ── MCP Servers ──────────────────────────────────────────────────────────────
+	for i, srv := range b.MCPServers {
+		loc := fmt.Sprintf("mcp_servers[%d]", i)
+		if srv.Alias == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "mcp_server_missing_alias",
+				Message:    fmt.Sprintf("%s: alias is required", loc),
+				Suggestion: "Add an alias field to identify this MCP server",
+			})
+		}
+		validTransports := map[string]bool{"http": true, "sse": true, "stdio": true}
+		if string(srv.Transport) != "" && !validTransports[string(srv.Transport)] {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "mcp_server_invalid_transport",
+				Message:    fmt.Sprintf("%s: unknown transport %q", loc, srv.Transport),
+				Suggestion: "Valid transports: http, sse, stdio",
+			})
+		}
+		if (srv.Transport == "http" || srv.Transport == "sse") && srv.URL == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "mcp_server_missing_url",
+				Message:    fmt.Sprintf("%s: url is required for transport %q", loc, srv.Transport),
+				Suggestion: "Add a url field pointing to the MCP server endpoint",
+			})
+		}
+	}
+
+	// ── Virtual MCP Servers ──────────────────────────────────────────────────────
+	for i, def := range b.VirtualMCPServers {
+		loc := fmt.Sprintf("virtual_mcp_servers[%d]", i)
+		if def.Name == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "virtual_mcp_server_missing_name",
+				Message:    fmt.Sprintf("%s: name is required", loc),
+				Suggestion: "Add a name field to identify this virtual MCP server",
+			})
+		}
+		if len(def.Sources) == 0 {
+			issues = append(issues, LintIssue{
+				Severity: SeverityWarning, Rule: "virtual_mcp_server_no_sources",
+				Message:    fmt.Sprintf("%s %q: has no tool sources defined", loc, def.Name),
+				Suggestion: "Add at least one source entry to expose tools from this virtual server",
+			})
+		}
+		validKinds := map[string]bool{"api_tool": true, "mcp_tool": true, "mcp_all": true}
+		for j, src := range def.Sources {
+			if !validKinds[string(src.Kind)] {
+				issues = append(issues, LintIssue{
+					Severity: SeverityError, Rule: "virtual_mcp_server_invalid_source_kind",
+					Message:    fmt.Sprintf("%s %q sources[%d]: unknown kind %q", loc, def.Name, j, src.Kind),
+					Suggestion: "Valid source kinds: api_tool, mcp_tool, mcp_all",
+				})
+			}
+		}
+	}
+
+	// ── API Tools ────────────────────────────────────────────────────────────────
+	for i, tool := range b.APITools {
+		loc := fmt.Sprintf("api_tools[%d]", i)
+		if tool.Name == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "api_tool_missing_name",
+				Message:    fmt.Sprintf("%s: name is required", loc),
+				Suggestion: "Add a name field to identify this API tool",
+			})
+		}
+		if tool.Path == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "api_tool_missing_path",
+				Message:    fmt.Sprintf("%s %q: path is required", loc, tool.Name),
+				Suggestion: "Add a path field pointing to the API endpoint (e.g. /v1/search)",
+			})
+		}
+		validMethods := map[string]bool{
+			"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
+		}
+		if tool.Method != "" && !validMethods[tool.Method] {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "api_tool_invalid_method",
+				Message:    fmt.Sprintf("%s %q: unknown HTTP method %q", loc, tool.Name, tool.Method),
+				Suggestion: "Valid methods: GET, POST, PUT, DELETE, PATCH",
+			})
+		}
+	}
+
+	// ── Schedules ────────────────────────────────────────────────────────────────
+	for i, s := range b.Schedules {
+		loc := fmt.Sprintf("schedules[%d]", i)
+		if s.Name == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "schedule_missing_name",
+				Message:    fmt.Sprintf("%s: name is required", loc),
+				Suggestion: "Add a name field to identify this schedule",
+			})
+		}
+		if s.Cron == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "schedule_missing_cron",
+				Message:    fmt.Sprintf("%s %q: cron is required", loc, s.Name),
+				Suggestion: "Add a cron field with a cron expression (e.g. '0 * * * *')",
+			})
+		}
+		if s.FlowName == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "schedule_missing_flow_name",
+				Message:    fmt.Sprintf("%s %q: flow_name is required", loc, s.Name),
+				Suggestion: "Add a flow_name field pointing to the flow to execute",
+			})
+		}
+		if s.TenantAlias == "" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "schedule_missing_tenant_alias",
+				Message:    fmt.Sprintf("%s %q: tenant_alias is required", loc, s.Name),
+				Suggestion: "Add a tenant_alias field to specify which tenant to use",
+			})
+		}
+		if s.Action != "upsert" && s.Action != "delete" {
+			issues = append(issues, LintIssue{
+				Severity: SeverityError, Rule: "schedule_invalid_action",
+				Message:    fmt.Sprintf("%s %q: action must be \"upsert\" or \"delete\", got %q", loc, s.Name, s.Action),
+				Suggestion: "Set action to \"upsert\" or \"delete\"",
+			})
+		}
+	}
+
 	return issues
 }
 
@@ -220,7 +410,7 @@ func checkStepHasAction(step control.StepConfig, flowName string, stepNum int, l
 	return issues
 }
 
-// â”€â”€â”€ Level 1: Schema validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 1: Schema validation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func lintLevel1(result LoadResult) []LintIssue {
 	descriptors := control.AllStepDescriptors()
@@ -296,8 +486,8 @@ func validateStepSchema(
 
 	// Build the set of valid input-map keys.
 	// UserFacingFields returns fields with keys in two forms:
-	//   "input.xxx"  â€” these correspond to Input["xxx"] in the parsed StepConfig
-	//   "input"      â€” the whole Input map is free-form (e.g. assign_quota_group)
+	//   "input.xxx"  — these correspond to Input["xxx"] in the parsed StepConfig
+	//   "input"      — the whole Input map is free-form (e.g. assign_quota_group)
 	//
 	// We also keep the full descriptor key for type inference via Defaults.
 	// validInputKeys: short key ("xxx") â†’ full descriptor field key ("input.xxx")
@@ -325,7 +515,7 @@ func validateStepSchema(
 	}
 
 	for key, val := range step.Input {
-		// Reject any _slot-suffixed key â€” these are internal compiler details.
+		// Reject any _slot-suffixed key — these are internal compiler details.
 		if IsSlotKey(key) {
 			issues = append(issues, slotKeyError(key, step.Action, flowName, stepNum, loc))
 			continue
@@ -432,7 +622,7 @@ func isIntegerString(s string) bool {
 	return err == nil
 }
 
-// â”€â”€â”€ Level 2: Reference integrity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 2: Reference integrity â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // lintLevel2 checks that every flow name referenced by APIs and steps exists in
 // the bundle, detects flows that are defined but never reachable from any API,
@@ -509,6 +699,92 @@ func lintLevel2(result LoadResult) []LintIssue {
 		}
 	}
 
+	// Check schedule flow references.
+	for _, sched := range b.Schedules {
+		schedLoc := result.SourceMap["schedule:"+sched.Name]
+		if sched.FlowName != "" {
+			if _, ok := flowIndex[sched.FlowName]; !ok && sched.Action == "upsert" {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "unresolved_flow_ref",
+					File:       schedLoc.File,
+					Line:       schedLoc.Line,
+					Message:    fmt.Sprintf("schedule %q references flow %q which is not defined in the bundle", sched.Name, sched.FlowName),
+					Suggestion: fmt.Sprintf("define a flow named %q or correct the flow_name field", sched.FlowName),
+				})
+			}
+		}
+		// Validate on_failure field (Section J).
+		if (sched.OnFailure != control.ScheduleOnFailure{}) {
+			if sched.OnFailure.RetryCount < 0 {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "schedule_invalid_retry_count",
+					File:       schedLoc.File,
+					Line:       schedLoc.Line,
+					Message:    fmt.Sprintf("schedule %q: on_failure.retry_count must be non-negative, got %d", sched.Name, sched.OnFailure.RetryCount),
+					Suggestion: "set on_failure.retry_count to a non-negative integer",
+				})
+			}
+			if sched.OnFailure.DeadLetterFlow != "" {
+				if _, ok := flowIndex[sched.OnFailure.DeadLetterFlow]; !ok {
+					issues = append(issues, LintIssue{
+						Severity:   SeverityError,
+						Rule:       "schedule_dead_letter_flow_not_found",
+						File:       schedLoc.File,
+						Line:       schedLoc.Line,
+						Message:    fmt.Sprintf("schedule %q: on_failure.dead_letter_flow references unknown flow %q", sched.Name, sched.OnFailure.DeadLetterFlow),
+						Suggestion: fmt.Sprintf("define a flow named %q or remove the dead_letter_flow reference", sched.OnFailure.DeadLetterFlow),
+					})
+				}
+			}
+		}
+	}
+
+	// Check WebSocket configuration flow references.
+	for _, api := range b.Apis {
+		if api.WebSocket != nil && api.WebSocket.Enabled {
+			apiLoc := apiIndex[apiKey(api.Method, api.Path)]
+			wsCfg := api.WebSocket
+			if wsCfg.InboundFlow != "" {
+				if _, ok := flowIndex[wsCfg.InboundFlow]; !ok {
+					issues = append(issues, LintIssue{
+						Severity:   SeverityError,
+						Rule:       "unresolved_flow_ref",
+						File:       apiLoc.File,
+						Line:       apiLoc.Line,
+						Message:    fmt.Sprintf("API %s %q websocket: inbound_flow %q is not defined in the bundle", methodOrAny(api.Method), api.Path, wsCfg.InboundFlow),
+						Suggestion: fmt.Sprintf("define a flow named %q or correct the inbound_flow field", wsCfg.InboundFlow),
+					})
+				}
+			}
+			if wsCfg.ConnectFlow != "" {
+				if _, ok := flowIndex[wsCfg.ConnectFlow]; !ok {
+					issues = append(issues, LintIssue{
+						Severity:   SeverityError,
+						Rule:       "unresolved_flow_ref",
+						File:       apiLoc.File,
+						Line:       apiLoc.Line,
+						Message:    fmt.Sprintf("API %s %q websocket: connect_flow %q is not defined in the bundle", methodOrAny(api.Method), api.Path, wsCfg.ConnectFlow),
+						Suggestion: fmt.Sprintf("define a flow named %q or correct the connect_flow field", wsCfg.ConnectFlow),
+					})
+				}
+			}
+			if wsCfg.DisconnectFlow != "" {
+				if _, ok := flowIndex[wsCfg.DisconnectFlow]; !ok {
+					issues = append(issues, LintIssue{
+						Severity:   SeverityError,
+						Rule:       "unresolved_flow_ref",
+						File:       apiLoc.File,
+						Line:       apiLoc.Line,
+						Message:    fmt.Sprintf("API %s %q websocket: disconnect_flow %q is not defined in the bundle", methodOrAny(api.Method), api.Path, wsCfg.DisconnectFlow),
+						Suggestion: fmt.Sprintf("define a flow named %q or correct the disconnect_flow field", wsCfg.DisconnectFlow),
+					})
+				}
+			}
+		}
+	}
+
 	// Reachability: warn about flows never transitively reachable from any API.
 	reachable := computeReachable(b)
 	for name, loc := range flowIndex {
@@ -567,6 +843,29 @@ func lintLevel2(result LoadResult) []LintIssue {
 		}
 	}
 
+	// Cross-check virtual MCP server source aliases against registered MCP servers.
+	mcpServerAliases := make(map[string]bool)
+	for _, srv := range b.MCPServers {
+		if srv.Alias != "" {
+			mcpServerAliases[srv.Alias] = true
+		}
+	}
+	for _, def := range b.VirtualMCPServers {
+		for _, src := range def.Sources {
+			if src.ServerAlias == "" {
+				continue
+			}
+			if (src.Kind == "mcp_tool" || src.Kind == "mcp_all") && !mcpServerAliases[src.ServerAlias] {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityWarning,
+					Rule:       "virtual_mcp_unresolved_server_alias",
+					Message:    fmt.Sprintf("virtual MCP server %q references server_alias %q which is not defined in this bundle", def.Name, src.ServerAlias),
+					Suggestion: "Add the MCP server definition to this bundle, or ensure it is pre-registered on the gateway",
+				})
+			}
+		}
+	}
+
 	return issues
 }
 
@@ -608,7 +907,7 @@ func lintStepRefs(
 	// on_miss: used by cache_get, registry_lookup, etc.
 	checkRef("on_miss", step.OnMiss)
 
-	// cases: switch-style branching â€” each value is a flow name.
+	// cases: switch-style branching — each value is a flow name.
 	for caseKey, caseFlow := range step.Cases {
 		if caseFlow == "" {
 			continue
@@ -735,7 +1034,7 @@ func collectStepFlowRefs(step control.StepConfig, fn func(string)) {
 	}
 }
 
-// â”€â”€â”€ Fuzzy matching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Fuzzy matching â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // fuzzyMatchString returns the element of candidates that is closest to target
 // (after normalisation via norm), provided the Levenshtein distance is â‰¤ 2.
@@ -789,7 +1088,7 @@ func minInt(a, b int) int {
 	return b
 }
 
-// â”€â”€â”€ Level 3: Named variable analysis + cycle detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 3: Named variable analysis + cycle detection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // lintLevel3 adds two categories of checks:
 //
@@ -822,7 +1121,7 @@ func lintLevel3(result LoadResult) []LintIssue {
 		}
 	}
 
-	// Variable forward-use analysis â€” one flow at a time.
+	// Variable forward-use analysis — one flow at a time.
 	for _, flow := range b.Flows {
 		loc := result.SourceMap[flow.Name]
 		seed := apiConstants[flow.Name]
@@ -836,7 +1135,7 @@ func lintLevel3(result LoadResult) []LintIssue {
 	return issues
 }
 
-// â”€â”€â”€ Variable forward-use analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Variable forward-use analysis â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // l3BuildAPIConstants collects the variable names pre-populated via API and
 // endpoint Constants maps, keyed by the flow name those constants are injected into.
@@ -1098,7 +1397,7 @@ var l3InputMapRefKeys = []string{
 	"payload_var", "model_var", "session_var",
 }
 
-// â”€â”€â”€ Cycle detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Cycle detection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // l3CallEdge is a directed edge in the flow call graph.
 type l3CallEdge struct {
@@ -1132,7 +1431,7 @@ func l3DetectCycles(b control.UnifiedSyncRequest, result LoadResult) []LintIssue
 		for _, edge := range graph[node] {
 			switch color[edge.Target] {
 			case 1:
-				// Back edge â€” cycle found. Report once per cycle root.
+				// Back edge — cycle found. Report once per cycle root.
 				if !reported[edge.Target] {
 					reported[edge.Target] = true
 					cycleNodes := l3ExtractCyclePath(path, edge.Target)
@@ -1265,7 +1564,7 @@ func l3ClassifyCycle(
 			File:     loc.File,
 			Line:     loc.Line,
 			Message: fmt.Sprintf(
-				"guaranteed infinite loop: %s â€” all call edges in this cycle are unconditional",
+				"guaranteed infinite loop: %s — all call edges in this cycle are unconditional",
 				cyclePath),
 			Suggestion: "add an if/condition step to guard the recursive call so the flow eventually terminates",
 		}}
@@ -1278,7 +1577,7 @@ func l3ClassifyCycle(
 			File:     loc.File,
 			Line:     loc.Line,
 			Message: fmt.Sprintf(
-				"bounded recursion pattern detected: %s â€” verify the exit condition is always eventually reached",
+				"bounded recursion pattern detected: %s — verify the exit condition is always eventually reached",
 				cyclePath),
 			Suggestion: "ensure the mutation step changes the value checked by the exit condition on every iteration",
 		}}
@@ -1290,7 +1589,7 @@ func l3ClassifyCycle(
 		File:     loc.File,
 		Line:     loc.Line,
 		Message: fmt.Sprintf(
-			"recursive call detected: %s â€” ensure the exit condition changes on each iteration",
+			"recursive call detected: %s — ensure the exit condition changes on each iteration",
 			cyclePath),
 		Suggestion: "add a state-mutation step (cache_put, set_identifier, etc.) to make progress toward the exit condition",
 	}}
@@ -1318,7 +1617,7 @@ func l3HasMutationStep(steps []control.StepConfig) bool {
 	return false
 }
 
-// â”€â”€â”€ Level 3 utility helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 3 utility helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // l3CopyVarMap makes a shallow copy of a map[string]int.
 func l3CopyVarMap(m map[string]int) map[string]int {
@@ -1359,7 +1658,7 @@ func l3UnionBoolMaps(maps []map[string]bool) map[string]bool {
 	return result
 }
 
-// â”€â”€â”€ Level 4: Advisory warnings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Level 4: Advisory warnings â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // lintLevel4 checks for common patterns that are not errors but worth warning about.
 //
@@ -1375,6 +1674,10 @@ func lintLevel4(result LoadResult) []LintIssue {
 	for _, flow := range b.Flows {
 		loc := result.SourceMap[flow.Name]
 		issues = append(issues, l4CheckFlow(flow, loc)...)
+		// Add step-specific required field validations.
+		for i, step := range flow.Instructions {
+			issues = append(issues, lintStepRequiredFields(step, flow, i+1, loc)...)
+		}
 	}
 
 	// Check APIs for rate limit policies.
@@ -1504,7 +1807,7 @@ func looksLikeSecret(s string) bool {
 	if len(s) < 20 {
 		return false
 	}
-	// URLs are never secrets â€” they're endpoint addresses.
+	// URLs are never secrets — they're endpoint addresses.
 	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
 		return false
 	}
@@ -1631,7 +1934,390 @@ func l4CheckAPI(api control.ApiUpdate, loc SourceLocation) []LintIssue {
 	return issues
 }
 
-// â”€â”€â”€ Utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// lintStepRequiredFields validates step-specific required fields
+func lintStepRequiredFields(
+	step control.StepConfig,
+	flow control.FlowUpdate,
+	stepNum int,
+	loc SourceLocation,
+) []LintIssue {
+	var issues []LintIssue
+	for _, nested := range step.Do {
+		issues = append(issues, lintStepRequiredFields(nested, flow, 1, loc)...)
+	}
+	for _, branch := range step.Branches {
+		for _, nested := range branch.Flow {
+			issues = append(issues, lintStepRequiredFields(nested, flow, 1, loc)...)
+		}
+	}
+	if step.Action == "" {
+		return issues
+	}
+	flowName := flow.Name
+	flowType := flow.Type
+	if flowType != "" && flowType != control.FlowTypeAny {
+		incompatibleWS := []string{"set_response_status", "set_response_header", "bind_body"}
+		incompatibleScheduled := []string{"ws_send", "ws_close", "ws_subscribe", "ws_unsubscribe", "bind_body", "bind_header"}
+		isIncompatibleWS := false
+		isIncompatibleScheduled := false
+		for _, action := range incompatibleWS {
+			if step.Action == action {
+				isIncompatibleWS = true
+				break
+			}
+		}
+		for _, action := range incompatibleScheduled {
+			if step.Action == action {
+				isIncompatibleScheduled = true
+				break
+			}
+		}
+		if (flowType == control.FlowTypeWSMessage || flowType == control.FlowTypeWSConnect || flowType == control.FlowTypeWSDisconnect) && isIncompatibleWS {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "flow_type_step_incompatible",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s (type: %s) step %d (%s): action %s produces HTTP response, incompatible with WebSocket flows", flowName, flowType, stepNum, step.Action, step.Action),
+				Suggestion: "remove this step or change flow type to http",
+			})
+		}
+		if flowType == control.FlowTypeScheduled && isIncompatibleScheduled {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "flow_type_step_incompatible",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s (type: %s) step %d (%s): action %s requires HTTP/WebSocket session, incompatible with scheduled flows", flowName, flowType, stepNum, step.Action, step.Action),
+				Suggestion: "remove this step or change flow type to http",
+			})
+		}
+	}
+	switch step.Action {
+	case "db_query", "db_query_one":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "db_query_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (%s): key is required", flowName, stepNum, step.Action),
+				Suggestion: "set key to a database data source name",
+			})
+		}
+		if step.Value == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "db_query_missing_value",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (%s): value is required", flowName, stepNum, step.Action),
+				Suggestion: "set value to a SQL query string",
+			})
+		}
+		if step.As == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "db_query_missing_as",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (%s): as is recommended for output", flowName, stepNum, step.Action),
+				Suggestion: "set as to capture query results",
+			})
+		}
+	case "db_exec":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "db_exec_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (db_exec): key is required", flowName, stepNum),
+				Suggestion: "set key to a database data source name",
+			})
+		}
+		if step.Value == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "db_exec_missing_value",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (db_exec): value is required", flowName, stepNum),
+				Suggestion: "set value to a SQL statement",
+			})
+		}
+	case "ws_broadcast_channel":
+		hasKeyStatic := step.Key != ""
+		hasKeyDynamic := false
+		if keyVar, ok := step.Input["key_var"]; ok && keyVar != "" {
+			hasKeyDynamic = true
+		}
+		if !hasKeyStatic && !hasKeyDynamic {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_broadcast_channel_missing_channel",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_broadcast_channel): key or key_var is required", flowName, stepNum),
+				Suggestion: "set key to channel name or input.key_var to dynamic channel",
+			})
+		}
+		hasPayload := step.Value != "" || step.BodyVar != ""
+		if _, ok := step.Input["message"]; ok {
+			hasPayload = true
+		}
+		if _, ok := step.Input["message_var"]; ok {
+			hasPayload = true
+		}
+		if _, ok := step.Input["payload_var"]; ok {
+			hasPayload = true
+		}
+		if !hasPayload {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_broadcast_channel_missing_payload",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_broadcast_channel): no payload specified", flowName, stepNum),
+				Suggestion: "set value, body_var, or input.message_var for payload",
+			})
+		}
+	case "ws_push_session":
+		hasSessionStatic := step.Key != ""
+		hasSessionDynamic := false
+		if sessionVar, ok := step.Input["key_var"]; ok && sessionVar != "" {
+			hasSessionDynamic = true
+		}
+		if !hasSessionStatic && !hasSessionDynamic {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_push_session_missing_session_id",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_push_session): key or key_var is required", flowName, stepNum),
+				Suggestion: "set key to session ID or input.key_var to dynamic session",
+			})
+		}
+		hasPayload := step.Value != "" || step.BodyVar != ""
+		if _, ok := step.Input["message"]; ok {
+			hasPayload = true
+		}
+		if _, ok := step.Input["message_var"]; ok {
+			hasPayload = true
+		}
+		if _, ok := step.Input["payload_var"]; ok {
+			hasPayload = true
+		}
+		if !hasPayload {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_push_session_missing_payload",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_push_session): no payload specified", flowName, stepNum),
+				Suggestion: "set value, body_var, or input.message_var for payload",
+			})
+		}
+	case "ws_upstream_connect":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_upstream_connect_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_upstream_connect): key is required", flowName, stepNum),
+				Suggestion: "set key to upstream service name",
+			})
+		}
+		if step.As == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_upstream_connect_missing_as",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_upstream_connect): as recommended for connection handle", flowName, stepNum),
+				Suggestion: "set as to store connection handle",
+			})
+		}
+	case "ws_upstream_disconnect":
+		hasKeyStatic := step.Key != ""
+		hasKeyDynamic := false
+		if keyVar, ok := step.Input["key_var"]; ok && keyVar != "" {
+			hasKeyDynamic = true
+		}
+		if !hasKeyStatic && !hasKeyDynamic {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "ws_upstream_disconnect_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (ws_upstream_disconnect): key or key_var is required", flowName, stepNum),
+				Suggestion: "set key to connection or input.key_var to dynamic reference",
+			})
+		}
+	case "storage_get":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_get_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_get): key is required", flowName, stepNum),
+				Suggestion: "set key to a storage provider name",
+			})
+		}
+		if step.Value == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_get_missing_value",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_get): value is required", flowName, stepNum),
+				Suggestion: "set value to the object key (path) to retrieve",
+			})
+		}
+		if step.As == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "storage_get_missing_as",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_get): as is recommended to capture retrieved content", flowName, stepNum),
+				Suggestion: "set as to a slot name to store the retrieved object bytes",
+			})
+		}
+	case "storage_put":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_put_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_put): key is required", flowName, stepNum),
+				Suggestion: "set key to a storage provider name",
+			})
+		}
+		if step.Value == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_put_missing_value",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_put): value is required", flowName, stepNum),
+				Suggestion: "set value to the object key (path) to store",
+			})
+		}
+		hasBody := step.BodyVar != "" || step.Variable != "" || step.As != ""
+		if !hasBody {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "storage_put_missing_body",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_put): no body source specified", flowName, stepNum),
+				Suggestion: "set body_var or as to the slot containing content to store",
+			})
+		}
+	case "storage_delete":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_delete_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_delete): key is required", flowName, stepNum),
+				Suggestion: "set key to a storage provider name",
+			})
+		}
+		if step.Value == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "storage_delete_missing_value",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (storage_delete): value is required", flowName, stepNum),
+				Suggestion: "set value to the object key (path) to delete",
+			})
+		}
+	case "send_email":
+		if step.Key == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "send_email_missing_key",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (send_email): key is required", flowName, stepNum),
+				Suggestion: "set key to email provider name",
+			})
+		}
+		hasRecipient := false
+		if _, ok := step.Input["to_var"]; ok {
+			hasRecipient = true
+		}
+		if _, ok := step.Input["to_val"]; ok {
+			hasRecipient = true
+		}
+		if _, ok := step.Input["to"]; ok {
+			hasRecipient = true
+		}
+		if !hasRecipient {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "send_email_missing_recipient",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (send_email): recipient is required", flowName, stepNum),
+				Suggestion: "set input.to_var or input.to_val for recipient",
+			})
+		}
+		hasSubject := false
+		if _, ok := step.Input["subject_var"]; ok {
+			hasSubject = true
+		}
+		if _, ok := step.Input["subject_val"]; ok {
+			hasSubject = true
+		}
+		if _, ok := step.Input["subject"]; ok {
+			hasSubject = true
+		}
+		if !hasSubject {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "send_email_missing_subject",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (send_email): subject is required", flowName, stepNum),
+				Suggestion: "set input.subject_var or input.subject_val",
+			})
+		}
+		hasBody := false
+		if _, ok := step.Input["body_var"]; ok {
+			hasBody = true
+		}
+		if _, ok := step.Input["body_val"]; ok {
+			hasBody = true
+		}
+		if _, ok := step.Input["body"]; ok {
+			hasBody = true
+		}
+		if step.Body != "" || step.Value != "" {
+			hasBody = true
+		}
+		if !hasBody {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "send_email_missing_body",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %s step %d (send_email): body is required", flowName, stepNum),
+				Suggestion: "set input.body_var or input.body_val",
+			})
+		}
+	}
+	return issues
+}
+
+// â"€â"€â"€ Utilities â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func methodOrAny(method string) string {
 	if method == "" {

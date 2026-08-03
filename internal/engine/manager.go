@@ -61,6 +61,15 @@ type EngineState struct {
 	RouteUpstreamUrls   map[uint64]*UpstreamUrlInfo // key: apiID<<8|endpointID; nil = no upstream URL override
 }
 
+// GetFlowByName looks up a named flow from the library.
+// Returns nil if the flow is not found.
+func (s *EngineState) GetFlowByName(name string) []Instruction {
+	if s.FlowLibrary == nil {
+		return nil
+	}
+	return s.FlowLibrary[name]
+}
+
 // OverflowMetrics counts how often requests exceeded the inline arena.
 // Non-zero ArenaOverflows signal that ArenaInlineSize needs tuning.
 // Exposed via /debug/arena.
@@ -277,6 +286,21 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	if (fm.CacheExec != nil || fm.RegistryExec != nil) && ctx.OpCount > 0 {
 		fm.flushOps(ctx)
 	}
+}
+
+// ProcessFlow executes a named flow directly, bypassing HTTP routing.
+// Used for WebSocket message flows and scheduled flows.
+func (fm *FlowManager) ProcessFlow(ctx *rctx.Context, flowName string) {
+	state := fm.State.Load()
+	if state == nil {
+		return
+	}
+	instructions := state.GetFlowByName(flowName)
+	if instructions == nil {
+		gatewaylog.Default.Warn("[ProcessFlow] flow not found", gatewaylog.F("flow", flowName))
+		return
+	}
+	Execute(ctx, instructions, 0)
 }
 
 // injectUpstreamUrl writes the upstream URL for the current route into the

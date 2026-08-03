@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FieldSchema } from '../types'
 import { listSchemaSets, listSchemaFields, upsertSchemaField, deleteSchemaField, deleteSchemaSet } from '../api'
+import ConfirmDialog from './ConfirmDialog'
 
 const card: React.CSSProperties = {
   background: '#1e1e2e', border: '1px solid #313244', borderRadius: 8, padding: 16, marginBottom: 12,
@@ -29,6 +30,7 @@ export default function SchemaLibrary() {
   const [showFieldForm, setShowFieldForm] = useState(false)
   const [fieldForm, setFieldForm] = useState<FieldSchema>(EMPTY_FIELD)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   useEffect(() => { loadSets() }, [])
   useEffect(() => { if (selectedSet) loadFields(selectedSet) }, [selectedSet])
@@ -57,12 +59,18 @@ export default function SchemaLibrary() {
   }
 
   async function handleDeleteSet(name: string) {
-    if (!window.confirm(`Delete entire schema set "${name}" and all its fields?`)) return
-    try {
-      await deleteSchemaSet(name)
-      setSets(s => s.filter(x => x !== name))
-      if (selectedSet === name) { setSelectedSet(null); setFields([]) }
-    } catch (e) { setErr(String(e)) }
+    setConfirmDialog({
+      title: 'Delete Schema Set',
+      message: `Delete entire schema set "${name}" and all its fields?`,
+      onConfirm: async () => {
+        try {
+          await deleteSchemaSet(name)
+          setSets(s => s.filter(x => x !== name))
+          if (selectedSet === name) { setSelectedSet(null); setFields([]) }
+        } catch (e) { setErr(String(e)) }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   function handleEditField(f: FieldSchema) {
@@ -89,11 +97,17 @@ export default function SchemaLibrary() {
 
   async function handleDeleteField(fieldName: string) {
     if (!selectedSet) return
-    if (!window.confirm(`Delete field "${fieldName}"?`)) return
-    try {
-      await deleteSchemaField(selectedSet, fieldName)
-      setFields(f => f.filter(x => x.name !== fieldName))
-    } catch (e) { setErr(String(e)) }
+    setConfirmDialog({
+      title: 'Delete Field',
+      message: `Delete field "${fieldName}"?`,
+      onConfirm: async () => {
+        try {
+          await deleteSchemaField(selectedSet, fieldName)
+          setFields(f => f.filter(x => x.name !== fieldName))
+        } catch (e) { setErr(String(e)) }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   return (
@@ -237,6 +251,15 @@ export default function SchemaLibrary() {
           </>
         )}
       </div>
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel="Delete"
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }

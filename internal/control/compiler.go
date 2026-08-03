@@ -11,7 +11,11 @@ import (
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/emailprovider"
+	"github.com/amitkhosla/rah/internal/storage"
+	"github.com/jackc/pgx/v5"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/geo"
@@ -164,6 +168,9 @@ type Compiler struct {
 	GrpcRegistry   *grpcutil.DescriptorRegistry        // optional; enables bake-time gRPC method resolution
 	GeoMgr         *geo.Manager                        // optional; enables geo_block steps
 	AvroRegistry   *avro.SchemaRegistry                // optional; enables avro_* steps
+	DataSourcePool *datasource.DataSourcePool          // optional; enables db_query/db_exec/db_query_one steps
+	EmailMgr       *emailprovider.EmailManager         // optional; enables send_email steps
+	StorageMgr     *storage.StorageManager             // optional; enables storage_get/storage_put/storage_delete steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -3088,6 +3095,732 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "xml_set":
 		return c.compileXMLSet(step)
 
+	// ── WebSocket steps ───────────────────────────────────────────────────────
+	// All WS steps access ctx.WSSession and ctx.WSPool through interfaces defined
+	// in rctx — no import of the ws package is needed here.
+
+	case "ws_send":
+		// Reads payload from BodyVar slot (or Value if BodyVar is empty) and calls
+		// ctx.WSSession.WSSend(payload). Returns 400 if WSSession is nil.
+		bodyVar := step.BodyVar
+		if bodyVar == "" {
+			bodyVar = step.As
+		}
+		payloadSlot := -1
+		if bodyVar != "" {
+			s, err := c.getSlot(bodyVar)
+			if err != nil {
+				return fmt.Errorf("ws_send: %w", err)
+			}
+			payloadSlot = s
+		}
+		staticPayload := step.Value
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_send",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSSession == nil {
+					ctx.ResponseStatus = 400
+					return state.PC + 1
+				}
+				var payload []byte
+				if payloadSlot >= 0 && payloadSlot < len(ctx.ByteSlots) {
+					payload = ctx.ByteSlots[payloadSlot]
+				} else if staticPayload != "" {
+					payload = []byte(staticPayload)
+				}
+				ctx.WSSession.WSSend(payload)
+				return state.PC + 1
+			},
+		})
+
+	case "ws_subscribe":
+		// Subscribes the current WS session to a channel. Channel name from step.Value.
+		channel := step.Value
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_subscribe",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSSession != nil {
+					ctx.WSSession.WSSubscribe(channel)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_unsubscribe":
+		// Unsubscribes the current WS session from a channel. Channel name from step.Value.
+		channel := step.Value
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_unsubscribe",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSSession != nil {
+					ctx.WSSession.WSUnsubscribe(channel)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_close":
+		// Closes the current WS session with a close code and text.
+		// code: step.Status (default 1000 = normal closure); text: step.Value.
+		closeCode := step.Status
+		if closeCode == 0 {
+			closeCode = 1000
+		}
+		closeText := step.Value
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_close",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSSession != nil {
+					ctx.WSSession.WSClose(closeCode, closeText)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_get_session_id":
+		// Writes the WS session ID string into the named slot (step.As).
+		asSlot, err := c.getSlot(step.As)
+		if err != nil {
+			return fmt.Errorf("ws_get_session_id: %w", err)
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_get_session_id",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSSession != nil {
+					sid := ctx.WSSession.WSSessionID()
+					ctx.ByteSlots[asSlot] = ctx.Alloc(len(sid))
+					copy(ctx.ByteSlots[asSlot], sid)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_upstream_send":
+		// Sends payload to a named upstream WS connection via ctx.WSPool.
+		upstreamName := step.Key
+		bodyVar2 := step.BodyVar
+		if bodyVar2 == "" {
+			bodyVar2 = step.As
+		}
+		upstreamPayloadSlot := -1
+		if bodyVar2 != "" {
+			s, err := c.getSlot(bodyVar2)
+			if err != nil {
+				return fmt.Errorf("ws_upstream_send: %w", err)
+			}
+			upstreamPayloadSlot = s
+		}
+		upstreamStaticPayload := step.Value
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_upstream_send",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSPool == nil {
+					log.Printf("[ws_upstream_send] WSPool is nil — no upstream pool configured")
+					return state.PC + 1
+				}
+				var payload []byte
+				if upstreamPayloadSlot >= 0 && upstreamPayloadSlot < len(ctx.ByteSlots) {
+					payload = ctx.ByteSlots[upstreamPayloadSlot]
+				} else if upstreamStaticPayload != "" {
+					payload = []byte(upstreamStaticPayload)
+				}
+				if err := ctx.WSPool.SendToUpstream(upstreamName, payload); err != nil {
+					log.Printf("[ws_upstream_send] send to upstream %q failed: %v", upstreamName, err)
+				}
+				return state.PC + 1
+			},
+		})
+
+	// ── Database steps ────────────────────────────────────────────────────────
+	// All DB steps close over c.DataSourcePool captured at bake time.
+	// The pool is nil when no data_sources are configured; steps become no-ops.
+
+	case "db_query":
+		// Executes step.Value as a SQL query against the pool named step.Key.
+		// Slot references in step.Value (${varname}) are resolved at runtime from ByteSlots.
+		// Result rows are marshalled as a JSON array and stored in the slot named step.As.
+		dbQueryPool := c.DataSourcePool
+		dbQueryName := step.Key
+		dbQuerySQL := step.Value
+		dbQueryDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("db_query: as: %w", err)
+			}
+			dbQueryDestSlot = s
+		}
+		dbQuerySlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			dbQuerySlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "db_query",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if dbQueryPool == nil {
+					log.Printf("[db_query] DataSourcePool is nil — no data_sources configured")
+					return state.PC + 1
+				}
+				pool, ok := dbQueryPool.Get(dbQueryName)
+				if !ok {
+					log.Printf("[db_query] unknown data source %q", dbQueryName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				sql := resolveSlotVars(dbQuerySQL, dbQuerySlotMap, ctx)
+				rows, err := pool.Query(context.Background(), sql)
+				if err != nil {
+					log.Printf("[db_query] query error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				defer rows.Close()
+				result, err := pgxRowsToJSON(rows)
+				if err != nil {
+					log.Printf("[db_query] marshal error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if dbQueryDestSlot >= 0 && dbQueryDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[dbQueryDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[dbQueryDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "db_exec":
+		// Executes step.Value as a SQL statement against the pool named step.Key.
+		// Stores the affected-rows count (int64) in IntSlots[step.As] if step.As is set.
+		dbExecPool := c.DataSourcePool
+		dbExecName := step.Key
+		dbExecSQL := step.Value
+		dbExecDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("db_exec: as: %w", err)
+			}
+			dbExecDestSlot = s
+		}
+		dbExecSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			dbExecSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "db_exec",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if dbExecPool == nil {
+					log.Printf("[db_exec] DataSourcePool is nil — no data_sources configured")
+					return state.PC + 1
+				}
+				pool, ok := dbExecPool.Get(dbExecName)
+				if !ok {
+					log.Printf("[db_exec] unknown data source %q", dbExecName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				sql := resolveSlotVars(dbExecSQL, dbExecSlotMap, ctx)
+				tag, err := pool.Exec(context.Background(), sql)
+				if err != nil {
+					log.Printf("[db_exec] exec error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if dbExecDestSlot >= 0 && dbExecDestSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[dbExecDestSlot] = tag.RowsAffected()
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "db_query_one":
+		// Like db_query but expects a single row. Stores the row as a JSON object in
+		// the slot named step.As. Sets status 404 if no rows are returned.
+		dbOnePool := c.DataSourcePool
+		dbOneName := step.Key
+		dbOneSQL := step.Value
+		dbOneDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("db_query_one: as: %w", err)
+			}
+			dbOneDestSlot = s
+		}
+		dbOneSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			dbOneSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "db_query_one",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if dbOnePool == nil {
+					log.Printf("[db_query_one] DataSourcePool is nil — no data_sources configured")
+					return state.PC + 1
+				}
+				pool, ok := dbOnePool.Get(dbOneName)
+				if !ok {
+					log.Printf("[db_query_one] unknown data source %q", dbOneName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				sql := resolveSlotVars(dbOneSQL, dbOneSlotMap, ctx)
+				rows, err := pool.Query(context.Background(), sql)
+				if err != nil {
+					log.Printf("[db_query_one] query error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				defer rows.Close()
+				result, err := pgxRowsToJSON(rows)
+				if err != nil {
+					log.Printf("[db_query_one] marshal error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				// Unwrap the outer array brackets to get a single object.
+				obj := pgxUnwrapSingleRow(result)
+				if obj == nil {
+					ctx.ResponseStatus = 404
+					ctx.Failed = true
+					return -1
+				}
+				if dbOneDestSlot >= 0 && dbOneDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[dbOneDestSlot] = ctx.Alloc(len(obj))
+					copy(ctx.ByteSlots[dbOneDestSlot], obj)
+				}
+				return state.PC + 1
+			},
+		})
+
+	// ── WebSocket broadcast/push/dynamic steps ────────────────────────────────
+
+	case "ws_broadcast_channel":
+		// Broadcasts payload to all sessions subscribed to a channel.
+		// channel: static from step.Key, or resolved from slot step.KeyIdentifier at runtime.
+		// payload: from BodyVar slot (or static step.Value).
+		// Stores the recipient count (int64) in IntSlots[step.As] if step.As is set.
+		wsBCStaticChannel := step.Key
+		wsBCChannelSlot := -1
+		if step.KeyIdentifier != "" {
+			s, err := c.getSlot(step.KeyIdentifier)
+			if err != nil {
+				return fmt.Errorf("ws_broadcast_channel: key_identifier: %w", err)
+			}
+			wsBCChannelSlot = s
+		}
+		wsBCBodyVar := step.BodyVar
+		if wsBCBodyVar == "" {
+			wsBCBodyVar = step.Variable
+		}
+		wsBCPayloadSlot := -1
+		if wsBCBodyVar != "" {
+			s, err := c.getSlot(wsBCBodyVar)
+			if err != nil {
+				return fmt.Errorf("ws_broadcast_channel: body_var: %w", err)
+			}
+			wsBCPayloadSlot = s
+		}
+		wsBCStaticPayload := step.Value
+		wsBCCountSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("ws_broadcast_channel: as: %w", err)
+			}
+			wsBCCountSlot = s
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_broadcast_channel",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSBroadcaster == nil {
+					return state.PC + 1
+				}
+				channel := wsBCStaticChannel
+				if wsBCChannelSlot >= 0 && wsBCChannelSlot < len(ctx.ByteSlots) {
+					channel = string(ctx.ByteSlots[wsBCChannelSlot])
+				}
+				var payload []byte
+				if wsBCPayloadSlot >= 0 && wsBCPayloadSlot < len(ctx.ByteSlots) {
+					payload = ctx.ByteSlots[wsBCPayloadSlot]
+				} else if wsBCStaticPayload != "" {
+					payload = []byte(wsBCStaticPayload)
+				}
+				count := ctx.WSBroadcaster.BroadcastChannel(channel, payload)
+				if wsBCCountSlot >= 0 && wsBCCountSlot < len(ctx.IntSlots) {
+					ctx.IntSlots[wsBCCountSlot] = int64(count)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_push_session":
+		// Pushes payload directly to a specific WebSocket session.
+		// session ID: static from step.Key, or resolved from slot step.KeyIdentifier.
+		// payload: from BodyVar slot or static step.Value.
+		// Stores success bool as "true"/"false" bytes in ByteSlots[step.As] if set.
+		wsPSStaticSession := step.Key
+		wsPSSessionSlot := -1
+		if step.KeyIdentifier != "" {
+			s, err := c.getSlot(step.KeyIdentifier)
+			if err != nil {
+				return fmt.Errorf("ws_push_session: key_identifier: %w", err)
+			}
+			wsPSSessionSlot = s
+		}
+		wsPSBodyVar := step.BodyVar
+		if wsPSBodyVar == "" {
+			wsPSBodyVar = step.Variable
+		}
+		wsPSPayloadSlot := -1
+		if wsPSBodyVar != "" {
+			s, err := c.getSlot(wsPSBodyVar)
+			if err != nil {
+				return fmt.Errorf("ws_push_session: body_var: %w", err)
+			}
+			wsPSPayloadSlot = s
+		}
+		wsPSStaticPayload := step.Value
+		wsPSResultSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("ws_push_session: as: %w", err)
+			}
+			wsPSResultSlot = s
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_push_session",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.WSBroadcaster == nil {
+					return state.PC + 1
+				}
+				sessionID := wsPSStaticSession
+				if wsPSSessionSlot >= 0 && wsPSSessionSlot < len(ctx.ByteSlots) {
+					sessionID = string(ctx.ByteSlots[wsPSSessionSlot])
+				}
+				var payload []byte
+				if wsPSPayloadSlot >= 0 && wsPSPayloadSlot < len(ctx.ByteSlots) {
+					payload = ctx.ByteSlots[wsPSPayloadSlot]
+				} else if wsPSStaticPayload != "" {
+					payload = []byte(wsPSStaticPayload)
+				}
+				ok := ctx.WSBroadcaster.PushSession(sessionID, payload)
+				if wsPSResultSlot >= 0 && wsPSResultSlot < len(ctx.ByteSlots) {
+					if ok {
+						ctx.ByteSlots[wsPSResultSlot] = []byte("true")
+					} else {
+						ctx.ByteSlots[wsPSResultSlot] = []byte("false")
+					}
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_upstream_connect":
+		// Opens (or reuses) a dynamic upstream WebSocket connection.
+		// upstream name: step.Key (static).
+		// scope key: step.Value (static) or resolved from slot step.KeyIdentifier.
+		// TTL: parsed from slot named step.As, or default 5 minutes.
+		// Stores a connection handle identifier in ByteSlots[step.As] when successful.
+		wsUCName := step.Key
+		wsUCScopeStatic := step.Value
+		wsUCScopeSlot := -1
+		if step.KeyIdentifier != "" {
+			s, err := c.getSlot(step.KeyIdentifier)
+			if err != nil {
+				return fmt.Errorf("ws_upstream_connect: key_identifier: %w", err)
+			}
+			wsUCScopeSlot = s
+		}
+		wsUCResultSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("ws_upstream_connect: as: %w", err)
+			}
+			wsUCResultSlot = s
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_upstream_connect",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.DynamicPool == nil {
+					log.Printf("[ws_upstream_connect] DynamicPool is nil — WebSocket not enabled")
+					return state.PC + 1
+				}
+				scopeKey := wsUCScopeStatic
+				if wsUCScopeSlot >= 0 && wsUCScopeSlot < len(ctx.ByteSlots) {
+					scopeKey = string(ctx.ByteSlots[wsUCScopeSlot])
+				}
+				_, err := ctx.DynamicPool.Connect(wsUCName, scopeKey, 0)
+				if err != nil {
+					log.Printf("[ws_upstream_connect] connect error: %v", err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if wsUCResultSlot >= 0 && wsUCResultSlot < len(ctx.ByteSlots) {
+					connKey := wsUCName + ":" + scopeKey
+					ctx.ByteSlots[wsUCResultSlot] = ctx.Alloc(len(connKey))
+					copy(ctx.ByteSlots[wsUCResultSlot], connKey)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "ws_upstream_disconnect":
+		// Explicitly closes a dynamic upstream WebSocket connection.
+		// upstream name: step.Key (static).
+		// scope key: step.Value (static) or resolved from slot step.KeyIdentifier.
+		wsUDName := step.Key
+		wsUDScopeStatic := step.Value
+		wsUDScopeSlot := -1
+		if step.KeyIdentifier != "" {
+			s, err := c.getSlot(step.KeyIdentifier)
+			if err != nil {
+				return fmt.Errorf("ws_upstream_disconnect: key_identifier: %w", err)
+			}
+			wsUDScopeSlot = s
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "ws_upstream_disconnect",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if ctx.DynamicPool == nil {
+					return state.PC + 1
+				}
+				scopeKey := wsUDScopeStatic
+				if wsUDScopeSlot >= 0 && wsUDScopeSlot < len(ctx.ByteSlots) {
+					scopeKey = string(ctx.ByteSlots[wsUDScopeSlot])
+				}
+				ctx.DynamicPool.Disconnect(wsUDName, scopeKey)
+				return state.PC + 1
+			},
+		})
+
+	// ── Email step ─────────────────────────────────────────────────────────────
+
+	case "send_email":
+		// Sends an email via the named SMTP provider.
+		// key: provider name (step.Key).
+		// Input fields: to, subject, body, html ("true"/"false").
+		// Slot references in to/subject/body (${varname}) are resolved at runtime.
+		seEmailMgr := c.EmailMgr
+		seProvider := step.Key
+		seToStatic := step.Input["to"]
+		seSubjectStatic := step.Input["subject"]
+		seBodyStatic := step.Input["body"]
+		seHTML := strings.ToLower(strings.TrimSpace(step.Input["html"])) == "true"
+		seToSlot := -1
+		seSubjectSlot := -1
+		seBodySlot := -1
+		if v := step.Input["to_var"]; v != "" {
+			if s, err := c.getSlot(v); err == nil {
+				seToSlot = s
+			}
+		}
+		if v := step.Input["subject_var"]; v != "" {
+			if s, err := c.getSlot(v); err == nil {
+				seSubjectSlot = s
+			}
+		}
+		if v := step.Input["body_var"]; v != "" {
+			if s, err := c.getSlot(v); err == nil {
+				seBodySlot = s
+			}
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "send_email",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if seEmailMgr == nil {
+					log.Printf("[send_email] EmailManager is nil — no email_providers configured")
+					return state.PC + 1
+				}
+				to := seToStatic
+				if seToSlot >= 0 && seToSlot < len(ctx.ByteSlots) {
+					to = string(ctx.ByteSlots[seToSlot])
+				}
+				subject := seSubjectStatic
+				if seSubjectSlot >= 0 && seSubjectSlot < len(ctx.ByteSlots) {
+					subject = string(ctx.ByteSlots[seSubjectSlot])
+				}
+				body := seBodyStatic
+				if seBodySlot >= 0 && seBodySlot < len(ctx.ByteSlots) {
+					body = string(ctx.ByteSlots[seBodySlot])
+				}
+				if err := seEmailMgr.Send(seProvider, to, subject, body, seHTML); err != nil {
+					log.Printf("[send_email] provider %q error: %v", seProvider, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	// ── Storage steps ─────────────────────────────────────────────────────────
+
+	case "storage_get":
+		// Retrieves an object from S3-compatible storage.
+		// key: provider name (step.Key)
+		// value: object key template (may contain ${varname} references)
+		// as: slot name to store retrieved bytes
+		sgStorageMgr := c.StorageMgr
+		sgProviderName := step.Key
+		sgObjectKeyTemplate := step.Value
+		sgDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("storage_get: as: %w", err)
+			}
+			sgDestSlot = s
+		}
+		sgSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			sgSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "storage_get",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if sgStorageMgr == nil {
+					log.Printf("[storage_get] StorageManager is nil — no storage_providers configured")
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				objectKey := resolveSlotVars(sgObjectKeyTemplate, sgSlotMap, ctx)
+				data, err := sgStorageMgr.Get(ctx.Request.Context(), sgProviderName, objectKey)
+				if err != nil {
+					log.Printf("[storage_get] provider %q key %q error: %v", sgProviderName, objectKey, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if sgDestSlot >= 0 && sgDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[sgDestSlot] = ctx.Alloc(len(data))
+					copy(ctx.ByteSlots[sgDestSlot], data)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "storage_put":
+		// Stores an object in S3-compatible storage.
+		// key: provider name (step.Key)
+		// value: object key template (may contain ${varname} references)
+		// body_var or as: slot name containing content bytes to store
+		// input["content_type"]: optional MIME type (default: application/octet-stream)
+		spStorageMgr := c.StorageMgr
+		spProviderName := step.Key
+		spObjectKeyTemplate := step.Value
+		spContentType := step.Input["content_type"]
+		spBodyVar := step.BodyVar
+		if spBodyVar == "" {
+			spBodyVar = step.Variable
+		}
+		spBodySlot := -1
+		if spBodyVar != "" {
+			s, err := c.getSlot(spBodyVar)
+			if err != nil {
+				return fmt.Errorf("storage_put: body_var: %w", err)
+			}
+			spBodySlot = s
+		} else if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("storage_put: as: %w", err)
+			}
+			spBodySlot = s
+		}
+		spSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			spSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "storage_put",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if spStorageMgr == nil {
+					log.Printf("[storage_put] StorageManager is nil — no storage_providers configured")
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				objectKey := resolveSlotVars(spObjectKeyTemplate, spSlotMap, ctx)
+				var content []byte
+				if spBodySlot >= 0 && spBodySlot < len(ctx.ByteSlots) {
+					content = ctx.ByteSlots[spBodySlot]
+				}
+				if err := spStorageMgr.Put(ctx.Request.Context(), spProviderName, objectKey, content, spContentType); err != nil {
+					log.Printf("[storage_put] provider %q key %q error: %v", spProviderName, objectKey, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "storage_delete":
+		// Deletes an object from S3-compatible storage.
+		// key: provider name (step.Key)
+		// value: object key template (may contain ${varname} references)
+		sdStorageMgr := c.StorageMgr
+		sdProviderName := step.Key
+		sdObjectKeyTemplate := step.Value
+		sdSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			sdSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "storage_delete",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				if sdStorageMgr == nil {
+					log.Printf("[storage_delete] StorageManager is nil — no storage_providers configured")
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				objectKey := resolveSlotVars(sdObjectKeyTemplate, sdSlotMap, ctx)
+				if err := sdStorageMgr.Delete(ctx.Request.Context(), sdProviderName, objectKey); err != nil {
+					log.Printf("[storage_delete] provider %q key %q error: %v", sdProviderName, objectKey, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "schedule_flow":
+		// No-op placeholder — full implementation requires scheduler reference injection.
+		// Will be wired in a future wave when the scheduler is accessible at compile time.
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "schedule_flow",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				log.Printf("[schedule_flow] not yet wired — step is a no-op")
+				return state.PC + 1
+			},
+		})
+
+	case "cancel_schedule":
+		// No-op placeholder — full implementation requires scheduler reference injection.
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "cancel_schedule",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				log.Printf("[cancel_schedule] not yet wired — step is a no-op")
+				return state.PC + 1
+			},
+		})
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -4415,4 +5148,92 @@ func (c *Compiler) ExportVarSchema(apiName string, apiHash uint64) []observabili
 		})
 	}
 	return rows
+}
+
+// ── DB step helpers ────────────────────────────────────────────────────────────
+
+// resolveSlotVars replaces ${varname} placeholders in sql with the corresponding
+// ByteSlot values from ctx at request time. Unresolved references are left as-is.
+func resolveSlotVars(sql string, slotMap map[string]int, ctx *rctx.Context) string {
+	if !strings.Contains(sql, "${") {
+		return sql
+	}
+	var b strings.Builder
+	b.Grow(len(sql))
+	remaining := sql
+	for {
+		start := strings.Index(remaining, "${")
+		if start < 0 {
+			b.WriteString(remaining)
+			break
+		}
+		end := strings.Index(remaining[start:], "}")
+		if end < 0 {
+			b.WriteString(remaining)
+			break
+		}
+		end += start
+		b.WriteString(remaining[:start])
+		varName := remaining[start+2 : end]
+		if idx, ok := slotMap[varName]; ok && idx >= 0 && idx < len(ctx.ByteSlots) {
+			b.Write(ctx.ByteSlots[idx])
+		} else {
+			b.WriteString(remaining[start : end+1])
+		}
+		remaining = remaining[end+1:]
+	}
+	return b.String()
+}
+
+// pgxRowsToJSON marshals pgx query rows to a JSON array of objects.
+func pgxRowsToJSON(rows pgx.Rows) ([]byte, error) {
+	fields := rows.FieldDescriptions()
+	var result []map[string]any
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		row := make(map[string]any, len(fields))
+		for i, f := range fields {
+			row[string(f.Name)] = vals[i]
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(result)
+}
+
+// pgxUnwrapSingleRow extracts the first (and only expected) JSON object from a
+// JSON array produced by pgxRowsToJSON. Returns nil when the array is empty.
+func pgxUnwrapSingleRow(data []byte) []byte {
+	// data is like [] or [{"key":"val"}] or [{"k":"v"},{"k":"v2"}]
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "[]" || len(trimmed) < 3 {
+		return nil
+	}
+	// Strip outer [ ... ] and return the first object.
+	inner := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	if inner == "" {
+		return nil
+	}
+	// Find end of first object.
+	depth := 0
+	for i, ch := range inner {
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return []byte(inner[:i+1])
+			}
+		}
+	}
+	return []byte(inner)
 }

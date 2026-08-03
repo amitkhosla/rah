@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchGatewayApis, deleteFlow } from '../api'
+import ConfirmDialog from './ConfirmDialog'
+import { fetchGatewayApis, deleteFlow, listWSSessions, listWSUpstreams, listSchedules } from '../api'
 import type { FlowStep, GatewayFlow, GatewayState } from '../types'
+import type { WSSession, WSUpstream, Schedule } from '../api'
 
 interface GatewayProps {
   onLoadFlow?: (name: string, steps: FlowStep[], allGatewayFlows: GatewayFlow[]) => void
   onLoadApi?: (api: { name: string; path: string; method: string; flow_name: string }) => void
+  onNavigateToTab?: (tab: string) => void
 }
 
 const METHOD_COLOR: Record<string, string> = {
@@ -33,13 +36,18 @@ function MethodBadge({ method }: { method: string }) {
   )
 }
 
-export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
+export default function Gateway({ onLoadFlow, onLoadApi, onNavigateToTab }: GatewayProps) {
   const [state, setState] = useState<GatewayState | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expandedFlow, setExpandedFlow] = useState<string | null>(null)
   const [expandedApi, setExpandedApi] = useState<string | null>(null)
   const [expandedSubFlows, setExpandedSubFlows] = useState<string | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
+  const [wsSessions, setWSSessions] = useState<WSSession[]>([])
+  const [wsUpstreams, setWSUpstreams] = useState<WSUpstream[]>([])
+  const [schedules, setSchedules] = useState<Schedule[]>([])
+  const [loadingExtras, setLoadingExtras] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -49,7 +57,22 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
       .catch(e => { setError(String(e)); setLoading(false) })
   }, [])
 
+  const loadExtras = useCallback(() => {
+    setLoadingExtras(true)
+    Promise.all([
+      listWSSessions().catch(() => []),
+      listWSUpstreams().catch(() => []),
+      listSchedules().catch(() => []),
+    ]).then(([sessions, upstreams, scheds]) => {
+      setWSSessions(sessions)
+      setWSUpstreams(upstreams)
+      setSchedules(scheds)
+      setLoadingExtras(false)
+    })
+  }, [])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => { loadExtras() }, [loadExtras])
 
   const findFlow = (name: string) => state?.flows.find(f => f.name === name)
 
@@ -155,9 +178,14 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
                   <div style={{ marginTop: 8 }}>
                     <div className="sub" style={{ marginBottom: 4, color: 'var(--muted)' }}>Orphaned flows (not linked to any API):</div>
                     {subFlowsByParent['__orphan__'].map(sf => renderFlow(sf, true, () => {
-                      if (confirm(`Delete orphaned flow "${sf.name}"?`)) {
-                        deleteFlow(sf.name).then(load).catch(e => alert(String(e)))
-                      }
+                      setConfirmDialog({
+                        title: 'Delete Orphaned Flow',
+                        message: `Delete orphaned flow "${sf.name}"?`,
+                        onConfirm: () => {
+                          deleteFlow(sf.name).then(load).catch(e => alert(String(e)))
+                          setConfirmDialog(null)
+                        }
+                      })
                     }))}
                   </div>
                 )}
@@ -269,6 +297,99 @@ export default function Gateway({ onLoadFlow, onLoadApi }: GatewayProps) {
               </div>
             )
           })}
+        </div>
+      </div>
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+
+      {/* WebSocket Status Card */}
+      <div style={{ marginTop: 24 }}>
+        <div className="panel">
+          <div className="panel-header">WebSocket Status</div>
+          <div className="panel-body">
+            {loadingExtras ? (
+              <span className="hint">Loading…</span>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Active Connections</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: 'var(--accent)' }}>
+                    {wsSessions.length}
+                  </div>
+                </div>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Upstream Pool</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: 'var(--accent)' }}>
+                    {wsUpstreams.length}
+                  </div>
+                </div>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Health</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: wsUpstreams.some(u => u.status === 'connected') ? '#22c55e' : '#f59e0b' }}>
+                    {wsUpstreams.some(u => u.status === 'connected') ? '✓ Ready' : '○ Degraded'}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              {onNavigateToTab && (
+                <>
+                  <button className="btn muted" style={{ width: 'auto', padding: '0 14px', fontSize: 12 }} onClick={() => onNavigateToTab('ws-endpoints')}>
+                    View Endpoints
+                  </button>
+                  <button className="btn muted" style={{ width: 'auto', padding: '0 14px', fontSize: 12 }} onClick={() => onNavigateToTab('ws-upstreams')}>
+                    View Upstreams
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Scheduler Status Card */}
+      <div style={{ marginTop: 12 }}>
+        <div className="panel">
+          <div className="panel-header">Scheduler Status</div>
+          <div className="panel-body">
+            {loadingExtras ? (
+              <span className="hint">Loading…</span>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Total Schedules</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: 'var(--accent)' }}>
+                    {schedules.length}
+                  </div>
+                </div>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Active</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: '#22c55e' }}>
+                    {schedules.filter(s => s.enabled).length}
+                  </div>
+                </div>
+                <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>Disabled</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: 'var(--muted)' }}>
+                    {schedules.filter(s => !s.enabled).length}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              {onNavigateToTab && (
+                <button className="btn muted" style={{ width: 'auto', padding: '0 14px', fontSize: 12 }} onClick={() => onNavigateToTab('schedules')}>
+                  Manage Schedules
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

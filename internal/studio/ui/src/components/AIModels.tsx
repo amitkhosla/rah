@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { listLLMModels, upsertLLMModel, deleteLLMModel, testLLMModel, listQuotas, upsertQuota, deleteQuota } from '../api'
 import type { TenantQuota } from '../api'
 import type { LLMModel, LLMAdapter, ModelCapabilities, LLMTestDebug } from '../types'
+import ConfirmDialog from './ConfirmDialog'
 
 // ── SecretRefBuilder ─────────────────────────────────────────────────
 // Popover helper that constructs a secret reference URI without the user
@@ -628,6 +629,7 @@ export default function AIModels() {
   const [testPrompt, setTestPrompt]   = useState('Say OK')
   const [testRunning, setTestRunning] = useState(false)
   const [testResult, setTestResult]   = useState<{ ok: boolean; response?: string; latency_ms?: number; input_tokens?: number; output_tokens?: number; error?: string; debug?: LLMTestDebug } | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   async function load() {
     setLoading(true); setErr('')
@@ -683,9 +685,15 @@ export default function AIModels() {
   }
 
   async function handleDelete(alias: string) {
-    if (!confirm(`Delete model "${alias}"?`)) return
-    try { await deleteLLMModel(alias); await load() }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+    setConfirmDialog({
+      title: 'Delete Model',
+      message: `Delete model "${alias}"?`,
+      onConfirm: async () => {
+        try { await deleteLLMModel(alias); await load() }
+        catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   async function handleQuickTest(alias: string) {
@@ -1219,6 +1227,15 @@ export default function AIModels() {
         </div>
       )}
       <SpendCaps />
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel="Delete"
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1233,6 +1250,7 @@ function SpendCaps() {
   const [editItem, setEditItem]   = useState<TenantQuota | null>(null)
   const [saving, setSaving]       = useState(false)
   const [saveMsg, setSaveMsg]     = useState('')
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
   const blankQuota = (): TenantQuota => ({ tenant_id: '', daily_cost_limit: undefined, monthly_cost_limit: undefined })
 
   async function load() {
@@ -1259,10 +1277,16 @@ function SpendCaps() {
     }
   }
 
-  async function handleDelete(tid: string) {
-    if (!confirm(`Remove spend cap for tenant "${tid}"?`)) return
-    try { await deleteQuota(tid); await load() }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+  function handleDelete(tid: string) {
+    setConfirmDialog({
+      title: 'Remove Spend Cap',
+      message: `Remove spend cap for tenant "${tid}"?`,
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try { await deleteQuota(tid); await load() }
+        catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+      },
+    })
   }
 
   return (
@@ -1358,6 +1382,15 @@ function SpendCaps() {
               onClick={() => setEditItem(blankQuota())}>+ Add Spend Cap</button>
           )}
         </div>
+      )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel="Remove"
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
     </div>
   )

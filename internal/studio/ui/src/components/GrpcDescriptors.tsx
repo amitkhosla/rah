@@ -5,6 +5,7 @@ import {
   deleteGrpcDescriptor,
 } from '../api'
 import type { GrpcDescriptorSummary } from '../types'
+import ConfirmDialog from './ConfirmDialog'
 
 const C = {
   base:    '#1e1e2e',
@@ -34,7 +35,7 @@ export default function GrpcDescriptors() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Delete confirm
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -67,11 +68,10 @@ export default function GrpcDescriptors() {
     }
   }
 
-  async function handleDelete(name: string) {
+  async function executeDelete(name: string) {
     try {
       await deleteGrpcDescriptor(name)
       if (selected === name) setSelected(null)
-      setConfirmDelete(null)
       load()
     } catch (e) {
       setErr(String(e))
@@ -163,7 +163,7 @@ export default function GrpcDescriptors() {
                     <div style={{ fontSize: 11, color: C.muted }}>{s.services?.length ?? 0} service{(s.services?.length ?? 0) !== 1 ? 's' : ''}</div>
                   </div>
                   <button
-                    onClick={e => { e.stopPropagation(); setConfirmDelete(s.name) }}
+                    onClick={e => { e.stopPropagation(); setConfirmDialog({ title: 'Delete Descriptor', message: `Delete "${s.name}"? This cannot be undone.`, onConfirm: () => { executeDelete(s.name); setConfirmDialog(null) } }) }}
                     style={{ padding: '2px 6px', borderRadius: 4, border: `1px solid ${C.border}`, background: 'transparent', color: C.red, fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
                   >
                     ✕
@@ -211,20 +211,15 @@ export default function GrpcDescriptors() {
         </div>
       </div>
 
-      {/* Delete confirm modal */}
-      {confirmDelete && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: C.base, border: `1px solid ${C.border}`, borderRadius: 10, padding: 24, maxWidth: 360, width: '90%' }}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 10 }}>Delete descriptor set?</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
-              <strong style={{ color: C.red }}>{confirmDelete}</strong> will be removed from the gateway and all grpc_call steps referencing it will fail at runtime.
-            </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={() => setConfirmDelete(null)} style={{ padding: '6px 16px', borderRadius: 6, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-              <button onClick={() => handleDelete(confirmDelete)} style={{ padding: '6px 16px', borderRadius: 6, border: 'none', background: C.red, color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Delete</button>
-            </div>
-          </div>
-        </div>
+      {/* Delete confirm dialog */}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel="Delete"
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
     </div>
   )

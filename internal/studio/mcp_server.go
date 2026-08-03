@@ -166,6 +166,139 @@ var studioMCPTools = []mcpToolDef{
 		Description: "Create or update an egress upstream profile.",
 		InputSchema: bodySchema("JSON body of the egress profile definition"),
 	},
+
+	// ── Rate limit configs v2 ─────────────────────────────────────────────────────
+	{
+		Name:        "list_rate_limit_configs_v2",
+		Description: "List all rate limit v2 configurations on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_rate_limit_config_v2",
+		Description: "Create or update a rate limit v2 configuration on the gateway.",
+		InputSchema: bodySchema("JSON body of the RateLimitConfigV2 definition"),
+	},
+	{
+		Name:        "delete_rate_limit_config_v2",
+		Description: "Delete a rate limit v2 configuration by name.",
+		InputSchema: paramSchema("name", "Name of the rate limit config to delete"),
+	},
+
+	// ── Tiers ─────────────────────────────────────────────────────────────────────
+	{
+		Name:        "list_tiers",
+		Description: "List all tier definitions on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_tier",
+		Description: "Create or update a tier definition on the gateway.",
+		InputSchema: bodySchema("JSON body of the TierDef definition"),
+	},
+	{
+		Name:        "delete_tier",
+		Description: "Delete a tier by name.",
+		InputSchema: paramSchema("name", "Name of the tier to delete"),
+	},
+
+	// ── Upstream services ─────────────────────────────────────────────────────────
+	{
+		Name:        "list_upstream_services",
+		Description: "List all upstream service definitions on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_upstream_service",
+		Description: "Create or update an upstream service definition on the gateway.",
+		InputSchema: bodySchema("JSON body of the UpstreamServiceDef definition"),
+	},
+	{
+		Name:        "delete_upstream_service",
+		Description: "Delete an upstream service by name.",
+		InputSchema: paramSchema("name", "Name of the upstream service to delete"),
+	},
+
+	// ── Concurrency ───────────────────────────────────────────────────────────────
+	{
+		Name:        "get_concurrency_config",
+		Description: "Get the current concurrency configuration on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "set_concurrency_config",
+		Description: "Set the concurrency configuration on the gateway.",
+		InputSchema: bodySchema("JSON body of the concurrency configuration"),
+	},
+
+	// ── AI routes ─────────────────────────────────────────────────────────────────
+	{
+		Name:        "list_ai_routes",
+		Description: "List all AI route configurations on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "set_ai_routes",
+		Description: "Replace all AI route configurations on the gateway.",
+		InputSchema: bodySchema("JSON array body of AI route definitions"),
+	},
+
+	// ── AI quotas ─────────────────────────────────────────────────────────────────
+	{
+		Name:        "list_ai_quotas",
+		Description: "List all AI tenant quota configurations on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_ai_quota",
+		Description: "Create or update an AI tenant quota configuration.",
+		InputSchema: bodySchema("JSON body of the AI quota definition"),
+	},
+	{
+		Name:        "delete_ai_quota",
+		Description: "Delete an AI quota configuration by tenant ID.",
+		InputSchema: paramSchema("tenant_id", "Tenant ID of the quota to delete"),
+	},
+
+	// ── Schedules ──────────────────────────────────────────────────────────────────
+	{
+		Name:        "list_schedules",
+		Description: "List all schedules on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "create_schedule",
+		Description: "Create or update a runtime schedule on the gateway.",
+		InputSchema: bodySchema("JSON body of the schedule configuration"),
+	},
+	{
+		Name:        "delete_schedule",
+		Description: "Delete a schedule by name.",
+		InputSchema: paramSchema("name", "Name of the schedule to delete"),
+	},
+	{
+		Name:        "get_schedule_history",
+		Description: "Get execution history for a schedule.",
+		InputSchema: paramSchema("name", "Name of the schedule"),
+	},
+
+	// ── WebSocket ──────────────────────────────────────────────────────────────────
+	{
+		Name:        "list_ws_sessions",
+		Description: "List all active WebSocket sessions on the gateway.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "list_ws_upstreams",
+		Description: "List all WebSocket upstream configurations on the gateway.",
+		InputSchema: emptySchema(),
+	},
+
+	// ── Flow execution ─────────────────────────────────────────────────────────────
+	{
+		Name:        "run_flow",
+		Description: "Trigger a named flow directly with optional tenant and constants.",
+		InputSchema: bodySchema("JSON body with tenant_alias and constants"),
+	},
 }
 
 // toolMetaTable maps tool name → routing metadata.
@@ -191,6 +324,29 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"get_rate_limit_config": {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs/{name}", PathParam: "name"},
 	"list_egress_profiles":  {HTTPMethod: http.MethodGet, Path: "/egress/profiles"},
 	"upsert_egress_profile": {HTTPMethod: http.MethodPost, Path: "/egress/profiles", BodyParam: "body"},
+	"list_rate_limit_configs_v2":  {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs-v2"},
+	"upsert_rate_limit_config_v2": {HTTPMethod: http.MethodPost, Path: "/rate-limit-configs-v2", BodyParam: "body"},
+	"delete_rate_limit_config_v2": {HTTPMethod: http.MethodDelete, Path: "/rate-limit-configs-v2/{name}", PathParam: "name"},
+	"list_tiers":                  {HTTPMethod: http.MethodGet, Path: "/tiers"},
+	"upsert_tier":                 {HTTPMethod: http.MethodPost, Path: "/tiers", BodyParam: "body"},
+	"delete_tier":                 {HTTPMethod: http.MethodDelete, Path: "/tiers/{name}", PathParam: "name"},
+	"list_upstream_services":      {HTTPMethod: http.MethodGet, Path: "/upstream-services"},
+	"upsert_upstream_service":     {HTTPMethod: http.MethodPost, Path: "/upstream-services", BodyParam: "body"},
+	"delete_upstream_service":     {HTTPMethod: http.MethodDelete, Path: "/upstream-services/{name}", PathParam: "name"},
+	"get_concurrency_config":      {HTTPMethod: http.MethodGet, Path: "/admin/concurrency"},
+	"set_concurrency_config":      {HTTPMethod: http.MethodPost, Path: "/admin/concurrency", BodyParam: "body"},
+	"list_ai_routes":              {HTTPMethod: http.MethodGet, Path: "/ai/routes"},
+	"set_ai_routes":               {HTTPMethod: http.MethodPut, Path: "/ai/routes", BodyParam: "body"},
+	"list_ai_quotas":              {HTTPMethod: http.MethodGet, Path: "/ai/quotas"},
+	"upsert_ai_quota":             {HTTPMethod: http.MethodPost, Path: "/ai/quotas", BodyParam: "body"},
+	"delete_ai_quota":             {HTTPMethod: http.MethodDelete, Path: "/ai/quotas/{tenant_id}", PathParam: "tenant_id"},
+	"list_schedules":              {HTTPMethod: http.MethodGet, Path: "/schedules"},
+	"create_schedule":             {HTTPMethod: http.MethodPost, Path: "/schedules/runtime", BodyParam: "body"},
+	"delete_schedule":             {HTTPMethod: http.MethodDelete, Path: "/schedules/runtime/{name}", PathParam: "name"},
+	"get_schedule_history":        {HTTPMethod: http.MethodGet, Path: "/schedules/{name}/history", PathParam: "name"},
+	"list_ws_sessions":            {HTTPMethod: http.MethodGet, Path: "/ws/sessions"},
+	"list_ws_upstreams":           {HTTPMethod: http.MethodGet, Path: "/ws/upstreams"},
+	"run_flow":                    {HTTPMethod: http.MethodPost, Path: "/flows/{name}/run", PathParam: "name", BodyParam: "body"},
 }
 
 // ── Schema helpers ────────────────────────────────────────────────────────────

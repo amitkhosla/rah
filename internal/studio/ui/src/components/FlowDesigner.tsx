@@ -59,6 +59,15 @@ interface VisualGroup {
 
 const VISUAL_GROUPS: VisualGroup[] = [
   {
+    label: 'DATABASE',
+    icon: '🗂️',
+    recipes: [
+      { title: 'Query (returns array)',   wraps: 'db_query',     description: 'Execute query that returns multiple rows' },
+      { title: 'Query One (returns object)', wraps: 'db_query_one', description: 'Execute query that returns a single row' },
+      { title: 'Execute (INSERT/UPDATE/DELETE)', wraps: 'db_exec', description: 'Execute data modification statement' },
+    ],
+  },
+  {
     label: 'LLM',
     icon: '🧠',
     recipes: [
@@ -122,6 +131,23 @@ const VISUAL_GROUPS: VisualGroup[] = [
       { title: 'Return Response',   wraps: 'return',    description: 'Return a value and exit flow' },
       { title: 'Switch',            wraps: 'switch',    description: 'Branch to different flows based on a value' },
       { title: 'Fail',              wraps: 'fail',      description: 'Return an error response and stop the flow' },
+    ],
+  },
+  {
+    label: 'WEBSOCKET',
+    icon: '⚡',
+    recipes: [
+      { title: 'Broadcast to Channel', wraps: 'ws_broadcast_channel', description: 'Send message to all clients in a channel' },
+      { title: 'Push to Session',      wraps: 'ws_push_session',       description: 'Send message to a specific WebSocket session' },
+      { title: 'Connect to Upstream',  wraps: 'ws_upstream_connect',   description: 'Establish connection to upstream WebSocket' },
+      { title: 'Disconnect Upstream',  wraps: 'ws_upstream_disconnect', description: 'Close connection to upstream WebSocket' },
+    ],
+  },
+  {
+    label: 'NOTIFICATIONS',
+    icon: '📧',
+    recipes: [
+      { title: 'Send Email', wraps: 'send_email', description: 'Send an email message' },
     ],
   },
   {
@@ -273,6 +299,7 @@ export default function FlowDesigner({
   const [dslText,     setDslText]       = useState('')
   const [dslError,    setDslError]      = useState<string | null>(null)
   const [showDslRef,  setShowDslRef]    = useState(false)
+  const [flowType,    setFlowType]      = useState<'' | 'ws_connect' | 'ws_message' | 'ws_disconnect' | 'scheduled'>('')
   // Variable picker popup: which step+field is currently showing the popup
   const [varPopup, setVarPopup] = useState<{ stepIdx: number; field: string; anchor: DOMRect } | null>(null)
   // Variable validation warnings: key = "stepIdx:fieldKey", value = warning message
@@ -286,6 +313,34 @@ export default function FlowDesigner({
   useEffect(() => {
     listLLMModels().then(setLlmModels).catch(() => { /* unavailable */ })
   }, [])
+
+  // ── Undo / Redo ───────────────────────────────────────────────────
+  const historyRef            = useRef<FlowStep[][]>([])
+  const historyIdx            = useRef(-1)
+  const historyInitialized    = useRef(false)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+
+  // Seed history with the initial steps once they're available
+  useEffect(() => {
+    if (!historyInitialized.current && steps.length > 0) {
+      historyInitialized.current = true
+      historyRef.current = [steps]
+      historyIdx.current = 0
+    }
+  }, [steps])
+
+  // Reset history whenever the user navigates to a different flow
+  const prevFlowNameRef = useRef(flowName)
+  useEffect(() => {
+    if (prevFlowNameRef.current === flowName) return
+    prevFlowNameRef.current = flowName
+    historyInitialized.current = false
+    historyRef.current = []
+    historyIdx.current = -1
+    setCanUndo(false)
+    setCanRedo(false)
+  }, [flowName])
 
   // ── Pattern condition builder state ───────────────────────────────────────
   // patternBuilderTarget: which step index is currently being edited (null = closed)
@@ -377,6 +432,38 @@ export default function FlowDesigner({
   )
 
 
+  // ── History helpers ──────────────────────────────────────────────
+  function pushHistory(newSteps: FlowStep[]) {
+    const stack = historyRef.current.slice(0, historyIdx.current + 1)
+    stack.push(newSteps)
+    if (stack.length > 50) stack.shift()
+    historyRef.current = stack
+    historyIdx.current = stack.length - 1
+    setCanUndo(historyIdx.current > 0)
+    setCanRedo(false)
+  }
+
+  function recordedSetSteps(newSteps: FlowStep[]) {
+    pushHistory(newSteps)
+    setSteps(newSteps)
+  }
+
+  function undo() {
+    if (historyIdx.current <= 0) return
+    historyIdx.current--
+    setSteps(historyRef.current[historyIdx.current])
+    setCanUndo(historyIdx.current > 0)
+    setCanRedo(true)
+  }
+
+  function redo() {
+    if (historyIdx.current >= historyRef.current.length - 1) return
+    historyIdx.current++
+    setSteps(historyRef.current[historyIdx.current])
+    setCanUndo(true)
+    setCanRedo(historyIdx.current < historyRef.current.length - 1)
+  }
+
   // ── Mutations ───────────────────────────────────────────────────
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
@@ -385,7 +472,7 @@ export default function FlowDesigner({
     if (!raw) return
     const b: PaletteBlock = JSON.parse(raw)
     const idx = steps.length
-    setSteps([...steps, { action: b.type, ...b.defaults }])
+    recordedSetSteps([...steps, { action: b.type, ...b.defaults }])
     setExpanded(prev => new Set([...prev, idx]))
   }
 
@@ -393,7 +480,7 @@ export default function FlowDesigner({
     const newStep = { action: block.type, ...block.defaults }
     const newSteps = [...steps]
     newSteps.splice(atIdx, 0, newStep)
-    setSteps(newSteps)
+    recordedSetSteps(newSteps)
     setExpanded(prev => {
       const next = new Set<number>()
       prev.forEach(i => next.add(i >= atIdx ? i + 1 : i))
@@ -408,7 +495,7 @@ export default function FlowDesigner({
       const cur = insertCursor
       const newSteps = [...steps]
       newSteps.splice(cur, 0, newStep)
-      setSteps(newSteps)
+      recordedSetSteps(newSteps)
       setExpanded(prev => {
         const next = new Set<number>()
         prev.forEach(i => next.add(i >= cur ? i + 1 : i))
@@ -417,7 +504,7 @@ export default function FlowDesigner({
       })
       setInsertCursor(null)
     } else {
-      setSteps([...steps, newStep])
+      recordedSetSteps([...steps, newStep])
       setExpanded(prev => new Set([...prev, steps.length]))
     }
   }
@@ -474,6 +561,8 @@ export default function FlowDesigner({
     'split':'✂️','substring':'✂️','byte_length':'🔢','to_int':'🔢',
     'vector_search':'🔍','embed_text':'🔢','store_internal_tx_id':'🔖',
     'bind_correlation_id':'🔖','bind_client_ip':'🌐',
+    'db_query':'🗂️','db_query_one':'🗂️','db_exec':'🗂️',
+    'send_email':'📧','ws_broadcast_channel':'⚡','ws_push_session':'⚡','ws_upstream_connect':'⚡','ws_upstream_disconnect':'⚡',
   }
   function sicon(a: string) { return SICONS[a] ?? '•' }
 
@@ -549,7 +638,7 @@ export default function FlowDesigner({
   }
 
   function removeStep(i: number) {
-    setSteps(steps.filter((_, idx) => idx !== i))
+    recordedSetSteps(steps.filter((_, idx) => idx !== i))
     setExpanded(prev => {
       const next = new Set<number>()
       prev.forEach(idx => { if (idx < i) next.add(idx); else if (idx > i) next.add(idx - 1) })
@@ -573,14 +662,14 @@ export default function FlowDesigner({
   /** Called when user clicks Save in the builder. */
   function applyPatternCondition(cond: PatternCondition) {
     if (patternBuilderTarget === null) return
-    setSteps(steps.map((s, i) =>
+    recordedSetSteps(steps.map((s, i) =>
       i === patternBuilderTarget ? { ...s, condition: cond as unknown as string } : s
     ))
   }
 
   /** Remove a pattern condition from an `if` step (revert to text condition). */
   function clearPatternCondition(stepIdx: number) {
-    setSteps(steps.map((s, i) =>
+    recordedSetSteps(steps.map((s, i) =>
       i === stepIdx ? { ...s, condition: '' } : s
     ))
   }
@@ -622,14 +711,14 @@ export default function FlowDesigner({
 
   /** Remove a step at arbitrary depth. */
   function removeNestedStep(topIdx: number, path: BranchPath) {
-    setSteps(steps.map((s, i) =>
+    recordedSetSteps(steps.map((s, i) =>
       i !== topIdx ? s : setNestedStep(s, path, () => null)
     ))
   }
 
   /** Append a new step to a branch at arbitrary depth. */
   function addToNestedBranch(topIdx: number, path: BranchPath, branch: 'then_steps' | 'else_steps', b: PaletteBlock) {
-    setSteps(steps.map((s, i) => {
+    recordedSetSteps(steps.map((s, i) => {
       if (i !== topIdx) return s
       // Navigate to the parent node, then append
       const navigate = (node: FlowStep, remaining: BranchPath): FlowStep => {
@@ -653,7 +742,8 @@ export default function FlowDesigner({
   }
 
   function applyDSL() {
-    // Steps are already live-synced from the textarea — just navigate to visual
+    // Steps are already live-synced from the textarea; capture state before switching
+    pushHistory(steps)
     setDslError(null)
     setExpanded(new Set())
     setNestedExpanded(new Set())
@@ -707,7 +797,7 @@ export default function FlowDesigner({
     const newSteps = steps.filter((_, i) => !selectedSteps.has(i))
     const callStep: FlowStep = { action: 'call', flow_name: extractName.trim() }
     newSteps.splice(firstIdx, 0, callStep)
-    setSteps(newSteps)
+    recordedSetSteps(newSteps)
     setSelectMode(false)
     setSelectedSteps(new Set())
     setExtractName('')
@@ -1572,6 +1662,30 @@ export default function FlowDesigner({
     return () => document.removeEventListener('mousedown', handleClick)
   }, [varPopup])
 
+  // ── Keyboard shortcuts: Ctrl+Z = undo, Ctrl+Y / Ctrl+Shift+Z = redo ──
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        if (historyIdx.current <= 0) return
+        historyIdx.current--
+        setSteps(historyRef.current[historyIdx.current])
+        setCanUndo(historyIdx.current > 0)
+        setCanRedo(true)
+      } else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
+        e.preventDefault()
+        if (historyIdx.current >= historyRef.current.length - 1) return
+        historyIdx.current++
+        setSteps(historyRef.current[historyIdx.current])
+        setCanUndo(true)
+        setCanRedo(historyIdx.current < historyRef.current.length - 1)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, []) // historyRef/historyIdx are refs; setSteps/setCanUndo/setCanRedo are stable
+
   // ── VarPopup component ─────────────────────────────────────────
   function VarPopup() {
     if (!varPopup) return null
@@ -1692,6 +1806,127 @@ export default function FlowDesigner({
       if (s.else_steps) vars.push(...computeFlowOutputs(s.else_steps as FlowStep[]))
     }
     return [...new Set(vars.filter(Boolean))]
+  }
+
+  // ── Database query editors ────────────────────────────────────
+  function renderDbQueryBody(step: FlowStep, i: number) {
+    const key = (step['key'] ?? '') as string
+    const value = (step['value'] ?? '') as string
+    const vars = (step['vars'] ?? '') as string
+    const outputVar = (step['as'] ?? '') as string
+    const prevVars = slotsUpTo(i)
+    const action = step.action as string
+    const isQueryOne = action === 'db_query_one'
+
+    return (
+      <div className="step-body">
+        {/* Data source */}
+        <label className="field-label">Data Source (key)</label>
+        <input className="input" placeholder="my_database"
+          value={key} onChange={e => updateStep(i, 'key', e.target.value)} />
+        <span className="field-desc">Name of the configured database connection.</span>
+
+        {/* SQL Query */}
+        <label className="field-label" style={{ marginTop: 8 }}>SQL Query</label>
+        <textarea className="input" style={{ minHeight: 80, fontFamily: 'monospace', fontSize: 12 }}
+          placeholder={isQueryOne ? 'SELECT * FROM users WHERE id = ?' : 'SELECT * FROM events WHERE tenant_id = ?'}
+          value={value} onChange={e => updateStep(i, 'value', e.target.value)} />
+        <span className="field-desc">Use ? for parameterized queries matching vars order.</span>
+
+        {/* Query Parameters */}
+        <label className="field-label" style={{ marginTop: 8 }}>Parameters (comma-separated)</label>
+        <input className="input" placeholder="tenant_id, user_id"
+          value={vars} onChange={e => updateStep(i, 'vars', e.target.value)} />
+        <span className="field-desc">Variable names or slot references (e.g. tenant_id, {'{slot_name}'}).</span>
+
+        {/* Output variable */}
+        <label className="field-label" style={{ marginTop: 8 }}>Output Variable</label>
+        <input className="input" placeholder={isQueryOne ? 'var.user' : 'var.events'}
+          value={outputVar} onChange={e => updateStep(i, 'as', e.target.value)} />
+        <span className="field-desc">
+          {isQueryOne ? 'Variable to hold the single row result object.' : 'Variable to hold the array of rows.'}
+        </span>
+
+        {(key || value || outputVar) && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--accent)', fontFamily: 'monospace', opacity: 0.85 }}>
+            {action} [{key}] → {outputVar}
+          </div>
+        )}
+        {renderLineageAnnotations(step)}
+      </div>
+    )
+  }
+
+  // ── Send Email step editor ────────────────────────────────────
+  function renderSendEmailBody(step: FlowStep, i: number) {
+    const key = (step['key'] ?? '') as string
+    const toVar = (step['to_var'] ?? '') as string
+    const subjectVar = (step['subject_var'] ?? '') as string
+    const bodyVar = (step['body_var'] ?? '') as string
+    const html = (step['html'] ?? '') as string
+    const prevVars = slotsUpTo(i)
+
+    return (
+      <div className="step-body">
+        {/* Provider */}
+        <label className="field-label">Email Provider (key)</label>
+        <input className="input" placeholder="sendgrid"
+          value={key} onChange={e => updateStep(i, 'key', e.target.value)} />
+        <span className="field-desc">Configured email service provider name.</span>
+
+        {/* To Variable */}
+        <label className="field-label" style={{ marginTop: 8 }}>To Email Variable</label>
+        {prevVars.length > 0 ? (
+          <select className="input" value={toVar} onChange={e => updateStep(i, 'to_var', e.target.value)}>
+            <option value="">— pick a variable —</option>
+            {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="var.recipient_email" value={toVar}
+            onChange={e => updateStep(i, 'to_var', e.target.value)} />
+        )}
+        <span className="field-desc">Variable holding the recipient email address.</span>
+
+        {/* Subject Variable */}
+        <label className="field-label" style={{ marginTop: 8 }}>Subject Variable</label>
+        {prevVars.length > 0 ? (
+          <select className="input" value={subjectVar} onChange={e => updateStep(i, 'subject_var', e.target.value)}>
+            <option value="">— pick a variable —</option>
+            {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="var.subject" value={subjectVar}
+            onChange={e => updateStep(i, 'subject_var', e.target.value)} />
+        )}
+        <span className="field-desc">Variable holding the email subject line.</span>
+
+        {/* Body Variable */}
+        <label className="field-label" style={{ marginTop: 8 }}>Body Variable</label>
+        {prevVars.length > 0 ? (
+          <select className="input" value={bodyVar} onChange={e => updateStep(i, 'body_var', e.target.value)}>
+            <option value="">— pick a variable —</option>
+            {prevVars.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="var.body" value={bodyVar}
+            onChange={e => updateStep(i, 'body_var', e.target.value)} />
+        )}
+        <span className="field-desc">Variable holding the email body content.</span>
+
+        {/* HTML checkbox */}
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={html === 'true'}
+            onChange={e => updateStep(i, 'html', e.target.checked ? 'true' : '')} />
+          <label style={{ fontSize: 13, cursor: 'pointer' }}>Send as HTML (default: plain text)</label>
+        </div>
+
+        {(key || toVar) && (
+          <div style={{ marginTop: 8, fontSize: 11, color: '#ec4899', fontFamily: 'monospace', opacity: 0.85 }}>
+            send_email [{key}] to {toVar}
+          </div>
+        )}
+      </div>
+    )
   }
 
   // ── B6: http_call editor ───────────────────────────────────────
@@ -2686,6 +2921,20 @@ export default function FlowDesigner({
               </button>
             )}
             <button
+              className="btn muted"
+              style={{ fontSize: 12, opacity: canUndo ? 1 : 0.4 }}
+              onClick={undo}
+              disabled={!canUndo}
+              title="Undo (Ctrl+Z)"
+            >↩ Undo</button>
+            <button
+              className="btn muted"
+              style={{ fontSize: 12, opacity: canRedo ? 1 : 0.4 }}
+              onClick={redo}
+              disabled={!canRedo}
+              title="Redo (Ctrl+Y)"
+            >↪ Redo</button>
+            <button
               className={`btn muted${showThisFlow ? ' active' : ''}`}
               style={{ fontSize: 12 }}
               onClick={() => setShowThisFlow(p => !p)}
@@ -2844,12 +3093,51 @@ export default function FlowDesigner({
               </div>
             )
           })()}
-          <input
-            className="input"
-            placeholder="flow name (required to save)"
-            value={flowName}
-            onChange={e => setFlowName(e.target.value)}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <input
+                className="input"
+                placeholder="flow name (required to save)"
+                value={flowName}
+                onChange={e => setFlowName(e.target.value)}
+              />
+            </div>
+            <select
+              className="input"
+              value={flowType}
+              onChange={e => setFlowType(e.target.value as any)}
+              style={{ minWidth: 140, height: 'auto' }}
+              title="Set flow type context"
+            >
+              <option value="">Any / HTTP</option>
+              <option value="ws_connect">WS Connect</option>
+              <option value="ws_message">WS Message</option>
+              <option value="ws_disconnect">WS Disconnect</option>
+              <option value="scheduled">Scheduled</option>
+            </select>
+          </div>
+          {flowType && (
+            <div style={{
+              padding: '6px 10px',
+              borderRadius: 5,
+              background: flowType === 'scheduled' ? 'rgba(168,85,247,0.08)' : 'rgba(59,130,246,0.08)',
+              border: flowType === 'scheduled' ? '1px solid rgba(168,85,247,0.2)' : '1px solid rgba(59,130,246,0.2)',
+              fontSize: 11,
+              color: flowType === 'scheduled' ? '#a855f7' : '#3b82f6',
+              marginBottom: 6,
+            }}>
+              <span style={{ fontWeight: 600 }}>
+                {flowType === 'ws_connect' && '⚡ WS Connect flow'}
+                {flowType === 'ws_message' && '⚡ WS Message flow'}
+                {flowType === 'ws_disconnect' && '⚡ WS Disconnect flow'}
+                {flowType === 'scheduled' && '⏱ Scheduled flow'}
+              </span>
+              <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                {flowType === 'scheduled' && 'Tip: add database or notification steps as needed'}
+                {flowType.startsWith('ws_') && 'Tip: use WebSocket-specific steps for messaging'}
+              </span>
+            </div>
+          )}
           {insertCursor !== null && (
             <div style={{
               padding: '5px 10px',
@@ -3191,6 +3479,9 @@ export default function FlowDesigner({
                        </div>
                      ))() :
                      step.action === 'llm_call'          ? renderLlmCallBody(step, i)             :
+                     ['db_query', 'db_query_one', 'db_exec'].includes(step.action)
+                                                         ? renderDbQueryBody(step, i)             :
+                     step.action === 'send_email'        ? renderSendEmailBody(step, i)           :
                      ['cache_get','cache_put','cache_get_global','cache_put_global','cache_delete','cache_delete_global'].includes(step.action)
                                                          ? renderCacheBody(step, i)               :
                                                            renderGenericBody(step, i, defs)}
@@ -3226,7 +3517,7 @@ export default function FlowDesigner({
             <button
               className="btn muted"
               style={{ flex: 1 }}
-              onClick={() => { setSteps([]); setExpanded(new Set()) }}
+              onClick={() => { recordedSetSteps([]); setExpanded(new Set()) }}
             >Clear Flow</button>
           </div>
 

@@ -261,12 +261,32 @@ type RateLimitRecord struct {
 	Config RateLimitConfig `json:"config"`
 }
 
+// TenantV2OverrideRecord is a persisted V2 rate limit override for one tenant+config pair.
+type TenantV2OverrideRecord struct {
+	Alias            string   `json:"alias"`
+	ConfigName       string   `json:"config_name"`
+	Blocked          bool     `json:"blocked,omitempty"`
+	RLDisabled       bool     `json:"rl_disabled,omitempty"`
+	ScaleOverridePct int16    `json:"scale_override_pct,omitempty"`
+	WindowLimits     []uint32 `json:"window_limits,omitempty"`
+}
+
+// TenantModifierRecord is a persisted global rate limit modifier for one tenant.
+type TenantModifierRecord struct {
+	Alias      string `json:"alias"`
+	ScalePct   int16  `json:"scale_pct,omitempty"`
+	Blocked    bool   `json:"blocked,omitempty"`
+	RLDisabled bool   `json:"rl_disabled,omitempty"`
+}
+
 // RegistrySnapshot is a point-in-time view of all tenant and rate-limit data.
 // Used for bulk restore at startup (RestoreFromSnapshot). Not stored as a
 // single blob — RegistryDatastore stores each entity individually.
 type RegistrySnapshot struct {
-	Tenants    []TenantRecord    `json:"tenants"`
-	RateLimits []RateLimitRecord `json:"rate_limits"`
+	Tenants     []TenantRecord           `json:"tenants"`
+	RateLimits  []RateLimitRecord        `json:"rate_limits"`
+	V2Overrides []TenantV2OverrideRecord `json:"v2_overrides,omitempty"`
+	Modifiers   []TenantModifierRecord   `json:"modifiers,omitempty"`
 }
 
 // ─── V2 Rate Limit Design — multi-window, multi-dimension ────────────────────

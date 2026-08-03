@@ -1,6 +1,10 @@
 ﻿package control
 
-import registrypkg "github.com/amitkhosla/rah/internal/registry"
+import (
+	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/mcpreg"
+	registrypkg "github.com/amitkhosla/rah/internal/registry"
+)
 
 // UpstreamPassthroughConfig controls what is forwarded on every upstream http_call.
 // *bool fields: nil = inherit from parent level (step → API → gateway → false).
@@ -277,14 +281,25 @@ type ApiConfig struct {
 	RateLimitPolicies []APIRateLimitEntry `json:"rate_limit_policies,omitempty"` // multi-entry RL policies (new model)
 	SkipRateLimit     bool                `json:"skip_rate_limit,omitempty"`     // suppress auto-injection and warnings
 	UpstreamDefaults  *UpstreamPassthroughConfig `json:"upstream_defaults,omitempty"`
+	WebSocket         *WSApiConfig        `json:"websocket,omitempty"`
 }
 
 type FlowUpdate struct {
 	Name         string       `json:"name"                    yaml:"name"`
+	Type         string       `json:"type,omitempty"          yaml:"type,omitempty"`
 	Code         string       `json:"code,omitempty"          yaml:"code,omitempty"`
 	Instructions []StepConfig `json:"instructions"            yaml:"instructions"`
 	Action       string       `json:"action"                  yaml:"action"` // "upsert" or "delete"
 }
+
+const (
+	FlowTypeHTTP         = "http"
+	FlowTypeWSConnect    = "ws_connect"
+	FlowTypeWSMessage    = "ws_message"
+	FlowTypeWSDisconnect = "ws_disconnect"
+	FlowTypeScheduled    = "scheduled"
+	FlowTypeAny          = ""
+)
 
 type ApiUpdate struct {
 	Name            string             `json:"name"`
@@ -319,6 +334,7 @@ type ApiUpdate struct {
 	RateLimitPolicies []APIRateLimitEntry `json:"rate_limit_policies,omitempty"`
 	SkipRateLimit     bool                `json:"skip_rate_limit,omitempty"`
 	UpstreamDefaults  *UpstreamPassthroughConfig `json:"upstream_defaults,omitempty"`
+	WebSocket         *WSApiConfig        `json:"websocket,omitempty"`
 }
 
 // TenantSyncDef declares a tenant to register at deploy time.
@@ -367,6 +383,15 @@ type UnifiedSyncRequest struct {
 	CacheSeeds []CacheSeedDef `json:"cache_seeds,omitempty"`
 	// APIKeys imports API keys via secret refs at deploy time.
 	APIKeys []APIKeySyncDef `json:"api_keys,omitempty"`
+
+	// AI/MCP entities — persisted independently from flows/APIs.
+	LLMModels        []config.LLMModelConfig      `json:"llm_models,omitempty"`
+	MCPServers        []config.MCPServerConfig      `json:"mcp_servers,omitempty"`
+	VirtualMCPServers []mcpreg.VirtualMCPServerDef  `json:"virtual_mcp_servers,omitempty"`
+	APITools          []mcpreg.APIToolDef           `json:"api_tools,omitempty"`
+
+	// Scheduled jobs — persisted independently from flows/APIs.
+	Schedules []ScheduleConfig `json:"schedules,omitempty"`
 }
 
 type Step struct {
@@ -404,4 +429,40 @@ type RuleConfig struct {
 	Label   string        `json:"label,omitempty"` // optional human-readable label
 	When    CondConfig    `json:"when"`
 	OnMatch OnMatchConfig `json:"on_match"`
+}
+
+// WSApiConfig controls WebSocket handling for an API.
+type WSApiConfig struct {
+	Enabled         bool     `json:"enabled,omitempty"`
+	InboundFlow     string   `json:"inbound_flow,omitempty"`
+	ConnectFlow     string   `json:"connect_flow,omitempty"`
+	DisconnectFlow  string   `json:"disconnect_flow,omitempty"`
+	OutboundChannel string   `json:"outbound_channel,omitempty"`
+	AuthRequired    bool     `json:"auth_required,omitempty"`
+	MaxMessageSize  int32    `json:"max_message_size,omitempty"`
+	PingIntervalSec int      `json:"ping_interval_sec,omitempty"`
+	PongTimeoutSec  int      `json:"pong_timeout_sec,omitempty"`
+	IdleTimeoutSec  int      `json:"idle_timeout_sec,omitempty"`
+	AllowedOrigins  []string `json:"allowed_origins,omitempty"`
+}
+
+// ScheduleOnFailure defines retry and dead letter behavior when a scheduled flow fails.
+type ScheduleOnFailure struct {
+	RetryCount       int    `json:"retry_count,omitempty"        yaml:"retry_count,omitempty"`
+	RetryIntervalSec int    `json:"retry_interval_sec,omitempty" yaml:"retry_interval_sec,omitempty"`
+	DeadLetterFlow   string `json:"dead_letter_flow,omitempty"   yaml:"dead_letter_flow,omitempty"`
+}
+
+// ScheduleConfig defines one scheduled job.
+type ScheduleConfig struct {
+	Name        string            `json:"name"`
+	Cron        string            `json:"cron"`
+	FlowName    string            `json:"flow_name"`
+	TenantAlias string            `json:"tenant_alias,omitempty"`
+	Enabled     bool              `json:"enabled,omitempty"`
+	TimeoutSec  int               `json:"timeout_sec,omitempty"`
+	Constants   map[string]string `json:"constants,omitempty"`
+	OnFailure   ScheduleOnFailure `json:"on_failure,omitempty" yaml:"on_failure,omitempty"`
+	MaxConcurrent int             `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
+	Action      string            `json:"action"`
 }

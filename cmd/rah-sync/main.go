@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -35,6 +35,9 @@ func main() {
 	case "diff":
 		exitCode := diffCmd(os.Args[2:])
 		os.Exit(exitCode)
+	case "export":
+		exitCode := exportCmd(os.Args[2:])
+		os.Exit(exitCode)
 	case "-h", "--help", "help":
 		printUsage()
 		os.Exit(0)
@@ -53,12 +56,17 @@ Usage:
   rah-sync publish <dir> --studio <URL> [options]
   rah-sync promote <release-id> --env <env> --studio <URL> [options]
   rah-sync diff <release-A> <release-B> --studio <URL>
+  rah-sync export --release <id> --studio <URL> [options]
 
 Subcommands:
   lint       Lint a bundle directory for configuration errors
   publish    Upload a bundle to studio and optionally deploy it
   promote    Deploy an existing release to an environment
   diff       Show differences between two releases
+  export     Export a release as YAML or JSON
+
+Common Options (all subcommands):
+  --token <token>     Bearer token for authentication (or env RAH_SYNC_TOKEN)
 
 Lint Options:
   --studio <URL>      Studio server URL for server-side validation (optional)
@@ -71,17 +79,27 @@ Publish Options:
   --auto-deploy <env> Automatically deploy to environment after publish (optional)
   --git-commit <sha>  Git commit SHA (optional)
   --git-branch <name> Git branch name (optional)
+  --include <spec>    Include filter: type:name (repeatable, comma-separated, optional)
+  --exclude <spec>    Exclude filter: type:name (repeatable, comma-separated, optional)
   --output format     Output format: text or json (default: text)
 
 Promote Options:
   --env <env>         Target environment (required, e.g. uat, prd)
   --studio <URL>      Studio server URL (required)
   --by <user>         User email performing the deployment (optional)
+  --include <spec>    Include filter: type:name (repeatable, comma-separated, optional)
+  --exclude <spec>    Exclude filter: type:name (repeatable, comma-separated, optional)
   --output format     Output format: text or json (default: text)
 
 Diff Options:
   --studio <URL>      Studio server URL (required)
   --output format     Output format: text or json (default: text)
+
+Export Options:
+  --release <id>      Release ID to export (required)
+  --studio <URL>      Studio server URL (required)
+  --format <format>   Output format: yaml or json (default: yaml)
+  --out <path>        Output file path (optional, defaults to <id>.yaml or <id>.json)
 
 Exit Codes:
   0  Success
@@ -95,6 +113,8 @@ Examples:
   rah-sync publish ./definitions --studio https://studio.example.com --auto-deploy uat
   rah-sync promote release-123 --env prd --studio https://studio.example.com
   rah-sync diff release-123 release-456 --studio https://studio.example.com
+  rah-sync export --release release-123 --studio https://studio.example.com --format yaml
+  rah-sync export --release release-123 --studio https://studio.example.com --format json --out my-bundle.json
 `)
 }
 
@@ -105,6 +125,7 @@ func lintCmd(args []string) int {
 	studioURL := fs.String("studio", "", "Studio server URL (optional)")
 	outputFormat := fs.String("output", "text", "Output format: text or json")
 	strict := fs.Bool("strict", false, "Treat warnings as errors")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
 
 	// Suppress default usage output
 	fs.SetOutput(io.Discard)
@@ -114,6 +135,12 @@ func lintCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
 	}
 
 	// Get positional argument: directory
@@ -151,10 +178,10 @@ func lintCmd(args []string) int {
 
 	// If --studio URL provided: post to server for additional checks
 	if *studioURL != "" {
-		serverIssues, err := lintWithStudio(bundleDir, *studioURL)
+		serverIssues, err := lintWithStudio(bundleDir, *studioURL, authToken)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Studio validation failed: %v\n", err)
-			// Don't exitâ€”continue with local results only
+			// Don't exit - continue with local results only
 		} else {
 			// Merge server-side issues into result
 			result.Issues = append(result.Issues, serverIssues...)
@@ -198,7 +225,7 @@ func lintCmd(args []string) int {
 
 // lintWithStudio posts the bundle to the studio server's dry-run endpoint
 // and collects server-side lint issues.
-func lintWithStudio(bundleDir string, studioURL string) ([]sync.LintIssue, error) {
+func lintWithStudio(bundleDir string, studioURL string, token string) ([]sync.LintIssue, error) {
 	// Load the bundle from disk
 	loadResult, err := sync.Load(bundleDir)
 	if err != nil {
@@ -220,6 +247,9 @@ func lintWithStudio(bundleDir string, studioURL string) ([]sync.LintIssue, error
 	}
 
 	req.Header.Set("Content-Type", "application/yaml")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -251,7 +281,7 @@ func lintWithStudio(bundleDir string, studioURL string) ([]sync.LintIssue, error
 	return respData.Issues, nil
 }
 
-// publishCmd handles: publish <dir> --studio URL [--tag TAG] [--auto-deploy ENV] [--git-commit SHA] [--git-branch BRANCH]
+// publishCmd handles: publish <dir> --studio URL [--tag TAG] [--auto-deploy ENV] [--git-commit SHA] [--git-branch BRANCH] [--include SPEC] [--exclude SPEC] [--token TOKEN]
 func publishCmd(args []string) int {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	fs.Usage = func() {}
@@ -262,6 +292,9 @@ func publishCmd(args []string) int {
 	gitCommit := fs.String("git-commit", "", "Git commit SHA (optional)")
 	gitBranch := fs.String("git-branch", "", "Git branch name (optional)")
 	outputFormat := fs.String("output", "text", "Output format: text or json")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
+	include := fs.String("include", "", "Include filters: type:name (repeatable, comma-separated)")
+	exclude := fs.String("exclude", "", "Exclude filters: type:name (repeatable, comma-separated)")
 
 	fs.SetOutput(io.Discard)
 
@@ -269,6 +302,12 @@ func publishCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
 	}
 
 	posArgs := fs.Args()
@@ -320,7 +359,7 @@ func publishCmd(args []string) int {
 		return 1
 	}
 
-	releaseID, err := publishBundle(*studioURL, loadResult.Bundle, *tag, *gitCommit, *gitBranch)
+	releaseID, err := publishBundle(*studioURL, loadResult.Bundle, *tag, *gitCommit, *gitBranch, authToken, *include, *exclude)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error publishing bundle: %v\n", err)
 		return 1
@@ -331,7 +370,7 @@ func publishCmd(args []string) int {
 	// If --auto-deploy is set, immediately promote to that environment
 	if *autoDeploy != "" {
 		fmt.Printf("Deploying to %s...\n", *autoDeploy)
-		deployErr := deployRelease(*studioURL, releaseID, *autoDeploy, "")
+		deployErr := deployRelease(*studioURL, releaseID, *autoDeploy, "", authToken, *include, *exclude)
 		if deployErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: deployment failed: %v\n", deployErr)
 			return 1
@@ -342,7 +381,7 @@ func publishCmd(args []string) int {
 	return 0
 }
 
-// promoteCmd handles: promote <release-id> --env ENV --studio URL [--by USER]
+// promoteCmd handles: promote <release-id> --env ENV --studio URL [--by USER] [--include SPEC] [--exclude SPEC] [--token TOKEN]
 func promoteCmd(args []string) int {
 	fs := flag.NewFlagSet("promote", flag.ContinueOnError)
 	fs.Usage = func() {}
@@ -351,6 +390,9 @@ func promoteCmd(args []string) int {
 	studioURL := fs.String("studio", "", "Studio server URL (required)")
 	byUser := fs.String("by", "", "User email (optional)")
 	outputFormat := fs.String("output", "text", "Output format: text or json")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
+	include := fs.String("include", "", "Include filters: type:name (repeatable, comma-separated)")
+	exclude := fs.String("exclude", "", "Exclude filters: type:name (repeatable, comma-separated)")
 
 	fs.SetOutput(io.Discard)
 
@@ -358,6 +400,12 @@ func promoteCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
 	}
 
 	posArgs := fs.Args()
@@ -379,7 +427,7 @@ func promoteCmd(args []string) int {
 
 	releaseID := posArgs[0]
 
-	err = deployRelease(*studioURL, releaseID, *env, *byUser)
+	err = deployRelease(*studioURL, releaseID, *env, *byUser, authToken, *include, *exclude)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error deploying release: %v\n", err)
 		return 1
@@ -395,13 +443,14 @@ func promoteCmd(args []string) int {
 	return 0
 }
 
-// diffCmd handles: diff <release-A> <release-B> --studio URL
+// diffCmd handles: diff <release-A> <release-B> --studio URL [--token TOKEN]
 func diffCmd(args []string) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.Usage = func() {}
 
 	studioURL := fs.String("studio", "", "Studio server URL (required)")
 	outputFormat := fs.String("output", "text", "Output format: text or json")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
 
 	fs.SetOutput(io.Discard)
 
@@ -409,6 +458,12 @@ func diffCmd(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		return 1
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
 	}
 
 	posArgs := fs.Args()
@@ -426,7 +481,7 @@ func diffCmd(args []string) int {
 	releaseA := posArgs[0]
 	releaseB := posArgs[1]
 
-	diff, err := getDiff(*studioURL, releaseA, releaseB)
+	diff, err := getDiff(*studioURL, releaseA, releaseB, authToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting diff: %v\n", err)
 		return 1
@@ -442,14 +497,101 @@ func diffCmd(args []string) int {
 	return 0
 }
 
+// exportCmd handles: export --release <id> --studio URL [--format yaml|json] [--out PATH] [--token TOKEN]
+func exportCmd(args []string) int {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.Usage = func() {}
+
+	releaseID := fs.String("release", "", "Release ID to export (required)")
+	studioURL := fs.String("studio", "", "Studio server URL (required)")
+	format := fs.String("format", "yaml", "Output format: yaml or json")
+	outPath := fs.String("out", "", "Output file path (optional)")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
+
+	fs.SetOutput(io.Discard)
+
+	err := fs.Parse(hoistFlags(args))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		return 1
+	}
+
+	// Validate required flags
+	if *releaseID == "" {
+		fmt.Fprintf(os.Stderr, "Error: --release is required\n")
+		fmt.Fprintf(os.Stderr, "Usage: rah-sync export --release <id> --studio <URL> [options]\n")
+		return 1
+	}
+
+	if *studioURL == "" {
+		fmt.Fprintf(os.Stderr, "Error: --studio URL is required\n")
+		return 1
+	}
+
+	// Validate format
+	if *format != "yaml" && *format != "json" {
+		fmt.Fprintf(os.Stderr, "Error: --format must be 'yaml' or 'json'\n")
+		return 1
+	}
+
+	// Determine output path
+	outFile := *outPath
+	if outFile == "" {
+		if *format == "json" {
+			outFile = *releaseID + ".json"
+		} else {
+			outFile = *releaseID + ".yaml"
+		}
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
+	}
+
+	// Export the release
+	err = exportRelease(*studioURL, *releaseID, *format, outFile, authToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error exporting release: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Exported release %s to %s\n", *releaseID, outFile)
+	return 0
+}
+
 // publishBundle POSTs the bundle to studio and returns the release ID
-func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBranch string) (string, error) {
+func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBranch, token, include, exclude string) (string, error) {
 	bundleJSON, err := json.Marshal(bundle)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal bundle: %w", err)
 	}
 
 	endpoint := studioURL + "/api/releases"
+
+	// Add query parameters for include/exclude filters
+	queryParams := []string{}
+	if include != "" {
+		// Parse comma-separated include values
+		for _, inc := range strings.Split(include, ",") {
+			if trimmed := strings.TrimSpace(inc); trimmed != "" {
+				queryParams = append(queryParams, "include="+inc)
+			}
+		}
+	}
+	if exclude != "" {
+		// Parse comma-separated exclude values
+		for _, exc := range strings.Split(exclude, ",") {
+			if trimmed := strings.TrimSpace(exc); trimmed != "" {
+				queryParams = append(queryParams, "exclude="+exc)
+			}
+		}
+	}
+
+	if len(queryParams) > 0 {
+		endpoint = endpoint + "?" + strings.Join(queryParams, "&")
+	}
 
 	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(bundleJSON))
 	if err != nil {
@@ -465,6 +607,9 @@ func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBran
 	}
 	if gitBranch != "" {
 		req.Header.Set("X-Git-Branch", gitBranch)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	client := &http.Client{}
@@ -496,8 +641,31 @@ func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBran
 }
 
 // deployRelease POSTs to /api/releases/:id/deploy to deploy a release
-func deployRelease(studioURL, releaseID, env, byUser string) error {
+func deployRelease(studioURL, releaseID, env, byUser, token, include, exclude string) error {
 	endpoint := fmt.Sprintf("%s/api/releases/%s/deploy", studioURL, releaseID)
+
+	// Add query parameters for include/exclude filters
+	queryParams := []string{}
+	if include != "" {
+		// Parse comma-separated include values
+		for _, inc := range strings.Split(include, ",") {
+			if trimmed := strings.TrimSpace(inc); trimmed != "" {
+				queryParams = append(queryParams, "include="+inc)
+			}
+		}
+	}
+	if exclude != "" {
+		// Parse comma-separated exclude values
+		for _, exc := range strings.Split(exclude, ",") {
+			if trimmed := strings.TrimSpace(exc); trimmed != "" {
+				queryParams = append(queryParams, "exclude="+exc)
+			}
+		}
+	}
+
+	if len(queryParams) > 0 {
+		endpoint = endpoint + "?" + strings.Join(queryParams, "&")
+	}
 
 	deployReq := map[string]string{
 		"env": env,
@@ -517,6 +685,9 @@ func deployRelease(studioURL, releaseID, env, byUser string) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -534,11 +705,20 @@ func deployRelease(studioURL, releaseID, env, byUser string) error {
 }
 
 // getDiff GETs the diff between two releases
-func getDiff(studioURL, releaseA, releaseB string) (map[string]interface{}, error) {
+func getDiff(studioURL, releaseA, releaseB, token string) (map[string]interface{}, error) {
 	endpoint := fmt.Sprintf("%s/api/releases/%s/diff/%s", studioURL, releaseA, releaseB)
 
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
 	client := &http.Client{}
-	resp, err := client.Get(endpoint)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get diff: %w", err)
 	}
@@ -598,6 +778,46 @@ func formatDiffText(releaseA, releaseB string, diff map[string]interface{}) {
 		}
 		fmt.Println()
 	}
+}
+
+// exportRelease GETs a release bundle and saves it to a file
+func exportRelease(studioURL, releaseID, format, outPath, token string) error {
+	endpoint := fmt.Sprintf("%s/api/releases/%s/bundle?format=%s", studioURL, releaseID, format)
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to get bundle: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("studio returned error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Write to file
+	err = os.WriteFile(outPath, respBody, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
 }
 
 // hoistFlags reorders args so that all --flag [value] pairs come before

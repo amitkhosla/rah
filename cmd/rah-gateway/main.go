@@ -14,7 +14,10 @@ import (
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/control"
 	"github.com/amitkhosla/rah/internal/datastore"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/egress"
+	"github.com/amitkhosla/rah/internal/emailprovider"
+	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/amitkhosla/rah/internal/engine"
 	enginesteps "github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
@@ -28,8 +31,10 @@ import (
 	"github.com/amitkhosla/rah/internal/quota"
 	"github.com/amitkhosla/rah/internal/rctx"
 	tenantregistry "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/scheduler"
 	"github.com/amitkhosla/rah/internal/secrets"
 	"github.com/amitkhosla/rah/internal/vectorstore"
+	"github.com/amitkhosla/rah/internal/ws"
 	"net/http/pprof"
 	"runtime"
 	"runtime/debug"
@@ -109,6 +114,19 @@ func (counterStatusProvider) ReadSlotCurrent(configID uint16, keyBytes []byte, w
 // connAcceptKey is used to store the TCP connection accept time in the request context
 // via http.Server.ConnContext. This enables per-request connection setup timing.
 type connAcceptKey struct{}
+
+// dynamicPoolAdapter bridges ws.DynamicPool to rctx.DynamicConnector.
+// ws.DynamicPool.Connect returns *ws.DynamicConn; rctx.DynamicConnector.Connect returns
+// rctx.DynamicConnHandle. The concrete *ws.DynamicConn already satisfies DynamicConnHandle
+// (it has Send([]byte) error), so the only work here is the return-type coercion.
+type dynamicPoolAdapter struct{ pool *ws.DynamicPool }
+
+func (a *dynamicPoolAdapter) Connect(name, scopeKey string, ttl time.Duration) (rctx.DynamicConnHandle, error) {
+	return a.pool.Connect(name, scopeKey, ttl)
+}
+func (a *dynamicPoolAdapter) Disconnect(name, scopeKey string) {
+	a.pool.Disconnect(name, scopeKey)
+}
 
 func main() {
 	port := flag.Int("port", 8080, "Gateway Port")
@@ -587,9 +605,173 @@ func main() {
 		log.Printf("[mqtt] no brokers configured â€” mqtt_publish/mqtt_call steps require runtime pool")
 	}
 
-	// Avro fingerprint registry â€” always initialised so avro steps can cache compiled
+	// Pre-declare regMgr so scheduler and WS closures can capture it by reference.
+	// It is assigned below when the registry manager is constructed.
+	var regMgr *tenantregistry.RegistryManager
+
+	// WebSocket upstream pool + coordinator
+	var wsCoord *ws.WS
+	if cfgMgr.Gateway().WebSocket.Enabled {
+		wsEventHandler := func(event ws.WSEvent) {
+			if wsCoord == nil {
+				return
+			}
+			session, ok := wsCoord.Sessions.Load(event.SessionID)
+			if !ok {
+				return
+			}
+
+			// Determine which flow to run based on event kind.
+			state := fm.State.Load()
+			if state == nil {
+				return
+			}
+			if int(event.ApiID) >= len(state.Definitions) {
+				return
+			}
+			apiDef := state.Definitions[event.ApiID]
+			if apiDef == nil {
+				return
+			}
+			wsCfg, ok := apiDef.WebSocket.(*control.WSApiConfig)
+			if !ok || wsCfg == nil {
+				return
+			}
+
+			var flowName string
+			switch event.Kind {
+			case ws.EventConnect:
+				flowName = wsCfg.ConnectFlow
+			case ws.EventInbound:
+				flowName = wsCfg.InboundFlow
+			case ws.EventDisconnect:
+				flowName = wsCfg.DisconnectFlow
+			}
+			if flowName == "" {
+				return
+			}
+
+			upgradeReq := session.UpgradeRequest()
+			if upgradeReq == nil {
+				return
+			}
+
+			ctx := fm.Pool.Get().(*rctx.Context)
+			ctx.Reset(&rctx.NoopResponseWriter{})
+			ctx.Request = upgradeReq
+			ctx.RequestBuffer = event.Payload
+			ctx.TenantID = event.TenantID
+			ctx.ApiId = event.ApiID
+			ctx.WSSession = session
+			ctx.WSPool = wsCoord.UpstreamPool
+			ctx.WSBroadcaster = wsCoord
+
+			fm.ProcessFlow(ctx, flowName)
+			fm.Pool.Put(ctx)
+		}
+		coord, wsErr := ws.New(cfgMgr.Gateway().WebSocket, cfgMgr.Gateway().WSUpstreams, ws.EventHandler(wsEventHandler))
+		if wsErr != nil {
+			gatewaylog.Default.Warn(`[WS] failed to initialize upstream pool`, gatewaylog.F(`error`, wsErr.Error()))
+		} else {
+			wsCoord = coord
+			gatewaylog.Default.Info(`[WS] coordinator initialized`)
+		}
+	}
+
+	// Wire WSPool and DynamicPool into FlowManager context pool so ws_upstream_send
+	// and ws_upstream_connect/disconnect steps can use them.
+	if wsCoord != nil {
+		origPoolNew := fm.Pool.New
+		dynAdapter := &dynamicPoolAdapter{pool: wsCoord.DynamicPool}
+		fm.Pool.New = func() any {
+			ctx := origPoolNew().(*rctx.Context)
+			ctx.WSPool = wsCoord.UpstreamPool
+			ctx.WSBroadcaster = wsCoord
+			ctx.DynamicPool = dynAdapter
+			return ctx
+		}
+	}
+
+	// Initialize data sources.
+	var dsPool *datasource.DataSourcePool
+	if len(cfgMgr.Gateway().DataSources) > 0 {
+		var dsErr error
+		dsPool, dsErr = datasource.New(cfgMgr.Gateway().DataSources)
+		if dsErr != nil {
+			gatewaylog.Default.Error("[DataSource] init failed", gatewaylog.F("error", dsErr.Error()))
+			os.Exit(1)
+		}
+	}
+
+	// Initialize email providers.
+	var emailMgr *emailprovider.EmailManager
+	if len(cfgMgr.Gateway().EmailProviders) > 0 {
+		emailMgr = emailprovider.New(cfgMgr.Gateway().EmailProviders)
+	}
+
+	// Initialize storage providers.
+	var storageMgr *storage.StorageManager
+	if len(cfgMgr.Gateway().StorageProviders) > 0 {
+		var storageErr error
+		storageMgr, storageErr = storage.New(cfgMgr.Gateway().StorageProviders)
+		if storageErr != nil {
+			gatewaylog.Default.Error("[Storage] init failed", gatewaylog.F("error", storageErr.Error()))
+			os.Exit(1)
+		}
+	}
+
+	// Scheduler
+	var sched *scheduler.Scheduler
+	schedCfg := cfgMgr.Gateway().Scheduler
+	if schedCfg.Enabled {
+		schedRunner := func(flowName, tenantAlias string, constants map[string]string, timeoutSec int) error {
+			if regMgr == nil {
+				return fmt.Errorf("gateway not ready")
+			}
+			tenantID, ok := regMgr.TenantIDByAlias(tenantAlias)
+			if !ok {
+				gatewaylog.Default.Warn("[Scheduler] tenant not found", gatewaylog.F("alias", tenantAlias))
+				return fmt.Errorf("tenant not found: %s", tenantAlias)
+			}
+
+			syntheticReq, _ := http.NewRequest(http.MethodGet, "/scheduler/"+flowName, nil)
+
+			ctx := fm.Pool.Get().(*rctx.Context)
+			ctx.Reset(&rctx.NoopResponseWriter{})
+			ctx.Request = syntheticReq
+			ctx.TenantID = tenantID
+			ctx.WSBroadcaster = wsCoord // may be nil if WS not enabled
+
+			// constants are resolved to slot indices at compile time;
+			// runtime injection by name is not supported without a slot map.
+			_ = constants
+
+			fm.ProcessFlow(ctx, flowName)
+			fm.Pool.Put(ctx)
+			return nil
+		}
+		schedSchedulerCfg := scheduler.SchedulerConfig{
+			Enabled:        schedCfg.Enabled,
+			Backend:        schedCfg.Backend,
+			LookaheadSec:   schedCfg.LookaheadSec,
+			MaxConcurrent:  schedCfg.MaxConcurrent,
+			LeaderElection: schedCfg.LeaderElection,
+			LeaderTTLSec:   schedCfg.LeaderTTLSec,
+		}
+		sched = scheduler.New(schedSchedulerCfg, instanceFingerprint, schedRunner)
+		sched.Start(gatewayCtx)
+		log.Printf(`[scheduler] started (backend=%s)`, schedCfg.Backend)
+	}
+
+	// Avro fingerprint registry — always initialised so avro steps can cache compiled
 	// AvroPrograms by schema fingerprint across hot-reload cycles (bake-time only).
 	compiler.AvroRegistry = &avro.SchemaRegistry{}
+
+	// Inject data source pool and email manager into the compiler so db_* and
+	// send_email steps can close over them at bake time.
+	compiler.DataSourcePool = dsPool
+	compiler.EmailMgr = emailMgr
+	compiler.StorageMgr = storageMgr
 
 	// Pricing manager â€” bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
@@ -773,7 +955,7 @@ func main() {
 
 	// Registry manager â€” created here (before the gateway goroutine) so that
 	// RegistryExec can be wired to fm before the first request arrives.
-	regMgr := tenantregistry.NewRegistryManager()
+	regMgr = tenantregistry.NewRegistryManager()
 	// Wire RegistryExec: routes buffered registry PUT ops to RegistryManager.
 	fm.RegistryExec = engine.NewRegistryExecutor(regMgr)
 
@@ -897,6 +1079,20 @@ func main() {
 					req,
 				)
 				return
+			}
+
+			// WS upgrade check — separate code path, does not use HTTP context pool.
+			// Runs before the concurrency gate; WebSocket connections are long-lived
+			// and must not block the gate slot for the duration of the connection.
+			if wsCoord != nil && int(apiId) < len(currentState.Definitions) {
+				if apiDef := currentState.Definitions[apiId]; apiDef != nil {
+					if wsCfg, ok := apiDef.WebSocket.(*control.WSApiConfig); ok && wsCfg != nil && wsCfg.Enabled {
+						if ws.CanHandle(req, wsCfg) {
+							wsCoord.Handler.Upgrade(w, req, wsCfg, 0, uint32(apiId))
+							return
+						}
+					}
+				}
 			}
 
 			// B0. Concurrency gate â€” active only when enabled in config or via PATCH /admin/concurrency.
@@ -1419,6 +1615,7 @@ func main() {
 	}
 
 	ms.SetDataStore(dataStoreMgr)
+	ms.SetCfgMgr(cfgMgr)
 
 	// Cross-instance flow/API sync: when another gateway instance writes to
 	// DomainFlows or DomainAPIDefinitions, re-bootstrap this instance from
@@ -1485,6 +1682,8 @@ func main() {
 	mux.HandleFunc("/getAllApis", ms.GetAllApisHandler)
 	mux.HandleFunc("/meta/steps", ms.StepsMetaHandler)
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
+	mux.HandleFunc("/schedules/runtime", ms.ScheduleRuntimeHandler)
+	mux.HandleFunc("/schedules/runtime/", ms.ScheduleRuntimeHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {
@@ -1794,6 +1993,7 @@ func main() {
 	control.RegisterTestRoutes(mux, dataStoreMgr, ms, fm, cacheMgr)
 
 	mcpReg := mcpreg.NewRegistry()
+	ms.SetMCPReg(mcpReg)
 	compiler.MCPRegistry = mcpReg
 	compiler.GatewayBase = fmt.Sprintf("http://localhost:%d", *port)
 	control.RegisterAIRoutes(mux, cfgMgr, func() {
