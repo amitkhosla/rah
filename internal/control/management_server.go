@@ -517,8 +517,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	for _, flowName := range deletedFlows {
 		for apiName, apiCfg := range newApiConfigs {
 			if apiCfg.FlowName == flowName {
-				msg := fmt.Sprintf(`cannot delete flow %s: still referenced by API %s - delete the API first`, flowName, apiName)
-				return fmt.Errorf(msg)
+				return fmt.Errorf("cannot delete flow %s: still referenced by API %s - delete the API first", flowName, apiName)
 			}
 		}
 	}
