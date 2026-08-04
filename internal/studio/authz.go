@@ -95,7 +95,7 @@ func (c *ExternalAuthzClient) Authorize(ctx context.Context, req AuthzRequest) (
 		// Network error or timeout — respect on_timeout setting.
 		return c.failOpen(), nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, nil

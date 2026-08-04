@@ -34,7 +34,7 @@ func (dc *DynamicConn) Close() {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 	if dc.conn != nil {
-		dc.conn.Close()
+		_ = dc.conn.Close()
 		dc.conn = nil
 	}
 }

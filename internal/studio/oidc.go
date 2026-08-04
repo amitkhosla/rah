@@ -72,7 +72,7 @@ func discoverOIDC(ctx context.Context, client *http.Client, issuerURL string) (*
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery: fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("oidc discovery: server returned %d", resp.StatusCode)
 	}
@@ -109,7 +109,7 @@ func exchangeCodeForIDToken(ctx context.Context, client *http.Client, disc *OIDC
 	if err != nil {
 		return "", fmt.Errorf("oidc token exchange: request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
@@ -141,7 +141,7 @@ func validateIDToken(ctx context.Context, client *http.Client, disc *OIDCDiscove
 	if err != nil {
 		return nil, fmt.Errorf("oidc validate: fetch JWKS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	jwksBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("oidc validate: read JWKS: %w", err)

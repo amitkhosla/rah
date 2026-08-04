@@ -1462,12 +1462,14 @@ func (s *Server) deployHandler(w http.ResponseWriter, r *http.Request) {
 	if sess, ok := sessionFromContext(r.Context()); ok {
 		actor = sess.Username
 	}
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: actor, Action: "deploy", ResourceType: "release",
-		ResourceID: rec.ReleaseID, Status: "success",
-		Summary: fmt.Sprintf("%s deployed release %s", actor, rec.ReleaseID),
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "deploy", ResourceType: "release",
+			ResourceID: rec.ReleaseID, Status: "success",
+			Summary: fmt.Sprintf("%s deployed release %s", actor, rec.ReleaseID),
+		})
+	}()
 	_ = json.NewEncoder(w).Encode(map[string]any{"release_id": rec.ReleaseID, "results": results})
 }
 
@@ -1662,11 +1664,13 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		if rec.status >= 400 {
 			status = "failure"
 		}
-		go s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: actor, Action: "sync", ResourceType: "flow",
-			Status: status, Summary: actor + " synced flows",
-		})
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: actor, Action: "sync", ResourceType: "flow",
+				Status: status, Summary: actor + " synced flows",
+			})
+		}()
 		return
 	}
 	dep := findDeployment(s.config.Deployments, name)
@@ -1684,11 +1688,13 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 	if rec.status >= 400 {
 		status = "failure"
 	}
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: actor, Action: "sync", ResourceType: "flow",
-		Status: status, Summary: actor + " synced flows",
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "sync", ResourceType: "flow",
+			Status: status, Summary: actor + " synced flows",
+		})
+	}()
 }
 
 // proxyToSandbox forwards POST /api/sync to every target in the sandbox deployment.
@@ -2659,14 +2665,16 @@ func (s *Server) recordingProxy(w http.ResponseWriter, r *http.Request, targetPa
 	if len(parts) > 0 {
 		resourceID = parts[len(parts)-1]
 	}
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		Timestamp:    time.Now().UTC(),
-		Actor:        actor,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		Status:       status,
-		Summary:      fmt.Sprintf("%s %s %s", actor, action, resourceID),
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
+			Timestamp:    time.Now().UTC(),
+			Actor:        actor,
+			Action:       action,
+			ResourceType: resourceType,
+			ResourceID:   resourceID,
+			Status:       status,
+			Summary:      fmt.Sprintf("%s %s %s", actor, action, resourceID),
+		})
+	}()
 }

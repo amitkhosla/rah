@@ -75,7 +75,7 @@ func (m *StorageManager) Get(ctx context.Context, providerName, key string) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("storage get %q: %w", key, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	return io.ReadAll(out.Body)
 }
 

@@ -137,11 +137,11 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, ok := s.userStore.Authenticate(req.Username, req.Password)
 	if !ok {
-		go s.auditStore.Append(context.Background(), AuditRecord{
+		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
 			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 			Actor: req.Username, Action: "login", ResourceType: "session",
 			Status: "failure", Summary: req.Username + " login failed",
-		})
+		}) }()
 		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
@@ -149,11 +149,11 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	token := s.sessions.create(user.Username, user.Role)
 	setSessionCookie(w, token)
-	go s.auditStore.Append(context.Background(), AuditRecord{
+	go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
 		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 		Actor: user.Username, Action: "login", ResourceType: "session",
 		Status: "success", Summary: user.Username + " logged in",
-	})
+	}) }()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meResponse{
 		Username:           user.Username,
@@ -176,11 +176,11 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 			actor = entry.Username
 		}
 		s.sessions.delete(c.Value)
-		go s.auditStore.Append(context.Background(), AuditRecord{
+		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
 			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 			Actor: actor, Action: "logout", ResourceType: "session",
 			Status: "success", Summary: actor + " logged out",
-		})
+		}) }()
 	}
 	clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
@@ -254,11 +254,13 @@ func (s *Server) changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.userStore.ChangePassword(entry.Username, req.CurrentPassword, req.NewPassword); err != nil {
-		go s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: entry.Username, Action: "password.change", ResourceType: "user",
-			ResourceID: entry.Username, Status: "failure", Summary: entry.Username + " password change failed",
-		})
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: entry.Username, Action: "password.change", ResourceType: "user",
+				ResourceID: entry.Username, Status: "failure", Summary: entry.Username + " password change failed",
+			})
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
@@ -266,11 +268,13 @@ func (s *Server) changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "password changed"})
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: entry.Username, Action: "password.change", ResourceType: "user",
-		ResourceID: entry.Username, Status: "success", Summary: entry.Username + " changed password",
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: entry.Username, Action: "password.change", ResourceType: "user",
+			ResourceID: entry.Username, Status: "success", Summary: entry.Username + " changed password",
+		})
+	}()
 }
 
 // ── Studio user management handlers (admin only) ──────────────────────────────
@@ -318,11 +322,13 @@ func (s *Server) studioUsersHandler(w http.ResponseWriter, r *http.Request) {
 		if sess, ok := sessionFromContext(r.Context()); ok {
 			actor = sess.Username
 		}
-		go s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: actor, Action: "user.create", ResourceType: "user",
-			Status: "success", Summary: fmt.Sprintf("%s created user", actor),
-		})
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: actor, Action: "user.create", ResourceType: "user",
+				Status: "success", Summary: fmt.Sprintf("%s created user", actor),
+			})
+		}()
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -364,11 +370,13 @@ func (s *Server) studioUserDeleteHandler(w http.ResponseWriter, r *http.Request)
 	if sess, ok := sessionFromContext(r.Context()); ok {
 		actor = sess.Username
 	}
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: actor, Action: "user.delete", ResourceType: "user",
-		Status: "success", Summary: fmt.Sprintf("%s deleted user", actor),
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "user.delete", ResourceType: "user",
+			Status: "success", Summary: fmt.Sprintf("%s deleted user", actor),
+		})
+	}()
 }
 
 // studioUsersHashHandler is always public — lets operators generate bcrypt hashes

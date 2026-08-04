@@ -65,7 +65,7 @@ func sendSMTP(cfg EmailProviderConfig, to, subject, body string, html bool) erro
 		if err != nil {
 			return fmt.Errorf("smtp client: %w", err)
 		}
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 		if err = client.Auth(auth); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
@@ -79,7 +79,7 @@ func sendSMTP(cfg EmailProviderConfig, to, subject, body string, html bool) erro
 		if err != nil {
 			return fmt.Errorf("smtp data: %w", err)
 		}
-		defer w.Close()
+		defer func() { _ = w.Close() }()
 		_, err = w.Write(msg)
 		return err
 	default: // starttls or none

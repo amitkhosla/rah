@@ -79,7 +79,7 @@ func (s *FileAuditStore) Append(_ context.Context, r AuditRecord) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	line, err := json.Marshal(r)
 	if err != nil {
 		return err

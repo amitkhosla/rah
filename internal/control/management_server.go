@@ -246,7 +246,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 		return
 	}
 
@@ -265,7 +265,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":               "success",
 		"rate_limit_warnings": warnings,
 	})
@@ -551,10 +551,10 @@ func (s *ManagementServer) DraftStatusHandler(w http.ResponseWriter, r *http.Req
 	draft := s.FlowManager.DraftState.Load()
 	w.Header().Set("Content-Type", "application/json")
 	if draft == nil {
-		json.NewEncoder(w).Encode(map[string]any{"draft_loaded": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"draft_loaded": false})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"draft_loaded": true,
 		"flow_count":   len(draft.FlowLibrary),
 		"api_count":    len(draft.Definitions),
@@ -1017,11 +1017,17 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 						TimeoutSec:  sc.TimeoutSec,
 						Constants:   sc.Constants,
 					}
-					s.OnScheduleUpsert(sched)
+					if err := s.OnScheduleUpsert(sched); err != nil {
+						gatewaylog.Default.Warn("[Management] schedule upsert failed",
+							gatewaylog.F("name", sc.Name), gatewaylog.F("error", err.Error()))
+					}
 				}
 			} else if sc.Action[0] == byte('d') {
 				if s.OnScheduleDelete != nil {
-					s.OnScheduleDelete(sc.Name)
+					if err := s.OnScheduleDelete(sc.Name); err != nil {
+						gatewaylog.Default.Warn("[Management] schedule delete failed",
+							gatewaylog.F("name", sc.Name), gatewaylog.F("error", err.Error()))
+					}
 				}
 			}
 		}
@@ -1318,7 +1324,7 @@ func (s *ManagementServer) StepsMetaHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(BuildStepCatalog())
+	_ = json.NewEncoder(w).Encode(BuildStepCatalog())
 }
 
 // GetAllApisHandler returns all registered flows and APIs in the same shape
@@ -1340,7 +1346,7 @@ func (s *ManagementServer) GetAllApisHandler(w http.ResponseWriter, r *http.Requ
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(UnifiedSyncRequest{Flows: flows, Apis: apis})
+	_ = json.NewEncoder(w).Encode(UnifiedSyncRequest{Flows: flows, Apis: apis})
 }
 
 // FlowProfileHandler handles GET /flows/{name}/profile and DELETE /flows/{name}.
@@ -1377,7 +1383,7 @@ func (s *ManagementServer) FlowProfileHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(profile)
+		_ = json.NewEncoder(w).Encode(profile)
 	case http.MethodPost:
 		if !isRun {
 			http.Error(w, "POST /flows/{name} requires /run suffix", http.StatusBadRequest)
@@ -1415,7 +1421,7 @@ func (s *ManagementServer) flowRunDirectHandler(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "flow": flowName})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "flow": flowName})
 }
 
 // deleteFlowHandler removes an orphaned flow (DELETE /flows/{name}).
@@ -1526,7 +1532,7 @@ func (s *ManagementServer) createRuntimeSchedule(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": cfg.Name})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": cfg.Name})
 }
 
 // deleteRuntimeSchedule handles DELETE /schedules/runtime/{name}.
@@ -1546,7 +1552,7 @@ func (s *ManagementServer) deleteRuntimeSchedule(w http.ResponseWriter, name str
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 }
 
 // SchedulesListHandler handles GET /schedules.
@@ -1572,7 +1578,7 @@ func (s *ManagementServer) SchedulesListHandler(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(schedules)
+	_ = json.NewEncoder(w).Encode(schedules)
 }
 
 // SchedulesUpsertHandler handles POST /schedules.
@@ -1627,7 +1633,7 @@ func (s *ManagementServer) SchedulesUpsertHandler(w http.ResponseWriter, r *http
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "upserted", "name": cfg.Name})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "upserted", "name": cfg.Name})
 }
 
 // SchedulesDeleteHandler handles DELETE /schedules/{name}.
@@ -1660,7 +1666,7 @@ func (s *ManagementServer) SchedulesDeleteHandler(w http.ResponseWriter, r *http
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": path})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": path})
 }
 
 // SchedulesHistoryHandler handles GET /schedules/{name}/history.
@@ -1686,7 +1692,7 @@ func (s *ManagementServer) SchedulesHistoryHandler(w http.ResponseWriter, r *htt
 	if s.OnScheduleHistory == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "[]")
+		_, _ = fmt.Fprint(w, "[]")
 		return
 	}
 
@@ -1702,8 +1708,8 @@ func (s *ManagementServer) SchedulesHistoryHandler(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if history == nil {
-		fmt.Fprint(w, "[]")
+		_, _ = fmt.Fprint(w, "[]")
 	} else {
-		json.NewEncoder(w).Encode(history)
+		_ = json.NewEncoder(w).Encode(history)
 	}
 }

@@ -427,7 +427,7 @@ func TestRecordingProxy_StatusCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTP Get failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Simulate the status recorder capturing a 400 response
 	statusRecorder.WriteHeader(http.StatusBadRequest)
@@ -710,7 +710,7 @@ func TestAuditLogHandler_NegativeLimit(t *testing.T) {
 			Action: "action",
 			Status: "ok",
 		}
-		srv.auditStore.Append(ctx, rec)
+		_ = srv.auditStore.Append(ctx, rec)
 	}
 
 	// GET with negative limit should return all records
@@ -720,7 +720,7 @@ func TestAuditLogHandler_NegativeLimit(t *testing.T) {
 	srv.auditLogHandler(w, req)
 
 	var records []AuditRecord
-	json.NewDecoder(w.Body).Decode(&records)
+	_ = json.NewDecoder(w.Body).Decode(&records)
 
 	if len(records) != 3 {
 		t.Fatalf("expected 3 records with negative limit, got %d", len(records))
@@ -733,7 +733,7 @@ func TestAuditLogHandler_InvalidLimitParam(t *testing.T) {
 
 	// Add a record
 	rec := AuditRecord{ID: "test", Actor: "user", Action: "action", Status: "ok"}
-	srv.auditStore.Append(ctx, rec)
+	_ = srv.auditStore.Append(ctx, rec)
 
 	// GET with invalid limit (non-numeric) should default to some reasonable behavior
 	req := httptest.NewRequest(http.MethodGet, "/api/audit?limit=not-a-number", nil)

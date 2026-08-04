@@ -157,11 +157,13 @@ func (s *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	sessionToken := s.sessions.create(username, user.Role)
 	setSessionCookie(w, sessionToken)
 
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: username, Action: "login.oidc", ResourceType: "session",
-		Status: "success", Summary: fmt.Sprintf("%s logged in via OIDC (%s)", username, provider.Name),
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: username, Action: "login.oidc", ResourceType: "session",
+			Status: "success", Summary: fmt.Sprintf("%s logged in via OIDC (%s)", username, provider.Name),
+		})
+	}()
 
 	// Redirect to the Studio root. The frontend reads /api/me after the redirect.
 	http.Redirect(w, r, "/", http.StatusFound)
@@ -170,12 +172,12 @@ func (s *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 // oidcDispatch routes /api/oidc/* requests.
 func (s *Server) oidcDispatch(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/oidc")
-	switch {
-	case path == "/providers" || path == "/providers/":
+	switch path {
+	case "/providers", "/providers/":
 		s.oidcProvidersHandler(w, r)
-	case path == "/login" || path == "/login/":
+	case "/login", "/login/":
 		s.oidcLoginHandler(w, r)
-	case path == "/callback" || path == "/callback/":
+	case "/callback", "/callback/":
 		s.oidcCallbackHandler(w, r)
 	default:
 		http.NotFound(w, r)

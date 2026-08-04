@@ -9,6 +9,7 @@ import (
 
 // releaseBundleHandler serves GET /api/releases/{id}/bundle?format=yaml|json
 // It is dispatched from releaseByIDHandler in server.go when the sub-path is "bundle".
+//nolint:unused
 func (s *Server) releaseBundleHandler(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

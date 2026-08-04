@@ -67,12 +67,14 @@ func (s *Server) tokenListCreateHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		go s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: caller, Action: "token.create", ResourceType: "token",
-			ResourceID: tok.ID, Status: "success",
-			Summary: fmt.Sprintf("%s created token %q (role=%s)", caller, req.Name, req.Role),
-		})
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: caller, Action: "token.create", ResourceType: "token",
+				ResourceID: tok.ID, Status: "success",
+				Summary: fmt.Sprintf("%s created token %q (role=%s)", caller, req.Name, req.Role),
+			})
+		}()
 
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -119,12 +121,14 @@ func (s *Server) tokenRevokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	caller := callerUsername(r.Context())
-	go s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: caller, Action: "token.revoke", ResourceType: "token",
-		ResourceID: id, Status: "success",
-		Summary: fmt.Sprintf("%s revoked token %s", caller, id),
-	})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: caller, Action: "token.revoke", ResourceType: "token",
+			ResourceID: id, Status: "success",
+			Summary: fmt.Sprintf("%s revoked token %s", caller, id),
+		})
+	}()
 
 	w.WriteHeader(http.StatusNoContent)
 }
