@@ -106,6 +106,10 @@ func (s *Server) scimTokenMiddleware(next http.Handler) http.Handler {
 			scimError(w, http.StatusServiceUnavailable, "SCIM provisioning not enabled")
 			return
 		}
+		if s.config.SCIM.Token == "" {
+			scimError(w, http.StatusServiceUnavailable, "SCIM token not configured")
+			return
+		}
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
 		if token == auth || subtle.ConstantTimeCompare([]byte(token), []byte(s.config.SCIM.Token)) != 1 {

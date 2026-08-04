@@ -366,6 +366,11 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		}
 	}
 	if cfg.OIDC != nil && len(cfg.OIDC.Providers) > 0 {
+		for i := range cfg.OIDC.Providers {
+			if resolved, err := resolveKeyRef(cfg.OIDC.Providers[i].ClientSecret); err == nil {
+				cfg.OIDC.Providers[i].ClientSecret = resolved
+			}
+		}
 		srv.oidcStateStore = newOIDCStateStore()
 	}
 	if cfg.Authz != nil {

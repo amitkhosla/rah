@@ -14,6 +14,7 @@ import (
 	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/router"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/scheduler"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,9 +59,10 @@ type ManagementServer struct {
 	InstrSchemaHook func(apiName string, endpointID uint8, apiHash uint64, rows []observability.InstrSchemaRow)
 
 	// Schedule management callbacks - wired by the scheduler package (wave 3D).
-	OnScheduleUpsert func(name, cron, flowName, tenantAlias string, enabled bool, timeoutSec int, constants map[string]string) error
-	OnScheduleDelete func(name string) error
-	OnScheduleList   func() ([]ScheduleConfig, error)
+	OnScheduleUpsert  func(s *scheduler.Schedule) error
+	OnScheduleDelete  func(name string) error
+	OnScheduleList    func() ([]*scheduler.Schedule, error)
+	OnScheduleHistory func(name string) ([]scheduler.ExecutionRecord, error)
 
 	// OnFlowRun is called to execute a named flow directly (MCP tool: run_flow).
 	OnFlowRun func(flowName, tenantAlias string, constants map[string]string) error
@@ -1006,7 +1008,16 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		if len(sc.Action) > 0 {
 			if sc.Action[0] == byte('u') {
 				if s.OnScheduleUpsert != nil {
-					s.OnScheduleUpsert(sc.Name, sc.Cron, sc.FlowName, sc.TenantAlias, sc.Enabled, sc.TimeoutSec, sc.Constants)
+					sched := &scheduler.Schedule{
+						Name:        sc.Name,
+						Cron:        sc.Cron,
+						FlowName:    sc.FlowName,
+						TenantAlias: sc.TenantAlias,
+						Enabled:     sc.Enabled,
+						TimeoutSec:  sc.TimeoutSec,
+						Constants:   sc.Constants,
+					}
+					s.OnScheduleUpsert(sched)
 				}
 			} else if sc.Action[0] == byte('d') {
 				if s.OnScheduleDelete != nil {
@@ -1496,7 +1507,16 @@ func (s *ManagementServer) createRuntimeSchedule(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if err := s.OnScheduleUpsert(cfg.Name, cfg.Cron, cfg.FlowName, cfg.TenantAlias, cfg.Enabled, cfg.TimeoutSec, cfg.Constants); err != nil {
+	sched := &scheduler.Schedule{
+		Name:        cfg.Name,
+		Cron:        cfg.Cron,
+		FlowName:    cfg.FlowName,
+		TenantAlias: cfg.TenantAlias,
+		Enabled:     cfg.Enabled,
+		TimeoutSec:  cfg.TimeoutSec,
+		Constants:   cfg.Constants,
+	}
+	if err := s.OnScheduleUpsert(sched); err != nil {
 		gatewaylog.Default.Warn("[Management] failed to create runtime schedule",
 			gatewaylog.F("name", cfg.Name),
 			gatewaylog.F("error", err.Error()))
@@ -1527,4 +1547,163 @@ func (s *ManagementServer) deleteRuntimeSchedule(w http.ResponseWriter, name str
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
+}
+
+// SchedulesListHandler handles GET /schedules.
+// Returns all schedules as a JSON array.
+func (s *ManagementServer) SchedulesListHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.OnScheduleList == nil {
+		http.Error(w, "schedule management not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	schedules, err := s.OnScheduleList()
+	if err != nil {
+		gatewaylog.Default.Warn("[Management] failed to list schedules",
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to list schedules: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(schedules)
+}
+
+// SchedulesUpsertHandler handles POST /schedules.
+// Creates or updates a schedule.
+func (s *ManagementServer) SchedulesUpsertHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var cfg ScheduleConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if cfg.Name == "" {
+		http.Error(w, "schedule name required", http.StatusBadRequest)
+		return
+	}
+	if cfg.Cron == "" {
+		http.Error(w, "cron expression required", http.StatusBadRequest)
+		return
+	}
+	if cfg.FlowName == "" {
+		http.Error(w, "flow_name required", http.StatusBadRequest)
+		return
+	}
+
+	if s.OnScheduleUpsert == nil {
+		http.Error(w, "schedule management not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	sched := &scheduler.Schedule{
+		Name:        cfg.Name,
+		Cron:        cfg.Cron,
+		FlowName:    cfg.FlowName,
+		TenantAlias: cfg.TenantAlias,
+		Enabled:     cfg.Enabled,
+		TimeoutSec:  cfg.TimeoutSec,
+		Constants:   cfg.Constants,
+	}
+
+	if err := s.OnScheduleUpsert(sched); err != nil {
+		gatewaylog.Default.Warn("[Management] failed to upsert schedule",
+			gatewaylog.F("name", cfg.Name),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to upsert schedule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "upserted", "name": cfg.Name})
+}
+
+// SchedulesDeleteHandler handles DELETE /schedules/{name}.
+// Deletes a schedule by name.
+func (s *ManagementServer) SchedulesDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/schedules/")
+	path = strings.TrimSpace(path)
+	if path == "" {
+		http.Error(w, "schedule name required", http.StatusBadRequest)
+		return
+	}
+
+	if s.OnScheduleDelete == nil {
+		http.Error(w, "schedule management not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := s.OnScheduleDelete(path); err != nil {
+		gatewaylog.Default.Warn("[Management] failed to delete schedule",
+			gatewaylog.F("name", path),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to delete schedule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": path})
+}
+
+// SchedulesHistoryHandler handles GET /schedules/{name}/history.
+// Returns execution history for a schedule.
+func (s *ManagementServer) SchedulesHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/schedules/")
+	path = strings.TrimSpace(path)
+	// Remove /history suffix
+	path = strings.TrimSuffix(path, "/history")
+	path = strings.TrimSpace(path)
+
+	if path == "" {
+		http.Error(w, "schedule name required", http.StatusBadRequest)
+		return
+	}
+
+	// If OnScheduleHistory is not available, return empty array
+	if s.OnScheduleHistory == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "[]")
+		return
+	}
+
+	history, err := s.OnScheduleHistory(path)
+	if err != nil {
+		gatewaylog.Default.Warn("[Management] failed to get schedule history",
+			gatewaylog.F("name", path),
+			gatewaylog.F("error", err.Error()))
+		http.Error(w, "failed to get history: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if history == nil {
+		fmt.Fprint(w, "[]")
+	} else {
+		json.NewEncoder(w).Encode(history)
+	}
 }

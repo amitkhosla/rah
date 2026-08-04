@@ -106,3 +106,8 @@ func (s *Scheduler) DeleteSchedule(ctx context.Context, name string) error {
 
 	return nil
 }
+
+// ListSchedules returns all schedules.
+func (s *Scheduler) ListSchedules(ctx context.Context) ([]*Schedule, error) {
+	return s.Store.ListAll(ctx)
+}

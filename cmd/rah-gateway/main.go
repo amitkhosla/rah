@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"github.com/amitkhosla/rah/internal/apikey"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
@@ -674,6 +675,7 @@ func main() {
 			gatewaylog.Default.Warn(`[WS] failed to initialize upstream pool`, gatewaylog.F(`error`, wsErr.Error()))
 		} else {
 			wsCoord = coord
+			wsCoord.Dispatcher.Start(gatewayCtx)
 			gatewaylog.Default.Info(`[WS] coordinator initialized`)
 		}
 	}
@@ -723,33 +725,33 @@ func main() {
 	// Scheduler
 	var sched *scheduler.Scheduler
 	schedCfg := cfgMgr.Gateway().Scheduler
-	if schedCfg.Enabled {
-		schedRunner := func(flowName, tenantAlias string, constants map[string]string, timeoutSec int) error {
-			if regMgr == nil {
-				return fmt.Errorf("gateway not ready")
-			}
-			tenantID, ok := regMgr.TenantIDByAlias(tenantAlias)
-			if !ok {
-				gatewaylog.Default.Warn("[Scheduler] tenant not found", gatewaylog.F("alias", tenantAlias))
-				return fmt.Errorf("tenant not found: %s", tenantAlias)
-			}
-
-			syntheticReq, _ := http.NewRequest(http.MethodGet, "/scheduler/"+flowName, nil)
-
-			ctx := fm.Pool.Get().(*rctx.Context)
-			ctx.Reset(&rctx.NoopResponseWriter{})
-			ctx.Request = syntheticReq
-			ctx.TenantID = tenantID
-			ctx.WSBroadcaster = wsCoord // may be nil if WS not enabled
-
-			// constants are resolved to slot indices at compile time;
-			// runtime injection by name is not supported without a slot map.
-			_ = constants
-
-			fm.ProcessFlow(ctx, flowName)
-			fm.Pool.Put(ctx)
-			return nil
+	schedRunner := func(flowName, tenantAlias string, constants map[string]string, timeoutSec int) error {
+		if regMgr == nil {
+			return fmt.Errorf("gateway not ready")
 		}
+		tenantID, ok := regMgr.TenantIDByAlias(tenantAlias)
+		if !ok {
+			gatewaylog.Default.Warn("[Scheduler] tenant not found", gatewaylog.F("alias", tenantAlias))
+			return fmt.Errorf("tenant not found: %s", tenantAlias)
+		}
+
+		syntheticReq, _ := http.NewRequest(http.MethodGet, "/scheduler/"+flowName, nil)
+
+		ctx := fm.Pool.Get().(*rctx.Context)
+		ctx.Reset(&rctx.NoopResponseWriter{})
+		ctx.Request = syntheticReq
+		ctx.TenantID = tenantID
+		ctx.WSBroadcaster = wsCoord // may be nil if WS not enabled
+
+		// constants are resolved to slot indices at compile time;
+		// runtime injection by name is not supported without a slot map.
+		_ = constants
+
+		fm.ProcessFlow(ctx, flowName)
+		fm.Pool.Put(ctx)
+		return nil
+	}
+	if schedCfg.Enabled {
 		schedSchedulerCfg := scheduler.SchedulerConfig{
 			Enabled:        schedCfg.Enabled,
 			Backend:        schedCfg.Backend,
@@ -1565,6 +1567,16 @@ func main() {
 		obsWriter.UpsertInstrSchema(rows)
 	}
 
+	if sched != nil {
+		ms.OnScheduleUpsert = func(s *scheduler.Schedule) error { return sched.UpsertSchedule(bootstrapCtx, s) }
+		ms.OnScheduleDelete = func(name string) error { return sched.DeleteSchedule(bootstrapCtx, name) }
+		ms.OnScheduleList = func() ([]*scheduler.Schedule, error) { return sched.ListSchedules(bootstrapCtx) }
+		// OnScheduleHistory: set to nil to use default behavior (return empty array)
+		ms.OnFlowRun = func(flowName, tenantAlias string, constants map[string]string) error {
+			return schedRunner(flowName, tenantAlias, constants, 0)
+		}
+	}
+
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
 	// successfully. Without this, bootstrap sees an empty LLM catalog and fails
@@ -1684,6 +1696,19 @@ func main() {
 	mux.HandleFunc("/flows/", ms.FlowProfileHandler)
 	mux.HandleFunc("/schedules/runtime", ms.ScheduleRuntimeHandler)
 	mux.HandleFunc("/schedules/runtime/", ms.ScheduleRuntimeHandler)
+	mux.HandleFunc("/schedules", ms.SchedulesListHandler)
+	mux.HandleFunc("/schedules/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/schedules/")
+		if strings.HasSuffix(path, "/history") {
+			ms.SchedulesHistoryHandler(w, r)
+		} else if r.Method == http.MethodPost {
+			ms.SchedulesUpsertHandler(w, r)
+		} else if r.Method == http.MethodDelete {
+			ms.SchedulesDeleteHandler(w, r)
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {
