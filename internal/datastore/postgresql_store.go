@@ -79,8 +79,16 @@ func buildConnString(cfg config.StoreConnection) string {
 }
 
 func (s *postgresqlStore) ensureSchema(ctx context.Context) error {
+	_, _ = s.pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS rah_system`)
+
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kv_entries')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='kv_entries')
+    THEN ALTER TABLE public.kv_entries SET SCHEMA rah_system; END IF;
+END $$`)
+
 	_, err := s.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS kv_entries (
+		CREATE TABLE IF NOT EXISTS rah_system.kv_entries (
 			full_key TEXT PRIMARY KEY,
 			value    BYTEA NOT NULL
 		)
@@ -94,7 +102,7 @@ func (s *postgresqlStore) Put(ctx context.Context, tenant Tenant, key string, va
 		return err
 	}
 	_, err = s.pool.Exec(ctx,
-		`INSERT INTO kv_entries(full_key, value) VALUES($1,$2)
+		`INSERT INTO rah_system.kv_entries(full_key, value) VALUES($1,$2)
 		 ON CONFLICT(full_key) DO UPDATE SET value=EXCLUDED.value`,
 		fullKey, value,
 	)
@@ -108,7 +116,7 @@ func (s *postgresqlStore) Get(ctx context.Context, tenant Tenant, key string) ([
 	}
 	var value []byte
 	err = s.pool.QueryRow(ctx,
-		`SELECT value FROM kv_entries WHERE full_key=$1`, fullKey,
+		`SELECT value FROM rah_system.kv_entries WHERE full_key=$1`, fullKey,
 	).Scan(&value)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -125,7 +133,7 @@ func (s *postgresqlStore) Delete(ctx context.Context, tenant Tenant, key string)
 		return err
 	}
 	_, err = s.pool.Exec(ctx,
-		`DELETE FROM kv_entries WHERE full_key=$1`, fullKey,
+		`DELETE FROM rah_system.kv_entries WHERE full_key=$1`, fullKey,
 	)
 	return err
 }
@@ -136,7 +144,7 @@ func (s *postgresqlStore) ListKeys(ctx context.Context, tenant Tenant, prefix st
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT full_key FROM kv_entries WHERE full_key LIKE $1`,
+		`SELECT full_key FROM rah_system.kv_entries WHERE full_key LIKE $1`,
 		scopedPrefix+"%",
 	)
 	if err != nil {
@@ -172,7 +180,7 @@ func (s *postgresqlStore) MultiGet(ctx context.Context, tenant Tenant, keys []st
 		fullKeys[i] = fk
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT full_key, value FROM kv_entries WHERE full_key = ANY($1)`,
+		`SELECT full_key, value FROM rah_system.kv_entries WHERE full_key = ANY($1)`,
 		fullKeys,
 	)
 	if err != nil {
@@ -209,7 +217,7 @@ func (s *postgresqlStore) MultiPut(ctx context.Context, tenant Tenant, kvs map[s
 		values = append(values, v)
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO kv_entries(full_key, value)
+		`INSERT INTO rah_system.kv_entries(full_key, value)
 		 SELECT * FROM unnest($1::text[], $2::bytea[])
 		 ON CONFLICT(full_key) DO UPDATE SET value = EXCLUDED.value`,
 		fullKeys, values,
@@ -243,7 +251,7 @@ func (s *postgresqlStore) MultiPutTx(ctx context.Context, tx pgx.Tx, kvs map[str
 		values = append(values, v)
 	}
 	_, err := tx.Exec(ctx,
-		`INSERT INTO kv_entries(full_key, value)
+		`INSERT INTO rah_system.kv_entries(full_key, value)
 		 SELECT * FROM unnest($1::text[], $2::bytea[])
 		 ON CONFLICT(full_key) DO UPDATE SET value = EXCLUDED.value`,
 		fullKeys, values,
@@ -253,7 +261,7 @@ func (s *postgresqlStore) MultiPutTx(ctx context.Context, tx pgx.Tx, kvs map[str
 
 // DeleteScopedKeyTx deletes a fully-scoped key inside the given transaction.
 func (s *postgresqlStore) DeleteScopedKeyTx(ctx context.Context, tx pgx.Tx, scopedKey string) error {
-	_, err := tx.Exec(ctx, `DELETE FROM kv_entries WHERE full_key=$1`, scopedKey)
+	_, err := tx.Exec(ctx, `DELETE FROM rah_system.kv_entries WHERE full_key=$1`, scopedKey)
 	return err
 }
 

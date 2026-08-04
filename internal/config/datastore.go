@@ -60,7 +60,8 @@ const (
 	DomainCredentials DataDomain = "credentials" // named credential mappings (CredentialRegistry)
 	DomainAsyncJobs   DataDomain = "async_jobs"  // async job state (status + results)
 	DomainAIConfig    DataDomain = "ai_config"   // runtime LLM model catalog + MCP server registry
-	DomainMCPTools    DataDomain = "mcp_tools"   // virtual MCP server definitions + API tool catalog
+	DomainMCPTools      DataDomain = "mcp_tools"      // virtual MCP server definitions + API tool catalog
+	DomainNamedQueries  DataDomain = "named_queries"  // named SQL queries for data sources
 
 	// Deployment infrastructure domains
 	DomainEnvironments     DataDomain = "environments"      // environment definitions (dev/qa/prod)

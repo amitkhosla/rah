@@ -225,53 +225,6 @@ func (rs *RedisStore) ListHistory(ctx context.Context, name string, limit int) (
 
 // TODO: implement using ZADD/ZRANGEBYSCORE/ZREM for atomic claiming
 
-// PostgresStore is a stub implementation for PostgreSQL backend.
-type PostgresStore struct {
-	dsn string
-}
-
-// NewPostgresStore creates a Postgres store (not yet implemented).
-func NewPostgresStore(dsn string) *PostgresStore {
-	return &PostgresStore{dsn: dsn}
-}
-
-// Upsert is not yet implemented.
-func (ps *PostgresStore) Upsert(ctx context.Context, s *Schedule) error {
-	return fmt.Errorf("postgres store: not yet implemented")
-}
-
-// Delete is not yet implemented.
-func (ps *PostgresStore) Delete(ctx context.Context, name string) error {
-	return fmt.Errorf("postgres store: not yet implemented")
-}
-
-// ListDueWithin is not yet implemented.
-func (ps *PostgresStore) ListDueWithin(ctx context.Context, windowSec int) ([]*ScheduledEvent, error) {
-	return nil, fmt.Errorf("postgres store: not yet implemented")
-}
-
-// Claim is not yet implemented.
-func (ps *PostgresStore) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) {
-	return ClaimError, fmt.Errorf("postgres store: not yet implemented")
-}
-
-// RecordExecution is not yet implemented.
-func (ps *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord, nextRun time.Time) error {
-	return fmt.Errorf("postgres store: not yet implemented")
-}
-
-// ListAll is not yet implemented.
-func (ps *PostgresStore) ListAll(ctx context.Context) ([]*Schedule, error) {
-	return nil, fmt.Errorf("postgres store: not yet implemented")
-}
-
-// ListHistory is not yet implemented.
-func (ps *PostgresStore) ListHistory(ctx context.Context, name string, limit int) ([]ExecutionRecord, error) {
-	return nil, fmt.Errorf("postgres store: not yet implemented")
-}
-
-// TODO: implement using SELECT FOR UPDATE SKIP LOCKED
-
 // NewStore factory creates the appropriate store implementation from config.
 func NewStore(cfg SchedulerConfig) Store {
 	switch cfg.Backend {
@@ -279,12 +232,27 @@ func NewStore(cfg SchedulerConfig) Store {
 		// For now, return a stub; in production, parse connection details from cfg
 		return NewRedisStore("localhost:6379", "", 0)
 	case "postgres":
-		// For now, return a stub; in production, parse DSN from cfg
-		return NewPostgresStore("")
+		// PostgreSQL store must be wired separately via NewPostgresStore(ctx, pool)
+		// This factory returns a stub that will fail at runtime.
+		// See scheduler initialization in cmd/rah-gateway/main.go for proper wiring.
+		return &memoryStoreStub{err: fmt.Errorf("postgres store not initialized: must wire via NewPostgresStore(ctx, pool)")}
 	default:
 		return NewMemoryStore()
 	}
 }
+
+// memoryStoreStub is a placeholder that fails at runtime if used.
+type memoryStoreStub struct {
+	err error
+}
+
+func (s *memoryStoreStub) Upsert(ctx context.Context, sc *Schedule) error                                  { return s.err }
+func (s *memoryStoreStub) Delete(ctx context.Context, name string) error                                    { return s.err }
+func (s *memoryStoreStub) ListDueWithin(ctx context.Context, windowSec int) ([]*ScheduledEvent, error)      { return nil, s.err }
+func (s *memoryStoreStub) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) { return ClaimError, s.err }
+func (s *memoryStoreStub) RecordExecution(ctx context.Context, rec ExecutionRecord, nextRun time.Time) error { return s.err }
+func (s *memoryStoreStub) ListAll(ctx context.Context) ([]*Schedule, error)                                  { return nil, s.err }
+func (s *memoryStoreStub) ListHistory(ctx context.Context, name string, limit int) ([]ExecutionRecord, error) { return nil, s.err }
 
 // SchedulerConfig is imported from internal/config
 type SchedulerConfig struct {

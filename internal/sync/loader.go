@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/control"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/mcpreg"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
 )
@@ -45,6 +46,8 @@ func Load(dir string) (LoadResult, error) {
 		VirtualMCPServers:   []mcpreg.VirtualMCPServerDef{},
 		APITools:            []mcpreg.APIToolDef{},
 		Schedules:           []control.ScheduleConfig{},
+		Migrations:          []control.MigrationDef{},
+		Queries:             make(map[string]datasource.NamedQueryConfig),
 	}
 
 	// Collect all .yaml and .json files from the directory tree

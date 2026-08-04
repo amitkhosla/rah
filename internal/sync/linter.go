@@ -1,4 +1,4 @@
-﻿package sync
+package sync
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/amitkhosla/rah/internal/control"
+	"github.com/amitkhosla/rah/internal/datasource"
 )
 
 // Lint runs Level 0—4 checks on the loaded bundle.
@@ -20,6 +21,13 @@ func Lint(result LoadResult) []LintIssue {
 	issues = append(issues, lintLevel2(result)...)
 	issues = append(issues, lintLevel3(result)...)
 	issues = append(issues, lintLevel4(result)...)
+	// Wave 5B: Redis, Named Queries, Migrations, and Tenant Isolation validation
+	issues = append(issues, lintRedisSteps(result)...)
+	issues = append(issues, lintNamedQueryRefs(result)...)
+	issues = append(issues, lintMigrationVersions(result)...)
+	issues = append(issues, lintRedisMultiKeySteps(result)...)
+	issues = append(issues, lintNamedQueryBatchBy(result)...)
+	issues = append(issues, lintRedisZAddScore(result)...)
 	return issues
 }
 
@@ -2314,6 +2322,265 @@ func lintStepRequiredFields(
 			})
 		}
 	}
+	return issues
+}
+
+// â"€â"€â"€ Wave 5B: Redis, Named Queries, Migrations, and Tenant Isolation Validation â"€â"€â"€â"€â"€â"€
+
+// lintRedisSteps checks that all redis_* steps reference a source name via the Key field.
+// Redis steps without a Key (source name) will fail at runtime.
+func lintRedisSteps(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	for _, flow := range b.Flows {
+		loc := result.SourceMap[flow.Name]
+		for i, step := range flow.Instructions {
+			issues = append(issues, checkRedisStepSource(step, flow.Name, i+1, loc)...)
+		}
+	}
+
+	return issues
+}
+
+// checkRedisStepSource recursively checks a step and nested steps for redis source validation.
+func checkRedisStepSource(step control.StepConfig, flowName string, stepNum int, loc SourceLocation) []LintIssue {
+	var issues []LintIssue
+
+	if isRedisStep(step.Action) && strings.TrimSpace(step.Key) == "" {
+		issues = append(issues, LintIssue{
+			Severity:   SeverityError,
+			Rule:       "redis-source-required",
+			File:       loc.File,
+			Line:       loc.Line,
+			Message:    fmt.Sprintf("flow %q step %d (type %s): key must specify a redis source name", flowName, stepNum, step.Action),
+			Suggestion: "set key to the name of a configured Redis source",
+		})
+	}
+
+	// Recurse into nested steps.
+	for i, nested := range step.Do {
+		issues = append(issues, checkRedisStepSource(nested, flowName, i+1, loc)...)
+	}
+	for _, branch := range step.Branches {
+		for i, nested := range branch.Flow {
+			issues = append(issues, checkRedisStepSource(nested, flowName, i+1, loc)...)
+		}
+	}
+
+	return issues
+}
+
+// isRedisStep checks if an action type is a redis_* step.
+func isRedisStep(t string) bool {
+	return len(t) >= 6 && t[:6] == "redis_"
+}
+
+// lintNamedQueryRefs checks that db_* steps using "query:" prefix reference a known named query.
+func lintNamedQueryRefs(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	for _, flow := range b.Flows {
+		loc := result.SourceMap[flow.Name]
+		for i, step := range flow.Instructions {
+			issues = append(issues, checkNamedQueryRef(step, flow.Name, i+1, loc, b.Queries)...)
+		}
+	}
+
+	return issues
+}
+
+// checkNamedQueryRef recursively checks for named query references.
+func checkNamedQueryRef(step control.StepConfig, flowName string, stepNum int, loc SourceLocation, queries map[string]datasource.NamedQueryConfig) []LintIssue {
+	var issues []LintIssue
+
+	if name, ok := extractQueryRef(step.Action, step.Value); ok {
+		if _, found := queries[name]; !found {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "named-query-unknown",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %q step %d: references unknown named query %q", flowName, stepNum, name),
+				Suggestion: fmt.Sprintf("add query %q to the queries section or inline the SQL in step value", name),
+			})
+		}
+	}
+
+	// Recurse into nested steps.
+	for i, nested := range step.Do {
+		issues = append(issues, checkNamedQueryRef(nested, flowName, i+1, loc, queries)...)
+	}
+	for _, branch := range step.Branches {
+		for i, nested := range branch.Flow {
+			issues = append(issues, checkNamedQueryRef(nested, flowName, i+1, loc, queries)...)
+		}
+	}
+
+	return issues
+}
+
+// extractQueryRef extracts the named query name from a db_query/db_exec/db_query_one step
+// that uses the "query:<name>" value prefix. Returns (name, true) if found, ("", false) otherwise.
+func extractQueryRef(stepType, value string) (string, bool) {
+	if stepType != "db_query" && stepType != "db_exec" && stepType != "db_query_one" {
+		return "", false
+	}
+	const pfx = "query:"
+	if !strings.HasPrefix(value, pfx) {
+		return "", false
+	}
+	return value[len(pfx):], true
+}
+
+// lintMigrationVersions checks for duplicate or non-positive migration versions.
+func lintMigrationVersions(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	seen := make(map[int]bool, len(b.Migrations))
+	for _, m := range b.Migrations {
+		if m.Version <= 0 {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "migration-version-invalid",
+				Message:    fmt.Sprintf("migration %q has invalid version %d (must be > 0)", m.Name, m.Version),
+				Suggestion: "set version to a positive integer",
+			})
+			continue
+		}
+		if seen[m.Version] {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "migration-version-duplicate",
+				Message:    fmt.Sprintf("duplicate migration version %d — each version must be unique", m.Version),
+				Suggestion: "choose a unique version number for this migration",
+			})
+		}
+		seen[m.Version] = true
+	}
+	return issues
+}
+
+// lintRedisMultiKeySteps checks that multi-key redis operations (mget, hmget) have Vars or Members set.
+func lintRedisMultiKeySteps(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	multiKeyTypes := map[string]bool{
+		"redis_mget":  true,
+		"redis_hmget": true,
+	}
+
+	for _, flow := range b.Flows {
+		loc := result.SourceMap[flow.Name]
+		for i, step := range flow.Instructions {
+			issues = append(issues, checkRedisMultiKey(step, flow.Name, i+1, loc, multiKeyTypes)...)
+		}
+	}
+
+	return issues
+}
+
+// checkRedisMultiKey recursively checks multi-key redis steps.
+func checkRedisMultiKey(step control.StepConfig, flowName string, stepNum int, loc SourceLocation, multiKeyTypes map[string]bool) []LintIssue {
+	var issues []LintIssue
+
+	if multiKeyTypes[step.Action] {
+		if len(step.Vars) == 0 && len(step.Members) == 0 {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "redis-multi-key-no-vars",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %q step %d (type %s): vars or members required for multi-key operation", flowName, stepNum, step.Action),
+				Suggestion: "set vars to a list of key variable names, or members to a list of member names",
+			})
+		}
+	}
+
+	// Recurse into nested steps.
+	for i, nested := range step.Do {
+		issues = append(issues, checkRedisMultiKey(nested, flowName, i+1, loc, multiKeyTypes)...)
+	}
+	for _, branch := range step.Branches {
+		for i, nested := range branch.Flow {
+			issues = append(issues, checkRedisMultiKey(nested, flowName, i+1, loc, multiKeyTypes)...)
+		}
+	}
+
+	return issues
+}
+
+// lintNamedQueryBatchBy checks that batch_by references a valid SQL parameter.
+func lintNamedQueryBatchBy(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	for name, q := range b.Queries {
+		if q.BatchBy == "" {
+			continue
+		}
+		// Check that the batch_by parameter is referenced in the SQL.
+		// The parameter should appear as $<name> or @<name> or :<name> depending on dialect.
+		if !strings.Contains(q.SQL, q.BatchBy) &&
+			!strings.Contains(q.SQL, "$"+q.BatchBy) &&
+			!strings.Contains(q.SQL, "@"+q.BatchBy) &&
+			!strings.Contains(q.SQL, ":"+q.BatchBy) {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "named-query-batch-by-invalid",
+				Message:    fmt.Sprintf("named query %q: batch_by %q not found in SQL", name, q.BatchBy),
+				Suggestion: fmt.Sprintf("add parameter %q to the SQL statement or remove batch_by", q.BatchBy),
+			})
+		}
+	}
+	return issues
+}
+
+// lintRedisZAddScore warns when redis_zadd has no score configured.
+func lintRedisZAddScore(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	for _, flow := range b.Flows {
+		loc := result.SourceMap[flow.Name]
+		for i, step := range flow.Instructions {
+			issues = append(issues, checkRedisZAddScore(step, flow.Name, i+1, loc)...)
+		}
+	}
+
+	return issues
+}
+
+// checkRedisZAddScore recursively checks redis_zadd score configuration.
+func checkRedisZAddScore(step control.StepConfig, flowName string, stepNum int, loc SourceLocation) []LintIssue {
+	var issues []LintIssue
+
+	if step.Action == "redis_zadd" {
+		if step.Score == 0 {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "redis-zadd-no-score",
+				File:       loc.File,
+				Line:       loc.Line,
+				Message:    fmt.Sprintf("flow %q step %d (redis_zadd): score=0 may be unintentional", flowName, stepNum),
+				Suggestion: "set score to a non-zero numeric value, or ensure 0 is the intended score",
+			})
+		}
+	}
+
+	// Recurse into nested steps.
+	for i, nested := range step.Do {
+		issues = append(issues, checkRedisZAddScore(nested, flowName, i+1, loc)...)
+	}
+	for _, branch := range step.Branches {
+		for i, nested := range branch.Flow {
+			issues = append(issues, checkRedisZAddScore(nested, flowName, i+1, loc)...)
+		}
+	}
+
 	return issues
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/datastore"
@@ -25,6 +26,7 @@ import (
 	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/rctx"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/redissource"
 	"github.com/amitkhosla/rah/internal/vectorstore"
 	"regexp"
 	"sort"
@@ -32,6 +34,9 @@ import (
 	"strings"
 	"time"
 )
+
+// pgxArgsPool pools []any slices for pgx query arguments — avoids per-request allocation.
+var pgxArgsPool = sync.Pool{New: func() any { s := make([]any, 0, 8); return &s }}
 
 // pendingJump tracks an on_error:jump: wrapper that referenced a not-yet-compiled
 // flow. Resolved in a second pass after all flows are compiled.
@@ -169,8 +174,10 @@ type Compiler struct {
 	GeoMgr         *geo.Manager                        // optional; enables geo_block steps
 	AvroRegistry   *avro.SchemaRegistry                // optional; enables avro_* steps
 	DataSourcePool *datasource.DataSourcePool          // optional; enables db_query/db_exec/db_query_one steps
+	QueryLibrary   map[string]datasource.NamedQueryConfig // optional; enables named query resolution
 	EmailMgr       *emailprovider.EmailManager         // optional; enables send_email steps
 	StorageMgr     *storage.StorageManager             // optional; enables storage_get/storage_put/storage_delete steps
+	RedisSourcePool *redissource.RedisSourcePool      // optional; enables redis_* steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -219,6 +226,24 @@ func (c *Compiler) resolveAPIKey(ref string) (string, error) {
 	s := string(val)
 	clear(val)
 	return s, nil
+}
+
+// resolveNamedQuerySQL returns the SQL for a step value. If value starts with "query:",
+// it looks up the name in c.QueryLibrary. Otherwise returns value unchanged.
+func (c *Compiler) resolveNamedQuerySQL(value string) (string, datasource.NamedQueryConfig, error) {
+	const pfx = "query:"
+	if !strings.HasPrefix(value, pfx) {
+		return value, datasource.NamedQueryConfig{}, nil
+	}
+	name := value[len(pfx):]
+	if c.QueryLibrary == nil {
+		return "", datasource.NamedQueryConfig{}, fmt.Errorf("unknown named query %q (no QueryLibrary configured)", name)
+	}
+	cfg, ok := c.QueryLibrary[name]
+	if !ok {
+		return "", datasource.NamedQueryConfig{}, fmt.Errorf("unknown named query %q", name)
+	}
+	return cfg.SQL, cfg, nil
 }
 
 func NewCompiler(fm *engine.FlowManager) *Compiler {
@@ -3236,12 +3261,16 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	// The pool is nil when no data_sources are configured; steps become no-ops.
 
 	case "db_query":
-		// Executes step.Value as a SQL query against the pool named step.Key.
-		// Slot references in step.Value (${varname}) are resolved at runtime from ByteSlots.
-		// Result rows are marshalled as a JSON array and stored in the slot named step.As.
+		// SQL is compiled at bake time: ${varname} → $N positional parameters.
+		// Args are collected from ByteSlots at runtime — no string interpolation.
 		dbQueryPool := c.DataSourcePool
 		dbQueryName := step.Key
-		dbQuerySQL := step.Value
+		dbQuerySQL, _, err := c.resolveNamedQuerySQL(step.Value)
+		if err != nil {
+			return fmt.Errorf("db_query: %w", err)
+		}
+		dbQueryParamSlots := []int{} // will be populated below
+		dbQuerySQL, dbQueryParamSlots = compileParamSQL(dbQuerySQL, c.slotMap)
 		dbQueryDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
@@ -3249,10 +3278,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				return fmt.Errorf("db_query: as: %w", err)
 			}
 			dbQueryDestSlot = s
-		}
-		dbQuerySlotMap := make(map[string]int, len(c.slotMap))
-		for k, v := range c.slotMap {
-			dbQuerySlotMap[k] = v
 		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_query",
@@ -3268,8 +3293,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					ctx.Failed = true
 					return -1
 				}
-				sql := resolveSlotVars(dbQuerySQL, dbQuerySlotMap, ctx)
-				rows, err := pool.Query(context.Background(), sql)
+				argsp := pgxArgsPool.Get().(*[]any)
+				args := (*argsp)[:0]
+				for _, slotIdx := range dbQueryParamSlots {
+					if slotIdx >= 0 && slotIdx < len(ctx.ByteSlots) {
+						args = append(args, ctx.ByteSlots[slotIdx])
+					}
+				}
+				defer func() {
+					*argsp = args[:0]
+					pgxArgsPool.Put(argsp)
+				}()
+				rows, err := pool.Query(context.Background(), dbQuerySQL, args...)
 				if err != nil {
 					log.Printf("[db_query] query error: %v", err)
 					ctx.ResponseStatus = 500
@@ -3293,11 +3328,16 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		})
 
 	case "db_exec":
-		// Executes step.Value as a SQL statement against the pool named step.Key.
+		// SQL is compiled at bake time: ${varname} → $N positional parameters.
 		// Stores the affected-rows count (int64) in IntSlots[step.As] if step.As is set.
 		dbExecPool := c.DataSourcePool
 		dbExecName := step.Key
-		dbExecSQL := step.Value
+		dbExecSQL, _, err := c.resolveNamedQuerySQL(step.Value)
+		if err != nil {
+			return fmt.Errorf("db_exec: %w", err)
+		}
+		dbExecParamSlots := []int{} // will be populated below
+		dbExecSQL, dbExecParamSlots = compileParamSQL(dbExecSQL, c.slotMap)
 		dbExecDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
@@ -3305,10 +3345,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				return fmt.Errorf("db_exec: as: %w", err)
 			}
 			dbExecDestSlot = s
-		}
-		dbExecSlotMap := make(map[string]int, len(c.slotMap))
-		for k, v := range c.slotMap {
-			dbExecSlotMap[k] = v
 		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_exec",
@@ -3324,8 +3360,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					ctx.Failed = true
 					return -1
 				}
-				sql := resolveSlotVars(dbExecSQL, dbExecSlotMap, ctx)
-				tag, err := pool.Exec(context.Background(), sql)
+				argsp := pgxArgsPool.Get().(*[]any)
+				args := (*argsp)[:0]
+				for _, slotIdx := range dbExecParamSlots {
+					if slotIdx >= 0 && slotIdx < len(ctx.ByteSlots) {
+						args = append(args, ctx.ByteSlots[slotIdx])
+					}
+				}
+				defer func() {
+					*argsp = args[:0]
+					pgxArgsPool.Put(argsp)
+				}()
+				tag, err := pool.Exec(context.Background(), dbExecSQL, args...)
 				if err != nil {
 					log.Printf("[db_exec] exec error: %v", err)
 					ctx.ResponseStatus = 500
@@ -3340,11 +3386,16 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		})
 
 	case "db_query_one":
-		// Like db_query but expects a single row. Stores the row as a JSON object in
-		// the slot named step.As. Sets status 404 if no rows are returned.
+		// Like db_query but expects a single row; sets 404 if no rows returned.
+		// SQL is compiled at bake time: ${varname} → $N positional parameters.
 		dbOnePool := c.DataSourcePool
 		dbOneName := step.Key
-		dbOneSQL := step.Value
+		dbOneSQL, _, err := c.resolveNamedQuerySQL(step.Value)
+		if err != nil {
+			return fmt.Errorf("db_query_one: %w", err)
+		}
+		dbOneParamSlots := []int{} // will be populated below
+		dbOneSQL, dbOneParamSlots = compileParamSQL(dbOneSQL, c.slotMap)
 		dbOneDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
@@ -3352,10 +3403,6 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				return fmt.Errorf("db_query_one: as: %w", err)
 			}
 			dbOneDestSlot = s
-		}
-		dbOneSlotMap := make(map[string]int, len(c.slotMap))
-		for k, v := range c.slotMap {
-			dbOneSlotMap[k] = v
 		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_query_one",
@@ -3371,8 +3418,18 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					ctx.Failed = true
 					return -1
 				}
-				sql := resolveSlotVars(dbOneSQL, dbOneSlotMap, ctx)
-				rows, err := pool.Query(context.Background(), sql)
+				argsp := pgxArgsPool.Get().(*[]any)
+				args := (*argsp)[:0]
+				for _, slotIdx := range dbOneParamSlots {
+					if slotIdx >= 0 && slotIdx < len(ctx.ByteSlots) {
+						args = append(args, ctx.ByteSlots[slotIdx])
+					}
+				}
+				defer func() {
+					*argsp = args[:0]
+					pgxArgsPool.Put(argsp)
+				}()
+				rows, err := pool.Query(context.Background(), dbOneSQL, args...)
 				if err != nil {
 					log.Printf("[db_query_one] query error: %v", err)
 					ctx.ResponseStatus = 500
@@ -3795,6 +3852,2302 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					ctx.ResponseStatus = 500
 					ctx.Failed = true
 					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_get":
+		// Retrieves a value from Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// as: slot name to store retrieved bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_get step: no redis sources configured")
+		}
+		rgRedisPool := c.RedisSourcePool
+		rgSourceName := step.Key
+		rgKeyTemplate := step.Value
+		rgDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_get: as: %w", err)
+			}
+			rgDestSlot = s
+		}
+		rgSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rgSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_get",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rgRedisPool.GetForTenant(rgSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_get] unknown redis source: %s", rgSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rgKeyTemplate, rgSlotMap, ctx)
+				data, err := tc.Get(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_get] source %q key %q error: %v", rgSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if rgDestSlot >= 0 && rgDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rgDestSlot] = ctx.Alloc(len(data))
+					copy(ctx.ByteSlots[rgDestSlot], data)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_put":
+		// Stores a value in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// body_var or as: slot name containing value bytes
+		// ttl: expiration time in seconds (0 = no expiry)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_put step: no redis sources configured")
+		}
+		rpRedisPool := c.RedisSourcePool
+		rpSourceName := step.Key
+		rpKeyTemplate := step.Value
+		rpBodyVar := step.BodyVar
+		if rpBodyVar == "" {
+			rpBodyVar = step.Variable
+		}
+		rpBodySlot := -1
+		if rpBodyVar != "" {
+			s, err := c.getSlot(rpBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_put: body_var: %w", err)
+			}
+			rpBodySlot = s
+		} else if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_put: as: %w", err)
+			}
+			rpBodySlot = s
+		}
+		rpTTL := time.Duration(step.TTL) * time.Second
+		rpSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rpSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_put",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rpRedisPool.GetForTenant(rpSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_put] unknown redis source: %s", rpSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rpKeyTemplate, rpSlotMap, ctx)
+				var data []byte
+				if rpBodySlot >= 0 && rpBodySlot < len(ctx.ByteSlots) {
+					data = ctx.ByteSlots[rpBodySlot]
+				}
+				if err := tc.Put(ctx.Request.Context(), key, data, rpTTL); err != nil {
+					log.Printf("[redis_put] source %q key %q error: %v", rpSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_mget":
+		// Retrieves multiple values from Redis.
+		// key: redis source name (step.Key)
+		// vars: list of key strings (literal keys, not templated)
+		// as: slot name to store JSON array result
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_mget step: no redis sources configured")
+		}
+		rmgRedisPool := c.RedisSourcePool
+		rmgSourceName := step.Key
+		rmgKeys := step.Vars
+		rmgDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_mget: as: %w", err)
+			}
+			rmgDestSlot = s
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_mget",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rmgRedisPool.GetForTenant(rmgSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_mget] unknown redis source: %s", rmgSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				values, err := tc.MGet(ctx.Request.Context(), rmgKeys)
+				if err != nil {
+					log.Printf("[redis_mget] source %q keys %v error: %v", rmgSourceName, rmgKeys, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				// Convert to JSON array of base64-encoded strings or null
+				result := make([]interface{}, len(values))
+				for i, v := range values {
+					if v == nil {
+						result[i] = nil
+					} else {
+						result[i] = base64.StdEncoding.EncodeToString(v)
+					}
+				}
+				jsonData, _ := json.Marshal(result)
+				if rmgDestSlot >= 0 && rmgDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rmgDestSlot] = ctx.Alloc(len(jsonData))
+					copy(ctx.ByteSlots[rmgDestSlot], jsonData)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_mput":
+		// Stores multiple key-value pairs in Redis.
+		// key: redis source name (step.Key)
+		// body: JSON object with key-value pairs; must be in a BodyVar or Variable slot
+		// ttl: expiration time in seconds
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_mput step: no redis sources configured")
+		}
+		rmpRedisPool := c.RedisSourcePool
+		rmpSourceName := step.Key
+		rmpBodyVar := step.BodyVar
+		if rmpBodyVar == "" {
+			rmpBodyVar = step.Variable
+		}
+		rmpBodySlot := -1
+		if rmpBodyVar != "" {
+			s, err := c.getSlot(rmpBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_mput: body_var: %w", err)
+			}
+			rmpBodySlot = s
+		}
+		rmpTTL := time.Duration(step.TTL) * time.Second
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_mput",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rmpRedisPool.GetForTenant(rmpSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_mput] unknown redis source: %s", rmpSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				var jsonBody []byte
+				if rmpBodySlot >= 0 && rmpBodySlot < len(ctx.ByteSlots) {
+					jsonBody = ctx.ByteSlots[rmpBodySlot]
+				}
+				var pairs map[string][]byte
+				if err := json.Unmarshal(jsonBody, &pairs); err != nil {
+					log.Printf("[redis_mput] source %q json unmarshal error: %v", rmpSourceName, err)
+					ctx.ResponseStatus = 400
+					ctx.Failed = true
+					return -1
+				}
+				if err := tc.MSet(ctx.Request.Context(), pairs, rmpTTL); err != nil {
+					log.Printf("[redis_mput] source %q error: %v", rmpSourceName, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_del":
+		// Deletes one or more keys from Redis.
+		// key: redis source name (step.Key)
+		// value: single key template OR empty to use vars list
+		// vars: list of key strings (if value is empty)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_del step: no redis sources configured")
+		}
+		rdRedisPool := c.RedisSourcePool
+		rdSourceName := step.Key
+		rdKeyTemplate := step.Value
+		rdKeys := step.Vars
+		rdSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rdSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_del",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rdRedisPool.GetForTenant(rdSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_del] unknown redis source: %s", rdSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				var keys []string
+				if rdKeyTemplate != "" {
+					// Single key template
+					key := resolveSlotVars(rdKeyTemplate, rdSlotMap, ctx)
+					keys = []string{key}
+				} else {
+					// Multiple keys from vars
+					keys = rdKeys
+				}
+				if err := tc.Del(ctx.Request.Context(), keys...); err != nil {
+					log.Printf("[redis_del] source %q keys %v error: %v", rdSourceName, keys, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_exists":
+		// Checks if a key exists in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// as: slot name to store "true"/"false"
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_exists step: no redis sources configured")
+		}
+		reRedisPool := c.RedisSourcePool
+		reSourceName := step.Key
+		reKeyTemplate := step.Value
+		reDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_exists: as: %w", err)
+			}
+			reDestSlot = s
+		}
+		reSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			reSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_exists",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := reRedisPool.GetForTenant(reSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_exists] unknown redis source: %s", reSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(reKeyTemplate, reSlotMap, ctx)
+				exists, err := tc.Exists(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_exists] source %q key %q error: %v", reSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte("false")
+				if exists {
+					result = []byte("true")
+				}
+				if reDestSlot >= 0 && reDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[reDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[reDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_incr":
+		// Increments a key value in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// delta: increment amount (default 1)
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_incr step: no redis sources configured")
+		}
+		riRedisPool := c.RedisSourcePool
+		riSourceName := step.Key
+		riKeyTemplate := step.Value
+		riDelta := step.Delta
+		if riDelta == 0 {
+			riDelta = 1
+		}
+		riDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_incr: as: %w", err)
+			}
+			riDestSlot = s
+		}
+		riSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			riSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_incr",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := riRedisPool.GetForTenant(riSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_incr] unknown redis source: %s", riSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(riKeyTemplate, riSlotMap, ctx)
+				val, err := tc.Incr(ctx.Request.Context(), key, riDelta)
+				if err != nil {
+					log.Printf("[redis_incr] source %q key %q error: %v", riSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(val, 10))
+				if riDestSlot >= 0 && riDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[riDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[riDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_decr":
+		// Decrements a key value in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// delta: decrement amount (default 1)
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_decr step: no redis sources configured")
+		}
+		rdcRedisPool := c.RedisSourcePool
+		rdcSourceName := step.Key
+		rdcKeyTemplate := step.Value
+		rdcDelta := step.Delta
+		if rdcDelta == 0 {
+			rdcDelta = 1
+		}
+		rdcDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_decr: as: %w", err)
+			}
+			rdcDestSlot = s
+		}
+		rdcSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rdcSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_decr",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rdcRedisPool.GetForTenant(rdcSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_decr] unknown redis source: %s", rdcSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rdcKeyTemplate, rdcSlotMap, ctx)
+				val, err := tc.Decr(ctx.Request.Context(), key, rdcDelta)
+				if err != nil {
+					log.Printf("[redis_decr] source %q key %q error: %v", rdcSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(val, 10))
+				if rdcDestSlot >= 0 && rdcDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rdcDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[rdcDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_expire":
+		// Sets expiration time on a key in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// ttl: expiration time in seconds
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_expire step: no redis sources configured")
+		}
+		reExpRedisPool := c.RedisSourcePool
+		reExpSourceName := step.Key
+		reExpKeyTemplate := step.Value
+		reExpTTL := time.Duration(step.TTL) * time.Second
+		reExpSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			reExpSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_expire",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := reExpRedisPool.GetForTenant(reExpSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_expire] unknown redis source: %s", reExpSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(reExpKeyTemplate, reExpSlotMap, ctx)
+				if err := tc.Expire(ctx.Request.Context(), key, reExpTTL); err != nil {
+					log.Printf("[redis_expire] source %q key %q error: %v", reExpSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_ttl":
+		// Gets remaining TTL of a key in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// as: slot name to store result as decimal bytes (seconds)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_ttl step: no redis sources configured")
+		}
+		rtRedisPool := c.RedisSourcePool
+		rtSourceName := step.Key
+		rtKeyTemplate := step.Value
+		rtDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_ttl: as: %w", err)
+			}
+			rtDestSlot = s
+		}
+		rtSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rtSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_ttl",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rtRedisPool.GetForTenant(rtSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_ttl] unknown redis source: %s", rtSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rtKeyTemplate, rtSlotMap, ctx)
+				ttl, err := tc.TTL(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_ttl] source %q key %q error: %v", rtSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(ttl, 10))
+				if rtDestSlot >= 0 && rtDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rtDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[rtDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_persist":
+		// Removes expiration time from a key in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_persist step: no redis sources configured")
+		}
+		rpersRedisPool := c.RedisSourcePool
+		rpersSourceName := step.Key
+		rpersKeyTemplate := step.Value
+		rpersSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rpersSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_persist",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rpersRedisPool.GetForTenant(rpersSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_persist] unknown redis source: %s", rpersSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rpersKeyTemplate, rpersSlotMap, ctx)
+				if err := tc.Persist(ctx.Request.Context(), key); err != nil {
+					log.Printf("[redis_persist] source %q key %q error: %v", rpersSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_lock":
+		// Acquires a distributed lock in Redis (SET NX).
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// ttl: lock expiration in seconds
+		// as: slot name to store "true"/"false"
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_lock step: no redis sources configured")
+		}
+		rlRedisPool := c.RedisSourcePool
+		rlSourceName := step.Key
+		rlKeyTemplate := step.Value
+		rlTTL := time.Duration(step.TTL) * time.Second
+		rlDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_lock: as: %w", err)
+			}
+			rlDestSlot = s
+		}
+		rlSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rlSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_lock",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rlRedisPool.GetForTenant(rlSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_lock] unknown redis source: %s", rlSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rlKeyTemplate, rlSlotMap, ctx)
+				acquired, err := tc.Lock(ctx.Request.Context(), key, rlTTL)
+				if err != nil {
+					log.Printf("[redis_lock] source %q key %q error: %v", rlSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte("false")
+				if acquired {
+					result = []byte("true")
+				}
+				if rlDestSlot >= 0 && rlDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rlDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[rlDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_unlock":
+		// Releases a distributed lock in Redis.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_unlock step: no redis sources configured")
+		}
+		rulRedisPool := c.RedisSourcePool
+		rulSourceName := step.Key
+		rulKeyTemplate := step.Value
+		rulSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rulSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_unlock",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rulRedisPool.GetForTenant(rulSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_unlock] unknown redis source: %s", rulSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rulKeyTemplate, rulSlotMap, ctx)
+				if err := tc.Unlock(ctx.Request.Context(), key); err != nil {
+					log.Printf("[redis_unlock] source %q key %q error: %v", rulSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_publish":
+		// Publishes a message to a Redis channel.
+		// key: redis source name (step.Key)
+		// value: channel name template (may contain ${varname} references)
+		// body_var or as: slot name containing message bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_publish step: no redis sources configured")
+		}
+		rpubRedisPool := c.RedisSourcePool
+		rpubSourceName := step.Key
+		rpubChannelTemplate := step.Value
+		rpubBodyVar := step.BodyVar
+		if rpubBodyVar == "" {
+			rpubBodyVar = step.Variable
+		}
+		rpubBodySlot := -1
+		if rpubBodyVar != "" {
+			s, err := c.getSlot(rpubBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_publish: body_var: %w", err)
+			}
+			rpubBodySlot = s
+		} else if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_publish: as: %w", err)
+			}
+			rpubBodySlot = s
+		}
+		rpubSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rpubSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_publish",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rpubRedisPool.GetForTenant(rpubSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_publish] unknown redis source: %s", rpubSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				channel := resolveSlotVars(rpubChannelTemplate, rpubSlotMap, ctx)
+				var message []byte
+				if rpubBodySlot >= 0 && rpubBodySlot < len(ctx.ByteSlots) {
+					message = ctx.ByteSlots[rpubBodySlot]
+				}
+				if err := tc.Publish(ctx.Request.Context(), channel, message); err != nil {
+					log.Printf("[redis_publish] source %q channel %q error: %v", rpubSourceName, channel, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	// Sorted set operations (9 cases)
+
+	case "redis_zadd":
+		// Adds a member to a sorted set with a score.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// variable: member name (may contain slot references)
+		// score: member score
+		// mode: zadd mode ("nx", "xx", "gt", "lt", or "")
+		// as: slot name to store result as decimal bytes (count of added members)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zadd step: no redis sources configured")
+		}
+		zaRedisPool := c.RedisSourcePool
+		zaSourceName := step.Key
+		zaKeyTemplate := step.Value
+		zaMember := step.Variable
+		zaScore := step.Score
+		zaMode := step.Mode
+		zaDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zadd: as: %w", err)
+			}
+			zaDestSlot = s
+		}
+		zaSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zaSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zadd",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zaRedisPool.GetForTenant(zaSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zadd] unknown redis source: %s", zaSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zaKeyTemplate, zaSlotMap, ctx)
+				resolvedMember := resolveSlotVars(zaMember, zaSlotMap, ctx)
+				count, err := tc.ZAdd(ctx.Request.Context(), key, resolvedMember, zaScore, zaMode)
+				if err != nil {
+					log.Printf("[redis_zadd] source %q key %q error: %v", zaSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(count, 10))
+				if zaDestSlot >= 0 && zaDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zaDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zaDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zincrby":
+		// Increments the score of a member in a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template (may contain ${varname} references)
+		// variable: member name
+		// score: increment amount
+		// as: slot name to store result as string bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zincrby step: no redis sources configured")
+		}
+		zibRedisPool := c.RedisSourcePool
+		zibSourceName := step.Key
+		zibKeyTemplate := step.Value
+		zibMember := step.Variable
+		zibIncr := step.Score
+		zibDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zincrby: as: %w", err)
+			}
+			zibDestSlot = s
+		}
+		zibSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zibSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zincrby",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zibRedisPool.GetForTenant(zibSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zincrby] unknown redis source: %s", zibSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zibKeyTemplate, zibSlotMap, ctx)
+				resolvedMember := resolveSlotVars(zibMember, zibSlotMap, ctx)
+				newScore, err := tc.ZIncrBy(ctx.Request.Context(), key, resolvedMember, zibIncr)
+				if err != nil {
+					log.Printf("[redis_zincrby] source %q key %q error: %v", zibSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatFloat(newScore, 'f', -1, 64))
+				if zibDestSlot >= 0 && zibDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zibDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zibDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zrange":
+		// Retrieves a range of members from a sorted set by index.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: start index
+		// vars[0]: stop index (optional, default -1)
+		// order: "asc" or "desc" (controls rev parameter)
+		// with_scores: true to include scores in output
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zrange step: no redis sources configured")
+		}
+		zrRedisPool := c.RedisSourcePool
+		zrSourceName := step.Key
+		zrKeyTemplate := step.Value
+		zrStart := step.Count
+		zrStop := int64(-1)
+		if len(step.Vars) > 0 && step.Vars[0] != "" {
+			if val, err := strconv.ParseInt(step.Vars[0], 10, 64); err == nil {
+				zrStop = val
+			}
+		}
+		zrRev := step.Order == "desc"
+		zrWithScores := step.WithScores
+		zrDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zrange: as: %w", err)
+			}
+			zrDestSlot = s
+		}
+		zrSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zrSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zrange",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zrRedisPool.GetForTenant(zrSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zrange] unknown redis source: %s", zrSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zrKeyTemplate, zrSlotMap, ctx)
+				var result []byte
+				if zrWithScores {
+					scores, err := tc.ZRangeWithScores(ctx.Request.Context(), key, zrStart, zrStop, zrRev)
+					if err != nil {
+						log.Printf("[redis_zrange] source %q key %q error: %v", zrSourceName, key, err)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+					output := make([]map[string]any, len(scores))
+					for i, z := range scores {
+						output[i] = map[string]any{"member": z.Member, "score": z.Score}
+					}
+					var errJson error
+					result, errJson = json.Marshal(output)
+					if errJson != nil {
+						log.Printf("[redis_zrange] marshal error: %v", errJson)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				} else {
+					members, err := tc.ZRange(ctx.Request.Context(), key, zrStart, zrStop, zrRev)
+					if err != nil {
+						log.Printf("[redis_zrange] source %q key %q error: %v", zrSourceName, key, err)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+					var errJson error
+					result, errJson = json.Marshal(members)
+					if errJson != nil {
+						log.Printf("[redis_zrange] marshal error: %v", errJson)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				}
+				if zrDestSlot >= 0 && zrDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zrDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zrDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zrangebyscore":
+		// Retrieves members from a sorted set by score range.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body: min score (default "-inf" if empty)
+		// field: max score (default "+inf" if empty)
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zrangebyscore step: no redis sources configured")
+		}
+		zbsRedisPool := c.RedisSourcePool
+		zbsSourceName := step.Key
+		zbsKeyTemplate := step.Value
+		zbsMinScore := step.Body
+		if zbsMinScore == "" {
+			zbsMinScore = "-inf"
+		}
+		zbsMaxScore := step.Field
+		if zbsMaxScore == "" {
+			zbsMaxScore = "+inf"
+		}
+		zbsDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zrangebyscore: as: %w", err)
+			}
+			zbsDestSlot = s
+		}
+		zbsSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zbsSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zrangebyscore",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zbsRedisPool.GetForTenant(zbsSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zrangebyscore] unknown redis source: %s", zbsSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zbsKeyTemplate, zbsSlotMap, ctx)
+				members, err := tc.ZRangeByScore(ctx.Request.Context(), key, zbsMinScore, zbsMaxScore)
+				if err != nil {
+					log.Printf("[redis_zrangebyscore] source %q key %q error: %v", zbsSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result, errJson := json.Marshal(members)
+				if errJson != nil {
+					log.Printf("[redis_zrangebyscore] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if zbsDestSlot >= 0 && zbsDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zbsDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zbsDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zscore":
+		// Retrieves the score of a member in a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// variable: member name
+		// as: slot name to store result as string bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zscore step: no redis sources configured")
+		}
+		zsRedisPool := c.RedisSourcePool
+		zsSourceName := step.Key
+		zsKeyTemplate := step.Value
+		zsMember := step.Variable
+		zsDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zscore: as: %w", err)
+			}
+			zsDestSlot = s
+		}
+		zsSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zsSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zscore",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zsRedisPool.GetForTenant(zsSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zscore] unknown redis source: %s", zsSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zsKeyTemplate, zsSlotMap, ctx)
+				resolvedMember := resolveSlotVars(zsMember, zsSlotMap, ctx)
+				score, err := tc.ZScore(ctx.Request.Context(), key, resolvedMember)
+				if err != nil {
+					log.Printf("[redis_zscore] source %q key %q error: %v", zsSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatFloat(score, 'f', -1, 64))
+				if zsDestSlot >= 0 && zsDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zsDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zsDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zrank":
+		// Retrieves the rank of a member in a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// variable: member name
+		// order: "asc" or "desc" (controls rev parameter)
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zrank step: no redis sources configured")
+		}
+		zrkRedisPool := c.RedisSourcePool
+		zrkSourceName := step.Key
+		zrkKeyTemplate := step.Value
+		zrkMember := step.Variable
+		zrkRev := step.Order == "desc"
+		zrkDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zrank: as: %w", err)
+			}
+			zrkDestSlot = s
+		}
+		zrkSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zrkSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zrank",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zrkRedisPool.GetForTenant(zrkSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zrank] unknown redis source: %s", zrkSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zrkKeyTemplate, zrkSlotMap, ctx)
+				resolvedMember := resolveSlotVars(zrkMember, zrkSlotMap, ctx)
+				rank, err := tc.ZRank(ctx.Request.Context(), key, resolvedMember, zrkRev)
+				if err != nil {
+					log.Printf("[redis_zrank] source %q key %q error: %v", zrkSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(rank, 10))
+				if zrkDestSlot >= 0 && zrkDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zrkDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zrkDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zrem":
+		// Removes one or more members from a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// variable: member name (or member to remove)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zrem step: no redis sources configured")
+		}
+		zrmRedisPool := c.RedisSourcePool
+		zrmSourceName := step.Key
+		zrmKeyTemplate := step.Value
+		zrmMember := step.Variable
+		zrmSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zrmSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zrem",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zrmRedisPool.GetForTenant(zrmSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zrem] unknown redis source: %s", zrmSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zrmKeyTemplate, zrmSlotMap, ctx)
+				resolvedMember := resolveSlotVars(zrmMember, zrmSlotMap, ctx)
+				if err := tc.ZRem(ctx.Request.Context(), key, resolvedMember); err != nil {
+					log.Printf("[redis_zrem] source %q key %q error: %v", zrmSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zpopmin":
+		// Removes and returns the members with the lowest scores from a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: number of members to pop (default 1)
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zpopmin step: no redis sources configured")
+		}
+		zpmRedisPool := c.RedisSourcePool
+		zpmSourceName := step.Key
+		zpmKeyTemplate := step.Value
+		zpmCount := step.Count
+		if zpmCount <= 0 {
+			zpmCount = 1
+		}
+		zpmDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zpopmin: as: %w", err)
+			}
+			zpmDestSlot = s
+		}
+		zpmSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zpmSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zpopmin",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zpmRedisPool.GetForTenant(zpmSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zpopmin] unknown redis source: %s", zpmSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zpmKeyTemplate, zpmSlotMap, ctx)
+				zValues, err := tc.ZPopMin(ctx.Request.Context(), key, zpmCount)
+				if err != nil {
+					log.Printf("[redis_zpopmin] source %q key %q error: %v", zpmSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				output := make([]map[string]any, len(zValues))
+				for i, z := range zValues {
+					output[i] = map[string]any{"member": z.Member, "score": z.Score}
+				}
+				result, errJson := json.Marshal(output)
+				if errJson != nil {
+					log.Printf("[redis_zpopmin] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if zpmDestSlot >= 0 && zpmDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zpmDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zpmDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_zpopmax":
+		// Removes and returns the members with the highest scores from a sorted set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: number of members to pop (default 1)
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_zpopmax step: no redis sources configured")
+		}
+		zpmaxRedisPool := c.RedisSourcePool
+		zpmaxSourceName := step.Key
+		zpmaxKeyTemplate := step.Value
+		zpmaxCount := step.Count
+		if zpmaxCount <= 0 {
+			zpmaxCount = 1
+		}
+		zpmaxDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_zpopmax: as: %w", err)
+			}
+			zpmaxDestSlot = s
+		}
+		zpmaxSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			zpmaxSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_zpopmax",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := zpmaxRedisPool.GetForTenant(zpmaxSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_zpopmax] unknown redis source: %s", zpmaxSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(zpmaxKeyTemplate, zpmaxSlotMap, ctx)
+				zValues, err := tc.ZPopMax(ctx.Request.Context(), key, zpmaxCount)
+				if err != nil {
+					log.Printf("[redis_zpopmax] source %q key %q error: %v", zpmaxSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				output := make([]map[string]any, len(zValues))
+				for i, z := range zValues {
+					output[i] = map[string]any{"member": z.Member, "score": z.Score}
+				}
+				result, errJson := json.Marshal(output)
+				if errJson != nil {
+					log.Printf("[redis_zpopmax] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if zpmaxDestSlot >= 0 && zpmaxDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[zpmaxDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[zpmaxDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	// Hash operations (7 cases)
+
+	case "redis_hset":
+		// Sets a field in a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// field: field name
+		// body_var: slot containing the value bytes (fallback to body if empty)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hset step: no redis sources configured")
+		}
+		hsRedisPool := c.RedisSourcePool
+		hsSourceName := step.Key
+		hsKeyTemplate := step.Value
+		hsField := step.Field
+		hsBodyVar := step.BodyVar
+		hsBodySlot := -1
+		if hsBodyVar != "" {
+			s, err := c.getSlot(hsBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_hset: body_var: %w", err)
+			}
+			hsBodySlot = s
+		}
+		hsSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hsSlotMap[k] = v
+		}
+		hsBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hset",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hsRedisPool.GetForTenant(hsSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hset] unknown redis source: %s", hsSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hsKeyTemplate, hsSlotMap, ctx)
+				var value []byte
+				if hsBodySlot >= 0 && hsBodySlot < len(ctx.ByteSlots) {
+					value = ctx.ByteSlots[hsBodySlot]
+				} else {
+					value = []byte(hsBody)
+				}
+				if err := tc.HSet(ctx.Request.Context(), key, hsField, value); err != nil {
+					log.Printf("[redis_hset] source %q key %q error: %v", hsSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hmset":
+		// Sets multiple fields in a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing JSON-encoded field map
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hmset step: no redis sources configured")
+		}
+		hmsRedisPool := c.RedisSourcePool
+		hmsSourceName := step.Key
+		hmsKeyTemplate := step.Value
+		hmsBodyVar := step.BodyVar
+		hmsBodySlot := -1
+		if hmsBodyVar != "" {
+			s, err := c.getSlot(hmsBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_hmset: body_var: %w", err)
+			}
+			hmsBodySlot = s
+		}
+		hmsSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hmsSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hmset",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hmsRedisPool.GetForTenant(hmsSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hmset] unknown redis source: %s", hmsSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hmsKeyTemplate, hmsSlotMap, ctx)
+				var body []byte
+				if hmsBodySlot >= 0 && hmsBodySlot < len(ctx.ByteSlots) {
+					body = ctx.ByteSlots[hmsBodySlot]
+				}
+				var fields map[string]any
+				if err := json.Unmarshal(body, &fields); err != nil {
+					log.Printf("[redis_hmset] source %q unmarshal error: %v", hmsSourceName, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if err := tc.HMSet(ctx.Request.Context(), key, fields); err != nil {
+					log.Printf("[redis_hmset] source %q key %q error: %v", hmsSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hget":
+		// Retrieves the value of a field in a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// field: field name
+		// as: slot name to store result as bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hget step: no redis sources configured")
+		}
+		hgRedisPool := c.RedisSourcePool
+		hgSourceName := step.Key
+		hgKeyTemplate := step.Value
+		hgField := step.Field
+		hgDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_hget: as: %w", err)
+			}
+			hgDestSlot = s
+		}
+		hgSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hgSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hget",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hgRedisPool.GetForTenant(hgSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hget] unknown redis source: %s", hgSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hgKeyTemplate, hgSlotMap, ctx)
+				value, err := tc.HGet(ctx.Request.Context(), key, hgField)
+				if err != nil {
+					log.Printf("[redis_hget] source %q key %q error: %v", hgSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if hgDestSlot >= 0 && hgDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[hgDestSlot] = ctx.Alloc(len(value))
+					copy(ctx.ByteSlots[hgDestSlot], value)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hmget":
+		// Retrieves the values of multiple fields in a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// members: list of field names
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hmget step: no redis sources configured")
+		}
+		hmgRedisPool := c.RedisSourcePool
+		hmgSourceName := step.Key
+		hmgKeyTemplate := step.Value
+		hmgFields := step.Members
+		hmgDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_hmget: as: %w", err)
+			}
+			hmgDestSlot = s
+		}
+		hmgSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hmgSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hmget",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hmgRedisPool.GetForTenant(hmgSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hmget] unknown redis source: %s", hmgSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hmgKeyTemplate, hmgSlotMap, ctx)
+				values, err := tc.HMGet(ctx.Request.Context(), key, hmgFields...)
+				if err != nil {
+					log.Printf("[redis_hmget] source %q key %q error: %v", hmgSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result, errJson := json.Marshal(values)
+				if errJson != nil {
+					log.Printf("[redis_hmget] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if hmgDestSlot >= 0 && hmgDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[hmgDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[hmgDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hgetall":
+		// Retrieves all fields and values from a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hgetall step: no redis sources configured")
+		}
+		hgaRedisPool := c.RedisSourcePool
+		hgaSourceName := step.Key
+		hgaKeyTemplate := step.Value
+		hgaDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_hgetall: as: %w", err)
+			}
+			hgaDestSlot = s
+		}
+		hgaSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hgaSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hgetall",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hgaRedisPool.GetForTenant(hgaSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hgetall] unknown redis source: %s", hgaSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hgaKeyTemplate, hgaSlotMap, ctx)
+				hashMap, err := tc.HGetAll(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_hgetall] source %q key %q error: %v", hgaSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result, errJson := json.Marshal(hashMap)
+				if errJson != nil {
+					log.Printf("[redis_hgetall] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if hgaDestSlot >= 0 && hgaDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[hgaDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[hgaDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hdel":
+		// Deletes a field from a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// field: field name
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hdel step: no redis sources configured")
+		}
+		hdRedisPool := c.RedisSourcePool
+		hdSourceName := step.Key
+		hdKeyTemplate := step.Value
+		hdField := step.Field
+		hdSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hdSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hdel",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hdRedisPool.GetForTenant(hdSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hdel] unknown redis source: %s", hdSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hdKeyTemplate, hdSlotMap, ctx)
+				if err := tc.HDel(ctx.Request.Context(), key, hdField); err != nil {
+					log.Printf("[redis_hdel] source %q key %q error: %v", hdSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_hincrby":
+		// Increments the integer value of a field in a hash.
+		// key: redis source name (step.Key)
+		// value: key template
+		// field: field name
+		// delta: increment amount (int64)
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_hincrby step: no redis sources configured")
+		}
+		hibRedisPool := c.RedisSourcePool
+		hibSourceName := step.Key
+		hibKeyTemplate := step.Value
+		hibField := step.Field
+		hibDelta := step.Delta
+		hibDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_hincrby: as: %w", err)
+			}
+			hibDestSlot = s
+		}
+		hibSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			hibSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_hincrby",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := hibRedisPool.GetForTenant(hibSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_hincrby] unknown redis source: %s", hibSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(hibKeyTemplate, hibSlotMap, ctx)
+				newVal, err := tc.HIncrBy(ctx.Request.Context(), key, hibField, hibDelta)
+				if err != nil {
+					log.Printf("[redis_hincrby] source %q key %q error: %v", hibSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(newVal, 10))
+				if hibDestSlot >= 0 && hibDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[hibDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[hibDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	// List operations (6 cases)
+
+	case "redis_lpush":
+		// Pushes values to the head of a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing the value bytes
+		// as: slot name to store result as decimal bytes (new length)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_lpush step: no redis sources configured")
+		}
+		lpushRedisPool := c.RedisSourcePool
+		lpushSourceName := step.Key
+		lpushKeyTemplate := step.Value
+		lpushBodyVar := step.BodyVar
+		lpushBodySlot := -1
+		if lpushBodyVar != "" {
+			s, err := c.getSlot(lpushBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_lpush: body_var: %w", err)
+			}
+			lpushBodySlot = s
+		}
+		lpushDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_lpush: as: %w", err)
+			}
+			lpushDestSlot = s
+		}
+		lpushSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			lpushSlotMap[k] = v
+		}
+		lpushBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_lpush",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := lpushRedisPool.GetForTenant(lpushSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_lpush] unknown redis source: %s", lpushSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(lpushKeyTemplate, lpushSlotMap, ctx)
+				var value []byte
+				if lpushBodySlot >= 0 && lpushBodySlot < len(ctx.ByteSlots) {
+					value = ctx.ByteSlots[lpushBodySlot]
+				} else {
+					value = []byte(lpushBody)
+				}
+				newLen, err := tc.LPush(ctx.Request.Context(), key, value)
+				if err != nil {
+					log.Printf("[redis_lpush] source %q key %q error: %v", lpushSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(newLen, 10))
+				if lpushDestSlot >= 0 && lpushDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[lpushDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[lpushDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_rpush":
+		// Pushes values to the tail of a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing the value bytes
+		// as: slot name to store result as decimal bytes (new length)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_rpush step: no redis sources configured")
+		}
+		rpushRedisPool := c.RedisSourcePool
+		rpushSourceName := step.Key
+		rpushKeyTemplate := step.Value
+		rpushBodyVar := step.BodyVar
+		rpushBodySlot := -1
+		if rpushBodyVar != "" {
+			s, err := c.getSlot(rpushBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_rpush: body_var: %w", err)
+			}
+			rpushBodySlot = s
+		}
+		rpushDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_rpush: as: %w", err)
+			}
+			rpushDestSlot = s
+		}
+		rpushSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rpushSlotMap[k] = v
+		}
+		rpushBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_rpush",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rpushRedisPool.GetForTenant(rpushSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_rpush] unknown redis source: %s", rpushSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rpushKeyTemplate, rpushSlotMap, ctx)
+				var value []byte
+				if rpushBodySlot >= 0 && rpushBodySlot < len(ctx.ByteSlots) {
+					value = ctx.ByteSlots[rpushBodySlot]
+				} else {
+					value = []byte(rpushBody)
+				}
+				newLen, err := tc.RPush(ctx.Request.Context(), key, value)
+				if err != nil {
+					log.Printf("[redis_rpush] source %q key %q error: %v", rpushSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(newLen, 10))
+				if rpushDestSlot >= 0 && rpushDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rpushDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[rpushDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_lpop":
+		// Pops and returns elements from the head of a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: number of elements to pop (default 1)
+		// as: slot name to store result
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_lpop step: no redis sources configured")
+		}
+		lpopRedisPool := c.RedisSourcePool
+		lpopSourceName := step.Key
+		lpopKeyTemplate := step.Value
+		lpopCount := step.Count
+		if lpopCount <= 0 {
+			lpopCount = 1
+		}
+		lpopDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_lpop: as: %w", err)
+			}
+			lpopDestSlot = s
+		}
+		lpopSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			lpopSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_lpop",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := lpopRedisPool.GetForTenant(lpopSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_lpop] unknown redis source: %s", lpopSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(lpopKeyTemplate, lpopSlotMap, ctx)
+				values, err := tc.LPop(ctx.Request.Context(), key, lpopCount)
+				if err != nil {
+					log.Printf("[redis_lpop] source %q key %q error: %v", lpopSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				var result []byte
+				if lpopCount == 1 && len(values) > 0 {
+					result = []byte(values[0])
+				} else {
+					var errJson error
+					result, errJson = json.Marshal(values)
+					if errJson != nil {
+						log.Printf("[redis_lpop] marshal error: %v", errJson)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				}
+				if lpopDestSlot >= 0 && lpopDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[lpopDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[lpopDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_rpop":
+		// Pops and returns elements from the tail of a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: number of elements to pop (default 1)
+		// as: slot name to store result
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_rpop step: no redis sources configured")
+		}
+		rpopRedisPool := c.RedisSourcePool
+		rpopSourceName := step.Key
+		rpopKeyTemplate := step.Value
+		rpopCount := step.Count
+		if rpopCount <= 0 {
+			rpopCount = 1
+		}
+		rpopDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_rpop: as: %w", err)
+			}
+			rpopDestSlot = s
+		}
+		rpopSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			rpopSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_rpop",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := rpopRedisPool.GetForTenant(rpopSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_rpop] unknown redis source: %s", rpopSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(rpopKeyTemplate, rpopSlotMap, ctx)
+				values, err := tc.RPop(ctx.Request.Context(), key, rpopCount)
+				if err != nil {
+					log.Printf("[redis_rpop] source %q key %q error: %v", rpopSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				var result []byte
+				if rpopCount == 1 && len(values) > 0 {
+					result = []byte(values[0])
+				} else {
+					var errJson error
+					result, errJson = json.Marshal(values)
+					if errJson != nil {
+						log.Printf("[redis_rpop] marshal error: %v", errJson)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				}
+				if rpopDestSlot >= 0 && rpopDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[rpopDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[rpopDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_lrange":
+		// Retrieves a range of elements from a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// count: start index
+		// vars[0]: stop index (optional, default -1)
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_lrange step: no redis sources configured")
+		}
+		lrRedisPool := c.RedisSourcePool
+		lrSourceName := step.Key
+		lrKeyTemplate := step.Value
+		lrStart := step.Count
+		lrStop := int64(-1)
+		if len(step.Vars) > 0 && step.Vars[0] != "" {
+			if val, err := strconv.ParseInt(step.Vars[0], 10, 64); err == nil {
+				lrStop = val
+			}
+		}
+		lrDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_lrange: as: %w", err)
+			}
+			lrDestSlot = s
+		}
+		lrSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			lrSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_lrange",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := lrRedisPool.GetForTenant(lrSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_lrange] unknown redis source: %s", lrSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(lrKeyTemplate, lrSlotMap, ctx)
+				values, err := tc.LRange(ctx.Request.Context(), key, lrStart, lrStop)
+				if err != nil {
+					log.Printf("[redis_lrange] source %q key %q error: %v", lrSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result, errJson := json.Marshal(values)
+				if errJson != nil {
+					log.Printf("[redis_lrange] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if lrDestSlot >= 0 && lrDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[lrDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[lrDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_llen":
+		// Returns the length of a list.
+		// key: redis source name (step.Key)
+		// value: key template
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_llen step: no redis sources configured")
+		}
+		llRedisPool := c.RedisSourcePool
+		llSourceName := step.Key
+		llKeyTemplate := step.Value
+		llDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_llen: as: %w", err)
+			}
+			llDestSlot = s
+		}
+		llSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			llSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_llen",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := llRedisPool.GetForTenant(llSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_llen] unknown redis source: %s", llSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(llKeyTemplate, llSlotMap, ctx)
+				length, err := tc.LLen(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_llen] source %q key %q error: %v", llSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(length, 10))
+				if llDestSlot >= 0 && llDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[llDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[llDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	// Set operations (5 cases)
+
+	case "redis_sadd":
+		// Adds members to a set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing member bytes
+		// as: slot name to store result as decimal bytes (count added)
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_sadd step: no redis sources configured")
+		}
+		saddRedisPool := c.RedisSourcePool
+		saddSourceName := step.Key
+		saddKeyTemplate := step.Value
+		saddBodyVar := step.BodyVar
+		saddBodySlot := -1
+		if saddBodyVar != "" {
+			s, err := c.getSlot(saddBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_sadd: body_var: %w", err)
+			}
+			saddBodySlot = s
+		}
+		saddDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_sadd: as: %w", err)
+			}
+			saddDestSlot = s
+		}
+		saddSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			saddSlotMap[k] = v
+		}
+		saddBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_sadd",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := saddRedisPool.GetForTenant(saddSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_sadd] unknown redis source: %s", saddSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(saddKeyTemplate, saddSlotMap, ctx)
+				var member []byte
+				if saddBodySlot >= 0 && saddBodySlot < len(ctx.ByteSlots) {
+					member = ctx.ByteSlots[saddBodySlot]
+				} else {
+					member = []byte(saddBody)
+				}
+				count, err := tc.SAdd(ctx.Request.Context(), key, member)
+				if err != nil {
+					log.Printf("[redis_sadd] source %q key %q error: %v", saddSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(count, 10))
+				if saddDestSlot >= 0 && saddDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[saddDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[saddDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_srem":
+		// Removes members from a set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing member bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_srem step: no redis sources configured")
+		}
+		sremRedisPool := c.RedisSourcePool
+		sremSourceName := step.Key
+		sremKeyTemplate := step.Value
+		sremBodyVar := step.BodyVar
+		sremBodySlot := -1
+		if sremBodyVar != "" {
+			s, err := c.getSlot(sremBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_srem: body_var: %w", err)
+			}
+			sremBodySlot = s
+		}
+		sremSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			sremSlotMap[k] = v
+		}
+		sremBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_srem",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := sremRedisPool.GetForTenant(sremSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_srem] unknown redis source: %s", sremSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(sremKeyTemplate, sremSlotMap, ctx)
+				var member []byte
+				if sremBodySlot >= 0 && sremBodySlot < len(ctx.ByteSlots) {
+					member = ctx.ByteSlots[sremBodySlot]
+				} else {
+					member = []byte(sremBody)
+				}
+				if err := tc.SRem(ctx.Request.Context(), key, member); err != nil {
+					log.Printf("[redis_srem] source %q key %q error: %v", sremSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_sismember":
+		// Checks if a member is in a set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// body_var: slot containing member bytes
+		// as: slot name to store result as "true"/"false" bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_sismember step: no redis sources configured")
+		}
+		simRedisPool := c.RedisSourcePool
+		simSourceName := step.Key
+		simKeyTemplate := step.Value
+		simBodyVar := step.BodyVar
+		simBodySlot := -1
+		if simBodyVar != "" {
+			s, err := c.getSlot(simBodyVar)
+			if err != nil {
+				return fmt.Errorf("redis_sismember: body_var: %w", err)
+			}
+			simBodySlot = s
+		}
+		simDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_sismember: as: %w", err)
+			}
+			simDestSlot = s
+		}
+		simSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			simSlotMap[k] = v
+		}
+		simBody := step.Body
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_sismember",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := simRedisPool.GetForTenant(simSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_sismember] unknown redis source: %s", simSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(simKeyTemplate, simSlotMap, ctx)
+				var member []byte
+				if simBodySlot >= 0 && simBodySlot < len(ctx.ByteSlots) {
+					member = ctx.ByteSlots[simBodySlot]
+				} else {
+					member = []byte(simBody)
+				}
+				isMember, err := tc.SIsMember(ctx.Request.Context(), key, member)
+				if err != nil {
+					log.Printf("[redis_sismember] source %q key %q error: %v", simSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				var result []byte
+				if isMember {
+					result = []byte("true")
+				} else {
+					result = []byte("false")
+				}
+				if simDestSlot >= 0 && simDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[simDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[simDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_smembers":
+		// Returns all members of a set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// as: slot name to store result as JSON bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_smembers step: no redis sources configured")
+		}
+		smRedisPool := c.RedisSourcePool
+		smSourceName := step.Key
+		smKeyTemplate := step.Value
+		smDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_smembers: as: %w", err)
+			}
+			smDestSlot = s
+		}
+		smSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			smSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_smembers",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := smRedisPool.GetForTenant(smSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_smembers] unknown redis source: %s", smSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(smKeyTemplate, smSlotMap, ctx)
+				members, err := tc.SMembers(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_smembers] source %q key %q error: %v", smSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result, errJson := json.Marshal(members)
+				if errJson != nil {
+					log.Printf("[redis_smembers] marshal error: %v", errJson)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				if smDestSlot >= 0 && smDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[smDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[smDestSlot], result)
+				}
+				return state.PC + 1
+			},
+		})
+
+	case "redis_scard":
+		// Returns the number of members in a set.
+		// key: redis source name (step.Key)
+		// value: key template
+		// as: slot name to store result as decimal bytes
+		if c.RedisSourcePool == nil {
+			return fmt.Errorf("redis_scard step: no redis sources configured")
+		}
+		scRedisPool := c.RedisSourcePool
+		scSourceName := step.Key
+		scKeyTemplate := step.Value
+		scDestSlot := -1
+		if step.As != "" {
+			s, err := c.getSlot(step.As)
+			if err != nil {
+				return fmt.Errorf("redis_scard: as: %w", err)
+			}
+			scDestSlot = s
+		}
+		scSlotMap := make(map[string]int, len(c.slotMap))
+		for k, v := range c.slotMap {
+			scSlotMap[k] = v
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name: "redis_scard",
+			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+				tc, ok := scRedisPool.GetForTenant(scSourceName, ctx.TenantID, ctx.TenantKey)
+				if !ok {
+					log.Printf("[redis_scard] unknown redis source: %s", scSourceName)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				key := resolveSlotVars(scKeyTemplate, scSlotMap, ctx)
+				cardinality, err := tc.SCard(ctx.Request.Context(), key)
+				if err != nil {
+					log.Printf("[redis_scard] source %q key %q error: %v", scSourceName, key, err)
+					ctx.ResponseStatus = 500
+					ctx.Failed = true
+					return -1
+				}
+				result := []byte(strconv.FormatInt(cardinality, 10))
+				if scDestSlot >= 0 && scDestSlot < len(ctx.ByteSlots) {
+					ctx.ByteSlots[scDestSlot] = ctx.Alloc(len(result))
+					copy(ctx.ByteSlots[scDestSlot], result)
 				}
 				return state.PC + 1
 			},
@@ -5152,8 +7505,48 @@ func (c *Compiler) ExportVarSchema(apiName string, apiHash uint64) []observabili
 
 // ── DB step helpers ────────────────────────────────────────────────────────────
 
-// resolveSlotVars replaces ${varname} placeholders in sql with the corresponding
-// ByteSlot values from ctx at request time. Unresolved references are left as-is.
+// compileParamSQL converts ${varname} placeholders in a SQL template into
+// PostgreSQL positional parameters ($1, $2, …) at compile time.
+// Returns the rewritten SQL and a slice of ByteSlot indices whose runtime values
+// map to $1, $2, … in order. Unknown slot names are left as-is so they surface
+// as a query error rather than silently injecting empty strings.
+func compileParamSQL(sql string, slotMap map[string]int) (string, []int) {
+	if !strings.Contains(sql, "${") {
+		return sql, nil
+	}
+	var b strings.Builder
+	var paramSlots []int
+	b.Grow(len(sql))
+	remaining := sql
+	for {
+		start := strings.Index(remaining, "${")
+		if start < 0 {
+			b.WriteString(remaining)
+			break
+		}
+		end := strings.Index(remaining[start:], "}")
+		if end < 0 {
+			b.WriteString(remaining)
+			break
+		}
+		end += start
+		b.WriteString(remaining[:start])
+		varName := remaining[start+2 : end]
+		if idx, ok := slotMap[varName]; ok {
+			paramSlots = append(paramSlots, idx)
+			fmt.Fprintf(&b, "$%d", len(paramSlots))
+		} else {
+			b.WriteString(remaining[start : end+1])
+		}
+		remaining = remaining[end+1:]
+	}
+	return b.String(), paramSlots
+}
+
+// resolveSlotVars replaces ${varname} placeholders in a template string with the
+// corresponding ByteSlot values from ctx at request time. Used for non-SQL
+// templates (e.g. storage object keys) where parameterisation is not applicable.
+// Unresolved references are left as-is.
 func resolveSlotVars(sql string, slotMap map[string]int, ctx *rctx.Context) string {
 	if !strings.Contains(sql, "${") {
 		return sql
