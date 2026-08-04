@@ -13,6 +13,40 @@ import (
 	"unsafe"
 )
 
+// WSSessionRef is implemented by ws.WSSession. Defined here to avoid import cycles.
+type WSSessionRef interface {
+	WSSessionID() string
+	WSTenantID() uint16
+	WSSend(payload []byte) bool
+	WSSubscribe(channel string)    // add subscription for this session
+	WSUnsubscribe(channel string)  // remove subscription
+	WSClose(code int, text string) // close this session with WS close frame
+}
+
+// WSPoolSender is implemented by ws.UpstreamPool to avoid import cycles.
+type WSPoolSender interface {
+	SendToUpstream(name string, payload []byte) error
+}
+
+// WSBroadcaster allows any flow type to push messages to WebSocket sessions.
+type WSBroadcaster interface {
+	BroadcastChannel(channel string, payload []byte) int
+	PushSession(sessionID string, payload []byte) bool
+}
+
+// DynamicConnHandle is implemented by ws.DynamicConn to avoid import cycles.
+type DynamicConnHandle interface {
+	Send(payload []byte) error
+}
+
+// DynamicConnector is implemented by ws.DynamicPool to avoid import cycles.
+// Connect opens or reuses an upstream WebSocket connection for the given name and scope key.
+// Disconnect explicitly closes and removes the connection.
+type DynamicConnector interface {
+	Connect(name, scopeKey string, ttl time.Duration) (DynamicConnHandle, error)
+	Disconnect(name, scopeKey string)
+}
+
 // nanotime returns the current time in nanoseconds.
 // Kept as a thin wrapper so it can be swapped in tests.
 func nanotime() int64 { return time.Now().UnixNano() }
@@ -24,6 +58,22 @@ type ResponseWriter interface {
 	WriteHeader(statusCode int)
 	Header() http.Header
 }
+
+// NoopResponseWriter discards all output. Used for WebSocket message flows and scheduled flows
+// where there is no HTTP response writer.
+type NoopResponseWriter struct {
+	status int
+	header http.Header
+}
+
+func (n *NoopResponseWriter) Header() http.Header {
+	if n.header == nil {
+		n.header = make(http.Header)
+	}
+	return n.header
+}
+func (n *NoopResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (n *NoopResponseWriter) WriteHeader(code int)        { n.status = code }
 
 // HeaderMutation tracks changes for the upstream proxy without string allocations.
 type HeaderMutation struct {
@@ -159,6 +209,22 @@ type Context struct {
 	// MQTTPool is the global MQTT broker pool (set by FlowManager at startup).
 	// Shared across all requests; read-only after initialization.
 	MQTTPool *mqtt.BrokerPool
+
+	// WSSession is nil for HTTP requests; set during WebSocket message processing.
+	WSSession WSSessionRef
+
+	// WSPool is nil unless a WebSocket upstream pool is configured.
+	// Set by FlowManager at startup. Allows ws_upstream_send steps to forward
+	// messages to named upstream WebSocket connections without import cycles.
+	WSPool WSPoolSender
+
+	// WSBroadcaster allows flows to push messages to WebSocket sessions by channel or session ID.
+	// Nil for non-WebSocket deployments.
+	WSBroadcaster WSBroadcaster
+
+	// DynamicPool allows flows to open/close on-demand upstream WebSocket connections.
+	// Nil when WebSocket is not enabled. Set by FlowManager at startup.
+	DynamicPool DynamicConnector
 
 	// detachedFromPool prevents the request goroutine from returning this
 	// context to the pool when work is moved to a background goroutine.
@@ -529,6 +595,10 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Timing = RequestTiming{} // single memclr â€” all 8 timing fields zeroed at once
 	ctx.Obs = nil
 	ctx.Trace = nil
+	ctx.WSSession = nil
+	ctx.WSPool = nil
+	ctx.WSBroadcaster = nil
+	ctx.DynamicPool = nil
 	ctx.ArenaOverflowed = false
 	ctx.Failed = false
 	ctx.Cancelled = 0

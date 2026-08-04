@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,9 +18,9 @@ const sessionCookieName = "rah_session"
 const sessionTTL = 8 * time.Hour
 
 // sessionEntry holds an active Studio session.
-// BasicCred is the GATEWAY service-account credential (server-wide, not per-user).
 type sessionEntry struct {
 	Username  string
+	Role      string
 	ExpiresAt time.Time
 }
 
@@ -35,17 +36,31 @@ func newSessionStore() *SessionStore {
 	return s
 }
 
-func (s *SessionStore) create(username string) string {
+func (s *SessionStore) create(username, role string) string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	token := base64.RawURLEncoding.EncodeToString(b)
 	s.mu.Lock()
 	s.sessions[token] = &sessionEntry{
 		Username:  username,
+		Role:      role,
 		ExpiresAt: time.Now().Add(sessionTTL),
 	}
 	s.mu.Unlock()
 	return token
+}
+
+// deleteByUsername removes all sessions for the given username.
+// Used when a user is deprovisioned via SCIM or their role/envs are changed.
+func (s *SessionStore) deleteByUsername(username string) {
+	lower := strings.ToLower(username)
+	s.mu.Lock()
+	for k, e := range s.sessions {
+		if strings.ToLower(e.Username) == lower {
+			delete(s.sessions, k)
+		}
+	}
+	s.mu.Unlock()
 }
 
 func (s *SessionStore) get(token string) (*sessionEntry, bool) {
@@ -97,10 +112,12 @@ type loginRequest struct {
 }
 
 type meResponse struct {
-	Username           string `json:"username"`
-	Role               string `json:"role"`
-	AuthEnabled        bool   `json:"auth_enabled"`
-	MustChangePassword bool   `json:"must_change_password,omitempty"`
+	Username           string   `json:"username"`
+	Role               string   `json:"role"`
+	AuthEnabled        bool     `json:"auth_enabled"`
+	MustChangePassword bool     `json:"must_change_password,omitempty"`
+	SSOProvider        string   `json:"sso_provider,omitempty"`
+	AllowedEnvs        []string `json:"allowed_envs,omitempty"`
 }
 
 // ── Auth handlers ─────────────────────────────────────────────────────────────
@@ -120,19 +137,30 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, ok := s.userStore.Authenticate(req.Username, req.Password)
 	if !ok {
+		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: req.Username, Action: "login", ResourceType: "session",
+			Status: "failure", Summary: req.Username + " login failed",
+		}) }()
 		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
 
-	token := s.sessions.create(user.Username)
+	token := s.sessions.create(user.Username, user.Role)
 	setSessionCookie(w, token)
+	go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
+		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+		Actor: user.Username, Action: "login", ResourceType: "session",
+		Status: "success", Summary: user.Username + " logged in",
+	}) }()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meResponse{
 		Username:           user.Username,
 		Role:               user.Role,
 		AuthEnabled:        true,
 		MustChangePassword: user.MustChangePassword,
+		AllowedEnvs:        user.AllowedEnvs,
 	})
 }
 
@@ -143,7 +171,16 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c, err := r.Cookie(sessionCookieName); err == nil {
+		actor := "unknown"
+		if entry, ok := s.sessions.get(c.Value); ok {
+			actor = entry.Username
+		}
 		s.sessions.delete(c.Value)
+		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "logout", ResourceType: "session",
+			Status: "success", Summary: actor + " logged out",
+		}) }()
 	}
 	clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
@@ -181,6 +218,8 @@ func (s *Server) meHandler(w http.ResponseWriter, r *http.Request) {
 		Role:               user.Role,
 		AuthEnabled:        true,
 		MustChangePassword: user.MustChangePassword,
+		SSOProvider:        user.SSOProvider,
+		AllowedEnvs:        user.AllowedEnvs,
 	})
 }
 
@@ -197,6 +236,13 @@ func (s *Server) changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSO-provisioned users have no local password — they must authenticate via their IDP.
+	if user, exists := s.userStore.Get(entry.Username); exists && user.SSOProvisioned {
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, `{"error":"password change not available for SSO-provisioned users"}`, http.StatusBadRequest)
+		return
+	}
+
 	var req struct {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
@@ -208,6 +254,13 @@ func (s *Server) changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.userStore.ChangePassword(entry.Username, req.CurrentPassword, req.NewPassword); err != nil {
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: entry.Username, Action: "password.change", ResourceType: "user",
+				ResourceID: entry.Username, Status: "failure", Summary: entry.Username + " password change failed",
+			})
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
@@ -215,6 +268,13 @@ func (s *Server) changePasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "password changed"})
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: entry.Username, Action: "password.change", ResourceType: "user",
+			ResourceID: entry.Username, Status: "success", Summary: entry.Username + " changed password",
+		})
+	}()
 }
 
 // ── Studio user management handlers (admin only) ──────────────────────────────
@@ -258,6 +318,17 @@ func (s *Server) studioUsersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"username": u.Username, "role": u.Role})
+		actor := "system"
+		if sess, ok := sessionFromContext(r.Context()); ok {
+			actor = sess.Username
+		}
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: actor, Action: "user.create", ResourceType: "user",
+				Status: "success", Summary: fmt.Sprintf("%s created user", actor),
+			})
+		}()
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -295,6 +366,17 @@ func (s *Server) studioUserDeleteHandler(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"deleted": target})
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "user.delete", ResourceType: "user",
+			Status: "success", Summary: fmt.Sprintf("%s deleted user", actor),
+		})
+	}()
 }
 
 // studioUsersHashHandler is always public — lets operators generate bcrypt hashes
@@ -323,13 +405,29 @@ func studioUsersHashHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
 
-// studioAuthMiddleware rejects requests without a valid session cookie.
+// studioAuthMiddleware rejects requests without a valid session cookie or machine token.
 // When sessions is nil (auth disabled) it is a no-op pass-through.
 func (s *Server) studioAuthMiddleware(next http.Handler) http.Handler {
 	if s.sessions == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Machine token via Bearer header — checked before cookie so CI/CD scripts work.
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			raw := strings.TrimPrefix(authHeader, "Bearer ")
+			if s.tokenStore != nil {
+				if tok, ok := s.tokenStore.Lookup(raw); ok {
+					ctx := context.WithValue(r.Context(), ctxKeyStudioToken{}, tok)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+			return
+		}
+
+		// 2. Session cookie.
 		c, err := r.Cookie(sessionCookieName)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")

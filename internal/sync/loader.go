@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/control"
+	"github.com/amitkhosla/rah/internal/mcpreg"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
 )
 
@@ -38,6 +40,11 @@ func Load(dir string) (LoadResult, error) {
 		Tenants:            []control.TenantSyncDef{},
 		CacheSeeds:         []control.CacheSeedDef{},
 		APIKeys:            []control.APIKeySyncDef{},
+		LLMModels:          []config.LLMModelConfig{},
+		MCPServers:          []config.MCPServerConfig{},
+		VirtualMCPServers:   []mcpreg.VirtualMCPServerDef{},
+		APITools:            []mcpreg.APIToolDef{},
+		Schedules:           []control.ScheduleConfig{},
 	}
 
 	// Collect all .yaml and .json files from the directory tree
@@ -363,6 +370,101 @@ func trackSourcesAndMerge(filePath string, partial control.UnifiedSyncRequest, r
 		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
 	}
 
+	// Track LLM model sources and detect duplicates.
+	for _, m := range partial.LLMModels {
+		if m.Alias == "" {
+			continue
+		}
+		key := "llm_model:" + m.Alias
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_llm_model",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("LLM model %q already defined in %s — last definition wins", m.Alias, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track MCP server sources and detect duplicates.
+	for _, srv := range partial.MCPServers {
+		if srv.Alias == "" {
+			continue
+		}
+		key := "mcp_server:" + srv.Alias
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_mcp_server",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("MCP server %q already defined in %s — last definition wins", srv.Alias, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track virtual MCP server sources and detect duplicates.
+	for _, def := range partial.VirtualMCPServers {
+		if def.Name == "" {
+			continue
+		}
+		key := "virtual_mcp:" + def.Name
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_virtual_mcp_server",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("virtual MCP server %q already defined in %s — last definition wins", def.Name, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track API tool sources and detect duplicates.
+	for _, tool := range partial.APITools {
+		if tool.Name == "" {
+			continue
+		}
+		key := "api_tool:" + tool.Name
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_api_tool",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("API tool %q already defined in %s — last definition wins", tool.Name, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
+	// Track schedule sources and detect duplicates.
+	for _, sched := range partial.Schedules {
+		if sched.Name == "" {
+			continue
+		}
+		key := "schedule:" + sched.Name
+		if existing, ok := result.SourceMap[key]; ok && existing.File != "" {
+			result.Issues = append(result.Issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "duplicate_schedule",
+				File:       filePath,
+				Line:       1,
+				Message:    fmt.Sprintf("schedule %q already defined in %s — last definition wins", sched.Name, existing.File),
+				Suggestion: "Remove the duplicate or consolidate into one file",
+			})
+		}
+		result.SourceMap[key] = SourceLocation{File: filePath, Line: 1}
+	}
+
 	// Merge bundles (concatenate and deduplicate)
 	result.Bundle = mergeBundles(result.Bundle, partial)
 }
@@ -495,6 +597,71 @@ func mergeBundles(existing, newBundle control.UnifiedSyncRequest) control.Unifie
 	result.APIKeys = make([]control.APIKeySyncDef, 0, len(existingAPIKeys))
 	for _, k := range existingAPIKeys {
 		result.APIKeys = append(result.APIKeys, k)
+	}
+
+	// Merge LLM models: keep last occurrence by alias.
+	existingLLMModels := make(map[string]config.LLMModelConfig)
+	for _, m := range existing.LLMModels {
+		existingLLMModels[m.Alias] = m
+	}
+	for _, m := range newBundle.LLMModels {
+		existingLLMModels[m.Alias] = m
+	}
+	result.LLMModels = make([]config.LLMModelConfig, 0, len(existingLLMModels))
+	for _, m := range existingLLMModels {
+		result.LLMModels = append(result.LLMModels, m)
+	}
+
+	// Merge MCP servers: keep last occurrence by alias.
+	existingMCPServers := make(map[string]config.MCPServerConfig)
+	for _, srv := range existing.MCPServers {
+		existingMCPServers[srv.Alias] = srv
+	}
+	for _, srv := range newBundle.MCPServers {
+		existingMCPServers[srv.Alias] = srv
+	}
+	result.MCPServers = make([]config.MCPServerConfig, 0, len(existingMCPServers))
+	for _, srv := range existingMCPServers {
+		result.MCPServers = append(result.MCPServers, srv)
+	}
+
+	// Merge virtual MCP servers: keep last occurrence by name.
+	existingVirtualMCP := make(map[string]mcpreg.VirtualMCPServerDef)
+	for _, def := range existing.VirtualMCPServers {
+		existingVirtualMCP[def.Name] = def
+	}
+	for _, def := range newBundle.VirtualMCPServers {
+		existingVirtualMCP[def.Name] = def
+	}
+	result.VirtualMCPServers = make([]mcpreg.VirtualMCPServerDef, 0, len(existingVirtualMCP))
+	for _, def := range existingVirtualMCP {
+		result.VirtualMCPServers = append(result.VirtualMCPServers, def)
+	}
+
+	// Merge API tools: keep last occurrence by name.
+	existingAPITools := make(map[string]mcpreg.APIToolDef)
+	for _, tool := range existing.APITools {
+		existingAPITools[tool.Name] = tool
+	}
+	for _, tool := range newBundle.APITools {
+		existingAPITools[tool.Name] = tool
+	}
+	result.APITools = make([]mcpreg.APIToolDef, 0, len(existingAPITools))
+	for _, tool := range existingAPITools {
+		result.APITools = append(result.APITools, tool)
+	}
+
+	// Merge schedules: keep last occurrence by name.
+	existingSchedules := make(map[string]control.ScheduleConfig)
+	for _, sched := range existing.Schedules {
+		existingSchedules[sched.Name] = sched
+	}
+	for _, sched := range newBundle.Schedules {
+		existingSchedules[sched.Name] = sched
+	}
+	result.Schedules = make([]control.ScheduleConfig, 0, len(existingSchedules))
+	for _, sched := range existingSchedules {
+		result.Schedules = append(result.Schedules, sched)
 	}
 
 	return result

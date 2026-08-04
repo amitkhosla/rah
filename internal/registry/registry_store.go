@@ -50,13 +50,15 @@ type pgTxStore interface {
 }
 
 const (
-	tenantKeyPrefix = "tenant:"
-	aliasSuffix     = ":aliases"
-	urlPropPrefix   = ":url:"
-	idPropPrefix    = ":id:"
-	metaPropPrefix  = ":meta:"
-	rateLimitPrefix = "rl:"
-	tenantIDSuffix  = ":tid" // used as: "tenant:{alias}:tid"
+	tenantKeyPrefix      = "tenant:"
+	aliasSuffix          = ":aliases"
+	urlPropPrefix        = ":url:"
+	idPropPrefix         = ":id:"
+	metaPropPrefix       = ":meta:"
+	rateLimitPrefix      = "rl:"
+	tenantIDSuffix       = ":tid"                    // used as: "tenant:{alias}:tid"
+	v2OverridePropPrefix = ":v2override:"            // key: tenant:{alias}:v2override:{configName}
+	modifierSuffix       = ":modifier"               // key: tenant:{alias}:modifier
 )
 
 // tenantTIDKey returns the datastore key used to persist a tenant's stable TenantID.
@@ -295,6 +297,57 @@ func (s *TenantRegistryStore) DeleteRateLimitConfig(ctx context.Context, name st
 	})
 }
 
+// ── Tenant: rate limit modifiers ─────────────────────────────────────────────
+
+func (s *TenantRegistryStore) PutModifier(ctx context.Context, alias string, rec TenantModifierRecord) error {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	k := tenantKeyPrefix + alias + modifierSuffix
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, data)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: data}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, data)
+	})
+}
+
+// ── Tenant: V2 rate limit overrides ──────────────────────────────────────────
+
+func (s *TenantRegistryStore) PutV2Override(ctx context.Context, alias, configName string, rec TenantV2OverrideRecord) error {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	k := tenantKeyPrefix + alias + v2OverridePropPrefix + configName
+	if s.audit == nil {
+		return s.backend.Put(ctx, k, data)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.MultiPutTx(ctx, tx, map[string][]byte{k: data}); err != nil {
+			return err
+		}
+		return s.audit.WritePut(ctx, tx, k, data)
+	})
+}
+
+func (s *TenantRegistryStore) DeleteV2Override(ctx context.Context, alias, configName string) error {
+	k := tenantKeyPrefix + alias + v2OverridePropPrefix + configName
+	if s.audit == nil {
+		return s.backend.Delete(ctx, k)
+	}
+	return s.pgStore.ExecTx(ctx, func(tx pgx.Tx) error {
+		if err := s.pgStore.DeleteScopedKeyTx(ctx, tx, k); err != nil {
+			return err
+		}
+		return s.audit.WriteDelete(ctx, tx, k)
+	})
+}
+
 // ── Startup restore ──────────────────────────────────────────────────────────
 
 // LoadAll reconstructs a RegistrySnapshot by scanning all stored keys.
@@ -355,6 +408,59 @@ func (s *TenantRegistryStore) LoadAll(ctx context.Context) (RegistrySnapshot, er
 			continue
 		}
 		snap.Tenants = append(snap.Tenants, rec)
+	}
+
+	// ── V2 overrides ─────────────────────────────────────────────────────────
+	overrideKeys, err := s.backend.ListKeys(ctx, tenantKeyPrefix)
+	if err == nil {
+		for _, k := range overrideKeys {
+			rest := strings.TrimPrefix(k, tenantKeyPrefix)
+			idx := strings.Index(rest, v2OverridePropPrefix)
+			if idx < 0 {
+				continue
+			}
+			alias := rest[:idx]
+			configName := rest[idx+len(v2OverridePropPrefix):]
+			if alias == "" || configName == "" {
+				continue
+			}
+			data, ok, err := s.backend.Get(ctx, k)
+			if err != nil || !ok {
+				continue
+			}
+			var rec TenantV2OverrideRecord
+			if err := json.Unmarshal(data, &rec); err != nil {
+				continue
+			}
+			rec.Alias = alias
+			rec.ConfigName = configName
+			snap.V2Overrides = append(snap.V2Overrides, rec)
+		}
+	}
+
+	// ── Tenant modifiers ──────────────────────────────────────────────────────
+	modKeys, err := s.backend.ListKeys(ctx, tenantKeyPrefix)
+	if err == nil {
+		for _, k := range modKeys {
+			if !strings.HasSuffix(k, modifierSuffix) {
+				continue
+			}
+			rest := strings.TrimPrefix(k, tenantKeyPrefix)
+			alias := strings.TrimSuffix(rest, modifierSuffix)
+			if alias == "" {
+				continue
+			}
+			data, ok, err := s.backend.Get(ctx, k)
+			if err != nil || !ok {
+				continue
+			}
+			var rec TenantModifierRecord
+			if err := json.Unmarshal(data, &rec); err != nil {
+				continue
+			}
+			rec.Alias = alias
+			snap.Modifiers = append(snap.Modifiers, rec)
+		}
 	}
 
 	return snap, nil

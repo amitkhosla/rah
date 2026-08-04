@@ -5,6 +5,7 @@ import {
   listCodeRules, upsertCodeRule, deleteCodeRule,
   listPatternRules, upsertPatternRule, deletePatternRule,
 } from '../api'
+import ConfirmDialog from './ConfirmDialog'
 
 // ── Profiles tab ──────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ function ProfilesTab() {
   const [reqMs, setReqMs]             = useState('')
   const [saving, setSaving]           = useState(false)
   const [saveErr, setSaveErr]         = useState('')
+
+  // confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -52,11 +56,17 @@ function ProfilesTab() {
   }
 
   async function handleDelete(profileName: string) {
-    if (!window.confirm(`Delete profile "${profileName}"?`)) return
-    try {
-      await deleteEgressProfile(profileName)
-      load()
-    } catch (e) { setErr(String(e)) }
+    setConfirmDialog({
+      title: 'Delete Egress Profile',
+      message: `Delete profile "${profileName}"?`,
+      onConfirm: async () => {
+        try {
+          await deleteEgressProfile(profileName)
+          load()
+        } catch (e) { setErr(String(e)) }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   return (
@@ -160,6 +170,15 @@ function ProfilesTab() {
       <button className="btn" onClick={handleSave} disabled={saving}>
         {saving ? 'Saving…' : 'Save Profile'}
       </button>
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }
@@ -176,6 +195,9 @@ function CodeRulesTab() {
   const [profile, setProfile] = useState('')
   const [saving, setSaving]   = useState(false)
   const [saveErr, setSaveErr] = useState('')
+
+  // confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -202,11 +224,17 @@ function CodeRulesTab() {
   }
 
   async function handleDelete(serviceCode: string) {
-    if (!window.confirm(`Delete code rule for "${serviceCode}"?`)) return
-    try {
-      await deleteCodeRule(serviceCode)
-      load()
-    } catch (e) { setErr(String(e)) }
+    setConfirmDialog({
+      title: 'Delete Code Rule',
+      message: `Delete code rule for "${serviceCode}"?`,
+      onConfirm: async () => {
+        try {
+          await deleteCodeRule(serviceCode)
+          load()
+        } catch (e) { setErr(String(e)) }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   return (
@@ -275,6 +303,15 @@ function CodeRulesTab() {
         </button>
       </div>
       {saveErr && <div style={{ color: '#f87171', fontSize: 12 }}>{saveErr}</div>}
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }
@@ -291,6 +328,9 @@ function PatternRulesTab() {
   const [profile, setProfile] = useState('')
   const [saving, setSaving]   = useState(false)
   const [saveErr, setSaveErr] = useState('')
+
+  // confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -317,12 +357,18 @@ function PatternRulesTab() {
   }
 
   async function handleDelete(index: number, pat: string) {
-    if (!window.confirm(`Delete pattern rule "${pat}"?`)) return
-    const idx = String(index).padStart(6, '0')
-    try {
-      await deletePatternRule(idx)
-      load()
-    } catch (e) { setErr(String(e)) }
+    setConfirmDialog({
+      title: 'Delete Pattern Rule',
+      message: `Delete pattern rule "${pat}"?`,
+      onConfirm: async () => {
+        const idx = String(index).padStart(6, '0')
+        try {
+          await deletePatternRule(idx)
+          load()
+        } catch (e) { setErr(String(e)) }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   return (
@@ -397,6 +443,15 @@ function PatternRulesTab() {
         </button>
       </div>
       {saveErr && <div style={{ color: '#f87171', fontSize: 12 }}>{saveErr}</div>}
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }

@@ -909,6 +909,24 @@ export function patchConcurrencyConfig(body: ConcurrencyPatch): Promise<Concurre
   })
 }
 
+// ── Audit Log ─────────────────────────────────────────────────────
+
+export interface AuditRecord {
+  id: string
+  timestamp: string
+  actor: string
+  action: string
+  resource_type: string
+  resource_id: string
+  status: string
+  summary: string
+  metadata?: Record<string, string>
+}
+
+export async function fetchAuditLog(): Promise<AuditRecord[]> {
+  return request<AuditRecord[]>('/api/audit')
+}
+
 // ── Rate Limit V2 Overrides ────────────────────────────────────────
 
 export async function upsertV2Override(alias: string, body: {
@@ -931,4 +949,109 @@ export async function deleteV2Override(alias: string, configName: string): Promi
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`deleteV2Override failed: ${res.status}`);
+}
+
+export interface TenantOverrideRow {
+  tenant_id: number
+  alias: string
+  global_blocked: boolean
+  global_rl_disabled: boolean
+  global_scale_pct: number
+  overrides: {
+    config_name: string
+    blocked: boolean
+    rl_disabled: boolean
+    scale_override_pct: number
+    window_limits?: number[]
+  }[]
+}
+
+export async function listAllV2Overrides(): Promise<TenantOverrideRow[]> {
+  return request<TenantOverrideRow[]>('/api/tenants/rate-limit-v2-overrides')
+}
+
+// ── Schedules ──────────────────────────────────────────────────────────
+
+export interface ScheduleOnFailure {
+  retry_count?: number
+  retry_interval_sec?: number
+  dead_letter_flow?: string
+}
+
+export interface Schedule {
+  name: string
+  cron: string
+  flow_name: string
+  tenant_alias: string
+  enabled: boolean
+  timeout_sec: number
+  constants?: Record<string, string>
+  next_run_at?: string
+  last_run_at?: string
+  last_status?: string
+  on_failure?: ScheduleOnFailure
+  max_concurrent?: number
+  runtime_only?: boolean
+}
+
+export interface ScheduleHistory {
+  execution_id: string
+  scheduled_at: string
+  started_at?: string
+  completed_at?: string
+  status: string
+  error?: string
+  duration_ms?: number
+}
+
+export async function listSchedules(): Promise<Schedule[]> {
+  return request<Schedule[]>('/api/schedules')
+}
+
+export async function upsertSchedule(s: Schedule): Promise<void> {
+  return request<void>('/api/schedules', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(s),
+  })
+}
+
+export async function deleteSchedule(name: string): Promise<void> {
+  return request<void>(`/api/schedules/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export async function getScheduleHistory(name: string): Promise<ScheduleHistory[]> {
+  return request<ScheduleHistory[]>(`/api/schedules/${encodeURIComponent(name)}/history`)
+}
+
+export async function runFlow(name: string, tenantAlias: string, constants?: Record<string, string>): Promise<void> {
+  return request<void>(`/api/flows/${encodeURIComponent(name)}/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tenant_alias: tenantAlias, constants }),
+  })
+}
+
+// ── WebSocket observability ────────────────────────────────────────────
+
+export interface WSSession {
+  id: string
+  tenant_id: number
+  api_id: number
+  connected_at: string
+}
+
+export interface WSUpstream {
+  name: string
+  url: string
+  status: string
+  last_ping_rtt_ms?: number
+}
+
+export async function listWSSessions(): Promise<WSSession[]> {
+  return request<WSSession[]>('/api/ws/sessions')
+}
+
+export async function listWSUpstreams(): Promise<WSUpstream[]> {
+  return request<WSUpstream[]>('/api/ws/upstreams')
 }

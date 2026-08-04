@@ -54,6 +54,18 @@ type ServerConfig struct {
 	// SandboxDeployment names the entry in Deployments[] that the sync button
 	// always routes to. Empty = legacy behaviour (proxy to default gateway).
 	SandboxDeployment string `json:"sandbox_deployment,omitempty" yaml:"sandbox_deployment,omitempty"`
+
+	// Machine token store path. Empty = memory only (tokens lost on restart).
+	TokenStorePath string `json:"token_store_path,omitempty" yaml:"token_store_path,omitempty"`
+
+	// OIDC configures one or more OpenID Connect identity providers for SSO.
+	OIDC *OIDCConfig `json:"oidc,omitempty" yaml:"oidc,omitempty"`
+
+	// Authz configures the optional external authorization service.
+	Authz *AuthzConfig `json:"authz,omitempty" yaml:"authz,omitempty"`
+
+	// SCIM configures SCIM 2.0 provisioning from an enterprise IDP.
+	SCIM *SCIMConfig `json:"scim,omitempty" yaml:"scim,omitempty"`
 }
 
 
@@ -275,11 +287,15 @@ type Server struct {
 	targets           []Target
 	store             ReleaseStore
 	chatStore         ChatHistoryStore
+	auditStore        AuditStore
 
-	// Auth â€” Studio's own user store + session map.
+	// Auth — Studio's own user store + session map.
 	// Both are nil when auth is disabled (open access mode).
-	userStore        *StudioUserStore
-	sessions         *SessionStore
+	userStore      *StudioUserStore
+	sessions       *SessionStore
+	tokenStore     *StudioTokenStore
+	oidcStateStore *oidcStateStore
+	authzClient    *ExternalAuthzClient
 
 	// gatewayBasicCred is the Authorization header value forwarded to the management
 	// API on every proxy call. Read from RAH_GATEWAY_AUTH_USERNAME / RAH_GATEWAY_AUTH_PASSWORD
@@ -335,6 +351,7 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		targets:           targets,
 		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
 		chatStore:         newChatHistoryStore(cfg.StoreKind, cfg.StorePath),
+			auditStore:    newAuditStore(cfg.StoreKind, cfg.StorePath),
 		baselineStore:     newMemFlowBaselineStore(),
 		versionStore:      newMemVersionHistoryStore(),
 	}
@@ -342,6 +359,22 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 	if cfg.AuthEnabled {
 		srv.userStore = newStudioUserStore(cfg.AuthStorePath, cfg.AuthUsers)
 		srv.sessions = newSessionStore()
+		srv.tokenStore = newTokenStore(cfg.TokenStorePath, parseEncryptionKey(os.Getenv("RAH_STUDIO_ENCRYPTION_KEY")))
+		if srv.userStore != nil && srv.sessions != nil {
+			// Invalidate sessions immediately when a user's role or envs change.
+			srv.userStore.sessionInvalidator = srv.sessions.deleteByUsername
+		}
+	}
+	if cfg.OIDC != nil && len(cfg.OIDC.Providers) > 0 {
+		for i := range cfg.OIDC.Providers {
+			if resolved, err := resolveKeyRef(cfg.OIDC.Providers[i].ClientSecret); err == nil {
+				cfg.OIDC.Providers[i].ClientSecret = resolved
+			}
+		}
+		srv.oidcStateStore = newOIDCStateStore()
+	}
+	if cfg.Authz != nil {
+		srv.authzClient = NewExternalAuthzClient(*cfg.Authz)
 	}
 
 	// Gateway service-account credential for management API proxy calls.
@@ -400,9 +433,16 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/tiers/", s.tiersMgmtProxy)
 	apiMux.HandleFunc("/api/upstream-services", s.upstreamServicesMgmtProxy)
 	apiMux.HandleFunc("/api/upstream-services/", s.upstreamServicesMgmtProxy)
+	apiMux.HandleFunc("/api/schedules", s.schedulesMgmtProxy)
+	apiMux.HandleFunc("/api/schedules/", s.schedulesMgmtProxy)
+	apiMux.HandleFunc("/api/ws/sessions", s.wsSessionsMgmtProxy)
+	apiMux.HandleFunc("/api/ws/upstreams", s.wsUpstreamsMgmtProxy)
 	apiMux.HandleFunc("/api/ai/chat", s.aiChatHandler)
 	apiMux.HandleFunc("/api/ai/project-context", s.aiProjectContextHandler)
 	apiMux.HandleFunc("/api/ai/chat-history", s.aiChatHistoryHandler)
+	apiMux.HandleFunc("/api/audit", s.auditLogHandler)
+	apiMux.HandleFunc("/api/tokens", s.tokenListCreateHandler)
+	apiMux.HandleFunc("/api/tokens/", s.tokenRevokeHandler)
 	apiMux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
@@ -463,8 +503,17 @@ func (s *Server) Handler() http.Handler {
 	outerMux.HandleFunc("/api/auth/login", s.loginHandler)
 	outerMux.HandleFunc("/api/auth/logout", s.logoutHandler)
 	outerMux.HandleFunc("/api/studio/users/hash", studioUsersHashHandler) // always public (bootstrap helper)
+	// OIDC endpoints are public (browser redirects, no session yet during login flow).
+	outerMux.HandleFunc("/api/oidc/", s.oidcDispatch)
 	outerMux.Handle("/api/", s.studioAuthMiddleware(apiMux))
 	outerMux.HandleFunc("/mcp", s.MCPHandler)
+	// SCIM endpoints use their own bearer token middleware (not Studio sessions).
+	scimMux := http.NewServeMux()
+	scimMux.HandleFunc("/scim/v2/Users", s.scimUsersHandler)
+	scimMux.HandleFunc("/scim/v2/Users/", s.scimUserByIDHandler)
+	scimMux.HandleFunc("/scim/v2/Groups", s.scimGroupsHandler)
+	scimMux.HandleFunc("/scim/v2/Groups/", s.scimGroupByIDHandler)
+	outerMux.Handle("/scim/", s.scimTokenMiddleware(scimMux))
 
 	// Serve the React SPA from the embedded ui/dist directory.
 	// Any path that doesn't match a real file falls back to index.html
@@ -1409,6 +1458,18 @@ func (s *Server) deployHandler(w http.ResponseWriter, r *http.Request) {
 		s.history = s.history[:200]
 	}
 	s.historyMu.Unlock()
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "deploy", ResourceType: "release",
+			ResourceID: rec.ReleaseID, Status: "success",
+			Summary: fmt.Sprintf("%s deployed release %s", actor, rec.ReleaseID),
+		})
+	}()
 	_ = json.NewEncoder(w).Encode(map[string]any{"release_id": rec.ReleaseID, "results": results})
 }
 
@@ -1567,6 +1628,19 @@ func (s *Server) resolveTenantIDs(ctx context.Context, targetBase string, aliase
 	return ids
 }
 
+func methodToAction(method string) string {
+	switch method {
+	case http.MethodPost:
+		return "create"
+	case http.MethodPut, http.MethodPatch:
+		return "update"
+	case http.MethodDelete:
+		return "delete"
+	default:
+		return strings.ToLower(method)
+	}
+}
+
 func (s *Server) getAllApisProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyToDefault(w, r, http.MethodGet, "/getAllApis")
 }
@@ -1578,9 +1652,25 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
 	name := s.config.SandboxDeployment
 	if name == "" {
-		s.proxyToDefault(w, r, http.MethodPost, "/sync")
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		s.proxyToDefault(rec, r, http.MethodPost, "/sync")
+		status := "success"
+		if rec.status >= 400 {
+			status = "failure"
+		}
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: actor, Action: "sync", ResourceType: "flow",
+				Status: status, Summary: actor + " synced flows",
+			})
+		}()
 		return
 	}
 	dep := findDeployment(s.config.Deployments, name)
@@ -1592,7 +1682,19 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sandbox deployment '"+name+"' has no targets configured", http.StatusInternalServerError)
 		return
 	}
-	s.proxyToSandbox(w, r, dep.Targets)
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	s.proxyToSandbox(rec, r, dep.Targets)
+	status := "success"
+	if rec.status >= 400 {
+		status = "failure"
+	}
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: actor, Action: "sync", ResourceType: "flow",
+			Status: status, Summary: actor + " synced flows",
+		})
+	}()
 }
 
 // proxyToSandbox forwards POST /api/sync to every target in the sandbox deployment.
@@ -1600,6 +1702,7 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets []string) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
@@ -1608,11 +1711,13 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 	for _, raw := range targets {
 		targetURL, err := buildTargetURL(raw, "/sync", r.URL.RawQuery)
 		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
 			http.Error(w, "invalid sandbox target url: "+raw, http.StatusBadGateway)
 			return
 		}
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(body))
 		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
 			http.Error(w, "failed to build sandbox request", http.StatusInternalServerError)
 			return
 		}
@@ -1622,6 +1727,7 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 		}
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
 			http.Error(w, "sandbox target unreachable: "+raw, http.StatusBadGateway)
 			return
 		}
@@ -1646,12 +1752,32 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 
 // tenantsMgmtProxy forwards /api/tenants[/...] â†’ /tenants[/...] on the management server.
 func (s *Server) tenantsMgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		s.proxyPassThrough(w, r, targetPath)
+		return
+	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	action := methodToAction(r.Method)
+	s.recordingProxy(w, r, targetPath, actor, "tenant", "tenant."+action)
 }
 
 // rateLimitConfigsMgmtProxy forwards /api/rate-limit-configs[/...] â†’ /rate-limit-configs[/...].
 func (s *Server) rateLimitConfigsMgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		s.proxyPassThrough(w, r, targetPath)
+		return
+	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	action := methodToAction(r.Method)
+	s.recordingProxy(w, r, targetPath, actor, "ratelimit_config", "ratelimit_config."+action)
 }
 
 // cacheMgmtProxy forwards /api/cache/{alias}/{key} â†’ /cache/{alias}/{key} on the management server.
@@ -1661,7 +1787,17 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 
 // rateLimitConfigsV2MgmtProxy forwards /api/rate-limit-configs-v2[/...] â†’ /rate-limit-configs-v2[/...].
 func (s *Server) rateLimitConfigsV2MgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		s.proxyPassThrough(w, r, targetPath)
+		return
+	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	action := methodToAction(r.Method)
+	s.recordingProxy(w, r, targetPath, actor, "ratelimit_config_v2", "ratelimit_config_v2."+action)
 }
 
 // concurrencyMgmtProxy forwards /api/concurrency â†’ /admin/concurrency on the management server.
@@ -1671,12 +1807,47 @@ func (s *Server) concurrencyMgmtProxy(w http.ResponseWriter, r *http.Request) {
 
 // tiersMgmtProxy forwards /api/tiers[/...] â†’ /tiers[/...] on the management server.
 func (s *Server) tiersMgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		s.proxyPassThrough(w, r, targetPath)
+		return
+	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	action := methodToAction(r.Method)
+	s.recordingProxy(w, r, targetPath, actor, "tier", "tier."+action)
 }
 
 // upstreamServicesMgmtProxy forwards /api/upstream-services[/...] â†’ /upstream-services[/...].
 func (s *Server) upstreamServicesMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// schedulesMgmtProxy forwards /api/schedules[/...] â†’ /schedules[/...] on the management server.
+func (s *Server) schedulesMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		s.proxyPassThrough(w, r, targetPath)
+		return
+	}
+	actor := "system"
+	if sess, ok := sessionFromContext(r.Context()); ok {
+		actor = sess.Username
+	}
+	action := methodToAction(r.Method)
+	s.recordingProxy(w, r, targetPath, actor, "schedule", "schedule."+action)
+}
+
+// wsSessionsMgmtProxy forwards /api/ws/sessions â†’ /ws/sessions on the management server.
+func (s *Server) wsSessionsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/ws/sessions")
+}
+
+// wsUpstreamsMgmtProxy forwards /api/ws/upstreams â†’ /ws/upstreams on the management server.
+func (s *Server) wsUpstreamsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/ws/upstreams")
 }
 
 // aiMgmtProxy forwards /api/ai[/...] â†’ /ai[/...] on the management server.
@@ -2439,4 +2610,71 @@ func (s *Server) proxyToDefault(w http.ResponseWriter, r *http.Request, method, 
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+// auditLogHandler returns audit records newest-first.
+// Accepts optional ?limit=N query param (default 200, max 1000).
+func (s *Server) auditLogHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+			if limit > 1000 {
+				limit = 1000
+			}
+		}
+	}
+	records, err := s.auditStore.List(r.Context(), limit)
+	if err != nil {
+		http.Error(w, "failed to list audit records", http.StatusInternalServerError)
+		return
+	}
+	if records == nil {
+		records = []AuditRecord{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(records)
+}
+
+// statusRecorder captures the HTTP status code written by a handler.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+// recordingProxy proxies the request to targetPath and appends an audit record.
+// Only called for mutating methods (POST, PUT, PATCH, DELETE).
+func (s *Server) recordingProxy(w http.ResponseWriter, r *http.Request, targetPath, actor, resourceType, action string) {
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	s.proxyPassThrough(rec, r, targetPath)
+	status := "success"
+	if rec.status >= 400 {
+		status = "failure"
+	}
+	// Extract resource ID from the last non-empty path segment.
+	resourceID := ""
+	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
+	if len(parts) > 0 {
+		resourceID = parts[len(parts)-1]
+	}
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
+			Timestamp:    time.Now().UTC(),
+			Actor:        actor,
+			Action:       action,
+			ResourceType: resourceType,
+			ResourceID:   resourceID,
+			Status:       status,
+			Summary:      fmt.Sprintf("%s %s %s", actor, action, resourceID),
+		})
+	}()
 }

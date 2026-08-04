@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'tenants' | 'apps' | 'rate-limits' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'settings'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
 import FlowDesigner   from './components/FlowDesigner'
@@ -16,6 +16,7 @@ import Tenants                from './components/Tenants'
 import Settings               from './components/Settings'
 import Dashboard              from './components/Dashboard'
 import Observability          from './components/Observability'
+import AuditLog               from './components/AuditLog'
 import RateLimitConfigsScreen from './components/RateLimitConfigsScreen'
 import TenantTiersScreen      from './components/TenantTiersScreen'
 import UpstreamServicesScreen from './components/UpstreamServicesScreen'
@@ -26,6 +27,11 @@ import Egress                from './components/Egress'
 import Releases              from './components/Releases'
 import SchemaLibrary         from './components/SchemaLibrary'
 import GrpcDescriptors       from './components/GrpcDescriptors'
+import TenantOverridesView   from './components/TenantOverridesView'
+import Tokens                from './components/Tokens'
+import Schedules             from './components/Schedules'
+import WSEndpoints           from './components/WSEndpoints'
+import WSUpstreams           from './components/WSUpstreams'
 import GlobalAIAssistant     from './components/GlobalAIAssistant'
 
 // ── Action name normalization (internal engine → display names) ──────
@@ -121,6 +127,7 @@ const NAV_ICONS: Record<string, string> = {
   releases:           '⊕',
   gateway:            '◉',
   observability:      '⊛',
+  'audit-log':        '📋',
   tenants:            '☰',
   apps:               '⬡',
   'rate-limits':      '⧖',
@@ -130,6 +137,10 @@ const NAV_ICONS: Record<string, string> = {
   schemas:            '⊞',
   grpc:               '⬡',
   concurrency:        '⟿',
+  tokens:             '🔑',
+  schedules:          '⏱',
+  'ws-endpoints':     '⚡',
+  'ws-upstreams':     '🔗',
   settings:           '⚙',
 }
 
@@ -146,10 +157,16 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'releases',      label: 'Releases' },
   { kind: 'item',    id: 'gateway',       label: 'Live' },
   { kind: 'item',    id: 'observability', label: 'Observability' },
+  { kind: 'item',    id: 'audit-log',     label: 'Audit Log' },
+  { kind: 'section', label: 'OPERATIONS' },
+  { kind: 'item',    id: 'schedules',     label: 'Schedules' },
+  { kind: 'item',    id: 'ws-endpoints',  label: 'WS Endpoints' },
+  { kind: 'item',    id: 'ws-upstreams',  label: 'WS Upstreams' },
   { kind: 'section', label: 'SECURITY' },
   { kind: 'item',    id: 'tenants',            label: 'Tenants' },
   { kind: 'item',    id: 'apps',               label: 'Apps' },
   { kind: 'item',    id: 'rate-limits',         label: 'Rate Limits' },
+  { kind: 'item',    id: 'rl-overrides',        label: 'RL Overrides' },
   { kind: 'item',    id: 'tiers',               label: 'Tiers' },
   { kind: 'item',    id: 'upstream-services',   label: 'Upstreams' },
   { kind: 'item',    id: 'egress',              label: 'Egress' },
@@ -157,6 +174,8 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'grpc',                label: 'gRPC' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'item',    id: 'concurrency',        label: 'Concurrency' },
+  { kind: 'section', label: 'ADMIN' },
+  { kind: 'item',    id: 'tokens',             label: 'Tokens' },
   { kind: 'section', label: '' },
   { kind: 'item',    id: 'settings',  label: 'Settings' },
 ]
@@ -427,6 +446,8 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
               )
             }
             const icon = NAV_ICONS[item.id] ?? '•'
+            // Hide tokens tab if auth not enabled or user is not admin
+            if (item.id === 'tokens' && (!authUser.authEnabled || authUser.role !== 'admin')) return null
             return (
               <div key={item.id}>
                 <button
@@ -690,13 +711,16 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
                 return [...prev, newDef]
               })
             }}
+            onNavigateToTab={(tabId) => setTab(tabId as TabId)}
           />
         )}
         {tab === 'releases'           && <Releases />}
         {tab === 'observability'      && <Observability />}
+        {tab === 'audit-log'          && <AuditLog />}
         {tab === 'tenants'           && <Tenants />}
         {tab === 'apps'              && <Apps />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
+        {tab === 'rl-overrides'      && <TenantOverridesView />}
         {tab === 'tiers'             && <TenantTiersScreen />}
         {tab === 'upstream-services' && <UpstreamServicesScreen />}
         {tab === 'egress'            && <Egress />}
@@ -704,6 +728,10 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'grpc'              && <GrpcDescriptors />}
         {tab === 'cache'             && <CachePanel />}
         {tab === 'concurrency'       && <Concurrency />}
+        {tab === 'tokens'            && <Tokens isAdmin={authUser.role === 'admin'} />}
+        {tab === 'schedules'         && <Schedules />}
+        {tab === 'ws-endpoints'      && <WSEndpoints />}
+        {tab === 'ws-upstreams'      && <WSUpstreams />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
 

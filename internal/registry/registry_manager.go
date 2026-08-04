@@ -190,6 +190,14 @@ func (m *RegistryManager) GetTenantRecord(tID uint16) *TenantRecord {
 	return m.tenantData[tID]
 }
 
+// TenantIDByAlias resolves a tenant alias string to its numeric ID.
+func (rm *RegistryManager) TenantIDByAlias(alias string) (uint16, bool) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	id, ok := rm.aliasMap[alias]
+	return id, ok
+}
+
 // TenantName returns the primary alias for the given TenantID.
 // Returns an empty string if the tenant is not found.
 // Satisfies observability.TenantNamer for use in async log workers.
@@ -1089,6 +1097,45 @@ func (m *RegistryManager) RestoreFromSnapshot(snap RegistrySnapshot) {
 		}
 		m.UpsertTenantState(t.Aliases, t.ServiceURLs, t.Identifiers, t.Metadata)
 	}
+	for _, ov := range snap.V2Overrides {
+		tID, found := m.aliasMap[ov.Alias]
+		if !found {
+			continue
+		}
+		configID, ok := m.rateLimitNames[ov.ConfigName]
+		if !ok {
+			continue
+		}
+		var flags TenantV2RLFlags
+		if ov.Blocked {
+			flags |= V2ConfigBlocked
+		}
+		if ov.RLDisabled {
+			flags |= V2ConfigDisabled
+		}
+		m.UpsertTenantV2Override(tID, configID, TenantV2ConfigOverride{
+			Flags:            flags,
+			ScaleOverridePct: ov.ScaleOverridePct,
+			WindowLimits:     ov.WindowLimits,
+		})
+	}
+	for _, mod := range snap.Modifiers {
+		tID, found := m.aliasMap[mod.Alias]
+		if !found {
+			continue
+		}
+		var flags TenantRLFlags
+		if mod.Blocked {
+			flags |= TenantBlocked
+		}
+		if mod.RLDisabled {
+			flags |= TenantRLDisabled
+		}
+		m.SetTenantRateLimitModifier(tID, TenantRateLimitModifier{
+			ScalePct: mod.ScalePct,
+			Flags:    flags,
+		})
+	}
 }
 
 // persistTenant asynchronously writes the updated tenant record to the store.
@@ -1197,6 +1244,22 @@ func (m *RegistryManager) persistRateLimitConfig(name string, cfg RateLimitConfi
 	}
 	s := m.store
 	go func() { _ = s.PutRateLimitConfig(context.Background(), name, cfg) }()
+}
+
+// PersistModifier writes a tenant global rate limit modifier to the backing store (if configured).
+// Must NOT be called under the manager mutex.
+func (m *RegistryManager) PersistModifier(ctx context.Context, alias string, rec TenantModifierRecord) {
+	m.mu.Lock()
+	store := m.store
+	m.mu.Unlock()
+	if store == nil {
+		return
+	}
+	s, ok := store.(*TenantRegistryStore)
+	if !ok {
+		return
+	}
+	_ = s.PutModifier(ctx, alias, rec)
 }
 
 // persistTenantID asynchronously writes the stable TenantID for a primary alias.
@@ -1570,6 +1633,103 @@ func (m *RegistryManager) ApplyStorePut(rawKey string, value []byte) {
 			return
 		}
 
+		if idx := strings.Index(rest, v2OverridePropPrefix); idx >= 0 {
+			alias, configName := rest[:idx], rest[idx+len(v2OverridePropPrefix):]
+			tID, ok := m.aliasMap[alias]
+			if !ok {
+				return
+			}
+			configID, ok := m.rateLimitNames[configName]
+			if !ok {
+				return
+			}
+			var rec TenantV2OverrideRecord
+			if json.Unmarshal(value, &rec) != nil {
+				return
+			}
+			var flags TenantV2RLFlags
+			if rec.Blocked {
+				flags |= V2ConfigBlocked
+			}
+			if rec.RLDisabled {
+				flags |= V2ConfigDisabled
+			}
+			reg := m.activeOrEmpty()
+			needed := int(tID) + 1
+			if needed > len(reg.TenantV2Overrides) {
+				grown := make([]*TenantV2OverrideTable, needed)
+				copy(grown, reg.TenantV2Overrides)
+				reg.TenantV2Overrides = grown
+			}
+			tbl := reg.TenantV2Overrides[tID]
+			if tbl == nil {
+				tbl = &TenantV2OverrideTable{}
+				reg.TenantV2Overrides[tID] = tbl
+			}
+			lo, hi := 0, len(tbl.ConfigIDs)-1
+			insertAt := len(tbl.ConfigIDs)
+			for lo <= hi {
+				mid := (lo + hi) >> 1
+				if tbl.ConfigIDs[mid] == configID {
+					tbl.Entries[mid] = TenantV2ConfigOverride{
+						Flags:            flags,
+						ScaleOverridePct: rec.ScaleOverridePct,
+						WindowLimits:     rec.WindowLimits,
+					}
+					State.Active.Store(reg)
+					return
+				} else if tbl.ConfigIDs[mid] < configID {
+					lo = mid + 1
+				} else {
+					hi = mid - 1
+					insertAt = mid
+				}
+			}
+			tbl.ConfigIDs = append(tbl.ConfigIDs, 0)
+			copy(tbl.ConfigIDs[insertAt+1:], tbl.ConfigIDs[insertAt:])
+			tbl.ConfigIDs[insertAt] = configID
+			tbl.Entries = append(tbl.Entries, TenantV2ConfigOverride{})
+			copy(tbl.Entries[insertAt+1:], tbl.Entries[insertAt:])
+			tbl.Entries[insertAt] = TenantV2ConfigOverride{
+				Flags:            flags,
+				ScaleOverridePct: rec.ScaleOverridePct,
+				WindowLimits:     rec.WindowLimits,
+			}
+			State.Active.Store(reg)
+			return
+		}
+		if strings.HasSuffix(rest, modifierSuffix) {
+			alias := strings.TrimSuffix(rest, modifierSuffix)
+			tID, ok := m.aliasMap[alias]
+			if !ok {
+				return
+			}
+			var rec TenantModifierRecord
+			if json.Unmarshal(value, &rec) != nil {
+				return
+			}
+			var flags TenantRLFlags
+			if rec.Blocked {
+				flags |= TenantBlocked
+			}
+			if rec.RLDisabled {
+				flags |= TenantRLDisabled
+			}
+			reg := m.activeOrEmpty()
+			needed := int(tID) + 1
+			if needed > len(reg.TenantModifiers) {
+				grown := make([]TenantRateLimitModifier, needed)
+				copy(grown, reg.TenantModifiers)
+				reg.TenantModifiers = grown
+			}
+			reg.TenantModifiers[tID] = TenantRateLimitModifier{
+				ScalePct: rec.ScalePct,
+				Flags:    flags,
+			}
+			State.Active.Store(reg)
+			return
+		}
+
 	case strings.HasPrefix(rawKey, rateLimitPrefix):
 		// "rl:{name}" → JSON storedRateLimitConfig
 		name := strings.TrimPrefix(rawKey, rateLimitPrefix)
@@ -1765,6 +1925,51 @@ func (m *RegistryManager) ApplyStoreDelete(rawKey string) {
 			return
 		}
 
+		if idx := strings.Index(rest, v2OverridePropPrefix); idx >= 0 {
+			alias, configName := rest[:idx], rest[idx+len(v2OverridePropPrefix):]
+			tID, ok := m.aliasMap[alias]
+			if !ok {
+				return
+			}
+			configID, ok := m.rateLimitNames[configName]
+			if !ok {
+				return
+			}
+			reg := m.activeOrEmpty()
+			if int(tID) >= len(reg.TenantV2Overrides) || reg.TenantV2Overrides[tID] == nil {
+				return
+			}
+			tbl := reg.TenantV2Overrides[tID]
+			lo, hi := 0, len(tbl.ConfigIDs)-1
+			for lo <= hi {
+				mid := (lo + hi) >> 1
+				if tbl.ConfigIDs[mid] == configID {
+					tbl.ConfigIDs = append(tbl.ConfigIDs[:mid], tbl.ConfigIDs[mid+1:]...)
+					tbl.Entries = append(tbl.Entries[:mid], tbl.Entries[mid+1:]...)
+					State.Active.Store(reg)
+					return
+				} else if tbl.ConfigIDs[mid] < configID {
+					lo = mid + 1
+				} else {
+					hi = mid - 1
+				}
+			}
+			return
+		}
+		if strings.HasSuffix(rest, modifierSuffix) {
+			alias := strings.TrimSuffix(rest, modifierSuffix)
+			tID, ok := m.aliasMap[alias]
+			if !ok {
+				return
+			}
+			reg := m.activeOrEmpty()
+			if int(tID) < len(reg.TenantModifiers) {
+				reg.TenantModifiers[tID] = TenantRateLimitModifier{}
+				State.Active.Store(reg)
+			}
+			return
+		}
+
 	case strings.HasPrefix(rawKey, rateLimitPrefix):
 		// Zero out the config slot (can't shrink slice safely without re-bake).
 		name := strings.TrimPrefix(rawKey, rateLimitPrefix)
@@ -1793,4 +1998,55 @@ func (m *RegistryManager) lookupIDKeyID(reg *TenantRegistry, propKey string) (ui
 // lookupMetaKeyID returns the KeyID for propKey in the Meta PropStore, if known.
 func (m *RegistryManager) lookupMetaKeyID(reg *TenantRegistry, propKey string) (uint16, bool) {
 	return findKeyID(reg.Meta.Keys, reg.Meta.StringPool, propKey)
+}
+
+// OverrideResolutionData returns two reverse-lookup maps needed to render
+// tenant override reports: configID→name and tenantID→aliases.
+// Acquires the manager lock once; callers must not hold the lock.
+func (m *RegistryManager) OverrideResolutionData() (idToName map[uint16]string, idToAliases map[uint16][]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idToName = make(map[uint16]string, len(m.rateLimitNames))
+	for name, id := range m.rateLimitNames {
+		idToName[id] = name
+	}
+	idToAliases = make(map[uint16][]string, len(m.tenantData))
+	for tid, rec := range m.tenantData {
+		if rec != nil {
+			idToAliases[tid] = rec.Aliases
+		}
+	}
+	return
+}
+
+// PersistV2Override writes a tenant V2 override to the backing store (if configured).
+// Must NOT be called under the manager mutex.
+func (m *RegistryManager) PersistV2Override(ctx context.Context, alias, configName string, rec TenantV2OverrideRecord) {
+	m.mu.Lock()
+	store := m.store
+	m.mu.Unlock()
+	if store == nil {
+		return
+	}
+	s, ok := store.(*TenantRegistryStore)
+	if !ok {
+		return
+	}
+	_ = s.PutV2Override(ctx, alias, configName, rec)
+}
+
+// DeleteV2Override removes a tenant V2 override from the backing store (if configured).
+// Must NOT be called under the manager mutex.
+func (m *RegistryManager) DeleteV2Override(ctx context.Context, alias, configName string) {
+	m.mu.Lock()
+	store := m.store
+	m.mu.Unlock()
+	if store == nil {
+		return
+	}
+	s, ok := store.(*TenantRegistryStore)
+	if !ok {
+		return
+	}
+	_ = s.DeleteV2Override(ctx, alias, configName)
 }

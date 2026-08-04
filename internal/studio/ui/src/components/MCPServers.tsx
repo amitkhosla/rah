@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import ConfirmDialog from './ConfirmDialog'
 import {
   listMCPServers, upsertMCPServer, deleteMCPServer, pingMCPServer, probeMCPTools,
   listAPITools, upsertAPITool, deleteAPITool,
@@ -91,6 +92,7 @@ function ExternalServers() {
   const [pings, setPings]       = useState<Record<string, MCPPingResult>>({})
   const [probed, setProbed]     = useState<Record<string, unknown[]>>({})
   const [pinging, setPinging]   = useState<Record<string, boolean>>({})
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   async function load() {
     setLoading(true); setErr('')
@@ -117,9 +119,15 @@ function ExternalServers() {
   }
 
   async function handleDelete(alias: string) {
-    if (!confirm(`Delete MCP server "${alias}"?`)) return
-    try { await deleteMCPServer(alias); await load() }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+    setConfirmDialog({
+      title: 'Delete MCP Server',
+      message: `Delete MCP server "${alias}"?`,
+      onConfirm: async () => {
+        try { await deleteMCPServer(alias); await load() }
+        catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   async function handlePing(alias: string) {
@@ -264,6 +272,14 @@ function ExternalServers() {
           })}
         </div>
       )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }
@@ -283,6 +299,7 @@ function VirtualServers() {
   const [srcKind, setSrcKind]   = useState<ToolSourceKind>('mcp_all')
   const [srcAlias, setSrcAlias] = useState('')
   const [srcTool, setSrcTool]   = useState('')
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   async function load() {
     setLoading(true); setErr('')
@@ -316,9 +333,15 @@ function VirtualServers() {
   }
 
   async function handleDelete(name: string) {
-    if (!confirm(`Delete virtual server "${name}"?`)) return
-    try { await deleteVirtualMCPServer(name); await load() }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+    setConfirmDialog({
+      title: 'Delete Virtual Server',
+      message: `Delete virtual server "${name}"?`,
+      onConfirm: async () => {
+        try { await deleteVirtualMCPServer(name); await load() }
+        catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   const SOURCE_KIND_LABEL: Record<ToolSourceKind, string> = {
@@ -439,6 +462,14 @@ function VirtualServers() {
           ))}
         </div>
       )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }
@@ -454,6 +485,7 @@ function APITools() {
   const [saving, setSaving]     = useState(false)
   const [msg, setMsg]           = useState('')
   const [msgErr, setMsgErr]     = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   async function load() {
     setLoading(true); setErr('')
@@ -480,9 +512,15 @@ function APITools() {
   }
 
   async function handleDelete(name: string) {
-    if (!confirm(`Delete API tool "${name}"?`)) return
-    try { await deleteAPITool(name); await load() }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+    setConfirmDialog({
+      title: 'Delete API Tool',
+      message: `Delete API tool "${name}"?`,
+      onConfirm: async () => {
+        try { await deleteAPITool(name); await load() }
+        catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+        setConfirmDialog(null)
+      }
+    })
   }
 
   return (
@@ -570,6 +608,14 @@ function APITools() {
             </div>
           ))}
         </div>
+      )}
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
       )}
     </div>
   )

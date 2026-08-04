@@ -4,6 +4,7 @@ import {
   fetchObsDetailLogConfig, updateObsDetailLogConfig,
 } from '../api'
 import { reconstructRoute } from '../reconstructRoute'
+import ConfirmDialog from './ConfirmDialog'
 import type { SyncStep } from '../api'
 import type { LLMModel } from '../types'
 
@@ -740,6 +741,7 @@ export default function AIRoutes() {
   const [detailLogPath, setDetailLogPath] = useState('/app/logs/obs-detail.jsonl')
   const [detailLogSaving, setDetailLogSaving] = useState(false)
   const [detailLogMsg, setDetailLogMsg] = useState<string | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
 
   // On mount: try to load routes from the gateway (server-side persistence).
   // Falls back to whatever loadRoutes() already returned from localStorage.
@@ -1051,7 +1053,7 @@ export default function AIRoutes() {
             <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
               <button type="button" title="Duplicate" onClick={e => { e.stopPropagation(); duplicateRoute(r) }}
                 style={{ flex: 1, fontSize: 10, padding: '2px 0', background: 'transparent', border: '1px solid var(--border-hi)', borderRadius: 4, cursor: 'pointer', color: 'var(--muted)' }}>⧉ copy</button>
-              <button type="button" title="Delete" onClick={e => { e.stopPropagation(); if (window.confirm(`Delete "${r.label}"?`)) deleteRoute(r.id) }}
+              <button type="button" title="Delete" onClick={e => { e.stopPropagation(); setConfirmDialog({ title: 'Delete Route', message: `Delete "${r.label}"?`, onConfirm: () => { deleteRoute(r.id); setConfirmDialog(null) } }) }}
                 style={{ flex: 1, fontSize: 10, padding: '2px 0', background: 'transparent', border: '1px solid var(--border-hi)', borderRadius: 4, cursor: 'pointer', color: '#ef4444' }}>✕ delete</button>
             </div>
           </div>
@@ -1443,6 +1445,15 @@ export default function AIRoutes() {
       </div>
 
       </div>
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
     </div>
   )
 }

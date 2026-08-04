@@ -65,6 +65,10 @@ type ApiDefinition struct {
 
 	SubArena  []SubRouteNode
 	Endpoints []Endpoint
+
+	// WebSocket holds the *control.WSApiConfig populated from ApiUpdate.WebSocket at bake time.
+	// Typed as any to avoid import cycle with control package.
+	WebSocket any
 }
 
 /*

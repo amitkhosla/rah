@@ -1,5 +1,11 @@
 package config
 
+import (
+	"github.com/amitkhosla/rah/internal/datasource"
+	"github.com/amitkhosla/rah/internal/emailprovider"
+	"github.com/amitkhosla/rah/internal/storage"
+)
+
 // CacheConfig controls the in-process response cache (Gen-2 slab cache).
 //
 // Backend.Kind selects the persistence/overflow layer:
@@ -520,6 +526,38 @@ type RegistryConfig struct {
 	Audit RegistryAuditConfig `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
+// WSGatewayConfig controls the WebSocket gateway subsystem.
+type WSGatewayConfig struct {
+	Enabled         bool `json:"enabled,omitempty"           yaml:"enabled,omitempty"`
+	MaxConnections  int  `json:"max_connections,omitempty"   yaml:"max_connections,omitempty"`
+	ReadBufferSize  int  `json:"read_buffer_size,omitempty"  yaml:"read_buffer_size,omitempty"`
+	WriteBufferSize int  `json:"write_buffer_size,omitempty" yaml:"write_buffer_size,omitempty"`
+	Compression     bool `json:"compression,omitempty"       yaml:"compression,omitempty"`
+}
+
+// WSUpstreamConfig configures one WebSocket upstream peer.
+type WSUpstreamConfig struct {
+	Name                 string `json:"name"                     yaml:"name"`
+	URL                  string `json:"url"                      yaml:"url"`
+	CredRef              string `json:"cred_ref,omitempty"       yaml:"cred_ref,omitempty"`
+	MaxMessageSizeKB     int    `json:"max_message_size_kb,omitempty"     yaml:"max_message_size_kb,omitempty"`
+	PingIntervalSec      int    `json:"ping_interval_sec,omitempty"       yaml:"ping_interval_sec,omitempty"`
+	PongTimeoutSec       int    `json:"pong_timeout_sec,omitempty"        yaml:"pong_timeout_sec,omitempty"`
+	ReconnectIntervalSec int    `json:"reconnect_interval_sec,omitempty"  yaml:"reconnect_interval_sec,omitempty"`
+	InboundFlow          string `json:"inbound_flow,omitempty"   yaml:"inbound_flow,omitempty"`
+	TLSInsecure          bool   `json:"tls_insecure,omitempty"   yaml:"tls_insecure,omitempty"`
+}
+
+// SchedulerConfig controls the scheduler subsystem.
+type SchedulerConfig struct {
+	Enabled        bool   `json:"enabled,omitempty"         yaml:"enabled,omitempty"`
+	Backend        string `json:"backend,omitempty"         yaml:"backend,omitempty"`
+	LookaheadSec   int    `json:"lookahead_sec,omitempty"   yaml:"lookahead_sec,omitempty"`
+	MaxConcurrent  int    `json:"max_concurrent,omitempty"  yaml:"max_concurrent,omitempty"`
+	LeaderElection bool   `json:"leader_election,omitempty" yaml:"leader_election,omitempty"`
+	LeaderTTLSec   int    `json:"leader_ttl_sec,omitempty"   yaml:"leader_ttl_sec,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout        GlobalLayout        `json:"layout"                   yaml:"layout"`
 	DataStore     DataStoreConfig     `json:"datastore"                yaml:"datastore"`
@@ -542,6 +580,12 @@ type GatewayConfig struct {
 	XML           *XMLConfig          `json:"xml,omitempty"            yaml:"xml,omitempty"`
 	Avro          *AvroConfig         `json:"avro,omitempty"           yaml:"avro,omitempty"`
 	Registry      RegistryConfig      `json:"registry,omitempty"       yaml:"registry,omitempty"`
+	WebSocket      WSGatewayConfig                    `json:"websocket,omitempty"        yaml:"websocket,omitempty"`
+	WSUpstreams    []WSUpstreamConfig                 `json:"ws_upstreams,omitempty"     yaml:"ws_upstreams,omitempty"`
+	Scheduler      SchedulerConfig                    `json:"scheduler,omitempty"        yaml:"scheduler,omitempty"`
+	DataSources      []datasource.DataSourceConfig      `json:"data_sources,omitempty"      yaml:"data_sources,omitempty"`
+	EmailProviders   []emailprovider.EmailProviderConfig `json:"email_providers,omitempty"   yaml:"email_providers,omitempty"`
+	StorageProviders []storage.StorageProviderConfig    `json:"storage_providers,omitempty" yaml:"storage_providers,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

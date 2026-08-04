@@ -1437,6 +1437,138 @@ func AllStepDescriptors() []StepDescriptor {
 		},
 	}
 
+	// ── Database ─────────────────────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "db_query", Title: "Database Query", Category: "database", Capability: "query",
+			Description: "Execute a SQL SELECT statement and retrieve all rows as a JSON array.",
+			Defaults: map[string]string{"key": "default", "as": "results"},
+			Fields: []StepField{
+				sf("key", "Data Source", "Name of the configured data source", "default"),
+				sf("value", "SQL Query", "SQL SELECT statement; use $1,$2,... for parameters", "SELECT * FROM users WHERE id = $1"),
+				sf("vars", "Parameters", "Ordered parameter values; reference slots with {slot_name}", `["{user_id}"]`),
+				sf("as", "Store as", "Slot to save the JSON array result into", "results"),
+			},
+		},
+		StepDescriptor{
+			Type: "db_query_one", Title: "Database Query One", Category: "database", Capability: "query",
+			Description: "Execute a SQL SELECT statement and retrieve the first row as a JSON object.",
+			Defaults: map[string]string{"key": "default", "as": "result"},
+			Fields: []StepField{
+				sf("key", "Data Source", "Name of the configured data source", "default"),
+				sf("value", "SQL Query", "SQL SELECT statement; use $1,$2,... for parameters", "SELECT * FROM users WHERE id = $1"),
+				sf("vars", "Parameters", "Ordered parameter values; reference slots with {slot_name}", `["{user_id}"]`),
+				sf("as", "Store as", "Slot to save the JSON object result into", "result"),
+			},
+		},
+		StepDescriptor{
+			Type: "db_exec", Title: "Database Execute", Category: "database", Capability: "execute",
+			Description: "Execute a SQL INSERT/UPDATE/DELETE statement and return the number of affected rows.",
+			Defaults: map[string]string{"key": "default", "as": "affected_rows"},
+			Fields: []StepField{
+				sf("key", "Data Source", "Name of the configured data source", "default"),
+				sf("value", "SQL Statement", "SQL INSERT/UPDATE/DELETE; use $1,$2,... for parameters", "INSERT INTO logs (msg) VALUES ($1)"),
+				sf("vars", "Parameters", "Ordered parameter values; reference slots with {slot_name}", `["{log_msg}"]`),
+				sf("as", "Store as", "Slot to save the affected row count into (optional)", "affected_rows"),
+			},
+		},
+	)
+
+	// ── WebSocket broadcast / push ────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "ws_broadcast_channel", Title: "WS Broadcast Channel", Category: "websocket", Capability: "broadcast",
+			Description: "Send a payload to all WebSocket sessions subscribed to a channel.",
+			Defaults: map[string]string{"key": "notifications"},
+			Fields: []StepField{
+				sf("key", "Channel", "Channel name to broadcast to", "notifications"),
+				sf("body_var", "Payload slot", "Slot containing the message bytes", "ws_payload"),
+				sf("as", "Count slot", "Optional slot to save the number of sessions reached", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "ws_push_session", Title: "WS Push Session", Category: "websocket", Capability: "push",
+			Description: "Send a payload to a specific WebSocket session by ID.",
+			Defaults: map[string]string{},
+			Fields: []StepField{
+				sf("key_var", "Session ID slot", "Slot containing the target session ID", "session_id"),
+				sf("body_var", "Payload slot", "Slot containing the message bytes", "ws_payload"),
+				sf("as", "Result slot", "Optional slot to save true/false (session reached)", ""),
+			},
+		},
+	)
+
+	// ── Dynamic upstream WebSocket ────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "ws_upstream_connect", Title: "WS Upstream Connect", Category: "websocket", Capability: "upstream",
+			Description: "Open an on-demand WebSocket connection to a named upstream; connection is reused until TTL expires.",
+			Defaults: map[string]string{"as": "ws_handle"},
+			Fields: []StepField{
+				sf("key", "Upstream name", "Name of the ws_upstream configured in gateway.yaml", "broker"),
+				sf("value", "Scope key", "Per-tenant or per-user isolation key; uses tenant ID if omitted", "{tenant_id}"),
+				sf("as", "Handle slot", "Slot to save the connection handle into", "ws_handle"),
+			},
+		},
+		StepDescriptor{
+			Type: "ws_upstream_disconnect", Title: "WS Upstream Disconnect", Category: "websocket", Capability: "upstream",
+			Description: "Close a dynamic upstream WebSocket connection.",
+			Defaults: map[string]string{},
+			Fields: []StepField{
+				sf("key", "Upstream name", "Name of the upstream to disconnect", "broker"),
+				sf("key_var", "Scope key slot", "Slot containing the scope key (alternative to static value)", ""),
+			},
+		},
+	)
+
+	// ── Email ─────────────────────────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "send_email", Title: "Send Email", Category: "notifications", Capability: "email",
+			Description: "Send an email via a configured email provider.",
+			Defaults: map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Provider", "Name of the email_provider configured in gateway.yaml", "default"),
+				sf("to_var", "To slot", "Slot containing the recipient address", "recipient_email"),
+				sf("subject_var", "Subject slot", "Slot containing the email subject line", "email_subject"),
+				sf("body_var", "Body slot", "Slot containing the email body", "email_body"),
+			},
+		},
+	)
+
+	// ── Object storage ────────────────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "storage_get", Title: "Storage Get", Category: "storage", Capability: "read",
+			Description: "Retrieve an object from S3-compatible storage.",
+			Defaults: map[string]string{"key": "default", "as": "file_content"},
+			Fields: []StepField{
+				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
+				sf("value", "Object path", "Key/path of the object to retrieve; supports {slot} references", "files/{file_id}"),
+				sf("as", "Store as", "Slot to save the retrieved bytes into", "file_content"),
+			},
+		},
+		StepDescriptor{
+			Type: "storage_put", Title: "Storage Put", Category: "storage", Capability: "write",
+			Description: "Store content in S3-compatible object storage.",
+			Defaults: map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
+				sf("value", "Object path", "Key/path where the object will be stored; supports {slot} references", "files/{file_id}"),
+				sf("body_var", "Content slot", "Slot containing the bytes to store", "file_content"),
+			},
+		},
+		StepDescriptor{
+			Type: "storage_delete", Title: "Storage Delete", Category: "storage", Capability: "write",
+			Description: "Delete an object from S3-compatible object storage.",
+			Defaults: map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
+				sf("value", "Object path", "Key/path of the object to delete; supports {slot} references", "files/{file_id}"),
+			},
+		},
+	)
+
 	// Append AI sub-group step descriptors.
 	base = append(base, SanitizeStepDescriptors()...)
 	base = append(base, RoutingStepDescriptors()...)
