@@ -1,20 +1,24 @@
-﻿package control
+package control
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/engine"
-	"github.com/amitkhosla/rah/internal/mcpreg"
 	"github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
+	"github.com/amitkhosla/rah/internal/mcpreg"
 	"github.com/amitkhosla/rah/internal/observability"
-	"github.com/amitkhosla/rah/internal/router"
+	"github.com/amitkhosla/rah/internal/redissource"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/router"
 	"github.com/amitkhosla/rah/internal/scheduler"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"log"
+	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,6 +70,13 @@ type ManagementServer struct {
 
 	// OnFlowRun is called to execute a named flow directly (MCP tool: run_flow).
 	OnFlowRun func(flowName, tenantAlias string, constants map[string]string) error
+
+	// DataSourcePool enables access to schema-isolated data sources for migrations.
+	DataSourcePool    *datasource.DataSourcePool
+	DataSourceConfigs []datasource.DataSourceConfig
+
+	// RedisSourcePool enables access to customer Redis sources for redis_* steps.
+	RedisSourcePool *redissource.RedisSourcePool
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -266,7 +277,7 @@ func (s *ManagementServer) UnifiedSyncHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":               "success",
+		"status":              "success",
 		"rate_limit_warnings": warnings,
 	})
 }
@@ -356,6 +367,11 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 	}
 
 	// 2. Update Shared Flows (The Instruction Library)
+	// Populate the Compiler's QueryLibrary with named queries from the sync request.
+	s.Compiler.QueryLibrary = req.Queries
+	// Wire RedisSourcePool into compiler for redis_* step compilation.
+	s.Compiler.RedisSourcePool = s.RedisSourcePool
+
 	var deletedFlows []string
 	for _, f := range req.Flows {
 		if f.Action == "delete" {
@@ -748,6 +764,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	}
 
 	// 2. Update Shared Flows (The Instruction Library)
+	// Populate the Compiler's QueryLibrary with named queries from the sync request.
+	s.Compiler.QueryLibrary = req.Queries
+	// Wire RedisSourcePool into compiler for redis_* step compilation.
+	s.Compiler.RedisSourcePool = s.RedisSourcePool
+
 	var deletedFlows []string
 	var compileErrors []string
 	for _, f := range req.Flows {
@@ -1121,8 +1142,132 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		}
 	}
 
+	// 9. Apply migrations to data sources after state is live.
+	if err := s.applyMigrations(context.Background(), req.Migrations); err != nil {
+		gatewaylog.Default.Warn("[Management] migration processing failed",
+			gatewaylog.F("error", err.Error()))
+	}
+
 	log.Printf("[Management] Sync Complete. RouterChanged=%v", routerChanged)
 	s.configVersion.Add(1)
+	return nil
+}
+
+// applyMigrations applies any pending migrations from the sync bundle to all
+// schema-isolated data sources for each tenant alias extracted from requests.
+func (s *ManagementServer) applyMigrations(ctx context.Context, migrations []MigrationDef) error {
+	if len(migrations) == 0 {
+		return nil
+	}
+	if s.DataSourcePool == nil {
+		return nil
+	}
+
+	// Validate: no duplicate versions, ascending order enforced.
+	seen := make(map[int]bool, len(migrations))
+	for _, m := range migrations {
+		if seen[m.Version] {
+			return fmt.Errorf("migration: duplicate version %d", m.Version)
+		}
+		seen[m.Version] = true
+	}
+	// Sort by version ascending.
+	sorted := make([]MigrationDef, len(migrations))
+	copy(sorted, migrations)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Version < sorted[j].Version })
+
+	// Apply to each data source that has schema isolation.
+	for _, cfg := range s.DataSourceConfigs {
+		if cfg.TenantIsolation != "schema" {
+			continue
+		}
+		pool, ok := s.DataSourcePool.Get(cfg.Name)
+		if !ok {
+			continue
+		}
+		// For now, apply migrations to public schema (not tenant-specific).
+		// In the future, may need to iterate over known tenant aliases.
+		if err := runMigrationsOnPool(ctx, pool, "", sorted, cfg.TenantKey); err != nil {
+			return fmt.Errorf("datasource %q: %w", cfg.Name, err)
+		}
+	}
+	return nil
+}
+
+// runMigrationsOnPool applies pending migrations to a single connection pool.
+// tenantAlias is optional; if empty, applies to public schema only.
+func runMigrationsOnPool(ctx context.Context, pool *pgxpool.Pool, tenantAlias string, migrations []MigrationDef, tenantKey string) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	var schemaName string
+	if tenantAlias != "" {
+		schemaName = "tenant_" + tenantAlias
+	} else {
+		schemaName = "public"
+	}
+
+	// Ensure schema exists (for tenant-specific runs).
+	if tenantAlias != "" {
+		if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+schemaName); err != nil {
+			return fmt.Errorf("create schema: %w", err)
+		}
+	}
+
+	// SET search_path for this session if in a tenant schema.
+	if tenantAlias != "" {
+		if _, err := conn.Exec(ctx, "SET search_path = "+schemaName+",public"); err != nil {
+			return fmt.Errorf("set search_path: %w", err)
+		}
+	}
+
+	// Ensure migrations tracking table.
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS rah_migrations (
+		version    INT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`); err != nil {
+		return fmt.Errorf("create rah_migrations: %w", err)
+	}
+
+	// Load already-applied versions.
+	rows, err := conn.Query(ctx, "SELECT version FROM rah_migrations")
+	if err != nil {
+		return err
+	}
+	applied := make(map[int]bool)
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err == nil {
+			applied[v] = true
+		}
+	}
+	rows.Close()
+
+	// Apply pending migrations in version order.
+	for _, m := range migrations {
+		if applied[m.Version] {
+			continue
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx for v%d: %w", m.Version, err)
+		}
+		if _, err := tx.Exec(ctx, m.SQL); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("migration v%d %q: %w", m.Version, m.Name, err)
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO rah_migrations (version, name) VALUES ($1, $2)", m.Version, m.Name); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("record migration v%d: %w", m.Version, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration v%d: %w", m.Version, err)
+		}
+	}
 	return nil
 }
 
@@ -1712,4 +1857,109 @@ func (s *ManagementServer) SchedulesHistoryHandler(w http.ResponseWriter, r *htt
 	} else {
 		_ = json.NewEncoder(w).Encode(history)
 	}
+}
+
+// NamedQueriesHandler serves GET /named-queries and POST /named-queries.
+func (s *ManagementServer) NamedQueriesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		// Return all named queries from the store.
+		queries := s.getStoredQueries()
+		_ = json.NewEncoder(w).Encode(map[string]any{"queries": queries})
+	case http.MethodPost:
+		var req struct {
+			Name        string `json:"name"`
+			SQL         string `json:"sql"`
+			BatchBy     string `json:"batch_by,omitempty"`
+			BatchWindow string `json:"batch_window,omitempty"`
+			BatchMax    int    `json:"batch_max,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			http.Error(w, `{"error":"name and sql required"}`, http.StatusBadRequest)
+			return
+		}
+		queries := s.getStoredQueries()
+		queries[req.Name] = datasource.NamedQueryConfig{
+			SQL: req.SQL, BatchBy: req.BatchBy,
+			BatchWindow: req.BatchWindow, BatchMax: req.BatchMax,
+		}
+		s.storeQueries(queries)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// NamedQueryDeleteHandler serves DELETE /named-queries/{name}.
+func (s *ManagementServer) NamedQueryDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Extract name from path — strip prefix "/named-queries/"
+	name := strings.TrimPrefix(r.URL.Path, "/named-queries/")
+	name = strings.Trim(name, "/")
+	if name == "" {
+		http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
+		return
+	}
+	queries := s.getStoredQueries()
+	delete(queries, name)
+	s.storeQueries(queries)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RedisSourcesHandler serves GET /redis-sources.
+func (s *ManagementServer) RedisSourcesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var names []string
+	if s.RedisSourcePool != nil {
+		names = s.RedisSourcePool.Names()
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"sources": names})
+}
+
+// MigrationsHandler serves GET /migrations.
+func (s *ManagementServer) MigrationsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"migrations": []any{}})
+}
+
+// getStoredQueries retrieves named queries from the registry store.
+func (s *ManagementServer) getStoredQueries() map[string]datasource.NamedQueryConfig {
+	const key = "_all"
+	if s.dataStore == nil {
+		return map[string]datasource.NamedQueryConfig{}
+	}
+	data, ok, err := s.dataStore.GetGlobal(context.Background(), config.DomainNamedQueries, key)
+	if err != nil || !ok || len(data) == 0 {
+		return map[string]datasource.NamedQueryConfig{}
+	}
+	var m map[string]datasource.NamedQueryConfig
+	_ = json.Unmarshal(data, &m)
+	if m == nil {
+		return map[string]datasource.NamedQueryConfig{}
+	}
+	return m
+}
+
+// storeQueries persists named queries to the registry store.
+func (s *ManagementServer) storeQueries(queries map[string]datasource.NamedQueryConfig) {
+	const key = "_all"
+	if s.dataStore == nil {
+		return
+	}
+	data, _ := json.Marshal(queries)
+	_ = s.dataStore.PutGlobal(context.Background(), config.DomainNamedQueries, key, data)
 }

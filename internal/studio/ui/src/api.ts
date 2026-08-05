@@ -1055,3 +1055,56 @@ export async function listWSSessions(): Promise<WSSession[]> {
 export async function listWSUpstreams(): Promise<WSUpstream[]> {
   return request<WSUpstream[]>('/api/ws/upstreams')
 }
+
+// ── Redis Sources ──────────────────────────────────────────────────────────────
+
+export interface RedisSourceDef {
+  name: string
+  addr?: string
+  addrs?: string[]
+  db?: number
+  tls?: boolean
+  tenant_prefix?: string
+  key_separator?: string
+}
+
+export function listRedisSources(): Promise<{ sources: string[] }> {
+  return request<{ sources: string[] }>('/api/redis-sources')
+}
+
+// ── Named Queries ──────────────────────────────────────────────────────────────
+
+export interface NamedQueryDef {
+  sql: string
+  batch_by?: string
+  batch_window?: string
+  batch_max?: number
+}
+
+export function listNamedQueries(): Promise<{ queries: Record<string, NamedQueryDef> }> {
+  return request<{ queries: Record<string, NamedQueryDef> }>('/api/named-queries')
+}
+
+export function upsertNamedQuery(name: string, q: NamedQueryDef): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/api/named-queries', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, ...q }),
+  })
+}
+
+export function deleteNamedQuery(name: string): Promise<void> {
+  return request<void>(`/api/named-queries/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+// ── Migrations ─────────────────────────────────────────────────────────────
+
+export interface MigrationStatus {
+  version: number
+  name: string
+  applied_at: string
+}
+
+export function listMigrations(): Promise<{ migrations: MigrationStatus[] }> {
+  return request<{ migrations: MigrationStatus[] }>('/api/migrations')
+}

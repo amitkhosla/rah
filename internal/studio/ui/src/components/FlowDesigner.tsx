@@ -218,6 +218,26 @@ const VISUAL_GROUPS: VisualGroup[] = [
     ],
   },
   {
+    label: 'REDIS',
+    icon: '🔴',
+    recipes: [
+      { title: 'GET',        wraps: 'redis_get',     description: 'Get a string value' },
+      { title: 'SET',        wraps: 'redis_put',     description: 'Set a string value with optional TTL' },
+      { title: 'MGET',       wraps: 'redis_mget',    description: 'Get multiple keys at once' },
+      { title: 'MSET',       wraps: 'redis_mput',    description: 'Set multiple key-value pairs' },
+      { title: 'INCR',       wraps: 'redis_incr',    description: 'Increment a counter' },
+      { title: 'DECR',       wraps: 'redis_decr',    description: 'Decrement a counter' },
+      { title: 'LOCK',       wraps: 'redis_lock',    description: 'Acquire a distributed lock' },
+      { title: 'UNLOCK',     wraps: 'redis_unlock',  description: 'Release a distributed lock' },
+      { title: 'ZADD',       wraps: 'redis_zadd',    description: 'Add to sorted set with score' },
+      { title: 'ZRANGE',     wraps: 'redis_zrange',  description: 'Range from sorted set' },
+      { title: 'HSET',       wraps: 'redis_hset',    description: 'Set a hash field' },
+      { title: 'HGETALL',    wraps: 'redis_hgetall', description: 'Get all hash fields' },
+      { title: 'LPUSH',      wraps: 'redis_lpush',   description: 'Push to list (left)' },
+      { title: 'PUBLISH',    wraps: 'redis_publish', description: 'Publish to channel' },
+    ],
+  },
+  {
     label: 'RESPONSE',
     icon: '📤',
     recipes: [

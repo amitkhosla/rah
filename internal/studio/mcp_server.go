@@ -299,6 +299,37 @@ var studioMCPTools = []mcpToolDef{
 		Description: "Trigger a named flow directly with optional tenant and constants.",
 		InputSchema: bodySchema("JSON body with tenant_alias and constants"),
 	},
+
+	// ── Named queries ──────────────────────────────────────────────────────────
+	{
+		Name:        "list_named_queries",
+		Description: "List all named SQL queries configured for data sources.",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "upsert_named_query",
+		Description: "Create or update a named SQL query.",
+		InputSchema: bodySchema("Named query definition as JSON: {\"name\":\"...\",\"sql\":\"...\",\"batch_by\":\"$1\",\"batch_window\":\"500us\",\"batch_max\":100}"),
+	},
+	{
+		Name:        "delete_named_query",
+		Description: "Delete a named SQL query by name.",
+		InputSchema: paramSchema("name", "Name of the query to delete"),
+	},
+
+	// ── Redis sources ──────────────────────────────────────────────────────────
+	{
+		Name:        "list_redis_sources",
+		Description: "List all configured Redis source names.",
+		InputSchema: emptySchema(),
+	},
+
+	// ── Migrations ─────────────────────────────────────────────────────────────
+	{
+		Name:        "list_migrations",
+		Description: "List applied database migrations.",
+		InputSchema: emptySchema(),
+	},
 }
 
 // toolMetaTable maps tool name → routing metadata.
@@ -347,6 +378,11 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"list_ws_sessions":            {HTTPMethod: http.MethodGet, Path: "/ws/sessions"},
 	"list_ws_upstreams":           {HTTPMethod: http.MethodGet, Path: "/ws/upstreams"},
 	"run_flow":                    {HTTPMethod: http.MethodPost, Path: "/flows/{name}/run", PathParam: "name", BodyParam: "body"},
+	"list_named_queries":          {HTTPMethod: http.MethodGet, Path: "/named-queries"},
+	"upsert_named_query":          {HTTPMethod: http.MethodPost, Path: "/named-queries", BodyParam: "body"},
+	"delete_named_query":          {HTTPMethod: http.MethodDelete, Path: "/named-queries/{name}", PathParam: "name"},
+	"list_redis_sources":          {HTTPMethod: http.MethodGet, Path: "/redis-sources"},
+	"list_migrations":             {HTTPMethod: http.MethodGet, Path: "/migrations"},
 }
 
 // ── Schema helpers ────────────────────────────────────────────────────────────

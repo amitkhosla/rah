@@ -45,8 +45,56 @@ func NewPostgresObsStore(dsn string) (ObsStore, error) {
 }
 
 func (s *postgresObsStore) ensureSchema(ctx context.Context) error {
+	_, _ = s.pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS rah_system`)
+
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_access_log')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_access_log')
+    THEN ALTER TABLE public.obs_access_log SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_metric_snapshots')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_metric_snapshots')
+    THEN ALTER TABLE public.obs_metric_snapshots SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_traces')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_traces')
+    THEN ALTER TABLE public.obs_traces SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_traces_v2')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_traces_v2')
+    THEN ALTER TABLE public.obs_traces_v2 SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_instruction_runs')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_instruction_runs')
+    THEN ALTER TABLE public.obs_instruction_runs SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_llm_calls')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_llm_calls')
+    THEN ALTER TABLE public.obs_llm_calls SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_instruction_schema')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_instruction_schema')
+    THEN ALTER TABLE public.obs_instruction_schema SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_var_schema')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_var_schema')
+    THEN ALTER TABLE public.obs_var_schema SET SCHEMA rah_system; END IF;
+END $$`)
+	_, _ = s.pool.Exec(ctx, `DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='obs_payloads')
+    AND NOT EXISTS (SELECT FROM pg_tables WHERE schemaname='rah_system' AND tablename='obs_payloads')
+    THEN ALTER TABLE public.obs_payloads SET SCHEMA rah_system; END IF;
+END $$`)
+
 	ddl := `
-CREATE TABLE IF NOT EXISTS obs_access_log (
+CREATE TABLE IF NOT EXISTS rah_system.obs_access_log (
     id          BIGSERIAL PRIMARY KEY,
     ts          BIGINT    NOT NULL,
     api_name    TEXT,
@@ -63,12 +111,12 @@ CREATE TABLE IF NOT EXISTS obs_access_log (
     res_bytes   BIGINT,
     extra       JSONB
 );
-CREATE INDEX IF NOT EXISTS obs_access_log_ts_idx     ON obs_access_log(ts DESC);
-CREATE INDEX IF NOT EXISTS obs_access_log_api_idx    ON obs_access_log(api_name, ts DESC);
-CREATE INDEX IF NOT EXISTS obs_access_log_tenant_idx ON obs_access_log(tenant_key, ts DESC);
-CREATE INDEX IF NOT EXISTS obs_access_log_status_idx ON obs_access_log(status, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_access_log_ts_idx     ON rah_system.obs_access_log(ts DESC);
+CREATE INDEX IF NOT EXISTS obs_access_log_api_idx    ON rah_system.obs_access_log(api_name, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_access_log_tenant_idx ON rah_system.obs_access_log(tenant_key, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_access_log_status_idx ON rah_system.obs_access_log(status, ts DESC);
 
-CREATE TABLE IF NOT EXISTS obs_metric_snapshots (
+CREATE TABLE IF NOT EXISTS rah_system.obs_metric_snapshots (
     ts          BIGINT NOT NULL,
     "window"    TEXT   NOT NULL,
     dimension   TEXT   NOT NULL,
@@ -81,9 +129,9 @@ CREATE TABLE IF NOT EXISTS obs_metric_snapshots (
     bytes_out   BIGINT,
     PRIMARY KEY (ts, "window", dimension)
 );
-CREATE INDEX IF NOT EXISTS obs_metrics_dim_idx ON obs_metric_snapshots(dimension, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_metrics_dim_idx ON rah_system.obs_metric_snapshots(dimension, ts DESC);
 
-CREATE TABLE IF NOT EXISTS obs_traces (
+CREATE TABLE IF NOT EXISTS rah_system.obs_traces (
     trace_id  BIGINT   PRIMARY KEY,
     ts        BIGINT   NOT NULL,
     api_name  TEXT,
@@ -92,12 +140,12 @@ CREATE TABLE IF NOT EXISTS obs_traces (
     total_ms  REAL,
     payload   JSONB
 );
-CREATE INDEX IF NOT EXISTS obs_traces_ts_idx     ON obs_traces(ts DESC);
-CREATE INDEX IF NOT EXISTS obs_traces_api_idx    ON obs_traces(api_name, ts DESC);
-CREATE INDEX IF NOT EXISTS obs_traces_tenant_idx ON obs_traces(tenant_id, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_traces_ts_idx     ON rah_system.obs_traces(ts DESC);
+CREATE INDEX IF NOT EXISTS obs_traces_api_idx    ON rah_system.obs_traces(api_name, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_traces_tenant_idx ON rah_system.obs_traces(tenant_id, ts DESC);
 
 -- V2 typed trace records (no JSONB blob)
-CREATE TABLE IF NOT EXISTS obs_traces_v2 (
+CREATE TABLE IF NOT EXISTS rah_system.obs_traces_v2 (
     trace_id       BIGINT   PRIMARY KEY,
     ts             BIGINT   NOT NULL,
     api_name       TEXT,
@@ -115,22 +163,22 @@ CREATE TABLE IF NOT EXISTS obs_traces_v2 (
     phase_durs     INTEGER[10],
     instr_count    SMALLINT
 );
-CREATE INDEX IF NOT EXISTS obs_tv2_ts_idx     ON obs_traces_v2(ts DESC);
-CREATE INDEX IF NOT EXISTS obs_tv2_api_idx    ON obs_traces_v2(api_name, ts DESC);
-CREATE INDEX IF NOT EXISTS obs_tv2_tenant_idx ON obs_traces_v2(tenant_id, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_tv2_ts_idx     ON rah_system.obs_traces_v2(ts DESC);
+CREATE INDEX IF NOT EXISTS obs_tv2_api_idx    ON rah_system.obs_traces_v2(api_name, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_tv2_tenant_idx ON rah_system.obs_traces_v2(tenant_id, ts DESC);
 
 -- Per-request instruction runs (join with obs_instruction_schema for names)
-CREATE TABLE IF NOT EXISTS obs_instruction_runs (
-    trace_id    BIGINT   NOT NULL REFERENCES obs_traces_v2(trace_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS rah_system.obs_instruction_runs (
+    trace_id    BIGINT   NOT NULL REFERENCES rah_system.obs_traces_v2(trace_id) ON DELETE CASCADE,
     pc          SMALLINT NOT NULL,
     seq         SMALLINT NOT NULL,
     dur_ns      INTEGER  NOT NULL,
     PRIMARY KEY (trace_id, pc, seq)
 );
-CREATE INDEX IF NOT EXISTS obs_ir_trace_idx ON obs_instruction_runs(trace_id);
+CREATE INDEX IF NOT EXISTS obs_ir_trace_idx ON rah_system.obs_instruction_runs(trace_id);
 
 -- Per-trace LLM calls
-CREATE TABLE IF NOT EXISTS obs_llm_calls (
+CREATE TABLE IF NOT EXISTS rah_system.obs_llm_calls (
     trace_id      BIGINT   NOT NULL,
     pc            SMALLINT NOT NULL,
     seq           SMALLINT NOT NULL,
@@ -142,10 +190,10 @@ CREATE TABLE IF NOT EXISTS obs_llm_calls (
     duration_ns   BIGINT,
     PRIMARY KEY (trace_id, pc, seq)
 );
-CREATE INDEX IF NOT EXISTS obs_llm_trace_idx ON obs_llm_calls(trace_id);
+CREATE INDEX IF NOT EXISTS obs_llm_trace_idx ON rah_system.obs_llm_calls(trace_id);
 
 -- Instruction schema: written once at API compile time
-CREATE TABLE IF NOT EXISTS obs_instruction_schema (
+CREATE TABLE IF NOT EXISTS rah_system.obs_instruction_schema (
     api_name    TEXT     NOT NULL,
     api_hash    BIGINT   NOT NULL,
     endpoint_id SMALLINT NOT NULL DEFAULT 0,
@@ -156,7 +204,7 @@ CREATE TABLE IF NOT EXISTS obs_instruction_schema (
 );
 
 -- Variable schema: maps slot index (var_id) to human-readable name; written at bake time
-CREATE TABLE IF NOT EXISTS obs_var_schema (
+CREATE TABLE IF NOT EXISTS rah_system.obs_var_schema (
     api_name  TEXT     NOT NULL,
     api_hash  BIGINT   NOT NULL,
     var_id    SMALLINT NOT NULL,
@@ -166,7 +214,7 @@ CREATE TABLE IF NOT EXISTS obs_var_schema (
 );
 
 -- Payload store: raw LLM/upstream request+response bytes, keyed by trace_id
-CREATE TABLE IF NOT EXISTS obs_payloads (
+CREATE TABLE IF NOT EXISTS rah_system.obs_payloads (
     trace_id   BIGINT   NOT NULL,
     kind       SMALLINT NOT NULL,  -- 1=LLM, 2=upstream
     seq        SMALLINT NOT NULL,  -- call sequence within trace (0-based)
@@ -174,7 +222,7 @@ CREATE TABLE IF NOT EXISTS obs_payloads (
     content    BYTEA,              -- [4B req_len][req_bytes][4B res_len][res_bytes]
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_obs_payloads_trace_id ON obs_payloads (trace_id, seq);
+CREATE INDEX IF NOT EXISTS idx_obs_payloads_trace_id ON rah_system.obs_payloads (trace_id, seq);
 `
 	_, err := s.pool.Exec(ctx, ddl)
 	return err
@@ -193,7 +241,7 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 	args := make([]any, 0, len(records)*cols)
 	var sb strings.Builder
 	sb.WriteString(
-		`INSERT INTO obs_access_log` +
+		`INSERT INTO rah_system.obs_access_log` +
 			`(ts,api_name,tenant_id,tenant_key,method,path,status,` +
 			`total_ms,gateway_ms,upstream_ms,ttfb_ms,req_bytes,res_bytes,extra) VALUES `)
 
@@ -240,7 +288,7 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 // WriteMetricSnapshot upserts a metric snapshot by (ts, window, dimension).
 func (s *postgresObsStore) WriteMetricSnapshot(ctx context.Context, snap MetricSnapshot) error {
 	_, err := s.pool.Exec(ctx, `
-INSERT INTO obs_metric_snapshots
+INSERT INTO rah_system.obs_metric_snapshots
     (ts,"window",dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 ON CONFLICT (ts, "window", dimension) DO UPDATE SET
@@ -333,7 +381,7 @@ func (s *postgresObsStore) WriteTraceBatch(ctx context.Context, records []TraceR
 	// Write v1 records individually into the legacy obs_traces table.
 	for _, rec := range v1Records {
 		_, err := s.pool.Exec(ctx, `
-INSERT INTO obs_traces (trace_id,ts,api_name,tenant_id,status,total_ms,payload)
+INSERT INTO rah_system.obs_traces (trace_id,ts,api_name,tenant_id,status,total_ms,payload)
 VALUES ($1,$2,$3,$4,$5,$6,$7)
 ON CONFLICT (trace_id) DO NOTHING`,
 			int64(rec.TraceID),
@@ -360,7 +408,7 @@ ON CONFLICT (trace_id) DO NOTHING`,
 		phaseDurs := rec.PhaseDurs[:]
 
 		batch.Queue(
-			`INSERT INTO obs_traces_v2 (
+			`INSERT INTO rah_system.obs_traces_v2 (
 				trace_id, ts, api_name, api_version_id, endpoint_id, tenant_id,
 				status, method, duration_ns, gateway_ns, upstream_ns,
 				req_bytes, res_bytes, upstream_calls, phase_durs, instr_count
@@ -386,7 +434,7 @@ ON CONFLICT (trace_id) DO NOTHING`,
 
 		for i, pc := range rec.InstrPCs {
 			batch.Queue(
-				`INSERT INTO obs_instruction_runs (trace_id, pc, seq, dur_ns)
+				`INSERT INTO rah_system.obs_instruction_runs (trace_id, pc, seq, dur_ns)
 				VALUES ($1,$2,$3,$4)
 				ON CONFLICT (trace_id, pc, seq) DO NOTHING`,
 				int64(rec.TraceID),
@@ -398,7 +446,7 @@ ON CONFLICT (trace_id) DO NOTHING`,
 
 		for _, llm := range rec.LLMCalls {
 			batch.Queue(
-				`INSERT INTO obs_llm_calls (
+				`INSERT INTO rah_system.obs_llm_calls (
 					trace_id, pc, seq, model_name, status,
 					input_tokens, output_tokens, cost_micro, duration_ns
 				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -444,7 +492,7 @@ func (s *postgresObsStore) UpsertInstrSchema(ctx context.Context, rows []InstrSc
 	const cols = 6
 	args := make([]any, 0, len(rows)*cols)
 	var sb strings.Builder
-	sb.WriteString(`INSERT INTO obs_instruction_schema (api_name,api_hash,endpoint_id,pc,step_type,step_name) VALUES `)
+	sb.WriteString(`INSERT INTO rah_system.obs_instruction_schema (api_name,api_hash,endpoint_id,pc,step_type,step_name) VALUES `)
 
 	for i, r := range rows {
 		if i > 0 {
@@ -507,7 +555,7 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 
 	query := `SELECT ts,api_name,tenant_id,tenant_key,method,path,status,` +
 		`total_ms,gateway_ms,upstream_ms,ttfb_ms,req_bytes,res_bytes,extra ` +
-		`FROM obs_access_log` + qb.whereClause() + ` ORDER BY ts DESC`
+		`FROM rah_system.obs_access_log` + qb.whereClause() + ` ORDER BY ts DESC`
 
 	// Remove the fake "TRUE LIMIT $N" from WHERE; rewrite as a real LIMIT.
 	query = rewriteLimit(query, qb.limitPlaceholder())
@@ -586,7 +634,7 @@ func (s *postgresObsStore) QueryMetrics(ctx context.Context, f MetricsFilter) ([
 	}
 
 	query := `SELECT ts,"window",dimension,req_total,req_5xx,lat_p50_ms,lat_p95_ms,lat_p99_ms,bytes_in,bytes_out ` +
-		`FROM obs_metric_snapshots` + qb.whereClause() + ` ORDER BY ts DESC`
+		`FROM rah_system.obs_metric_snapshots` + qb.whereClause() + ` ORDER BY ts DESC`
 
 	rows, err := s.pool.Query(ctx, query, qb.args...)
 	if err != nil {
@@ -667,8 +715,8 @@ func (s *postgresObsStore) queryTracesV2(ctx context.Context, f TraceFilter, lim
 		t.phase_durs,t.instr_count,t.method,
 		ARRAY_AGG(r.pc   ORDER BY r.seq) FILTER (WHERE r.pc   IS NOT NULL) AS instr_pcs,
 		ARRAY_AGG(r.dur_ns ORDER BY r.seq) FILTER (WHERE r.dur_ns IS NOT NULL) AS instr_durs_ns
-		FROM obs_traces_v2 t
-		LEFT JOIN obs_instruction_runs r ON r.trace_id = t.trace_id` +
+		FROM rah_system.obs_traces_v2 t
+		LEFT JOIN rah_system.obs_instruction_runs r ON r.trace_id = t.trace_id` +
 		qb.whereClause() +
 		` GROUP BY t.trace_id,t.ts,t.api_name,t.api_version_id,t.endpoint_id,t.tenant_id,
 		t.status,t.duration_ns,t.gateway_ns,t.upstream_ns,t.req_bytes,t.res_bytes,t.upstream_calls,
@@ -748,7 +796,7 @@ func (s *postgresObsStore) queryTracesV1(ctx context.Context, f TraceFilter, lim
 	}
 	qb.add("TRUE LIMIT $%d", limit)
 
-	query := `SELECT trace_id,ts,api_name,tenant_id,status,total_ms,payload FROM obs_traces` +
+	query := `SELECT trace_id,ts,api_name,tenant_id,status,total_ms,payload FROM rah_system.obs_traces` +
 		qb.whereClause() + ` ORDER BY ts DESC`
 	query = rewriteLimit(query, qb.limitPlaceholder())
 
@@ -783,7 +831,7 @@ func (s *postgresObsStore) queryTracesV1(ctx context.Context, f TraceFilter, lim
 func (s *postgresObsStore) QueryInstrSchema(ctx context.Context, apiName string) ([]InstrSchemaRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT api_name, api_hash, endpoint_id, pc, step_type, step_name
-		FROM obs_instruction_schema
+		FROM rah_system.obs_instruction_schema
 		WHERE api_name = $1
 		ORDER BY endpoint_id, pc`,
 		apiName,
@@ -827,7 +875,7 @@ func (s *postgresObsStore) UpsertVarSchema(ctx context.Context, rows []VarSchema
 	const cols = 5
 	args := make([]any, 0, len(rows)*cols)
 	var sb strings.Builder
-	sb.WriteString(`INSERT INTO obs_var_schema (api_name,api_hash,var_id,var_name,step_type) VALUES `)
+	sb.WriteString(`INSERT INTO rah_system.obs_var_schema (api_name,api_hash,var_id,var_name,step_type) VALUES `)
 
 	for i, r := range rows {
 		if i > 0 {
@@ -861,7 +909,7 @@ func (s *postgresObsStore) UpsertVarSchema(ctx context.Context, rows []VarSchema
 func (s *postgresObsStore) QueryVarSchema(ctx context.Context, apiName string) ([]VarSchemaRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT api_name, api_hash, var_id, var_name, step_type
-		FROM obs_var_schema
+		FROM rah_system.obs_var_schema
 		WHERE api_name = $1
 		ORDER BY var_id`,
 		apiName,
@@ -903,7 +951,7 @@ func (s *postgresObsStore) WritePayloadBatch(ctx context.Context, records []Payl
 	const cols = 5
 	args := make([]any, 0, len(records)*cols)
 	var sb strings.Builder
-	sb.WriteString(`INSERT INTO obs_payloads (trace_id, kind, seq, pc, content) VALUES `)
+	sb.WriteString(`INSERT INTO rah_system.obs_payloads (trace_id, kind, seq, pc, content) VALUES `)
 
 	for i, r := range records {
 		if i > 0 {
@@ -928,7 +976,7 @@ func (s *postgresObsStore) WritePayloadBatch(ctx context.Context, records []Payl
 // QueryPayloads returns all payload records for a given trace ID, ordered by seq.
 func (s *postgresObsStore) QueryPayloads(ctx context.Context, traceID uint64) ([]PayloadRecord, error) {
 	const q = `SELECT kind, seq, pc, content
-                 FROM obs_payloads
+                 FROM rah_system.obs_payloads
                 WHERE trace_id = $1
                 ORDER BY seq`
 

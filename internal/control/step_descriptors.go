@@ -60,7 +60,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "registry_lookup", Title: "Registry Lookup", Category: "registry", Capability: "identity",
 			Description: "Resolve an alias (from a variable) to a TenantID. Must run before any load_service_url or load_identifier steps.",
-			Defaults: map[string]string{"key_identifier": "header.X-Tenant-ID"},
+			Defaults:    map[string]string{"key_identifier": "header.X-Tenant-ID"},
 			Fields: []StepField{
 				sf("key_identifier", "Alias variable", "Variable whose value is used as the tenant alias for lookup (e.g. a header, query param, or path segment)", "header.X-Tenant-ID"),
 			},
@@ -68,7 +68,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_service_url", Title: "Load Service URL", Category: "registry", Capability: "service-url",
 			Description: "Load a named upstream URL for the current tenant (stored as url:<name>) into a variable. Requires registry_lookup to have run first.",
-			Defaults: map[string]string{"key": "primary", "as": "upstream_url"},
+			Defaults:    map[string]string{"key": "primary", "as": "upstream_url"},
 			Fields: []StepField{
 				sf("key", "URL name", "Name of the service URL as registered in the tenant (e.g. primary, fallback, health)", "primary"),
 				sf("as", "Store as", "Variable name to save the URL into; use this variable in a following http_call as url_var", "upstream_url"),
@@ -77,7 +77,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_service_url_var", Title: "Load Service URL (Dynamic Key)", Category: "registry", Capability: "service-url",
 			Description: "Load a service URL using a key name from a variable (e.g. set via a route constant or earlier step). ~50–100 ns vs 2–5 ns for static Load Service URL. Use only when the key differs per API.",
-			Defaults: map[string]string{"key_identifier": "url_key", "as": "upstream_url"},
+			Defaults:    map[string]string{"key_identifier": "url_key", "as": "upstream_url"},
 			Fields: []StepField{
 				sf("key_identifier", "Key name variable", "Variable holding the URL key name at runtime (e.g. 'payments_url')", "url_key"),
 				sf("as", "Store as", "Variable to save the resolved URL into", "upstream_url"),
@@ -86,7 +86,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_service_url", Title: "Set Service URL", Category: "registry", Capability: "write",
 			Description: "Write a service URL for the current tenant into the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "primary", "source": "var.new_url"},
+			Defaults:    map[string]string{"key": "primary", "source": "var.new_url"},
 			Fields: []StepField{
 				sf("key", "URL name", "Name of the service URL to write (e.g. primary, fallback, health)", "primary"),
 				sf("source", "Value variable", "Variable whose value is written to the registry", "var.new_url"),
@@ -95,7 +95,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_identifier", Title: "Set Identifier", Category: "registry", Capability: "write",
 			Description: "Write an identifier / credential for the current tenant into the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "api_key", "source": "var.new_key"},
+			Defaults:    map[string]string{"key": "api_key", "source": "var.new_key"},
 			Fields: []StepField{
 				sf("key", "Identifier name", "Name of the identifier to write (e.g. api_key, client_id)", "api_key"),
 				sf("source", "Value variable", "Variable whose value is written to the registry", "var.new_key"),
@@ -104,7 +104,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_meta", Title: "Set Metadata", Category: "registry", Capability: "write",
 			Description: "Write a metadata value for the current tenant into the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "tier", "source": "var.new_tier"},
+			Defaults:    map[string]string{"key": "tier", "source": "var.new_tier"},
 			Fields: []StepField{
 				sf("key", "Metadata key", "Name of the metadata field to write (e.g. tier, region, plan)", "tier"),
 				sf("source", "Value variable", "Variable whose value is written to the registry", "var.new_tier"),
@@ -113,7 +113,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "delete_service_url", Title: "Delete Service URL", Category: "registry", Capability: "write",
 			Description: "Remove a service URL for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "primary"},
+			Defaults:    map[string]string{"key": "primary"},
 			Fields: []StepField{
 				sf("key", "URL name", "Name of the service URL to delete (e.g. primary, fallback, health)", "primary"),
 			},
@@ -121,7 +121,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "delete_identifier", Title: "Delete Identifier", Category: "registry", Capability: "write",
 			Description: "Remove an identifier / credential for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "api_key"},
+			Defaults:    map[string]string{"key": "api_key"},
 			Fields: []StepField{
 				sf("key", "Identifier name", "Name of the identifier to delete (e.g. api_key, client_id)", "api_key"),
 			},
@@ -129,7 +129,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "delete_meta", Title: "Delete Metadata", Category: "registry", Capability: "write",
 			Description: "Remove a metadata value for the current tenant from the registry. Requires registry_lookup to have run first. Use in admin/onboarding flows.",
-			Defaults: map[string]string{"key": "tier"},
+			Defaults:    map[string]string{"key": "tier"},
 			Fields: []StepField{
 				sf("key", "Metadata key", "Name of the metadata field to delete (e.g. tier, region, plan)", "tier"),
 			},
@@ -137,7 +137,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_identifier", Title: "Load Identifier", Category: "registry", Capability: "credential",
 			Description: "Load a named identifier / secret for the current tenant (stored as id:<name>) into a variable. Requires registry_lookup to have run first.",
-			Defaults: map[string]string{"key": "api_key", "as": "tenant_api_key"},
+			Defaults:    map[string]string{"key": "api_key", "as": "tenant_api_key"},
 			Fields: []StepField{
 				sf("key", "Identifier name", "Name of the identifier as registered in the tenant (e.g. api_key, client_id, secret)", "api_key"),
 				sf("as", "Store as", "Variable name to save the identifier value into", "tenant_api_key"),
@@ -146,7 +146,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_meta", Title: "Load Meta", Category: "registry", Capability: "identity",
 			Description: "Load a metadata value for the current tenant (e.g. tier, region, field_enc_key_ref) into a variable. Requires registry_lookup to have run first.",
-			Defaults: map[string]string{"key": "tier", "as": "tier_slot"},
+			Defaults:    map[string]string{"key": "tier", "as": "tier_slot"},
 			Fields: []StepField{
 				sf("key", "Meta key", "Name of the metadata property registered in the tenant (e.g. tier, region, field_enc_key_ref)", "tier"),
 				sf("as", "Store as", "Variable name to write the value into", "tier_slot"),
@@ -157,7 +157,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "validate_api_key", Title: "Validate API Key",
 			Description: "Validates an inbound API key by SHA-256 hash lookup. Sets ctx.CallerID (AppID, stable across rotation) and ctx.CallerKey (alias) on success. Use before check_rate_limit_v2 with count_by: app.",
-			Category: "auth", Capability: "api_key_auth",
+			Category:    "auth", Capability: "api_key_auth",
 			Defaults: map[string]string{
 				"apikey.source":         "header",
 				"apikey.header":         "X-API-Key",
@@ -167,67 +167,67 @@ func AllStepDescriptors() []StepDescriptor {
 				"apikey.require_tenant": "false",
 			},
 			Fields: []StepField{
-				sf("apikey.source",         "Key Source",       "header | query | cookie | variable",                      "header"),
-				sf("apikey.header",         "Header Name",      "Header containing the API key (source=header)",       "X-API-Key"),
-				sf("apikey.query_param",    "Query Param",      "Query parameter name (source=query)",                 "api_key"),
-				sf("apikey.cookie",         "Cookie Name",      "Cookie name (source=cookie)",                         "api_key"),
-				sf("apikey.slot",           "Variable",    "Variable name (source=variable)",                    ""),
-				sf("apikey.on_failure",     "On Failure",       "stop = halt request; continue = write result and proceed", "stop"),
-				sf("apikey.failure_status", "Failure Status",   "HTTP status on auth failure",                         "401"),
-				sf("apikey.failure_body",   "Failure Body",     "Response body on auth failure",                       "unauthorized"),
-				sf("apikey.require_tenant", "Require Tenant",   "true = key AllowedTenants must include ctx.TenantID", "false"),
-				sf("apikey.result_var",     "Result Variable",  "Variable to write 'true'/'false' into (continue mode)",   ""),
+				sf("apikey.source", "Key Source", "header | query | cookie | variable", "header"),
+				sf("apikey.header", "Header Name", "Header containing the API key (source=header)", "X-API-Key"),
+				sf("apikey.query_param", "Query Param", "Query parameter name (source=query)", "api_key"),
+				sf("apikey.cookie", "Cookie Name", "Cookie name (source=cookie)", "api_key"),
+				sf("apikey.slot", "Variable", "Variable name (source=variable)", ""),
+				sf("apikey.on_failure", "On Failure", "stop = halt request; continue = write result and proceed", "stop"),
+				sf("apikey.failure_status", "Failure Status", "HTTP status on auth failure", "401"),
+				sf("apikey.failure_body", "Failure Body", "Response body on auth failure", "unauthorized"),
+				sf("apikey.require_tenant", "Require Tenant", "true = key AllowedTenants must include ctx.TenantID", "false"),
+				sf("apikey.result_var", "Result Variable", "Variable to write 'true'/'false' into (continue mode)", ""),
 			},
 		},
 		{
 			Type: "token_validation", Title: "Token Validation", Category: "auth", Capability: "jwt",
 			Description: "Validate a JWT. Verifies signature (JWKS), standard claims, required scopes, and arbitrary custom claims. Every parameter supports a static value or a runtime variable loaded by any earlier step.",
-			Defaults: map[string]string{"key_identifier": "header.Authorization"},
+			Defaults:    map[string]string{"key_identifier": "header.Authorization"},
 			Fields: []StepField{
 				// Token source
-				sf("key_identifier",                 "Token source",                    "Where to read the token: header.X, query.X, cookie.X, or a variable name", "header.Authorization"),
+				sf("key_identifier", "Token source", "Where to read the token: header.X, query.X, cookie.X, or a variable name", "header.Authorization"),
 				// JWKS / crypto
-				sf("input.jwt.jwks_uri",             "JWKS URL (static)",               "JWKS endpoint URL", "https://YOUR_IDP/.well-known/jwks.json"),
-				sf("input.jwt.jwks_uri_var",         "JWKS URL (variable)",             "Variable holding the JWKS URL (e.g. from load_service_url)", ""),
-				sf("input.jwt.alg",                  "Algorithm (static)",              "JWT algorithm. Default: RS256", "RS256"),
-				sf("input.jwt.alg_var",              "Algorithm (variable)",            "Variable holding the algorithm string", ""),
-				sf("input.jwt.leeway_seconds",       "Leeway seconds (static)",         "Clock skew tolerance in seconds. Default: 30", "30"),
-				sf("input.jwt.leeway_var",           "Leeway seconds (variable)",       "Variable holding clock leeway as a number string", ""),
-				sf("input.jwt.prefetch_jwks",        "Prefetch JWKS",                   "Pre-warm JWKS cache at deploy time (true/false)", "true"),
+				sf("input.jwt.jwks_uri", "JWKS URL (static)", "JWKS endpoint URL", "https://YOUR_IDP/.well-known/jwks.json"),
+				sf("input.jwt.jwks_uri_var", "JWKS URL (variable)", "Variable holding the JWKS URL (e.g. from load_service_url)", ""),
+				sf("input.jwt.alg", "Algorithm (static)", "JWT algorithm. Default: RS256", "RS256"),
+				sf("input.jwt.alg_var", "Algorithm (variable)", "Variable holding the algorithm string", ""),
+				sf("input.jwt.leeway_seconds", "Leeway seconds (static)", "Clock skew tolerance in seconds. Default: 30", "30"),
+				sf("input.jwt.leeway_var", "Leeway seconds (variable)", "Variable holding clock leeway as a number string", ""),
+				sf("input.jwt.prefetch_jwks", "Prefetch JWKS", "Pre-warm JWKS cache at deploy time (true/false)", "true"),
 				// Validation checks
-				sf("input.jwt.validate",             "Validate (static)",               "Comma-sep: signature,issuer,audience,expiry,not_before. Empty = all.", "signature,expiry"),
-				sf("input.jwt.validate_var",         "Validate (variable)",             "Variable holding the comma-sep validation check list", ""),
+				sf("input.jwt.validate", "Validate (static)", "Comma-sep: signature,issuer,audience,expiry,not_before. Empty = all.", "signature,expiry"),
+				sf("input.jwt.validate_var", "Validate (variable)", "Variable holding the comma-sep validation check list", ""),
 				// Claim values
-				sf("input.jwt.issuer",               "Issuer (static)",                 "Expected iss claim value", "https://accounts.example.com"),
-				sf("input.jwt.issuer_var",           "Issuer (variable)",               "Variable holding the expected issuer", ""),
-				sf("input.jwt.audience",             "Audience (static)",               "Expected aud claim value", "my-api"),
-				sf("input.jwt.audience_var",         "Audience (variable)",             "Variable holding the expected audience", ""),
+				sf("input.jwt.issuer", "Issuer (static)", "Expected iss claim value", "https://accounts.example.com"),
+				sf("input.jwt.issuer_var", "Issuer (variable)", "Variable holding the expected issuer", ""),
+				sf("input.jwt.audience", "Audience (static)", "Expected aud claim value", "my-api"),
+				sf("input.jwt.audience_var", "Audience (variable)", "Variable holding the expected audience", ""),
 				// Scopes
-				sf("input.jwt.required_scopes",     "Required scopes (static)",        "Comma-sep scope values that must be present", "read:orders"),
-				sf("input.jwt.required_scopes_var", "Required scopes (variable)",      "Variable holding comma-sep required scopes", ""),
-				sf("input.jwt.scope_claims",         "Scope claim keys (static)",       "Claim keys to scan for scopes. Default: scope,scp", "scope,scp"),
-				sf("input.jwt.scope_claims_var",     "Scope claim keys (variable)",     "Variable holding the scope claim key list", ""),
+				sf("input.jwt.required_scopes", "Required scopes (static)", "Comma-sep scope values that must be present", "read:orders"),
+				sf("input.jwt.required_scopes_var", "Required scopes (variable)", "Variable holding comma-sep required scopes", ""),
+				sf("input.jwt.scope_claims", "Scope claim keys (static)", "Claim keys to scan for scopes. Default: scope,scp", "scope,scp"),
+				sf("input.jwt.scope_claims_var", "Scope claim keys (variable)", "Variable holding the scope claim key list", ""),
 				// Custom claims
-				sf("input.jwt.custom_claims",        "Custom claims (JSON)",            `JSON object of static claim checks e.g. {"role":"admin"}`, `{"role":"admin"}`),
-				sf("input.jwt.custom_claims_vars",   "Custom claim variables (JSON)",   `JSON object mapping claim keys to variable names e.g. {"org":"var.tenant_org"}`, ""),
+				sf("input.jwt.custom_claims", "Custom claims (JSON)", `JSON object of static claim checks e.g. {"role":"admin"}`, `{"role":"admin"}`),
+				sf("input.jwt.custom_claims_vars", "Custom claim variables (JSON)", `JSON object mapping claim keys to variable names e.g. {"org":"var.tenant_org"}`, ""),
 				// Failure config
-				sf("input.jwt.on_failure",           "On failure mode (static)",        `"stop" (return error) or "continue" (write result variable and proceed)`, "stop"),
-				sf("input.jwt.on_failure_var",       "On failure mode (variable)",      "Variable holding 'stop' or 'continue'", ""),
-				sf("input.jwt.failure_status",       "Failure status (static)",         "HTTP status code on failure. Default: 401", "401"),
-				sf("input.jwt.failure_status_var",   "Failure status (variable)",       "Variable holding the failure HTTP status code string", ""),
-				sf("input.jwt.failure_body",         "Failure body (static)",           "Response body on failure. Default: unauthorized", "unauthorized"),
-				sf("input.jwt.failure_body_var",     "Failure body (variable)",         "Variable holding the failure response body", ""),
+				sf("input.jwt.on_failure", "On failure mode (static)", `"stop" (return error) or "continue" (write result variable and proceed)`, "stop"),
+				sf("input.jwt.on_failure_var", "On failure mode (variable)", "Variable holding 'stop' or 'continue'", ""),
+				sf("input.jwt.failure_status", "Failure status (static)", "HTTP status code on failure. Default: 401", "401"),
+				sf("input.jwt.failure_status_var", "Failure status (variable)", "Variable holding the failure HTTP status code string", ""),
+				sf("input.jwt.failure_body", "Failure body (static)", "Response body on failure. Default: unauthorized", "unauthorized"),
+				sf("input.jwt.failure_body_var", "Failure body (variable)", "Variable holding the failure response body", ""),
 				// Result values
-				sf("input.jwt.result_success",       "Success result value (static)",   "Value written to result variable on success. Default: true", "true"),
-				sf("input.jwt.result_success_var",   "Success result value (variable)", "Variable holding the success result value", ""),
-				sf("input.jwt.result_failure",       "Failure result value (static)",   "Value written to result variable on failure. Default: false", "false"),
-				sf("input.jwt.result_failure_var",   "Failure result value (variable)", "Variable holding the failure result value", ""),
+				sf("input.jwt.result_success", "Success result value (static)", "Value written to result variable on success. Default: true", "true"),
+				sf("input.jwt.result_success_var", "Success result value (variable)", "Variable holding the success result value", ""),
+				sf("input.jwt.result_failure", "Failure result value (static)", "Value written to result variable on failure. Default: false", "false"),
+				sf("input.jwt.result_failure_var", "Failure result value (variable)", "Variable holding the failure result value", ""),
 				// Output variables
-				sf("input.jwt.result_var",           "Result variable",                 "Variable to write result value into (requires on_failure=continue)", ""),
-				sf("input.jwt.claims_var",           "Claims output variable",          "Variable to write all JWT claims JSON into on success", ""),
-				sf("input.jwt.subject_var",          "Subject output variable",         "Variable to write the JWT sub (subject) claim into on success", ""),
-				sf("input.jwt.client_id_var",        "Client ID output variable",       "Variable to write the client_id (or azp/appid) claim into on success", ""),
-				sf("input.jwt.scopes_out_var",       "Scopes output variable",          "Variable to write comma-separated parsed scopes into on success", ""),
+				sf("input.jwt.result_var", "Result variable", "Variable to write result value into (requires on_failure=continue)", ""),
+				sf("input.jwt.claims_var", "Claims output variable", "Variable to write all JWT claims JSON into on success", ""),
+				sf("input.jwt.subject_var", "Subject output variable", "Variable to write the JWT sub (subject) claim into on success", ""),
+				sf("input.jwt.client_id_var", "Client ID output variable", "Variable to write the client_id (or azp/appid) claim into on success", ""),
+				sf("input.jwt.scopes_out_var", "Scopes output variable", "Variable to write comma-separated parsed scopes into on success", ""),
 			},
 		},
 
@@ -254,7 +254,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_secret", Title: "Load Secret", Category: "auth", Capability: "auth",
 			Description: "Fetch a secret from GSM, Vault, AWS SM, or env into a variable.",
-			Defaults: map[string]string{"ref": "", "as": "secret_value"},
+			Defaults:    map[string]string{"ref": "", "as": "secret_value"},
 			Fields: []StepField{
 				sf("ref", "Secret Reference", "Secret URI e.g. gsm://project/secrets/name or env:MY_VAR", "gsm://my-project/secrets/api-key"),
 				sf("as", "Store into variable", "Variable name to write secret value into", "secret_value"),
@@ -272,17 +272,17 @@ func AllStepDescriptors() []StepDescriptor {
 				"input.dpop.failure_body":    "invalid dpop proof",
 			},
 			Fields: []StepField{
-				sf("input.dpop.header",           "DPoP header name",        "Request header containing the proof JWT. Default: DPoP", "DPoP"),
-				sf("input.dpop.max_age_seconds",  "Max age (seconds)",       "Maximum age of the iat claim. Default: 60", "60"),
-				sf("input.dpop.match_query",       "Match query string",      "Include query string in htu comparison (true/false). Default: false", "false"),
-				sf("input.dpop.require_ath",       "Require ath claim",       "Require ath = SHA256(access_token) claim. Set true when access_token_var is provided. Default: false", "false"),
-				sf("input.dpop.check_cnf_jkt",    "Check cnf.jkt",          "Verify access token cnf.jkt matches proof key thumbprint (RFC 9449 §7). Requires access_token_var. Default: false", "false"),
-				sf("input.dpop.on_failure",        "On failure",              `"stop" (return error) or "continue" (write result_var and proceed)`, "stop"),
-				sf("input.dpop.failure_status",    "Failure status",          "HTTP status on failure. Default: 401", "401"),
-				sf("input.dpop.failure_body",      "Failure body",            "Response body on failure", "invalid dpop proof"),
-				sf("input.dpop.access_token_var",  "Access token variable",   "Variable holding the raw access token (used for ath and cnf.jkt checks)", ""),
-				sf("input.dpop.result_var",        "Result variable",         "Variable to write 'true'/'false' into in continue mode", ""),
-				sf("input.dpop.cnf_jkt_var",       "JWK thumbprint variable", "Variable to write the verified JWK SHA-256 thumbprint into on success", ""),
+				sf("input.dpop.header", "DPoP header name", "Request header containing the proof JWT. Default: DPoP", "DPoP"),
+				sf("input.dpop.max_age_seconds", "Max age (seconds)", "Maximum age of the iat claim. Default: 60", "60"),
+				sf("input.dpop.match_query", "Match query string", "Include query string in htu comparison (true/false). Default: false", "false"),
+				sf("input.dpop.require_ath", "Require ath claim", "Require ath = SHA256(access_token) claim. Set true when access_token_var is provided. Default: false", "false"),
+				sf("input.dpop.check_cnf_jkt", "Check cnf.jkt", "Verify access token cnf.jkt matches proof key thumbprint (RFC 9449 §7). Requires access_token_var. Default: false", "false"),
+				sf("input.dpop.on_failure", "On failure", `"stop" (return error) or "continue" (write result_var and proceed)`, "stop"),
+				sf("input.dpop.failure_status", "Failure status", "HTTP status on failure. Default: 401", "401"),
+				sf("input.dpop.failure_body", "Failure body", "Response body on failure", "invalid dpop proof"),
+				sf("input.dpop.access_token_var", "Access token variable", "Variable holding the raw access token (used for ath and cnf.jkt checks)", ""),
+				sf("input.dpop.result_var", "Result variable", "Variable to write 'true'/'false' into in continue mode", ""),
+				sf("input.dpop.cnf_jkt_var", "JWK thumbprint variable", "Variable to write the verified JWK SHA-256 thumbprint into on success", ""),
 			},
 		},
 
@@ -297,24 +297,24 @@ func AllStepDescriptors() []StepDescriptor {
 				"input.introspect.failure_body":      "unauthorized",
 			},
 			Fields: []StepField{
-				sf("input.introspect.endpoint",          "Introspection endpoint",    "Full URL of the introspection endpoint (required)", "https://auth.example.com/oauth2/introspect"),
-				sf("input.introspect.auth",              "Endpoint auth mode",        `"basic" (client_id+client_secret), "bearer" (bearer_token), or "none". Auto-detected from other fields if omitted.`, "basic"),
-				sf("input.introspect.client_id",         "Client ID",                 "Gateway's client_id for Basic auth to the introspection endpoint", ""),
-				sf("input.introspect.client_secret",     "Client secret",             "Gateway's client_secret for Basic auth (load via load_secret for security)", ""),
-				sf("input.introspect.bearer_token",      "Bearer token (static)",     "Static bearer token for Bearer auth to the introspection endpoint", ""),
-				sf("input.introspect.bearer_token_var",  "Bearer token (variable)",   "Variable holding a runtime bearer token for endpoint auth", ""),
-				sf("input.introspect.cache_ttl_seconds", "Cache TTL (seconds)",       "How long to cache successful introspection responses. 0 = no caching. Default: 30", "30"),
-				sf("input.introspect.required_scopes",   "Required scopes",           "Comma-separated scope values that must be present in the response", ""),
-				sf("input.introspect.token_var",         "Token variable",            "Variable holding the access token to introspect", ""),
-				sf("input.introspect.token_header",      "Token header",              "Request header to read the token from (e.g. Authorization). Bearer prefix is stripped.", "Authorization"),
-				sf("input.introspect.on_failure",        "On failure",                `"stop" or "continue"`, "stop"),
-				sf("input.introspect.failure_status",    "Failure status",            "HTTP status on failure. Default: 401", "401"),
-				sf("input.introspect.failure_body",      "Failure body",              "Response body on failure. Default: unauthorized", "unauthorized"),
-				sf("input.introspect.result_var",        "Result variable",           "Variable to write 'true'/'false' into in continue mode", ""),
-				sf("input.introspect.claims_var",        "Claims output variable",    "Variable to write full introspection response JSON into on success", ""),
-				sf("input.introspect.subject_var",       "Subject output variable",   "Variable to write the sub claim into on success", ""),
-				sf("input.introspect.client_id_var",     "Client ID output variable", "Variable to write the client_id claim into on success", ""),
-				sf("input.introspect.scopes_out_var",    "Scopes output variable",    "Variable to write space-separated scopes into on success", ""),
+				sf("input.introspect.endpoint", "Introspection endpoint", "Full URL of the introspection endpoint (required)", "https://auth.example.com/oauth2/introspect"),
+				sf("input.introspect.auth", "Endpoint auth mode", `"basic" (client_id+client_secret), "bearer" (bearer_token), or "none". Auto-detected from other fields if omitted.`, "basic"),
+				sf("input.introspect.client_id", "Client ID", "Gateway's client_id for Basic auth to the introspection endpoint", ""),
+				sf("input.introspect.client_secret", "Client secret", "Gateway's client_secret for Basic auth (load via load_secret for security)", ""),
+				sf("input.introspect.bearer_token", "Bearer token (static)", "Static bearer token for Bearer auth to the introspection endpoint", ""),
+				sf("input.introspect.bearer_token_var", "Bearer token (variable)", "Variable holding a runtime bearer token for endpoint auth", ""),
+				sf("input.introspect.cache_ttl_seconds", "Cache TTL (seconds)", "How long to cache successful introspection responses. 0 = no caching. Default: 30", "30"),
+				sf("input.introspect.required_scopes", "Required scopes", "Comma-separated scope values that must be present in the response", ""),
+				sf("input.introspect.token_var", "Token variable", "Variable holding the access token to introspect", ""),
+				sf("input.introspect.token_header", "Token header", "Request header to read the token from (e.g. Authorization). Bearer prefix is stripped.", "Authorization"),
+				sf("input.introspect.on_failure", "On failure", `"stop" or "continue"`, "stop"),
+				sf("input.introspect.failure_status", "Failure status", "HTTP status on failure. Default: 401", "401"),
+				sf("input.introspect.failure_body", "Failure body", "Response body on failure. Default: unauthorized", "unauthorized"),
+				sf("input.introspect.result_var", "Result variable", "Variable to write 'true'/'false' into in continue mode", ""),
+				sf("input.introspect.claims_var", "Claims output variable", "Variable to write full introspection response JSON into on success", ""),
+				sf("input.introspect.subject_var", "Subject output variable", "Variable to write the sub claim into on success", ""),
+				sf("input.introspect.client_id_var", "Client ID output variable", "Variable to write the client_id claim into on success", ""),
+				sf("input.introspect.scopes_out_var", "Scopes output variable", "Variable to write space-separated scopes into on success", ""),
 			},
 		},
 
@@ -330,13 +330,13 @@ func AllStepDescriptors() []StepDescriptor {
 				"input.revoke.failure_body":   "token revoked",
 			},
 			Fields: []StepField{
-				sf("key_identifier",              "JTI variable",          "Variable holding the jti claim (write from token_validation's claims_var with an extract step, or use jwt.jti_var when available)", "var.token_jti"),
-				sf("input.revoke.datastore",       "Datastore name",    "Named datastore for the blocklist. Default: default", "default"),
-				sf("input.revoke.key_prefix",      "Key prefix",        "Blocklist key prefix. Default: revoked:jti:", "revoked:jti:"),
-				sf("input.revoke.on_failure",      "On failure",        `"stop" (default) or "continue"`, "stop"),
-				sf("input.revoke.failure_status",  "Failure status",    "HTTP status when token is revoked. Default: 401", "401"),
-				sf("input.revoke.failure_body",    "Failure body",      "Response body when token is revoked. Default: token revoked", "token revoked"),
-				sf("input.revoke.result_var",      "Result variable",   "Variable to write 'true' (not revoked) / 'false' (revoked) into in continue mode", ""),
+				sf("key_identifier", "JTI variable", "Variable holding the jti claim (write from token_validation's claims_var with an extract step, or use jwt.jti_var when available)", "var.token_jti"),
+				sf("input.revoke.datastore", "Datastore name", "Named datastore for the blocklist. Default: default", "default"),
+				sf("input.revoke.key_prefix", "Key prefix", "Blocklist key prefix. Default: revoked:jti:", "revoked:jti:"),
+				sf("input.revoke.on_failure", "On failure", `"stop" (default) or "continue"`, "stop"),
+				sf("input.revoke.failure_status", "Failure status", "HTTP status when token is revoked. Default: 401", "401"),
+				sf("input.revoke.failure_body", "Failure body", "Response body when token is revoked. Default: token revoked", "token revoked"),
+				sf("input.revoke.result_var", "Result variable", "Variable to write 'true' (not revoked) / 'false' (revoked) into in continue mode", ""),
 			},
 		},
 
@@ -344,7 +344,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "assign_quota_group", Title: "Assign Quota Group", Category: "rate-limit", Capability: "quota",
 			Description: "Map a runtime string value (e.g. tenant tier from metadata) to a quota group ID. The group ID selects a rate limit config in the following Check Rate Limit step. Must run before Check Rate Limit.",
-			Defaults: map[string]string{"key_identifier": "tier_slot"},
+			Defaults:    map[string]string{"key_identifier": "tier_slot"},
 			Fields: []StepField{
 				sf("key_identifier", "Source variable", "Variable holding the tier/plan string (e.g. loaded via load_meta)", "tier_slot"),
 				sf("input", "Group map (JSON)", `Map of tier name → group ID (1–255). E.g. {"free":"1","pro":"2","enterprise":"3"}`, `{"free":"1","pro":"2","enterprise":"3"}`),
@@ -385,8 +385,8 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "api_rate_limits", Title: "API Rate Limits", Category: "rate-limit", Capability: "throttle",
 			Description: "Enforce the rate limits configured in the API definition at this position in the flow. If absent, limits are auto-injected at the start of the flow. No configuration needed — drag to control where enforcement happens.",
-			Defaults: map[string]string{},
-			Fields:   []StepField{},
+			Defaults:    map[string]string{},
+			Fields:      []StepField{},
 		},
 		{
 			Type: "check_upstream_rate_limit", Title: "Check Upstream Rate Limit", Category: "rate-limit", Capability: "throttle",
@@ -404,7 +404,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "spike_arrest", Title: "Spike Arrest", Category: "resilience", Capability: "gate",
 			Description: "Smooth inbound traffic by allowing at most one request per interval_ms per (flow, tenant [, key]) bucket. Excess requests receive 429 immediately.",
-			Defaults: map[string]string{"input.interval_ms": "100"},
+			Defaults:    map[string]string{"input.interval_ms": "100"},
 			Fields: []StepField{
 				sf("input.interval_ms", "Interval (ms)", "Minimum milliseconds between allowed requests per bucket. Default: 100 (10 req/s).", "100"),
 				sf("source", "Key variable (optional)", "Variable name whose value is added to the bucket key for per-user/per-key throttling. Omit for per-tenant-only bucketing.", ""),
@@ -413,7 +413,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "circuit_breaker", Title: "Circuit Breaker", Category: "resilience", Capability: "gate",
 			Description: "Open the circuit after failure_threshold consecutive failures; return 503 while open (or jump to fallback_flow if specified). Probe recovery after open_duration_ms via half-open state.",
-			Defaults: map[string]string{"input.failure_threshold": "5", "input.success_threshold": "2", "input.open_duration_ms": "30000"},
+			Defaults:    map[string]string{"input.failure_threshold": "5", "input.success_threshold": "2", "input.open_duration_ms": "30000"},
 			Fields: []StepField{
 				sf("input.failure_threshold", "Failure threshold", "Consecutive failures required to open the circuit. Default: 5.", "5"),
 				sf("input.success_threshold", "Success threshold", "Consecutive successes in half-open state required to close the circuit. Default: 2.", "2"),
@@ -424,7 +424,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "record_circuit_outcome", Title: "Record Circuit Outcome", Category: "resilience", Capability: "action",
 			Description: "Record the success or failure of the guarded work for the most-recently compiled circuit_breaker. Must be placed after the protected step(s).",
-			Defaults: map[string]string{},
+			Defaults:    map[string]string{},
 			Fields: []StepField{
 				sf("condition", "Success condition (optional)", "Boolean expression evaluated at runtime. True = success, false = failure. Omit to always record success.", "status < 500"),
 			},
@@ -434,7 +434,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_body", Title: "Read Body Field", Category: "request", Capability: "request",
 			Description: "Extract a field from the request body using a gjson path expression and store it in a variable.",
-			Defaults: map[string]string{"key": "", "as": "body_field"},
+			Defaults:    map[string]string{"key": "", "as": "body_field"},
 			Fields: []StepField{
 				sf("key", "gjson path", "gjson path expression to extract from the request body (e.g. result.tenant.plan)", "result.id"),
 				sf("as", "Store into variable", "Variable name to write the extracted value into", "body_field"),
@@ -443,7 +443,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_header", Title: "Read Header", Category: "request", Capability: "request",
 			Description: "Extract an HTTP request header value into a variable.",
-			Defaults: map[string]string{"key": "", "as": "auth_header"},
+			Defaults:    map[string]string{"key": "", "as": "auth_header"},
 			Fields: []StepField{
 				sf("key", "Header Name", "Name of the HTTP header e.g. Authorization", "Authorization"),
 				sf("as", "Store into variable", "Variable name to write value into", "auth_header"),
@@ -452,7 +452,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_query_param", Title: "Read Query Param", Category: "request", Capability: "request",
 			Description: "Extract a URL query parameter value into a variable.",
-			Defaults: map[string]string{"key": "", "as": "query_param"},
+			Defaults:    map[string]string{"key": "", "as": "query_param"},
 			Fields: []StepField{
 				sf("key", "Param Name", "Query parameter name e.g. api_key", "api_key"),
 				sf("as", "Store into variable", "Variable name to write value into", "query_param"),
@@ -461,7 +461,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_path", Title: "Read Path Param", Category: "request", Capability: "request",
 			Description: "Extract a path parameter (e.g. {id}) into a variable by index.",
-			Defaults: map[string]string{"index": "0", "as": "path_id"},
+			Defaults:    map[string]string{"index": "0", "as": "path_id"},
 			Fields: []StepField{
 				sf("index", "Param Index", "0-based index of the path parameter", "0"),
 				sf("as", "Store into variable", "Variable name to write value into", "path_id"),
@@ -470,7 +470,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_client_ip", Title: "Bind Client IP", Category: "network", Capability: "identity",
 			Description: "Extract the real client IP address and store it in a variable. Resolution order: X-Forwarded-For (entry selected by xff_index) → X-Real-IP → TCP RemoteAddr.",
-			Defaults: map[string]string{"as": "client_ip", "input": `{"xff_index":"0"}`},
+			Defaults:    map[string]string{"as": "client_ip", "input": `{"xff_index":"0"}`},
 			Fields: []StepField{
 				sf("as", "Variable name", "Variable to store the client IP string in (e.g. client_ip)", "client_ip"),
 				sf("input", "XFF Index (JSON)", `{"xff_index":"0"} — which X-Forwarded-For entry to use: 0=first/leftmost (original client), -1=last/rightmost (nearest proxy)`, `{"xff_index":"0"}`),
@@ -479,7 +479,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_request_header", Title: "Set Upstream Header", Category: "request", Capability: "request",
 			Description: "Inject a header into the upstream request before proxying. The header name is static; the value is read from a variable at runtime.",
-			Defaults: map[string]string{"key": "Cookie", "source": "var.cookie_val"},
+			Defaults:    map[string]string{"key": "Cookie", "source": "var.cookie_val"},
 			Fields: []StepField{
 				sf("key", "Header Name", "Static header name to inject into the upstream request (e.g. Cookie, X-Auth-Token)", "Cookie"),
 				sf("source", "Value variable", "Variable whose value is used as the header value", "var.cookie_val"),
@@ -488,7 +488,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "remove_request_header", Title: "Remove Upstream Header", Category: "request", Capability: "request",
 			Description: "Remove a header from the upstream request before proxying. The header name is static and baked at compile time.",
-			Defaults: map[string]string{"key": "Cookie"},
+			Defaults:    map[string]string{"key": "Cookie"},
 			Fields: []StepField{
 				sf("key", "Header Name", "Static header name to remove from the upstream request (e.g. Cookie, X-Auth-Token)", "Cookie"),
 			},
@@ -496,7 +496,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "rename_request_header", Title: "Rename Upstream Header", Category: "request", Capability: "request",
 			Description: "Rename a header in the upstream request: copy the source header to a new name and remove the original. Both names are static and baked at compile time.",
-			Defaults: map[string]string{"key": "Authorization", "as": "X-Auth-Token"},
+			Defaults:    map[string]string{"key": "Authorization", "as": "X-Auth-Token"},
 			Fields: []StepField{
 				sf("key", "Source header", "Static header name to read from the incoming request", "Authorization"),
 				sf("as", "Destination header", "Static header name to set on the upstream request", "X-Auth-Token"),
@@ -507,7 +507,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_request_body", Title: "Set Request Body", Category: "http", Capability: "mutate",
 			Description: "Stage a request body for the next http_call step. The body bytes come from a variable; the Content-Type is baked at compile time.",
-			Defaults: map[string]string{"source": "var.body", "input.content_type": "application/json"},
+			Defaults:    map[string]string{"source": "var.body", "input.content_type": "application/json"},
 			Fields: []StepField{
 				sf("source", "Body variable", "Variable containing the request body bytes to send", "var.body"),
 				sf("input.content_type", "Content-Type", "MIME type of the body (default: application/json)", "application/json"),
@@ -516,7 +516,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_request_url", Title: "Bind Request URL", Category: "http", Capability: "extract",
 			Description: "Capture the incoming request URL (path + optional query string) into a variable.",
-			Defaults: map[string]string{"as": "request_url"},
+			Defaults:    map[string]string{"as": "request_url"},
 			Fields: []StepField{
 				sf("as", "Store as", "Variable to write the URL into", "request_url"),
 				sf("include_query", "Include query string", "true (default) to append ?query, false for path only", "true"),
@@ -525,7 +525,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "copy_header", Title: "Copy Header", Category: "http", Capability: "mutate",
 			Description: "Read an incoming request header and forward it to the upstream under a (possibly different) key. Both names are baked at compile time.",
-			Defaults: map[string]string{},
+			Defaults:    map[string]string{},
 			Fields: []StepField{
 				sf("key", "Source header", "Incoming request header name to read", "X-Request-Id"),
 				sf("as", "Destination header", "Header name to set on the upstream request", "X-Correlation-Id"),
@@ -535,7 +535,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "ip_restriction", Title: "IP Restriction", Category: "network", Capability: "access-control",
 			Description: "Allow or deny requests based on CIDR ranges. Returns configured status/body when blocked.",
-			Defaults: map[string]string{"input": `{"mode":"allow","cidrs":"10.0.0.0/8","source":"header.X-Forwarded-For","on_violation_status":"403","on_violation_body":"ip not allowed"}`},
+			Defaults:    map[string]string{"input": `{"mode":"allow","cidrs":"10.0.0.0/8","source":"header.X-Forwarded-For","on_violation_status":"403","on_violation_body":"ip not allowed"}`},
 			Fields: []StepField{
 				sf("key_identifier", "IP variable (optional)", "Optional variable with pre-resolved client IP (from bind_client_ip). If set, it overrides source resolution.", "client_ip"),
 				sf("input", "Config (JSON)", `mode: allow|deny, cidrs: comma-separated CIDRs, source: header.X-Forwarded-For|header.X-Real-IP|remote_addr, on_violation_status: 4xx/5xx, on_violation_body: response text`, `{"mode":"allow","cidrs":"10.0.0.0/8,192.168.0.0/16","source":"header.X-Forwarded-For","on_violation_status":"403","on_violation_body":"ip not allowed"}`),
@@ -630,7 +630,7 @@ func AllStepDescriptors() []StepDescriptor {
 			Capability:  "upstream",
 			Description: "Make an outbound gRPC unary call. Transcodes JSON ↔ proto using a pre-uploaded FileDescriptorSet. Supports TLS (grpcs://), metadata forwarding, deadline propagation, and automatic client-disconnect cancellation.",
 			Defaults: map[string]string{
-				"timeout_ms":    "5000",
+				"timeout_ms":     "5000",
 				"wait_for_ready": "false",
 			},
 			Fields: []StepField{
@@ -657,7 +657,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "store_internal_tx_id", Title: "Store Transaction ID", Category: "observability", Capability: "tracing",
 			Description: "Save the gateway-assigned internal transaction ID (InternalTxID) into a variable for use in downstream headers or logs.",
-			Defaults: map[string]string{"as": "tx_id"},
+			Defaults:    map[string]string{"as": "tx_id"},
 			Fields: []StepField{
 				sf("as", "Store as", "Variable name to save the formatted transaction ID string into", "tx_id"),
 			},
@@ -665,7 +665,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "bind_correlation_id", Title: "Bind Correlation ID", Category: "observability", Capability: "tracing",
 			Description: "Read a correlation ID from an incoming header; optionally generate one if the header is absent.",
-			Defaults: map[string]string{"key": "X-Correlation-ID", "as": "corr_id", "generate_if_missing": "true"},
+			Defaults:    map[string]string{"key": "X-Correlation-ID", "as": "corr_id", "generate_if_missing": "true"},
 			Fields: []StepField{
 				sf("key", "Header name", "Incoming request header to read the correlation ID from", "X-Correlation-ID"),
 				sf("as", "Store as", "Variable name to save the correlation ID into", "corr_id"),
@@ -675,7 +675,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "log_field", Title: "Log Custom Field", Category: "observability", Capability: "logging",
 			Description: "Write a variable value as a named field in the request access log Extra section.",
-			Defaults: map[string]string{"key": "client_id", "source": "var.client_id"},
+			Defaults:    map[string]string{"key": "client_id", "source": "var.client_id"},
 			Fields: []StepField{
 				sf("key", "Field name", "Name of the field as it appears in the access log Extra section (e.g. client_id, tenant_alias)", "client_id"),
 				sf("source", "Source variable", "Variable whose value is written to the access log", "var.client_id"),
@@ -684,7 +684,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "log", Title: "Log Message", Category: "observability", Capability: "logging",
 			Description: "Emit a structured log message from within a flow. Writes to the gateway log and optionally to the ingest pipeline as a KindFlowLog event.",
-			Defaults: map[string]string{"level": "info", "message": ""},
+			Defaults:    map[string]string{"level": "info", "message": ""},
 			Fields: []StepField{
 				sf("level", "Log level", "Log level: debug|info|warn|error. Default: info", "info"),
 				sf("message", "Message", "Log message text (required)", ""),
@@ -696,8 +696,8 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "if", Title: "If / Else", Category: "control", Capability: "branching", SupportsNested: true,
 			Description: "Branch to one of two sub-flows based on a boolean condition.",
-			Defaults: map[string]string{"condition": "", "then": "", "else": ""},
-			NextHints: []string{"call", "http_call", "set_response_status"},
+			Defaults:    map[string]string{"condition": "", "then": "", "else": ""},
+			NextHints:   []string{"call", "http_call", "set_response_status"},
 			Fields: []StepField{
 				sf("condition", "Condition", "Boolean expression. Examples: header.X-Role == \"admin\", status >= 500, query.debug != \"\"", "header.X-Role == \"admin\""),
 				sf("then", "Then → flow", "Flow name to execute when condition is true", ""),
@@ -708,11 +708,11 @@ func AllStepDescriptors() []StepDescriptor {
 			Type: "pattern_match", Title: "Pattern Match", Category: "control", Capability: "branching", SupportsNested: true,
 			Description: "Match a variable value against a regex pattern compiled at deploy time. Branches to then-flow on match or else-flow on no-match. Regex is compiled once at bake time — runtime cost is a single Match call with zero allocations.",
 			Defaults: map[string]string{
-				"source":         "header.x-service",
-				"input.pattern":  "^(api|data).*",
-				"input.flags":    "",
-				"then":           "",
-				"else":           "",
+				"source":        "header.x-service",
+				"input.pattern": "^(api|data).*",
+				"input.flags":   "",
+				"then":          "",
+				"else":          "",
 			},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable whose value is tested — e.g. a header, query param, or any earlier-bound variable", "header.x-service"),
@@ -737,7 +737,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "switch", Title: "Switch", Category: "control", Capability: "multi-branch", SupportsNested: true,
 			Description: "Route to one of several sub-flows based on the string value of a variable.",
-			Defaults: map[string]string{"as": "", "cases": ""},
+			Defaults:    map[string]string{"as": "", "cases": ""},
 			Fields: []StepField{
 				sf("as", "Match expression", "Variable or request source to match on (e.g. header.X-Plan, query.mode)", "header.X-Plan"),
 				sf("cases", "Cases", "Comma-separated key=flow pairs: free=free_flow,premium=premium_flow", "free=free_flow,premium=premium_flow"),
@@ -746,7 +746,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "foreach", Title: "For Each", Category: "control", Capability: "iteration", SupportsNested: true,
 			Description: "Iterate over a list in a variable and execute a sub-flow once per item.",
-			Defaults: map[string]string{"source": "", "as": "item", "do": ""},
+			Defaults:    map[string]string{"source": "", "as": "item", "do": ""},
 			Fields: []StepField{
 				sf("source", "Source list variable", "Variable containing the array to iterate over", "var.items"),
 				sf("as", "Item variable", "Variable name bound to the current item inside the sub-flow", "item"),
@@ -756,7 +756,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "foreach_header", Title: "For Each Header", Category: "control", Capability: "iteration", SupportsNested: true,
 			Description: "Iterate over all HTTP request headers and execute a sub-flow once per header.",
-			Defaults: map[string]string{"as": "header_name", "value_as": "header_value", "do": ""},
+			Defaults:    map[string]string{"as": "header_name", "value_as": "header_value", "do": ""},
 			Fields: []StepField{
 				sf("as", "Header name variable", "Variable name bound to the current header name inside the sub-flow", "header_name"),
 				sf("value_as", "Header value variable", "Variable name bound to the current header value inside the sub-flow", "header_value"),
@@ -766,7 +766,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "foreach_param", Title: "For Each Query Parameter", Category: "control", Capability: "iteration", SupportsNested: true,
 			Description: "Iterate over all URL query parameters and execute a sub-flow once per parameter.",
-			Defaults: map[string]string{"as": "param_name", "value_as": "param_value", "do": ""},
+			Defaults:    map[string]string{"as": "param_name", "value_as": "param_value", "do": ""},
 			Fields: []StepField{
 				sf("as", "Parameter name variable", "Variable name bound to the current parameter name inside the sub-flow", "param_name"),
 				sf("value_as", "Parameter value variable", "Variable name bound to the current parameter value inside the sub-flow", "param_value"),
@@ -776,7 +776,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "foreach_cookie", Title: "For Each Cookie", Category: "control", Capability: "iteration", SupportsNested: true,
 			Description: "Iterate over all HTTP request cookies and execute a sub-flow once per cookie.",
-			Defaults: map[string]string{"as": "cookie_name", "value_as": "cookie_value", "do": ""},
+			Defaults:    map[string]string{"as": "cookie_name", "value_as": "cookie_value", "do": ""},
 			Fields: []StepField{
 				sf("as", "Cookie name variable", "Variable name bound to the current cookie name inside the sub-flow", "cookie_name"),
 				sf("value_as", "Cookie value variable", "Variable name bound to the current cookie value inside the sub-flow", "cookie_value"),
@@ -786,7 +786,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "parallel", Title: "Parallel", Category: "control", Capability: "flow",
 			Description: "Execute multiple branches concurrently. All branches run in parallel; the step waits for all to finish (or timeout). Use error_policy: fail_fast to stop early on the first failure.",
-			Defaults: map[string]string{"timeout_ms": "3000", "error_policy": "continue"},
+			Defaults:    map[string]string{"timeout_ms": "3000", "error_policy": "continue"},
 			Fields: []StepField{
 				sf("timeout_ms", "Timeout (ms)", "Maximum time in milliseconds to wait for all branches (default: 3000)", "3000"),
 				sf("error_policy", "Error policy", `"continue" (default): proceed even if a branch fails. "fail_fast": cancel remaining branches on first failure.`, "continue"),
@@ -796,7 +796,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "call", Title: "Call Flow", Category: "control", Capability: "sub-flow",
 			Description: "Invoke a named sub-flow inline, sharing the current slot context.",
-			Defaults: map[string]string{"flow_name": ""},
+			Defaults:    map[string]string{"flow_name": ""},
 			Fields: []StepField{
 				sf("flow_name", "Flow name", "Name of the sub-flow to invoke", "my_sub_flow"),
 			},
@@ -804,7 +804,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "return", Title: "Return Response", Category: "control", Capability: "termination",
 			Description: "Terminate flow immediately and send an HTTP response to the caller.",
-			Defaults: map[string]string{"status": "200", "body": ""},
+			Defaults:    map[string]string{"status": "200", "body": ""},
 			Fields: []StepField{
 				sf("status", "HTTP status", "Numeric HTTP status code to send (default 200)", "200"),
 				sf("body", "Static body", "Static response body string. Leave empty to use the variable named by 'as'.", ""),
@@ -814,7 +814,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "fail", Title: "Fail", Category: "control", Capability: "termination",
 			Description: "Mark the request as failed with a code and message, then stop.",
-			Defaults: map[string]string{"status": "500", "body": ""},
+			Defaults:    map[string]string{"status": "500", "body": ""},
 			Fields: []StepField{
 				sf("status", "Error code", "Numeric error code stored in ctx.ErrorCode (default 500)", "500"),
 				sf("body", "Static message", "Static error message string. Leave empty to use the variable named by 'as'.", ""),
@@ -824,7 +824,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "capture_error", Title: "Capture Error", Category: "control", Capability: "error-handling",
 			Description: "Capture current error state into variables and clear it, allowing the flow to continue.",
-			Defaults: map[string]string{},
+			Defaults:    map[string]string{},
 			Fields: []StepField{
 				sf("key", "Error code variable", "Variable to capture the numeric error code into", ""),
 				sf("as", "Error message variable", "Variable to capture the error message into", "err_msg"),
@@ -835,7 +835,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "concat", Title: "Concat", Category: "string", Capability: "string-op",
 			Description: "Join two string variables into one. Result = left + separator + right. When only 'source' is given, 'value' acts as a static prefix placed before the source value.",
-			Defaults: map[string]string{"source": "var.input", "as": "result"},
+			Defaults:    map[string]string{"source": "var.input", "as": "result"},
 			Fields: []StepField{
 				sf("key_identifier", "Left variable (optional)", "Variable providing the left part. Omit to use 'value' alone as a static prefix.", ""),
 				sf("source", "Right variable", "Variable (or request source like path.id, header.X-Name) providing the right part", "var.input"),
@@ -846,7 +846,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "to_lower", Title: "To Lower", Category: "string", Capability: "string-op",
 			Description: "Convert a string variable to lower-case.",
-			Defaults: map[string]string{"source": "var.input", "as": "lower_val"},
+			Defaults:    map[string]string{"source": "var.input", "as": "lower_val"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to convert", "var.input"),
 				sf("as", "Store as", "Variable to save the lower-cased result into", "lower_val"),
@@ -855,7 +855,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "to_upper", Title: "To Upper", Category: "string", Capability: "string-op",
 			Description: "Convert a string variable to upper-case.",
-			Defaults: map[string]string{"source": "var.input", "as": "upper_val"},
+			Defaults:    map[string]string{"source": "var.input", "as": "upper_val"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to convert", "var.input"),
 				sf("as", "Store as", "Variable to save the upper-cased result into", "upper_val"),
@@ -864,7 +864,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "substring", Title: "Substring", Category: "string", Capability: "string-op",
 			Description: "Slice a string variable by byte offset. Provide start and/or length in the input map.",
-			Defaults: map[string]string{"source": "var.input", "as": "sliced"},
+			Defaults:    map[string]string{"source": "var.input", "as": "sliced"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to slice", "var.input"),
 				sf("as", "Store as", "Variable to save the substring into", "sliced"),
@@ -873,7 +873,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "to_int", Title: "To Int", Category: "string", Capability: "type-convert",
 			Description: "Parse a string variable as a 64-bit integer and store in an integer variable.",
-			Defaults: map[string]string{"source": "var.str_val", "as": "int_val"},
+			Defaults:    map[string]string{"source": "var.str_val", "as": "int_val"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to parse", "var.str_val"),
 				sf("as", "Store as", "Variable to save the integer into", "int_val"),
@@ -882,7 +882,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "byte_length", Title: "String Length", Category: "string", Capability: "type-convert",
 			Description: "Write the byte-length of a variable value into an integer variable.",
-			Defaults: map[string]string{"source": "var.str_val", "as": "int_len"},
+			Defaults:    map[string]string{"source": "var.str_val", "as": "int_len"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable whose byte-length to measure", "var.str_val"),
 				sf("as", "Integer destination variable", "Variable to write the length into", "int_len"),
@@ -892,7 +892,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "trim", Title: "Trim Whitespace", Category: "string", Capability: "string-op",
 			Description: "Remove leading and trailing whitespace from a string variable. Zero-copy — the result is a sub-slice of the source.",
-			Defaults: map[string]string{"source": "var.input", "as": "trimmed"},
+			Defaults:    map[string]string{"source": "var.input", "as": "trimmed"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to trim", "var.input"),
 				sf("as", "Store as", "Variable to save the trimmed value into", "trimmed"),
@@ -901,7 +901,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "contains", Title: "Contains", Category: "string", Capability: "string-op",
 			Description: "Check whether a string variable contains a fixed substring. Writes true/false to a boolean variable.",
-			Defaults: map[string]string{"source": "var.input", "value": "needle", "as": "found"},
+			Defaults:    map[string]string{"source": "var.input", "value": "needle", "as": "found"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to search", "var.input"),
 				sf("value", "Needle (static)", "Fixed substring to search for (baked at compile time)", "needle"),
@@ -911,7 +911,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "starts_with", Title: "Starts With", Category: "string", Capability: "string-op",
 			Description: "Check whether a string variable starts with a fixed prefix. Writes true/false to a boolean variable.",
-			Defaults: map[string]string{"source": "var.input", "value": "prefix", "as": "matched"},
+			Defaults:    map[string]string{"source": "var.input", "value": "prefix", "as": "matched"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to check", "var.input"),
 				sf("value", "Prefix (static)", "Fixed prefix to test for (baked at compile time)", "prefix"),
@@ -921,7 +921,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "ends_with", Title: "Ends With", Category: "string", Capability: "string-op",
 			Description: "Check whether a string variable ends with a fixed suffix. Writes true/false to a boolean variable.",
-			Defaults: map[string]string{"source": "var.input", "value": "suffix", "as": "matched"},
+			Defaults:    map[string]string{"source": "var.input", "value": "suffix", "as": "matched"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to check", "var.input"),
 				sf("value", "Suffix (static)", "Fixed suffix to test for (baked at compile time)", "suffix"),
@@ -931,7 +931,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "replace", Title: "Replace", Category: "string", Capability: "string-op",
 			Description: "Replace all occurrences of a static substring with another static string. One allocation for the output.",
-			Defaults: map[string]string{"source": "var.input", "as": "replaced"},
+			Defaults:    map[string]string{"source": "var.input", "as": "replaced"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to modify", "var.input"),
 				sf("input.old", "Find (static)", "Substring to replace (baked at compile time)", "old_value"),
@@ -942,7 +942,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cut_prefix", Title: "Cut Prefix", Category: "string", Capability: "string-op",
 			Description: "Strip a static prefix from a string slot. If the string starts with the prefix, writes the remainder (zero-copy); otherwise writes the original string unchanged.",
-			Defaults: map[string]string{"source": "var.input", "input.prefix": "Bearer ", "input.case_sensitive": "true", "as": "result"},
+			Defaults:    map[string]string{"source": "var.input", "input.prefix": "Bearer ", "input.case_sensitive": "true", "as": "result"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to modify", "var.input"),
 				sf("input.prefix", "Prefix (static)", "Fixed prefix to strip (baked at compile time)", "Bearer "),
@@ -953,7 +953,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "split", Title: "Split", Category: "string", Capability: "string-op",
 			Description: "Split a string variable by a static separator and store the result as a JSON array into another variable. Use foreach to iterate the result.",
-			Defaults: map[string]string{"source": "var.input", "value": ",", "as": "parts"},
+			Defaults:    map[string]string{"source": "var.input", "value": ",", "as": "parts"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to split", "var.input"),
 				sf("value", "Separator (static)", "Delimiter to split on (default: comma)", ","),
@@ -963,7 +963,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "index_of", Title: "Index Of", Category: "string", Capability: "string-op",
 			Description: "Find the byte offset of a static substring in a string variable. Writes -1 if not found.",
-			Defaults: map[string]string{"source": "var.input", "value": "needle", "as": "pos"},
+			Defaults:    map[string]string{"source": "var.input", "value": "needle", "as": "pos"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to search", "var.input"),
 				sf("value", "Needle (static)", "Fixed substring to find (baked at compile time)", "needle"),
@@ -974,7 +974,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_const", Title: "Set Literal Value", Category: "string", Capability: "data",
 			Description: "Write a static literal string into a named variable. Use this to define a fixed response body, header value, or any constant before passing it to another step.",
-			Defaults: map[string]string{"value": `{"status":"ok"}`, "as": "var.result"},
+			Defaults:    map[string]string{"value": `{"status":"ok"}`, "as": "var.result"},
 			Fields: []StepField{
 				sf("value", "Literal value", "The static string to store (plain text, JSON, etc.)", `{"status":"ok"}`),
 				sf("as", "Variable name", "Variable name that later steps can reference", "var.result"),
@@ -997,7 +997,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "base64_encode", Title: "Base64 Encode", Category: "encoding", Capability: "encoding",
 			Description: "Encode a byte variable to base64. Set input.encoding to 'std' (default), 'url', 'raw_url', or 'raw_std'.",
-			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Defaults:    map[string]string{"source": "var.input", "as": "encoded"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing bytes to encode", "var.input"),
 				sf("as", "Store as", "Variable for the base64 output", "encoded"),
@@ -1007,7 +1007,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "base64_decode", Title: "Base64 Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a base64 string variable into raw bytes. Clears the result variable on invalid input. Default encoding: raw_url (JWT-friendly).",
-			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.encoded", "as": "decoded"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the base64 string", "var.encoded"),
 				sf("as", "Store as", "Variable for the decoded bytes", "decoded"),
@@ -1017,7 +1017,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "hex_encode", Title: "Hex Encode", Category: "encoding", Capability: "encoding",
 			Description: "Encode a byte variable as a lowercase hexadecimal string.",
-			Defaults: map[string]string{"source": "var.input", "as": "hex"},
+			Defaults:    map[string]string{"source": "var.input", "as": "hex"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing bytes to encode", "var.input"),
 				sf("as", "Store as", "Variable for the hex string", "hex"),
@@ -1026,7 +1026,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "hex_decode", Title: "Hex Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a hex string variable into raw bytes. Clears the result variable on invalid input.",
-			Defaults: map[string]string{"source": "var.hex", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.hex", "as": "decoded"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the hex string", "var.hex"),
 				sf("as", "Store as", "Variable for the decoded bytes", "decoded"),
@@ -1035,7 +1035,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "url_encode", Title: "URL Encode", Category: "encoding", Capability: "encoding",
 			Description: "Percent-encode a string variable (RFC 3986 unreserved characters pass through). Space is encoded as %20.",
-			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Defaults:    map[string]string{"source": "var.input", "as": "encoded"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the string to encode", "var.input"),
 				sf("as", "Store as", "Variable for the percent-encoded output", "encoded"),
@@ -1044,7 +1044,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "url_decode", Title: "URL Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a percent-encoded string variable. '+' is decoded as space.",
-			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.encoded", "as": "decoded"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the percent-encoded string", "var.encoded"),
 				sf("as", "Store as", "Variable for the decoded output", "decoded"),
@@ -1055,7 +1055,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "extract_cookie", Title: "Extract Cookie", Category: "cookie", Capability: "extract",
 			Description: "Extract a named cookie from the Cookie request header. Zero-copy — aliases header memory.",
-			Defaults: map[string]string{"as": "cookie_val"},
+			Defaults:    map[string]string{"as": "cookie_val"},
 			Fields: []StepField{
 				sf("key", "Cookie name", "Name of the cookie to extract (baked at compile time)", "session_id"),
 				sf("as", "Store as", "Variable to write the cookie value into", "cookie_val"),
@@ -1064,7 +1064,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_response_cookie", Title: "Set Response Cookie", Category: "cookie", Capability: "mutate",
 			Description: "Add a Set-Cookie response header. Cookie name and attributes are baked at compile time; value is read from a variable at runtime.",
-			Defaults: map[string]string{"source": "var.session_id", "input.path": "/", "input.http_only": "true"},
+			Defaults:    map[string]string{"source": "var.session_id", "input.path": "/", "input.http_only": "true"},
 			Fields: []StepField{
 				sf("key", "Cookie name", "Name of the cookie to set", "session_id"),
 				sf("source", "Value variable", "Variable containing the cookie value", "var.session_id"),
@@ -1078,7 +1078,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_request_cookie", Title: "Set Request Cookie", Category: "cookie", Capability: "mutate",
 			Description: "Inject a cookie into the upstream request's Cookie header via the mutation log.",
-			Defaults: map[string]string{"source": "var.cookie_val"},
+			Defaults:    map[string]string{"source": "var.cookie_val"},
 			Fields: []StepField{
 				sf("key", "Cookie name", "Name of the cookie to send upstream", "session_id"),
 				sf("source", "Value variable", "Variable containing the cookie value", "var.cookie_val"),
@@ -1087,7 +1087,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "remove_response_cookie", Title: "Remove Response Cookie", Category: "cookie", Capability: "mutate",
 			Description: "Expire a client cookie by setting Max-Age=0. Cookie name and path are baked at compile time.",
-			Defaults: map[string]string{"input.path": "/"},
+			Defaults:    map[string]string{"input.path": "/"},
 			Fields: []StepField{
 				sf("key", "Cookie name", "Name of the cookie to remove", "session_id"),
 				sf("input.path", "Path", "Must match the original cookie path (default: /)", "/"),
@@ -1096,7 +1096,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cookie_flatten", Title: "Cookie Flatten", Category: "cookie", Capability: "transform",
 			Description: "Build a Cookie header value string from multiple named variables, formatted as 'name=value; name2=value2; ...'. Empty variables are skipped.",
-			Defaults: map[string]string{"as": "cookie_header", "input.session_id": "session_slot"},
+			Defaults:    map[string]string{"as": "cookie_header", "input.session_id": "session_slot"},
 			Fields: []StepField{
 				sf("as", "Output variable", "Variable to write the flattened cookie header value", "cookie_header"),
 				sf("input", "Cookie→Variable Mapping", "Map of cookie names to variable names (e.g. {\"session_id\":\"session_variable\",\"csrf\":\"csrf_variable\"})", ""),
@@ -1107,7 +1107,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "hmac_sha256", Title: "HMAC-SHA256", Category: "crypto", Capability: "signing",
 			Description: "Compute HMAC-SHA256 of a string variable using a bake-time secret key. Output is a lowercase hex string.",
-			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Defaults:    map[string]string{"source": "var.payload", "as": "signature"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the data to sign", "var.payload"),
 				sf("as", "Store as", "Variable for the HMAC hex string", "signature"),
@@ -1117,7 +1117,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "hmac_sha1", Title: "HMAC-SHA1", Category: "crypto", Capability: "signing",
 			Description: "Compute HMAC-SHA1 of a string variable using a bake-time key. Output is a lowercase hex string. Use only for legacy integrations.",
-			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Defaults:    map[string]string{"source": "var.payload", "as": "signature"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the data to sign", "var.payload"),
 				sf("as", "Store as", "Variable for the HMAC hex string", "signature"),
@@ -1127,7 +1127,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "sha256_hash", Title: "SHA-256 Hash", Category: "crypto", Capability: "hashing",
 			Description: "Compute SHA-256 hash of a string variable. Output is a lowercase hex string. No secret key — use hmac_sha256 for signed hashes.",
-			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Defaults:    map[string]string{"source": "var.input", "as": "digest"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the data to hash", "var.input"),
 				sf("as", "Store as", "Variable for the SHA-256 hex string", "digest"),
@@ -1136,7 +1136,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "md5_hash", Title: "MD5 Hash", Category: "crypto", Capability: "hashing",
 			Description: "Compute MD5 hash of a string variable. Output is a lowercase hex string. MD5 is cryptographically broken — use only for checksums or legacy compatibility.",
-			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Defaults:    map[string]string{"source": "var.input", "as": "digest"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the data to hash", "var.input"),
 				sf("as", "Store as", "Variable for the MD5 hex string", "digest"),
@@ -1145,7 +1145,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "aes_encrypt", Title: "AES Encrypt (GCM)", Category: "crypto", Capability: "encryption",
 			Description: "Encrypt a variable with AES-GCM using a bake-time key (hex-encoded, 16/24/32 bytes). Output is nonce||ciphertext, written to a variable.",
-			Defaults: map[string]string{"source": "var.plaintext", "as": "ciphertext"},
+			Defaults:    map[string]string{"source": "var.plaintext", "as": "ciphertext"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing the plaintext bytes", "var.plaintext"),
 				sf("as", "Store as", "Variable for the encrypted output (nonce prefix + ciphertext)", "ciphertext"),
@@ -1155,7 +1155,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "aes_decrypt", Title: "AES Decrypt (GCM)", Category: "crypto", Capability: "encryption",
 			Description: "Decrypt AES-GCM ciphertext (nonce||ciphertext) using a bake-time key. Sets Failed=true on authentication failure.",
-			Defaults: map[string]string{"source": "var.ciphertext", "as": "plaintext"},
+			Defaults:    map[string]string{"source": "var.ciphertext", "as": "plaintext"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable containing nonce||ciphertext bytes", "var.ciphertext"),
 				sf("as", "Store as", "Variable for the decrypted plaintext", "plaintext"),
@@ -1165,7 +1165,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "load_secret_var", Title: "Load Secret (Runtime Ref)", Category: "crypto", Capability: "secret",
 			Description: "Resolves a secret reference stored in a variable at runtime. Use with load_meta to support per-tenant keys whose reference (e.g. 'env:TENANT_KEY' or 'gsm://...') is stored in the tenant registry. The secrets manager caches resolved values — no Vault/GSM call on every request.",
-			Defaults: map[string]string{"source": "key_ref_slot", "as": "key_material"},
+			Defaults:    map[string]string{"source": "key_ref_slot", "as": "key_material"},
 			Fields: []StepField{
 				sf("source", "Reference variable", "Variable containing the secret reference string at runtime (e.g. 'gsm://...', 'env:MY_VAR')", "key_ref_slot"),
 				sf("as", "Store as", "Variable to write the resolved secret bytes into", "key_material"),
@@ -1174,7 +1174,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "aes_encrypt_slot_key", Title: "AES Encrypt (Runtime Key)", Category: "crypto", Capability: "encryption",
 			Description: "Encrypt a variable with AES-256-GCM using a key loaded from another variable at runtime. Use with load_secret_var for per-tenant field-level encryption. Output format is identical to aes_encrypt.",
-			Defaults: map[string]string{"source": "plaintext_slot", "as": "ciphertext_slot"},
+			Defaults:    map[string]string{"source": "plaintext_slot", "as": "ciphertext_slot"},
 			Fields: []StepField{
 				sf("source", "Plaintext variable", "Variable containing the value to encrypt", "plaintext_slot"),
 				sf("input.key_slot", "Key variable", "Variable holding the 32-byte AES-256 key (loaded via load_secret_var)", "key_material"),
@@ -1184,7 +1184,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "aes_decrypt_slot_key", Title: "AES Decrypt (Runtime Key)", Category: "crypto", Capability: "encryption",
 			Description: "Decrypt AES-256-GCM ciphertext using a key loaded from another variable at runtime. Counterpart to aes_encrypt_slot_key. Sets Failed=true on authentication failure.",
-			Defaults: map[string]string{"source": "ciphertext_slot", "as": "plaintext_slot"},
+			Defaults:    map[string]string{"source": "ciphertext_slot", "as": "plaintext_slot"},
 			Fields: []StepField{
 				sf("source", "Ciphertext variable", "Variable containing nonce||ciphertext bytes to decrypt", "ciphertext_slot"),
 				sf("input.key_slot", "Key variable", "Variable holding the 32-byte AES-256 key", "key_material"),
@@ -1196,7 +1196,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "add", Title: "Add", Category: "math", Capability: "arithmetic",
 			Description: "Add two numeric variables and store the result.",
-			Defaults: map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
+			Defaults:    map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
 			Fields: []StepField{
 				sf("key_identifier", "Left operand", "Variable containing the first number", "var.a"),
 				sf("source", "Right operand", "Variable containing the second number", "var.b"),
@@ -1206,7 +1206,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "sub", Title: "Subtract", Category: "math", Capability: "arithmetic",
 			Description: "Subtract the right-operand variable from the left and store the result.",
-			Defaults: map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
+			Defaults:    map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
 			Fields: []StepField{
 				sf("key_identifier", "Left operand", "Variable containing the number to subtract from", "var.a"),
 				sf("source", "Right operand", "Variable containing the number to subtract", "var.b"),
@@ -1216,7 +1216,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "mul", Title: "Multiply", Category: "math", Capability: "arithmetic",
 			Description: "Multiply two numeric variables and store the result.",
-			Defaults: map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
+			Defaults:    map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
 			Fields: []StepField{
 				sf("key_identifier", "Left operand", "Variable containing the first factor", "var.a"),
 				sf("source", "Right operand", "Variable containing the second factor", "var.b"),
@@ -1226,7 +1226,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "div", Title: "Divide", Category: "math", Capability: "arithmetic",
 			Description: "Divide the left-operand variable by the right and store the result.",
-			Defaults: map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
+			Defaults:    map[string]string{"key_identifier": "var.a", "source": "var.b", "as": "result"},
 			Fields: []StepField{
 				sf("key_identifier", "Dividend", "Variable containing the number to be divided", "var.a"),
 				sf("source", "Divisor", "Variable containing the divisor", "var.b"),
@@ -1238,7 +1238,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_get", Title: "Cache Read · Per-Tenant", Category: "cache", Capability: "read",
 			Description: "Read a cached value for this tenant. Each tenant has its own private cache — other tenants cannot see or affect this data. On a hit the value is saved to the output variable. On a miss the output variable is empty (if it was new) or keeps its previous value. Add an `if` step after this checking whether the output variable is non-empty to branch on hit vs miss.",
-			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
+			Defaults:    map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the lookup key — e.g. a user ID or request path", "cache_key"),
 				sf("as", "Output variable", "Variable to save the cached value into when there is a cache hit", "cached_body"),
@@ -1247,7 +1247,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_put", Title: "Cache Write · Per-Tenant", Category: "cache", Capability: "write",
 			Description: "Store a value in this tenant's private cache. The entry expires after the TTL you set. Only this tenant can read back the value via Cache Read · Per-Tenant.",
-			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
+			Defaults:    map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the cache key — must match the key used on the read step", "cache_key"),
 				sf("source", "Value to cache (variable)", "Variable holding the value you want to store — e.g. an upstream response body", "upstream_response"),
@@ -1257,7 +1257,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_get_global", Title: "Cache Read · Shared", Category: "cache", Capability: "read",
 			Description: "Read a value from the shared (global) cache — the same data is visible across all tenants. Use this for content that does not vary per tenant, such as public API responses or configuration payloads. On a hit the value is saved to the output variable. On a miss the output variable is empty (if it was new) or keeps its previous value. Add an `if` step after this checking whether the output variable is non-empty to branch on hit vs miss.",
-			Defaults: map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
+			Defaults:    map[string]string{"key_identifier": "cache_key", "as": "cached_body"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the lookup key", "cache_key"),
 				sf("as", "Output variable", "Variable to save the cached value into when there is a cache hit", "cached_body"),
@@ -1266,7 +1266,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_put_global", Title: "Cache Write · Shared", Category: "cache", Capability: "write",
 			Description: "Store a value in the shared (global) cache. The entry is readable by all tenants via Cache Read · Shared. Use only for data that is truly the same for every tenant.",
-			Defaults: map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
+			Defaults:    map[string]string{"key_identifier": "cache_key", "source": "upstream_response", "ttl": "300"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the cache key — must match the key used on the read step", "cache_key"),
 				sf("source", "Value to cache (variable)", "Variable holding the value you want to store", "upstream_response"),
@@ -1277,7 +1277,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_delete", Title: "Cache Invalidate · Per-Tenant", Category: "cache", Capability: "write",
 			Description: "Remove a specific entry from this tenant's private cache immediately. Use this to force-expire a cached value before its TTL runs out — e.g. after a write that makes the cached response stale.",
-			Defaults: map[string]string{"key_identifier": "cache_key"},
+			Defaults:    map[string]string{"key_identifier": "cache_key"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the key to delete", "cache_key"),
 			},
@@ -1285,7 +1285,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_delete_global", Title: "Cache Invalidate · Shared", Category: "cache", Capability: "write",
 			Description: "Remove a specific entry from the shared (global) cache immediately. Affects all tenants that read from Cache Read · Shared using the same key.",
-			Defaults: map[string]string{"key_identifier": "cache_key"},
+			Defaults:    map[string]string{"key_identifier": "cache_key"},
 			Fields: []StepField{
 				sf("key_identifier", "Cache key (variable)", "Variable whose value is used as the key to delete from the shared cache", "cache_key"),
 			},
@@ -1293,7 +1293,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_exists", Title: "Cache Exists", Category: "cache", Capability: "read",
 			Description: "Check whether a key exists in L1 cache without fetching its value. Writes true/false to a boolean variable. ~2-3× faster than cache_get.",
-			Defaults: map[string]string{"source": "var.cache_key", "as": "cache_hit"},
+			Defaults:    map[string]string{"source": "var.cache_key", "as": "cache_hit"},
 			Fields: []StepField{
 				sf("source", "Key variable", "Variable containing the cache key to check", "var.cache_key"),
 				sf("as", "Boolean result variable", "Variable to write true (hit) or false (miss) into", "cache_hit"),
@@ -1302,7 +1302,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "cache_incr", Title: "Cache Increment", Category: "cache", Capability: "write",
 			Description: "Atomically increment an int64 counter stored in the cache. Initialises to delta if the key is absent. Result is written to an integer variable.",
-			Defaults: map[string]string{"source": "var.counter_key", "as": "counter_val"},
+			Defaults:    map[string]string{"source": "var.counter_key", "as": "counter_val"},
 			Fields: []StepField{
 				sf("source", "Key variable", "Variable containing the cache key for the counter", "var.counter_key"),
 				sf("as", "Integer result variable", "Variable to write the updated counter value into", "counter_val"),
@@ -1314,13 +1314,13 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "batch_flush", Title: "Batch Flush", Category: "cache", Capability: "batch",
 			Description: "Flush all queued storage ops (cache gets/puts, registry ops) in a single pipeline round-trip. Place after a group of cache_get_batched / json_extract_emit steps and before any step that reads the results.",
-			Defaults: map[string]string{},
-			Fields:   []StepField{},
+			Defaults:    map[string]string{},
+			Fields:      []StepField{},
 		},
 		{
 			Type: "cache_get_batched", Title: "Cache Read (Batched)", Category: "cache", Capability: "read",
 			Description: "Queue a cache lookup into the batch buffer — the result is not available until a Batch Flush step runs. Use this when you need multiple cache lookups and want to issue them all in one round-trip for efficiency.",
-			Defaults: map[string]string{"variable": "cache_key", "destination": "cached_body"},
+			Defaults:    map[string]string{"variable": "cache_key", "destination": "cached_body"},
 			Fields: []StepField{
 				sf("variable", "Cache key (variable)", "Variable whose value is used as the lookup key", "cache_key"),
 				sf("destination", "Output variable", "Variable to write the cached value into after the batch flush runs", "cached_body"),
@@ -1329,7 +1329,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "json_extract_emit", Title: "JSON Extract & Emit", Category: "cache", Capability: "batch",
 			Description: "Extract multiple fields from a JSON body in one scan and emit one storage op per field. Use params to configure each extraction (path, key_prefix, op_type, target, dest_variable/value_variable, async).",
-			Defaults: map[string]string{"variable": "http_resp"},
+			Defaults:    map[string]string{"variable": "http_resp"},
 			Fields: []StepField{
 				sf("variable", "Body variable", "Variable holding the JSON body to extract from", "http_resp"),
 				sf("params", "Extract ops (JSON array)", `Array of op descriptors. Each: {"path":"user.id","key_prefix":"user:","op_type":"put","target":"cache","value_variable":"","async":"true"}`, ""),
@@ -1338,7 +1338,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "json_foreach_emit", Title: "JSON Foreach & Emit", Category: "cache", Capability: "batch",
 			Description: "Iterate over a JSON array and emit one batch of storage ops per element. Handles unbounded arrays via auto-flush. Use params to configure per-element extractions.",
-			Defaults: map[string]string{"variable": "http_resp", "path": "items"},
+			Defaults:    map[string]string{"variable": "http_resp", "path": "items"},
 			Fields: []StepField{
 				sf("variable", "Body variable", "Variable holding the JSON body containing the array", "http_resp"),
 				sf("path", "Array path", "gjson path to the array within the body (e.g. items, data.services)", "items"),
@@ -1348,7 +1348,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "json_set", Title: "JSON Set", Category: "json", Capability: "transform",
 			Description: "Set a value at a JSON path in a variable. Uses gjson to locate the field and hand-rolled splicing to replace it.",
-			Defaults: map[string]string{"source": "var.body", "as": "var.body", "key": "user.id"},
+			Defaults:    map[string]string{"source": "var.body", "as": "var.body", "key": "user.id"},
 			Fields: []StepField{
 				sf("source", "Source variable", "Variable with JSON input to mutate", "var.body"),
 				sf("as", "Output variable", "Variable for JSON output (can be same as source)", "var.body"),
@@ -1362,7 +1362,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_response_header", Title: "Set Response Header", Category: "response", Capability: "response-mod",
 			Description: "Set a response header to the value from a variable.",
-			Defaults: map[string]string{"key": "X-Custom-Header", "source": "var.header_value"},
+			Defaults:    map[string]string{"key": "X-Custom-Header", "source": "var.header_value"},
 			Fields: []StepField{
 				sf("key", "Header name", "Name of the HTTP response header to set", "X-Request-ID"),
 				sf("source", "Value variable", "Variable whose value is written to the header", "var.header_value"),
@@ -1371,7 +1371,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "remove_response_header", Title: "Remove Response Header", Category: "response", Capability: "response-mod",
 			Description: "Remove a response header by name.",
-			Defaults: map[string]string{"key": "X-Custom-Header"},
+			Defaults:    map[string]string{"key": "X-Custom-Header"},
 			Fields: []StepField{
 				sf("key", "Header name", "Name of the HTTP response header to remove", "X-Custom-Header"),
 			},
@@ -1379,7 +1379,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_response_body", Title: "Set Response Body", Category: "response", Capability: "response-mod",
 			Description: "Replace the response body with the value from a variable.",
-			Defaults: map[string]string{"source": "var.body"},
+			Defaults:    map[string]string{"source": "var.body"},
 			Fields: []StepField{
 				sf("source", "Body variable", "Variable whose value becomes the response body", "var.body"),
 			},
@@ -1387,7 +1387,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_response_status", Title: "Set Response Status", Category: "response", Capability: "response-mod",
 			Description: "Set the HTTP response status code.",
-			Defaults: map[string]string{"value": "200"},
+			Defaults:    map[string]string{"value": "200"},
 			Fields: []StepField{
 				sf("value", "Status code", "Numeric HTTP status code (e.g. 200, 401, 404, 503)", "200"),
 			},
@@ -1395,7 +1395,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "set_response_status_from_slot", Title: "Set Response Status from Variable", Category: "response", Capability: "response-mod",
 			Description: "Set the HTTP response status code from an integer variable.",
-			Defaults: map[string]string{"source": "var.status"},
+			Defaults:    map[string]string{"source": "var.status"},
 			Fields: []StepField{
 				sf("source", "Status variable", "Integer variable whose value becomes the response status code", "var.status"),
 			},
@@ -1403,7 +1403,7 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "map_status", Title: "Map Status Code", Category: "response", Capability: "response-mod",
 			Description: "Remap HTTP status codes from a variable using a lookup table. Useful for transforming upstream status codes to client-facing codes.",
-			Defaults: map[string]string{"source_var": "upstream_status", "default": "pass"},
+			Defaults:    map[string]string{"source_var": "upstream_status", "default": "pass"},
 			Fields: []StepField{
 				sf("source_var", "Source variable", "Variable holding the upstream HTTP status code (integer variable)", "upstream_status"),
 				sf("mappings", "Status mappings", "Map of upstream status codes to client status codes (e.g. 502→503)", ""),
@@ -1413,13 +1413,13 @@ func AllStepDescriptors() []StepDescriptor {
 		{
 			Type: "echo_request", Title: "Echo Request", Category: "response", Capability: "debug",
 			Description: "Mirror the incoming request back as the response. Useful for testing flows.",
-			Defaults: map[string]string{},
-			Fields:   []StepField{},
+			Defaults:    map[string]string{},
+			Fields:      []StepField{},
 		},
 		{
 			Type: "current_timestamp", Title: "Current Timestamp", Category: "response", Capability: "time",
 			Description: "Write the current time into a variable. Format: unix_s (coarse, ~1 ns via cached clock), unix_ms (default), unix_ns, rfc3339.",
-			Defaults: map[string]string{"as": "ts", "format": "unix_ms"},
+			Defaults:    map[string]string{"as": "ts", "format": "unix_ms"},
 			Fields: []StepField{
 				sf("as", "Store as", "Variable name to write the timestamp into.", "ts"),
 				sf("format", "Format", "Output format: unix_s | unix_ms | unix_ns | rfc3339. Default: unix_ms.", "unix_ms"),
@@ -1442,7 +1442,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "db_query", Title: "Database Query", Category: "database", Capability: "query",
 			Description: "Execute a SQL SELECT statement and retrieve all rows as a JSON array.",
-			Defaults: map[string]string{"key": "default", "as": "results"},
+			Defaults:    map[string]string{"key": "default", "as": "results"},
 			Fields: []StepField{
 				sf("key", "Data Source", "Name of the configured data source", "default"),
 				sf("value", "SQL Query", "SQL SELECT statement; use $1,$2,... for parameters", "SELECT * FROM users WHERE id = $1"),
@@ -1453,7 +1453,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "db_query_one", Title: "Database Query One", Category: "database", Capability: "query",
 			Description: "Execute a SQL SELECT statement and retrieve the first row as a JSON object.",
-			Defaults: map[string]string{"key": "default", "as": "result"},
+			Defaults:    map[string]string{"key": "default", "as": "result"},
 			Fields: []StepField{
 				sf("key", "Data Source", "Name of the configured data source", "default"),
 				sf("value", "SQL Query", "SQL SELECT statement; use $1,$2,... for parameters", "SELECT * FROM users WHERE id = $1"),
@@ -1464,7 +1464,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "db_exec", Title: "Database Execute", Category: "database", Capability: "execute",
 			Description: "Execute a SQL INSERT/UPDATE/DELETE statement and return the number of affected rows.",
-			Defaults: map[string]string{"key": "default", "as": "affected_rows"},
+			Defaults:    map[string]string{"key": "default", "as": "affected_rows"},
 			Fields: []StepField{
 				sf("key", "Data Source", "Name of the configured data source", "default"),
 				sf("value", "SQL Statement", "SQL INSERT/UPDATE/DELETE; use $1,$2,... for parameters", "INSERT INTO logs (msg) VALUES ($1)"),
@@ -1479,7 +1479,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "ws_broadcast_channel", Title: "WS Broadcast Channel", Category: "websocket", Capability: "broadcast",
 			Description: "Send a payload to all WebSocket sessions subscribed to a channel.",
-			Defaults: map[string]string{"key": "notifications"},
+			Defaults:    map[string]string{"key": "notifications"},
 			Fields: []StepField{
 				sf("key", "Channel", "Channel name to broadcast to", "notifications"),
 				sf("body_var", "Payload slot", "Slot containing the message bytes", "ws_payload"),
@@ -1489,7 +1489,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "ws_push_session", Title: "WS Push Session", Category: "websocket", Capability: "push",
 			Description: "Send a payload to a specific WebSocket session by ID.",
-			Defaults: map[string]string{},
+			Defaults:    map[string]string{},
 			Fields: []StepField{
 				sf("key_var", "Session ID slot", "Slot containing the target session ID", "session_id"),
 				sf("body_var", "Payload slot", "Slot containing the message bytes", "ws_payload"),
@@ -1503,7 +1503,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "ws_upstream_connect", Title: "WS Upstream Connect", Category: "websocket", Capability: "upstream",
 			Description: "Open an on-demand WebSocket connection to a named upstream; connection is reused until TTL expires.",
-			Defaults: map[string]string{"as": "ws_handle"},
+			Defaults:    map[string]string{"as": "ws_handle"},
 			Fields: []StepField{
 				sf("key", "Upstream name", "Name of the ws_upstream configured in gateway.yaml", "broker"),
 				sf("value", "Scope key", "Per-tenant or per-user isolation key; uses tenant ID if omitted", "{tenant_id}"),
@@ -1513,7 +1513,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "ws_upstream_disconnect", Title: "WS Upstream Disconnect", Category: "websocket", Capability: "upstream",
 			Description: "Close a dynamic upstream WebSocket connection.",
-			Defaults: map[string]string{},
+			Defaults:    map[string]string{},
 			Fields: []StepField{
 				sf("key", "Upstream name", "Name of the upstream to disconnect", "broker"),
 				sf("key_var", "Scope key slot", "Slot containing the scope key (alternative to static value)", ""),
@@ -1526,7 +1526,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "send_email", Title: "Send Email", Category: "notifications", Capability: "email",
 			Description: "Send an email via a configured email provider.",
-			Defaults: map[string]string{"key": "default"},
+			Defaults:    map[string]string{"key": "default"},
 			Fields: []StepField{
 				sf("key", "Provider", "Name of the email_provider configured in gateway.yaml", "default"),
 				sf("to_var", "To slot", "Slot containing the recipient address", "recipient_email"),
@@ -1541,7 +1541,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "storage_get", Title: "Storage Get", Category: "storage", Capability: "read",
 			Description: "Retrieve an object from S3-compatible storage.",
-			Defaults: map[string]string{"key": "default", "as": "file_content"},
+			Defaults:    map[string]string{"key": "default", "as": "file_content"},
 			Fields: []StepField{
 				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
 				sf("value", "Object path", "Key/path of the object to retrieve; supports {slot} references", "files/{file_id}"),
@@ -1551,7 +1551,7 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "storage_put", Title: "Storage Put", Category: "storage", Capability: "write",
 			Description: "Store content in S3-compatible object storage.",
-			Defaults: map[string]string{"key": "default"},
+			Defaults:    map[string]string{"key": "default"},
 			Fields: []StepField{
 				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
 				sf("value", "Object path", "Key/path where the object will be stored; supports {slot} references", "files/{file_id}"),
@@ -1561,10 +1561,466 @@ func AllStepDescriptors() []StepDescriptor {
 		StepDescriptor{
 			Type: "storage_delete", Title: "Storage Delete", Category: "storage", Capability: "write",
 			Description: "Delete an object from S3-compatible object storage.",
-			Defaults: map[string]string{"key": "default"},
+			Defaults:    map[string]string{"key": "default"},
 			Fields: []StepField{
 				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
 				sf("value", "Object path", "Key/path of the object to delete; supports {slot} references", "files/{file_id}"),
+			},
+		},
+	)
+
+	// ── Redis ─────────────────────────────────────────────────────────────
+	base = append(base,
+		// KV operations
+		StepDescriptor{
+			Type: "redis_get", Title: "Redis GET", Category: "redis", Capability: "read",
+			Description: "Retrieve a value from Redis by key.",
+			Defaults:    map[string]string{"key": "default", "as": "redis_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key to retrieve; supports {slot} references", "user:{user_id}"),
+				sf("as", "Store as", "Variable to save the retrieved value into", "redis_value"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_put", Title: "Redis PUT", Category: "redis", Capability: "write",
+			Description: "Store a value in Redis with optional TTL.",
+			Defaults:    map[string]string{"key": "default", "value": "mykey", "ttl": "300"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key where value will be stored; supports {slot} references", "user:{user_id}"),
+				sf("body_var", "Value variable", "Variable containing value bytes to store", "var.value"),
+				sf("ttl", "TTL (seconds)", "Time to live in seconds (0 = no expiry)", "300"),
+				sf("as", "Status variable", "Optional variable to write operation result", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_mget", Title: "Redis MGET", Category: "redis", Capability: "read",
+			Description: "Retrieve multiple values from Redis.",
+			Defaults:    map[string]string{"key": "default", "as": "redis_values"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("vars", "Key variables", "JSON array of variable names or static keys to retrieve", `["{key1}","{key2}"]`),
+				sf("as", "Store as", "Variable to save the JSON array of values into", "redis_values"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_mput", Title: "Redis MPUT", Category: "redis", Capability: "write",
+			Description: "Store multiple values in Redis.",
+			Defaults:    map[string]string{"key": "default", "ttl": "300"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("body_var", "Pairs variable", "Variable containing JSON object of {key: value} pairs", "var.pairs"),
+				sf("ttl", "TTL (seconds)", "Time to live in seconds for all keys (0 = no expiry)", "300"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_del", Title: "Redis DEL", Category: "redis", Capability: "write",
+			Description: "Delete one or more keys from Redis.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Single key to delete; supports {slot} references", "user:{user_id}"),
+				sf("vars", "Key variables", "JSON array of variable names or static keys to delete", ""),
+				sf("as", "Count variable", "Optional variable to write number of deleted keys", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_exists", Title: "Redis EXISTS", Category: "redis", Capability: "read",
+			Description: "Check if one or more keys exist in Redis.",
+			Defaults:    map[string]string{"key": "default", "as": "key_exists"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Single key to check; supports {slot} references", "user:{user_id}"),
+				sf("as", "Count variable", "Variable to write count of existing keys (0 or 1)", "key_exists"),
+			},
+		},
+		// Counter operations
+		StepDescriptor{
+			Type: "redis_incr", Title: "Redis INCR", Category: "redis", Capability: "write",
+			Description: "Atomically increment an integer value in Redis.",
+			Defaults:    map[string]string{"key": "default", "delta": "1", "as": "new_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key holding the integer; supports {slot} references", "counter:{id}"),
+				sf("delta", "Delta", "Amount to increment (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the new value into", "new_value"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_decr", Title: "Redis DECR", Category: "redis", Capability: "write",
+			Description: "Atomically decrement an integer value in Redis.",
+			Defaults:    map[string]string{"key": "default", "delta": "1", "as": "new_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key holding the integer; supports {slot} references", "counter:{id}"),
+				sf("delta", "Delta", "Amount to decrement (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the new value into", "new_value"),
+			},
+		},
+		// Expiration operations
+		StepDescriptor{
+			Type: "redis_expire", Title: "Redis EXPIRE", Category: "redis", Capability: "write",
+			Description: "Set TTL expiration on a Redis key.",
+			Defaults:    map[string]string{"key": "default", "ttl": "300"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key to set expiration on; supports {slot} references", "user:{user_id}"),
+				sf("ttl", "TTL (seconds)", "Time to live in seconds", "300"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_ttl", Title: "Redis TTL", Category: "redis", Capability: "read",
+			Description: "Get remaining TTL of a Redis key.",
+			Defaults:    map[string]string{"key": "default", "as": "remaining_ttl"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key to check TTL on; supports {slot} references", "user:{user_id}"),
+				sf("as", "Store as", "Variable to write remaining TTL in seconds (-2 if not exist, -1 if no expiry)", "remaining_ttl"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_persist", Title: "Redis PERSIST", Category: "redis", Capability: "write",
+			Description: "Remove TTL expiration from a Redis key.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Key to remove expiration from; supports {slot} references", "user:{user_id}"),
+			},
+		},
+		// Locking operations
+		StepDescriptor{
+			Type: "redis_lock", Title: "Redis LOCK", Category: "redis", Capability: "write",
+			Description: "Acquire a distributed lock in Redis.",
+			Defaults:    map[string]string{"key": "default", "ttl": "10", "as": "lock_acquired"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Lock key", "Key for the lock; supports {slot} references", "lock:{resource_id}"),
+				sf("ttl", "TTL (seconds)", "Lock timeout in seconds", "10"),
+				sf("as", "Success variable", "Variable to write true/false (lock acquired or not)", "lock_acquired"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_unlock", Title: "Redis UNLOCK", Category: "redis", Capability: "write",
+			Description: "Release a distributed lock in Redis.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Lock key", "Key for the lock to release; supports {slot} references", "lock:{resource_id}"),
+			},
+		},
+		// Pub/Sub
+		StepDescriptor{
+			Type: "redis_publish", Title: "Redis PUBLISH", Category: "redis", Capability: "write",
+			Description: "Publish a message to a Redis channel.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Channel", "Channel name to publish to; supports {slot} references", "events:{event_type}"),
+				sf("body_var", "Message variable", "Variable containing the message bytes", "var.message"),
+				sf("as", "Count variable", "Optional variable to write number of subscribers", ""),
+			},
+		},
+		// Sorted Set operations
+		StepDescriptor{
+			Type: "redis_zadd", Title: "Redis ZADD", Category: "redis", Capability: "write",
+			Description: "Add members to a sorted set in Redis.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("body_var", "Members variable", "Variable containing JSON array of {member, score} objects", "var.members"),
+				sf("as", "Count variable", "Optional variable to write number of added members", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zincrby", Title: "Redis ZINCRBY", Category: "redis", Capability: "write",
+			Description: "Increment the score of a member in a sorted set.",
+			Defaults:    map[string]string{"key": "default", "delta": "1", "as": "new_score"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Member", "JSON object with member name and increment amount", `{"member":"player1","delta":10}`),
+				sf("delta", "Delta", "Score increment amount", "1"),
+				sf("as", "Store as", "Variable to write the new score into", "new_score"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zrange", Title: "Redis ZRANGE", Category: "redis", Capability: "read",
+			Description: "Retrieve a range of members from a sorted set.",
+			Defaults:    map[string]string{"key": "default", "as": "members"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Start-End range", "JSON object with start and end indices (default: 0,-1 for all)", `{"start":"0","end":"-1"}`),
+				sf("order", "Order", "asc for ascending scores, desc for descending", "asc"),
+				sf("with_scores", "Include scores", "true to include scores, false for members only", "false"),
+				sf("as", "Store as", "Variable to write the JSON array result into", "members"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zrangebyscore", Title: "Redis ZRANGEBYSCORE", Category: "redis", Capability: "read",
+			Description: "Retrieve members from a sorted set by score range.",
+			Defaults:    map[string]string{"key": "default", "as": "members"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Score range", "JSON object with min and max scores", `{"min":"0","max":"100"}`),
+				sf("with_scores", "Include scores", "true to include scores, false for members only", "false"),
+				sf("as", "Store as", "Variable to write the JSON array result into", "members"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zscore", Title: "Redis ZSCORE", Category: "redis", Capability: "read",
+			Description: "Get the score of a member in a sorted set.",
+			Defaults:    map[string]string{"key": "default", "as": "score"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Member", "Member name to get score for", "player1"),
+				sf("as", "Store as", "Variable to write the score into (or empty if not found)", "score"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zrank", Title: "Redis ZRANK", Category: "redis", Capability: "read",
+			Description: "Get the rank of a member in a sorted set.",
+			Defaults:    map[string]string{"key": "default", "as": "rank"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Member", "Member name to get rank for", "player1"),
+				sf("order", "Order", "asc for ascending rank, desc for descending", "asc"),
+				sf("as", "Store as", "Variable to write the rank into (-1 if not found)", "rank"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zrem", Title: "Redis ZREM", Category: "redis", Capability: "write",
+			Description: "Remove members from a sorted set.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("members", "Members", "JSON array of member names to remove", `["player1","player2"]`),
+				sf("as", "Count variable", "Optional variable to write number of removed members", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zpopmin", Title: "Redis ZPOPMIN", Category: "redis", Capability: "write",
+			Description: "Remove and return members with lowest scores from a sorted set.",
+			Defaults:    map[string]string{"key": "default", "count": "1", "as": "members"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("count", "Count", "Number of members to pop (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the JSON array of popped members with scores", "members"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_zpopmax", Title: "Redis ZPOPMAX", Category: "redis", Capability: "write",
+			Description: "Remove and return members with highest scores from a sorted set.",
+			Defaults:    map[string]string{"key": "default", "count": "1", "as": "members"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Sorted set key; supports {slot} references", "leaderboard:{game_id}"),
+				sf("count", "Count", "Number of members to pop (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the JSON array of popped members with scores", "members"),
+			},
+		},
+		// Hash operations
+		StepDescriptor{
+			Type: "redis_hset", Title: "Redis HSET", Category: "redis", Capability: "write",
+			Description: "Set fields in a Redis hash.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("body_var", "Fields variable", "Variable containing JSON object of {field: value} pairs", "var.fields"),
+				sf("as", "Count variable", "Optional variable to write number of fields added", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hmset", Title: "Redis HMSET", Category: "redis", Capability: "write",
+			Description: "Set multiple fields in a Redis hash (deprecated, use HSET).",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("body_var", "Fields variable", "Variable containing JSON object of {field: value} pairs", "var.fields"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hget", Title: "Redis HGET", Category: "redis", Capability: "read",
+			Description: "Get a field value from a Redis hash.",
+			Defaults:    map[string]string{"key": "default", "as": "field_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("members", "Field", "Field name to retrieve", "email"),
+				sf("as", "Store as", "Variable to write the field value into", "field_value"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hmget", Title: "Redis HMGET", Category: "redis", Capability: "read",
+			Description: "Get multiple field values from a Redis hash.",
+			Defaults:    map[string]string{"key": "default", "as": "field_values"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("vars", "Field variables", "JSON array of field names to retrieve", `["email","name"]`),
+				sf("as", "Store as", "Variable to write the JSON array of values into", "field_values"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hgetall", Title: "Redis HGETALL", Category: "redis", Capability: "read",
+			Description: "Get all fields and values from a Redis hash.",
+			Defaults:    map[string]string{"key": "default", "as": "hash_data"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("as", "Store as", "Variable to write the JSON object into", "hash_data"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hdel", Title: "Redis HDEL", Category: "redis", Capability: "write",
+			Description: "Delete fields from a Redis hash.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("vars", "Field variables", "JSON array of field names to delete", `["email","phone"]`),
+				sf("as", "Count variable", "Optional variable to write number of deleted fields", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_hincrby", Title: "Redis HINCRBY", Category: "redis", Capability: "write",
+			Description: "Increment a numeric field in a Redis hash.",
+			Defaults:    map[string]string{"key": "default", "delta": "1", "as": "new_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Hash key; supports {slot} references", "user:{user_id}"),
+				sf("members", "Field", "Field name to increment", "score"),
+				sf("delta", "Delta", "Amount to increment by", "1"),
+				sf("as", "Store as", "Variable to write the new value into", "new_value"),
+			},
+		},
+		// List operations
+		StepDescriptor{
+			Type: "redis_lpush", Title: "Redis LPUSH", Category: "redis", Capability: "write",
+			Description: "Push values to the head of a Redis list.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("body_var", "Values variable", "Variable containing JSON array of values to push", "var.values"),
+				sf("as", "Length variable", "Optional variable to write the new list length", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_rpush", Title: "Redis RPUSH", Category: "redis", Capability: "write",
+			Description: "Push values to the tail of a Redis list.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("body_var", "Values variable", "Variable containing JSON array of values to push", "var.values"),
+				sf("as", "Length variable", "Optional variable to write the new list length", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_lpop", Title: "Redis LPOP", Category: "redis", Capability: "write",
+			Description: "Pop a value from the head of a Redis list.",
+			Defaults:    map[string]string{"key": "default", "count": "1", "as": "popped_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("count", "Count", "Number of values to pop (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the popped value(s) into", "popped_value"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_rpop", Title: "Redis RPOP", Category: "redis", Capability: "write",
+			Description: "Pop a value from the tail of a Redis list.",
+			Defaults:    map[string]string{"key": "default", "count": "1", "as": "popped_value"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("count", "Count", "Number of values to pop (default: 1)", "1"),
+				sf("as", "Store as", "Variable to write the popped value(s) into", "popped_value"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_lrange", Title: "Redis LRANGE", Category: "redis", Capability: "read",
+			Description: "Get a range of elements from a Redis list.",
+			Defaults:    map[string]string{"key": "default", "as": "list_elements"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("members", "Start-End range", "JSON object with start and end indices (default: 0,-1 for all)", `{"start":"0","end":"-1"}`),
+				sf("as", "Store as", "Variable to write the JSON array of elements into", "list_elements"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_llen", Title: "Redis LLEN", Category: "redis", Capability: "read",
+			Description: "Get the length of a Redis list.",
+			Defaults:    map[string]string{"key": "default", "as": "list_length"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "List key; supports {slot} references", "queue:{queue_id}"),
+				sf("as", "Store as", "Variable to write the length into", "list_length"),
+			},
+		},
+		// Set operations
+		StepDescriptor{
+			Type: "redis_sadd", Title: "Redis SADD", Category: "redis", Capability: "write",
+			Description: "Add members to a Redis set.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Set key; supports {slot} references", "tags:{object_id}"),
+				sf("body_var", "Members variable", "Variable containing JSON array of members to add", "var.members"),
+				sf("as", "Count variable", "Optional variable to write number of added members", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_srem", Title: "Redis SREM", Category: "redis", Capability: "write",
+			Description: "Remove members from a Redis set.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Set key; supports {slot} references", "tags:{object_id}"),
+				sf("body_var", "Members variable", "Variable containing JSON array of members to remove", "var.members"),
+				sf("as", "Count variable", "Optional variable to write number of removed members", ""),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_sismember", Title: "Redis SISMEMBER", Category: "redis", Capability: "read",
+			Description: "Check if a member exists in a Redis set.",
+			Defaults:    map[string]string{"key": "default", "as": "is_member"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Set key; supports {slot} references", "tags:{object_id}"),
+				sf("members", "Member", "Member to check for", "tag_value"),
+				sf("as", "Boolean result", "Variable to write true/false into", "is_member"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_smembers", Title: "Redis SMEMBERS", Category: "redis", Capability: "read",
+			Description: "Get all members from a Redis set.",
+			Defaults:    map[string]string{"key": "default", "as": "set_members"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Set key; supports {slot} references", "tags:{object_id}"),
+				sf("as", "Store as", "Variable to write the JSON array of members into", "set_members"),
+			},
+		},
+		StepDescriptor{
+			Type: "redis_scard", Title: "Redis SCARD", Category: "redis", Capability: "read",
+			Description: "Get the cardinality (size) of a Redis set.",
+			Defaults:    map[string]string{"key": "default", "as": "set_size"},
+			Fields: []StepField{
+				sf("key", "Redis source", "Name of the configured Redis source", "default"),
+				sf("value", "Key template", "Set key; supports {slot} references", "tags:{object_id}"),
+				sf("as", "Store as", "Variable to write the set size into", "set_size"),
 			},
 		},
 	)

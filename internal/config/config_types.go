@@ -3,6 +3,7 @@ package config
 import (
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/emailprovider"
+	"github.com/amitkhosla/rah/internal/redissource"
 	"github.com/amitkhosla/rah/internal/storage"
 )
 
@@ -559,33 +560,34 @@ type SchedulerConfig struct {
 }
 
 type GatewayConfig struct {
-	Layout        GlobalLayout        `json:"layout"                   yaml:"layout"`
-	DataStore     DataStoreConfig     `json:"datastore"                yaml:"datastore"`
-	Secrets       SecretsConfig       `json:"secrets"                  yaml:"secrets"`
-	Cache         CacheConfig         `json:"cache"                    yaml:"cache"`
-	LLM           LLMConfig           `json:"llm"                      yaml:"llm"`
-	Pricing       PricingConfig       `json:"pricing,omitempty"        yaml:"pricing,omitempty"`
-	Quotas        QuotasConfig        `json:"quotas,omitempty"         yaml:"quotas,omitempty"`
-	Async         AsyncConfig         `json:"async"                    yaml:"async"`
-	VectorStores  []VectorStoreConfig `json:"vector_stores,omitempty"  yaml:"vector_stores,omitempty"`
-	Ingest        IngestConfig        `json:"ingest,omitempty"         yaml:"ingest,omitempty"`
-	Observability ObservabilityConfig `json:"observability,omitempty"  yaml:"observability,omitempty"`
-	Instance      InstanceConfig      `json:"instance,omitempty"       yaml:"instance,omitempty"`
-	Admin         AdminConfig         `json:"admin,omitempty"          yaml:"admin,omitempty"`
-	Concurrency   ConcurrencyConfig   `json:"concurrency,omitempty"    yaml:"concurrency,omitempty"`
-	Egress        *EgressConfig       `json:"egress,omitempty"         yaml:"egress,omitempty"`
-	Grpc          *GrpcConfig         `json:"grpc,omitempty"           yaml:"grpc,omitempty"`
-	TLS           *TLSConfig          `json:"tls,omitempty"            yaml:"tls,omitempty"`
-	MQTT          MQTTConfig          `json:"mqtt,omitempty"           yaml:"mqtt,omitempty"`
-	XML           *XMLConfig          `json:"xml,omitempty"            yaml:"xml,omitempty"`
-	Avro          *AvroConfig         `json:"avro,omitempty"           yaml:"avro,omitempty"`
-	Registry      RegistryConfig      `json:"registry,omitempty"       yaml:"registry,omitempty"`
-	WebSocket      WSGatewayConfig                    `json:"websocket,omitempty"        yaml:"websocket,omitempty"`
-	WSUpstreams    []WSUpstreamConfig                 `json:"ws_upstreams,omitempty"     yaml:"ws_upstreams,omitempty"`
-	Scheduler      SchedulerConfig                    `json:"scheduler,omitempty"        yaml:"scheduler,omitempty"`
-	DataSources      []datasource.DataSourceConfig      `json:"data_sources,omitempty"      yaml:"data_sources,omitempty"`
+	Layout           GlobalLayout                        `json:"layout"                   yaml:"layout"`
+	DataStore        DataStoreConfig                     `json:"datastore"                yaml:"datastore"`
+	Secrets          SecretsConfig                       `json:"secrets"                  yaml:"secrets"`
+	Cache            CacheConfig                         `json:"cache"                    yaml:"cache"`
+	LLM              LLMConfig                           `json:"llm"                      yaml:"llm"`
+	Pricing          PricingConfig                       `json:"pricing,omitempty"        yaml:"pricing,omitempty"`
+	Quotas           QuotasConfig                        `json:"quotas,omitempty"         yaml:"quotas,omitempty"`
+	Async            AsyncConfig                         `json:"async"                    yaml:"async"`
+	VectorStores     []VectorStoreConfig                 `json:"vector_stores,omitempty"  yaml:"vector_stores,omitempty"`
+	Ingest           IngestConfig                        `json:"ingest,omitempty"         yaml:"ingest,omitempty"`
+	Observability    ObservabilityConfig                 `json:"observability,omitempty"  yaml:"observability,omitempty"`
+	Instance         InstanceConfig                      `json:"instance,omitempty"       yaml:"instance,omitempty"`
+	Admin            AdminConfig                         `json:"admin,omitempty"          yaml:"admin,omitempty"`
+	Concurrency      ConcurrencyConfig                   `json:"concurrency,omitempty"    yaml:"concurrency,omitempty"`
+	Egress           *EgressConfig                       `json:"egress,omitempty"         yaml:"egress,omitempty"`
+	Grpc             *GrpcConfig                         `json:"grpc,omitempty"           yaml:"grpc,omitempty"`
+	TLS              *TLSConfig                          `json:"tls,omitempty"            yaml:"tls,omitempty"`
+	MQTT             MQTTConfig                          `json:"mqtt,omitempty"           yaml:"mqtt,omitempty"`
+	XML              *XMLConfig                          `json:"xml,omitempty"            yaml:"xml,omitempty"`
+	Avro             *AvroConfig                         `json:"avro,omitempty"           yaml:"avro,omitempty"`
+	Registry         RegistryConfig                      `json:"registry,omitempty"       yaml:"registry,omitempty"`
+	WebSocket        WSGatewayConfig                     `json:"websocket,omitempty"        yaml:"websocket,omitempty"`
+	WSUpstreams      []WSUpstreamConfig                  `json:"ws_upstreams,omitempty"     yaml:"ws_upstreams,omitempty"`
+	Scheduler        SchedulerConfig                     `json:"scheduler,omitempty"        yaml:"scheduler,omitempty"`
+	DataSources      []datasource.DataSourceConfig       `json:"data_sources,omitempty"       yaml:"data_sources,omitempty"`
+	RedisSources     []redissource.RedisSourceConfig     `json:"redis_sources,omitempty"     yaml:"redis_sources,omitempty"`
 	EmailProviders   []emailprovider.EmailProviderConfig `json:"email_providers,omitempty"   yaml:"email_providers,omitempty"`
-	StorageProviders []storage.StorageProviderConfig    `json:"storage_providers,omitempty" yaml:"storage_providers,omitempty"`
+	StorageProviders []storage.StorageProviderConfig     `json:"storage_providers,omitempty" yaml:"storage_providers,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

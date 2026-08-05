@@ -1,28 +1,22 @@
-﻿package main
+package main
 
 import (
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
-	"net"
-	"net/http"
-	"os"
-	"strings"
 	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/control"
-	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/datasource"
+	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/egress"
 	"github.com/amitkhosla/rah/internal/emailprovider"
-	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/amitkhosla/rah/internal/engine"
 	enginesteps "github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
-	"github.com/amitkhosla/rah/internal/avro"
 	grpcutil "github.com/amitkhosla/rah/internal/grpc"
 	"github.com/amitkhosla/rah/internal/ingest"
 	"github.com/amitkhosla/rah/internal/mcpreg"
@@ -31,21 +25,28 @@ import (
 	"github.com/amitkhosla/rah/internal/pricing"
 	"github.com/amitkhosla/rah/internal/quota"
 	"github.com/amitkhosla/rah/internal/rctx"
+	"github.com/amitkhosla/rah/internal/redissource"
 	tenantregistry "github.com/amitkhosla/rah/internal/registry"
 	"github.com/amitkhosla/rah/internal/scheduler"
 	"github.com/amitkhosla/rah/internal/secrets"
+	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/amitkhosla/rah/internal/vectorstore"
 	"github.com/amitkhosla/rah/internal/ws"
+	"log"
+	"net"
+	"net/http"
 	"net/http/pprof"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
-	goredis "github.com/redis/go-redis/v9"
 	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otlptracegrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -705,6 +706,18 @@ func main() {
 		}
 	}
 
+	// Initialize Redis sources.
+	var redisSrcPool *redissource.RedisSourcePool
+	if len(cfgMgr.Gateway().RedisSources) > 0 {
+		var rErr error
+		redisSrcPool, rErr = redissource.New(gatewayCtx, cfgMgr.Gateway().RedisSources)
+		if rErr != nil {
+			gatewaylog.Default.Error("[RedisSource] init failed", gatewaylog.F("error", rErr.Error()))
+			os.Exit(1)
+		}
+		defer redisSrcPool.Close()
+	}
+
 	// Initialize email providers.
 	var emailMgr *emailprovider.EmailManager
 	if len(cfgMgr.Gateway().EmailProviders) > 0 {
@@ -769,9 +782,10 @@ func main() {
 	// AvroPrograms by schema fingerprint across hot-reload cycles (bake-time only).
 	compiler.AvroRegistry = &avro.SchemaRegistry{}
 
-	// Inject data source pool and email manager into the compiler so db_* and
-	// send_email steps can close over them at bake time.
+	// Inject data source pool, redis source pool, and email manager into the compiler so db_*,
+	// redis_*, and send_email steps can close over them at bake time.
 	compiler.DataSourcePool = dsPool
+	compiler.RedisSourcePool = redisSrcPool
 	compiler.EmailMgr = emailMgr
 	compiler.StorageMgr = storageMgr
 
@@ -1577,6 +1591,17 @@ func main() {
 		}
 	}
 
+	// Wire data source pool for migration processing.
+	if dsPool != nil && len(cfgMgr.Gateway().DataSources) > 0 {
+		ms.DataSourcePool = dsPool
+		ms.DataSourceConfigs = cfgMgr.Gateway().DataSources
+	}
+
+	// Wire Redis source pool for redis_* step management.
+	if redisSrcPool != nil {
+		ms.RedisSourcePool = redisSrcPool
+	}
+
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
 	// successfully. Without this, bootstrap sees an empty LLM catalog and fails
@@ -1709,6 +1734,10 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/named-queries", ms.NamedQueriesHandler)
+	mux.HandleFunc("/named-queries/", ms.NamedQueryDeleteHandler)
+	mux.HandleFunc("/redis-sources", ms.RedisSourcesHandler)
+	mux.HandleFunc("/migrations", ms.MigrationsHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {
@@ -1821,11 +1850,11 @@ func main() {
 			Value    string `json:"value"`
 		}
 		type propDump struct {
-			Stride     uint32    `json:"stride"`
-			KeyCount   int       `json:"key_count"`
-			PoolSize   int       `json:"pool_size"`
-			MatrixLen  int       `json:"matrix_len"`
-			Rows       []propRow `json:"rows"`
+			Stride    uint32    `json:"stride"`
+			KeyCount  int       `json:"key_count"`
+			PoolSize  int       `json:"pool_size"`
+			MatrixLen int       `json:"matrix_len"`
+			Rows      []propRow `json:"rows"`
 		}
 		dumpStore := func(store tenantregistry.PropStore) propDump {
 			d := propDump{
@@ -1913,8 +1942,8 @@ func main() {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
-		runtime.GC()          // immediate GC cycle
-		debug.FreeOSMemory()  // return freed pages to OS immediately (Go normally defers this)
+		runtime.GC()         // immediate GC cycle
+		debug.FreeOSMemory() // return freed pages to OS immediately (Go normally defers this)
 		w.Header().Set("Content-Type", "application/json")
 		if _, err := fmt.Fprint(w, `{"gc":"done"}`); err != nil {
 			gatewaylog.Default.Error("failed to write gc response", gatewaylog.F("error", err.Error()))
@@ -2120,4 +2149,3 @@ func buildObsDSN(c config.StoreConnection) string {
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
 		c.Host, c.Username, c.Password, c.Database)
 }
-

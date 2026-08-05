@@ -2,6 +2,7 @@
 
 import (
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/mcpreg"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
 )
@@ -151,6 +152,16 @@ type StepConfig struct {
 
 	// SourceVar is the variable name holding a source value for mapping or transformation steps.
 	SourceVar string `json:"source_var,omitempty"`
+
+	// Redis/sorted set operations
+	Score      float64  `yaml:"score"       json:"score,omitempty"`
+	Field      string   `yaml:"field"       json:"field,omitempty"`
+	Order      string   `yaml:"order"       json:"order,omitempty"`
+	WithScores bool     `yaml:"with_scores" json:"with_scores,omitempty"`
+	Mode       string   `yaml:"mode"        json:"mode,omitempty"`
+	Count      int64    `yaml:"count"       json:"count,omitempty"`
+	Members    []string `yaml:"members"     json:"members,omitempty"`
+	Vars       []string `yaml:"vars"        json:"vars,omitempty"`
 }
 
 // â”€â”€â”€ Rate Limit Warning Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -368,6 +379,13 @@ type APIKeySyncDef struct {
 	Action         string   `json:"action"` // "upsert" | "delete"
 }
 
+// MigrationDef defines a database migration to apply at deploy time.
+type MigrationDef struct {
+	Version int    `yaml:"version" json:"version"`
+	Name    string `yaml:"name"    json:"name"`
+	SQL     string `yaml:"sql"     json:"sql"`
+}
+
 type UnifiedSyncRequest struct {
 	SyncUUID string       `json:"sync_uuid"`
 	Flows    []FlowUpdate `json:"flows"`
@@ -392,6 +410,11 @@ type UnifiedSyncRequest struct {
 
 	// Scheduled jobs — persisted independently from flows/APIs.
 	Schedules []ScheduleConfig `json:"schedules,omitempty"`
+
+	// Database migrations to apply at deploy time.
+	Migrations []MigrationDef `yaml:"migrations" json:"migrations,omitempty"`
+	// Named queries for data sources.
+	Queries map[string]datasource.NamedQueryConfig `yaml:"queries" json:"queries,omitempty"`
 }
 
 type Step struct {

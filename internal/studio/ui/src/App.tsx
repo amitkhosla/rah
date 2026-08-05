@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'migrations' | 'settings'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
 import FlowDesigner   from './components/FlowDesigner'
@@ -32,6 +32,9 @@ import Tokens                from './components/Tokens'
 import Schedules             from './components/Schedules'
 import WSEndpoints           from './components/WSEndpoints'
 import WSUpstreams           from './components/WSUpstreams'
+import RedisSources          from './components/RedisSources'
+import NamedQueries          from './components/NamedQueries'
+import Migrations            from './components/Migrations'
 import GlobalAIAssistant     from './components/GlobalAIAssistant'
 
 // ── Action name normalization (internal engine → display names) ──────
@@ -141,6 +144,9 @@ const NAV_ICONS: Record<string, string> = {
   schedules:          '⏱',
   'ws-endpoints':     '⚡',
   'ws-upstreams':     '🔗',
+  'redis-sources':    '🔴',
+  'named-queries':    '🗄',
+  migrations:         '📜',
   settings:           '⚙',
 }
 
@@ -174,6 +180,10 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'grpc',                label: 'gRPC' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'item',    id: 'concurrency',        label: 'Concurrency' },
+  { kind: 'section', label: 'DATA SOURCES' },
+  { kind: 'item',    id: 'redis-sources',      label: 'Redis Sources' },
+  { kind: 'item',    id: 'named-queries',      label: 'Named Queries' },
+  { kind: 'item',    id: 'migrations',         label: 'Migrations' },
   { kind: 'section', label: 'ADMIN' },
   { kind: 'item',    id: 'tokens',             label: 'Tokens' },
   { kind: 'section', label: '' },
@@ -732,6 +742,9 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'schedules'         && <Schedules />}
         {tab === 'ws-endpoints'      && <WSEndpoints />}
         {tab === 'ws-upstreams'      && <WSUpstreams />}
+        {tab === 'redis-sources'     && <RedisSources />}
+        {tab === 'named-queries'     && <NamedQueries />}
+        {tab === 'migrations'        && <Migrations />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
 

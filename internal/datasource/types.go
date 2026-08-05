@@ -1,9 +1,22 @@
-package datasource
+﻿package datasource
 
-// DataSourceConfig configures a named database connection pool.
+// NamedQueryConfig defines a named query with batching configuration.
+type NamedQueryConfig struct {
+	SQL         string `yaml:"sql"`
+	BatchBy     string `yaml:"batch_by"`
+	BatchWindow string `yaml:"batch_window"`
+	BatchMax    int    `yaml:"batch_max"`
+}
+
+// DataSourceConfig defines a data source with tenant isolation settings.
 type DataSourceConfig struct {
-	Name            string `json:"name"              yaml:"name"`
-	DSNRef          string `json:"dsn_ref"           yaml:"dsn_ref"`            // env:VAR or plain DSN
-	MaxConnections  int    `json:"max_connections"   yaml:"max_connections"`    // default 20
-	QueryTimeoutSec int    `json:"query_timeout_sec" yaml:"query_timeout_sec"`  // default 10
+	Name             string   `yaml:"name"`
+	Driver           string   `yaml:"driver"`
+	DSNRef           string   `yaml:"dsn_ref"`
+	MaxConnections   int      `yaml:"max_connections"`
+	QueryTimeoutSec  int      `yaml:"query_timeout_sec"`
+	TenantIsolation  string   `yaml:"tenant_isolation"`
+	TenantKey        string   `yaml:"tenant_key"`
+	SharedSchemas    []string `yaml:"shared_schemas"`
+	RLSVariable      string   `yaml:"rls_variable"`
 }
