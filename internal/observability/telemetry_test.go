@@ -49,6 +49,7 @@ func TestUpdateConfig(t *testing.T) {
 
 func TestLogUpstreamSuppressedAtErrorLevel(t *testing.T) {
 	tel := New(Config{Enabled: true, ExportQueueSize: 16})
+	tel.Stop() // stop workers so channel state is stable when we inspect it
 	original := gatewaylog.Default.Level()
 	gatewaylog.Default.SetLevel(gatewaylog.ERROR)
 	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
@@ -60,6 +61,7 @@ func TestLogUpstreamSuppressedAtErrorLevel(t *testing.T) {
 
 func TestLogUpstreamDeliveredAtInfoLevel(t *testing.T) {
 	tel := New(Config{Enabled: true, ExportQueueSize: 16})
+	tel.Stop() // stop workers so the item stays in the channel when we inspect it
 	original := gatewaylog.Default.Level()
 	gatewaylog.Default.SetLevel(gatewaylog.INFO)
 	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
@@ -71,6 +73,7 @@ func TestLogUpstreamDeliveredAtInfoLevel(t *testing.T) {
 
 func TestLogUpstreamSuppressedWhenTelemetryDisabled(t *testing.T) {
 	tel := New(Config{Enabled: false, ExportQueueSize: 16})
+	tel.Stop() // stop workers so channel state is stable when we inspect it
 	original := gatewaylog.Default.Level()
 	gatewaylog.Default.SetLevel(gatewaylog.INFO)
 	t.Cleanup(func() { gatewaylog.Default.SetLevel(original) })
