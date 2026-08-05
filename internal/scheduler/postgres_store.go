@@ -171,7 +171,7 @@ func (s *PostgresStore) Claim(ctx context.Context, event *ScheduledEvent, instan
 	if err != nil {
 		return ClaimError, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Try to acquire exclusive lock without blocking.
 	// If another instance has locked the row, we lose the claim.
@@ -201,7 +201,7 @@ func (s *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Insert execution history record.
 	_, err = tx.Exec(ctx, `

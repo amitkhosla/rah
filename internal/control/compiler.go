@@ -3269,8 +3269,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return fmt.Errorf("db_query: %w", err)
 		}
-		dbQueryParamSlots := []int{} // will be populated below
-		dbQuerySQL, dbQueryParamSlots = compileParamSQL(dbQuerySQL, c.slotMap)
+		dbQuerySQL, dbQueryParamSlots := compileParamSQL(dbQuerySQL, c.slotMap)
 		dbQueryDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
@@ -3336,8 +3335,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return fmt.Errorf("db_exec: %w", err)
 		}
-		dbExecParamSlots := []int{} // will be populated below
-		dbExecSQL, dbExecParamSlots = compileParamSQL(dbExecSQL, c.slotMap)
+		dbExecSQL, dbExecParamSlots := compileParamSQL(dbExecSQL, c.slotMap)
 		dbExecDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
@@ -3394,8 +3392,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if err != nil {
 			return fmt.Errorf("db_query_one: %w", err)
 		}
-		dbOneParamSlots := []int{} // will be populated below
-		dbOneSQL, dbOneParamSlots = compileParamSQL(dbOneSQL, c.slotMap)
+		dbOneSQL, dbOneParamSlots := compileParamSQL(dbOneSQL, c.slotMap)
 		dbOneDestSlot := -1
 		if step.As != "" {
 			s, err := c.getSlot(step.As)
