@@ -24,15 +24,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Fetch main for lint baseline
-        if: github.ref != 'refs/heads/main'
-        run: git fetch origin main --no-tags
+      - name: Compute lint base rev
+        id: lint_base
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "rev=${{ github.event.before }}" >> $GITHUB_OUTPUT
+          else
+            git fetch origin main --no-tags --quiet
+            echo "rev=$(git merge-base HEAD origin/main)" >> $GITHUB_OUTPUT
+          fi
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
-          args: --new-from-rev=${{ github.ref == 'refs/heads/main' && github.event.before || 'origin/main' }}
+          args: --new-from-rev=${{ steps.lint_base.outputs.rev }}
 
   # ── Build (verify it compiles on all target platforms) ────────────────────
   build:
