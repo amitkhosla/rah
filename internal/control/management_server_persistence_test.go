@@ -408,7 +408,7 @@ func waitForTenantPersisted(t *testing.T, store *tenantregistry.TenantRegistrySt
 		snap, _ := store.LoadAll(context.Background())
 		for _, rec := range snap.Tenants {
 			for _, a := range rec.Aliases {
-				if a == alias && (len(rec.ServiceURLs) > 0 || len(rec.Identifiers) > 0) {
+				if a == alias && len(rec.ServiceURLs) > 0 && len(rec.Identifiers) > 0 {
 					return
 				}
 			}
