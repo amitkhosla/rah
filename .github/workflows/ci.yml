@@ -28,7 +28,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
-          args: --new-from-rev=${{ github.event_name == 'pull_request' && 'origin/main' || github.event.before }}
+          args: --new-from-rev=${{ github.ref == 'refs/heads/main' && github.event.before || 'origin/main' }}
 
   # ── Build (verify it compiles on all target platforms) ────────────────────
   build:
