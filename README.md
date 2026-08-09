@@ -39,7 +39,9 @@ without restarts or in-flight disruption.
 | **Vector & RAG** | Upsert, search, and semantic cache across Qdrant, Chroma, Weaviate, Redis, PgVector |
 | **Secrets** | Google Secret Manager, AWS Secrets Manager, HashiCorp Vault, AES-256-GCM at-rest |
 | **Observability** | Per-instruction timing, traces, access logs, metrics — Prometheus / OTEL export |
-| **Async Jobs** | Queue long-running flows; poll for results; memory or persistent backend |
+| **Scheduled Flows** | Cron-triggered flows via hashed timing wheel; distributed claiming across instances |
+| **WebSocket** | Manage client sessions and upstream WS pools; push to session or broadcast to channel |
+| **Customer Data** | Connect flows to customer-owned Postgres (schema/RLS isolation) and Redis (tenant namespacing) |
 | **MCP** | Serve and call Model Context Protocol servers from flows; expose RAH APIs as MCP tools |
 
 ---
@@ -223,8 +225,10 @@ RAH is a full execution layer for AI pipelines, not a passthrough proxy.
 - Anthropic (all Claude models, Prompt Caching cost tracking)
 - OpenAI (GPT-4o, o1-series with `max_completion_tokens`)
 - Google (Gemini 2.0 / 1.5, v1 and v1beta)
-- Amazon Bedrock
-- Any custom endpoint via `adapter: custom`
+- Amazon Bedrock (Claude on Bedrock via SigV4 signing)
+- Ollama (local models, no auth)
+- DeepSeek
+- Any OpenAI-compatible endpoint via `adapter: custom` (HuggingFace TGI, vLLM, LM Studio, Groq, Together AI, Fireworks)
 
 **Model routing example** — route by token count and tenant tier:
 
@@ -525,23 +529,65 @@ The limiter is a lock-free CAS semaphore (~10–20 ns per acquire/release).
 
 ---
 
-## Async Execution
+## Scheduled Flows (Cron)
 
-Any flow can run asynchronously. The client receives a `job_id` immediately; the flow
-executes in the background. Results are polled via management API.
+Flows can be triggered on a cron schedule without an inbound HTTP request. The
+scheduler uses a hashed timing wheel (3600 slots, 1-second resolution) and supports
+distributed multi-instance deployments — only one instance claims and executes each
+scheduled event.
 
 ```yaml
-apis:
-  - name: long-running-report
-    path: /reports/generate
-    method: POST
-    async: allowed     # client opts in per-request; or "forced"
+schedules:
+  - name: daily-report
+    cron: "0 6 * * *"        # standard 5-field cron; 6-field with seconds also supported
+    flow: generate_report
+    tenant_alias: acme
+    timeout_sec: 120
+    on_failure:
+      retry_count: 3
+      retry_interval_sec: 30
+      dead_letter_flow: handle_report_failure
+    max_concurrent: 1
 ```
 
-Job state machine: `pending → running → completed | failed`
+Schedules can also be created at runtime by tenants via the management API
+(`runtime_only: true`). Persistence backends: in-memory or Redis.
 
-Backends: in-memory (single-instance) or persistent (any bound datastore domain).
-Worker concurrency is configurable (`max_workers`, default 64).
+---
+
+## WebSocket
+
+RAH manages WebSocket connections to browser clients and to upstream services in a
+single layer — no separate broker required.
+
+**Client sessions** — incoming WebSocket connections are tracked per session. Flows can
+push messages to individual sessions or broadcast to all subscribers of a channel:
+
+```yaml
+- action: ws_broadcast_channel
+  channel: alerts
+  slot: message_slot
+
+- action: ws_push_session
+  session_id: session_id_slot
+  slot: message_slot
+```
+
+**Upstream pools** — RAH maintains persistent outbound WebSocket connections to
+upstream services with auto-reconnect and configurable ping intervals:
+
+```yaml
+- action: ws_upstream_connect
+  name: data-feed
+  url: wss://feeds.example.com/stream
+  ttl_sec: 300         # idle TTL; connection closed and removed after expiry
+
+- action: ws_upstream_disconnect
+  name: data-feed
+```
+
+Static upstream connections (always-on) are defined in gateway config; dynamic
+connections are opened on-demand per flow execution and reused within their TTL window.
 
 ---
 
@@ -623,6 +669,108 @@ All keys are scoped by tenant:
 tenant:{tenant_name}:{domain}:{key}
 ```
 Control-plane data (API definitions, flows) lives under `__global__`.
+
+---
+
+## Customer Data Sources
+
+RAH can connect flows directly to customer-owned Postgres and Redis instances. These
+are **separate** from RAH's internal datastore domains — they are your databases, with
+your schemas and your tables. RAH handles connection pooling, tenant isolation, and
+parameterized query safety.
+
+### Postgres data sources
+
+```yaml
+data_sources:
+  - name: orders_db
+    driver: postgres
+    dsn_ref: env:ORDERS_DATABASE_URL   # or a literal DSN
+    max_connections: 20
+    query_timeout_sec: 30
+    tenant_isolation: schema           # "schema" | "rls" | "" (none)
+    tenant_key: id                     # "id" | "alias"
+    shared_schemas: [public, shared]   # schemas visible to all tenants (schema mode)
+    rls_variable: app.current_tenant   # session variable name (rls mode)
+```
+
+**Tenant isolation modes:**
+- `schema` — sets `search_path = tenant_<id>, public` per connection; each tenant sees only its own schema
+- `rls` — sets `SET LOCAL <rls_variable> = '<tenant>'`; your Postgres RLS policies enforce row-level filtering
+- *(empty)* — no automatic isolation; manage it yourself in SQL
+
+**Flow steps:**
+
+| Step | Description |
+|------|-------------|
+| `db_query` | Execute a SQL SELECT; returns a JSON array |
+| `db_query_one` | SELECT expecting one row; returns a JSON object (404 if empty) |
+| `db_exec` | Execute INSERT / UPDATE / DELETE / DDL; returns affected row count |
+
+```yaml
+- action: db_query
+  key: orders_db          # data source name
+  value: "SELECT id, amount FROM orders WHERE customer_id = $1"
+  vars: ["{customer_id}"]
+  as: orders
+
+- action: db_exec
+  key: orders_db
+  value: "INSERT INTO events (type, payload) VALUES ($1, $2)"
+  vars: ["{event_type}", "{event_body}"]
+```
+
+DDL statements (`CREATE TABLE`, `ALTER TABLE`, etc.) are also accepted via `db_exec` —
+there is no statement restriction. This lets flows provision schemas or run migrations
+as part of a deployment flow.
+
+**Named queries with automatic batching:**
+
+```yaml
+# Define at sync time
+queries:
+  get_orders_by_ids:
+    sql: "SELECT id, customer_id, amount FROM orders WHERE id = ANY($1::bigint[])"
+    batch_by: "$1"
+    batch_window: 500us   # collect requests for up to 500 µs
+    batch_max: 100        # max keys per batch
+
+# Reference in a flow
+- action: db_query
+  key: orders_db
+  value: "query:get_orders_by_ids"
+  vars: ["{order_id}"]
+  as: order
+```
+
+Concurrent flow executions requesting different keys within the batch window are
+collapsed into a single `WHERE id = ANY($1)` query. A singleflight group additionally
+deduplicates identical concurrent keys.
+
+### Redis data sources
+
+```yaml
+redis_sources:
+  - name: sessions
+    addr: "redis.example.com:6379"   # single node; use "addrs" for cluster
+    password: env:REDIS_PASSWORD
+    db: 0
+    tls: true
+    tenant_prefix: alias             # "id" | "alias" | "none"
+    key_sep: ":"
+```
+
+All key operations are automatically namespaced per tenant (`{tenant_alias}:{key}`).
+The reserved prefix `_rah:` is blocked and cannot be used by flows.
+
+**Available operations:** `redis_get`, `redis_put`, `redis_mget`, `redis_mput`,
+`redis_del`, `redis_exists`, `redis_incr`, `redis_decr`, `redis_expire`, `redis_ttl`,
+`redis_persist`, `redis_publish`, `redis_lock`, `redis_unlock` — plus sorted sets
+(`redis_zadd`, `redis_zrange`, `redis_zrangebyscore`, `redis_zrank`, `redis_zscore`,
+`redis_zrem`, `redis_zpopmin`, `redis_zpopmax`), hashes (`redis_hset`, `redis_hmset`,
+`redis_hget`, `redis_hgetall`, `redis_hdel`, `redis_hincrby`), and lists
+(`redis_lpush`, `redis_rpush`, `redis_lpop`, `redis_rpop`, `redis_lrange`, `redis_llen`),
+and sets (`redis_sadd`, `redis_srem`, `redis_sismember`, `redis_smembers`, `redis_scard`).
 
 ---
 
@@ -758,7 +906,9 @@ automatically. Key top-level sections:
 | Section | Purpose |
 |---------|---------|
 | `layout` | Slot sizes, max APIs, default rate limits |
-| `datastore` | Store backends and domain bindings |
+| `datastore` | RAH internal store backends and domain bindings |
+| `data_sources` | Customer-owned Postgres connections (with tenant isolation) |
+| `redis_sources` | Customer-owned Redis connections (with tenant key namespacing) |
 | `secrets` | Credential provider config |
 | `cache` | L1 slab cache sizing and L2 backend |
 | `llm` | Model catalog and MCP server registrations |
@@ -766,13 +916,14 @@ automatically. Key top-level sections:
 | `quotas` | Per-tenant cost quota definitions |
 | `observability` | Traces, access log, metrics, export sinks |
 | `concurrency` | AIMD controller parameters |
+| `scheduler` | Cron schedule definitions and store backend |
+| `websocket` | Static upstream WS connections and session config |
 | `egress` | Outbound call profiles (TLS, timeouts, connection pool) |
 | `ingest` | Event pipeline sources, kinds, and sinks |
 | `mqtt` | MQTT broker connections |
 | `grpc` | gRPC message size limits and keepalive |
 | `tls` | HTTPS listener (cert/key paths) |
 | `admin` | Management plane auth (Basic Auth, roles) |
-| `async` | Job queue backend and worker count |
 | `vector_stores` | Vector database backends |
 | `instance` | Config poll interval, heartbeat |
 
