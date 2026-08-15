@@ -23,7 +23,7 @@ func newGCSProvider(cfg StorageProviderConfig) (*gcsProvider, error) {
 		// CredentialRef resolves to a file path (e.g. env:GOOGLE_CREDS_FILE → /path/to/key.json)
 		credFile := resolveRef(cfg.CredentialRef)
 		if credFile != "" {
-			opts = append(opts, option.WithCredentialsFile(credFile))
+			opts = append(opts, option.WithCredentialsFile(credFile)) //nolint:staticcheck
 		}
 	}
 
@@ -41,7 +41,7 @@ func (p *gcsProvider) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcs get %q: %w", key, err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	return io.ReadAll(r)
 }
 

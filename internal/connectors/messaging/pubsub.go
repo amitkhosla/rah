@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck
 	"github.com/amitkhosla/rah/internal/config"
 	"google.golang.org/api/option"
 )
@@ -29,7 +29,7 @@ func (p *PubSubPublisher) Connect(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("pubsub[%s]: resolve credentials: %w", p.cfg.Name, err)
 		}
-		opts = append(opts, option.WithCredentialsJSON(credBytes))
+		opts = append(opts, option.WithCredentialsJSON(credBytes)) //nolint:staticcheck
 	}
 
 	// Create Pub/Sub client

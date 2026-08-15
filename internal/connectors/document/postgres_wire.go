@@ -173,7 +173,7 @@ func (p *PostgresProvider) Get(ctx context.Context, req GetRequest) ([]byte, err
 			}
 			return nil, fmt.Errorf("postgres[%s]: get by id failed: %w", p.cfg.Name, err)
 		}
-	} else if req.Filter != nil && len(req.Filter) > 0 {
+	} else if len(req.Filter) > 0 {
 		// Query by filter (JSONB contains)
 		query := fmt.Sprintf(`SELECT id, doc FROM %s WHERE doc @> $1::jsonb LIMIT 1`, req.Collection)
 		err := p.pool.QueryRow(ctx, query, string(req.Filter)).Scan(&id, &doc)
@@ -282,7 +282,7 @@ func (p *PostgresProvider) Delete(ctx context.Context, req DeleteRequest) error 
 		return err
 	}
 
-	if req.Filter == nil || len(req.Filter) == 0 {
+	if len(req.Filter) == 0 {
 		return fmt.Errorf("postgres[%s]: filter is required for delete", p.cfg.Name)
 	}
 
@@ -360,7 +360,7 @@ func (p *PostgresProvider) PutMany(ctx context.Context, req PutManyRequest) erro
 	}
 
 	br := p.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	for range req.Docs {
 		if _, err := br.Exec(); err != nil {
@@ -410,7 +410,7 @@ func (p *PostgresProvider) Query(ctx context.Context, req QueryRequest) ([]byte,
 	argIndex := 1
 
 	// Add WHERE clause if filter provided
-	if req.Filter != nil && len(req.Filter) > 0 {
+	if len(req.Filter) > 0 {
 		query += fmt.Sprintf(` WHERE doc @> $%d::jsonb`, argIndex)
 		args = append(args, string(req.Filter))
 		argIndex++

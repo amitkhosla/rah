@@ -85,7 +85,7 @@ func (p *MySQLProvider) ensureConnected(ctx context.Context) error {
 				if err == nil {
 					// Register with driver
 					tlsName := "mysql_tls_" + p.cfg.Name
-					mysql.RegisterTLSConfig(tlsName, tlsCfg)
+					_ = mysql.RegisterTLSConfig(tlsName, tlsCfg)
 					if strings.Contains(dsn, "?") {
 						dsn += "&tls=" + tlsName
 					} else {
@@ -126,7 +126,7 @@ func (p *MySQLProvider) ensureConnected(ctx context.Context) error {
 	testCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := db.PingContext(testCtx); err != nil {
-		db.Close()
+		_ = db.Close()
 		p.initErr = fmt.Errorf("mysql[%s]: ping failed: %w", p.cfg.Name, err)
 		return p.initErr
 	}
@@ -370,7 +370,7 @@ func (p *MySQLProvider) Query(ctx context.Context, req QueryRequest) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("mysql[%s]: query failed: %w", p.cfg.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []interface{}
 	for rows.Next() {
@@ -476,7 +476,7 @@ func (p *MySQLProvider) Execute(ctx context.Context, req ExecuteRequest) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("mysql[%s]: execute query failed: %w", p.cfg.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Get column names
 	columns, err := rows.Columns()
@@ -549,7 +549,7 @@ func (p *MySQLProvider) GetMany(ctx context.Context, req GetManyRequest) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("mysql[%s]: getmany failed: %w", p.cfg.Name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	results := make(map[string][]byte, len(req.IDs))
 	for rows.Next() {
@@ -700,7 +700,7 @@ func (p *MySQLProvider) buildFilterWhere(filter []byte) (string, []interface{}, 
 
 	filterObj.ForEach(func(key, value gjson.Result) bool {
 		jsonPath := "$." + key.String()
-		condition := fmt.Sprintf("JSON_EXTRACT(doc, ?) = ?")
+		condition := "JSON_EXTRACT(doc, ?) = ?"
 		conditions = append(conditions, condition)
 		args = append(args, jsonPath, value.Value())
 		return true

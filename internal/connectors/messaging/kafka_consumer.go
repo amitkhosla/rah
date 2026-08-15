@@ -45,7 +45,7 @@ func (c *KafkaConsumer) Start(ctx context.Context, handler MessageHandler) error
 		return fmt.Errorf("kafka_consumer[%s]: create group: %w", c.cfg.Name, err)
 	}
 	c.group = group
-	defer group.Close()
+	defer func() { _ = group.Close() }()
 
 	h := &kafkaGroupHandler{handler: handler, name: c.cfg.Name}
 	for {

@@ -38,11 +38,11 @@ func (c *RedisStreamsConsumer) Start(ctx context.Context, handler MessageHandler
 
 	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		rdb.Close()
+		_ = rdb.Close()
 		return fmt.Errorf("redis_streams_consumer[%s]: ping failed: %w", c.cfg.Name, err)
 	}
 	c.rdb = rdb
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	consumerName := c.cfg.Name
 

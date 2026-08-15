@@ -7410,9 +7410,9 @@ func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
 
 	// Pre-allocate well-known event slots if in event flow mode
 	if c.eventFlowMode {
-		c.getSlot("__event__")
-		c.getSlot("__event_key__")
-		c.getSlot("__event_topic__")
+		_, _ = c.getSlot("__event__")
+		_, _ = c.getSlot("__event_key__")
+		_, _ = c.getSlot("__event_topic__")
 	}
 
 	// Emit stream-response-body flag as first instruction — set once at flow start.

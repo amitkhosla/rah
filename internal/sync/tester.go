@@ -158,7 +158,7 @@ func runOne(studioURL, token string, t TestDef) TestResult {
 		res.Error = err.Error()
 		return res
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	res.DurationMs = float64(time.Since(start).Milliseconds())
 
 	respBytes, _ := io.ReadAll(resp.Body)

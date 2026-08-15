@@ -689,7 +689,7 @@ func (m *DataStoreManager) testStoreConnection(ctx context.Context, cfg config.S
 func (m *DataStoreManager) testRedisConnection(ctx context.Context, conn config.StoreConnection) (int64, error) {
 	start := time.Now()
 	client := goredis.NewClient(&goredis.Options{Addr: conn.EffectiveAddress(), Password: conn.Password})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := client.Ping(ctx).Err(); err != nil {
 		return 0, fmt.Errorf("redis ping: %w", err)
 	}

@@ -155,7 +155,7 @@ func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
 	})
 
 	// Logout flow: clear session cookie and redirect
-	logoutYAML := fmt.Sprintf(`steps:
+	logoutYAML := `steps:
   - name: clear_session_cookie
     kind: set_cookie
     name: session_token
@@ -167,7 +167,7 @@ func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
     kind: http_redirect
     location: /
     status_code: 302
-`)
+`
 
 	flows = append(flows, FlowBlueprint{
 		Name: fmt.Sprintf("%s-logout", appName),

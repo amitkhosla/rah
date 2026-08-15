@@ -491,7 +491,7 @@ func TestURLSchemaValidation(t *testing.T) {
 					t.Logf("âœ… %s → %s (matches schema)", key, url)
 					validCount++
 				} else {
-					t.Logf("âš ï¸  %s → %s (doesn't match expected pattern)", key, url)
+					t.Logf("[WARN] %s -> %s (doesn't match expected pattern)", key, url)
 					invalidCount++
 				}
 			}
@@ -540,3 +540,4 @@ func TestURLValueCorrectness(t *testing.T) {
 
 	t.Log(strings.Repeat("=", 80) + "\n")
 }
+

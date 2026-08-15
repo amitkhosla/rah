@@ -604,7 +604,7 @@ func main() {
 		defer pool.DisconnectAll(250)
 		log.Printf("[mqtt] pool initialized: %d broker(s)", len(mqttCfg.Brokers))
 	} else {
-		log.Printf("[mqtt] no brokers configured Ã¢â‚¬â€ mqtt_publish/mqtt_call steps require runtime pool")
+		log.Printf("[mqtt] no brokers configured -- mqtt_publish/mqtt_call steps require runtime pool")
 	}
 
 	// Pre-declare regMgr so scheduler and WS closures can capture it by reference.
@@ -839,7 +839,7 @@ func main() {
 		compiler.CredMgr = credReg
 		log.Printf("CredentialRegistry enabled (credentials domain configured)")
 	} else {
-		log.Printf("CredentialRegistry disabled (no credentials domain configured Ã¢â‚¬â€ add 'credentials' binding to datastore config)")
+		log.Printf("CredentialRegistry disabled (no credentials domain configured -- add 'credentials' binding to datastore config)")
 	}
 
 	// Cache Ã¢â‚¬â€ optional; controlled by [cache] section in config.
@@ -964,7 +964,7 @@ func main() {
 			log.Printf("[rate-limit] distributed rate limiting enabled via Redis (%s)", rlCfg.Connection.Address)
 			defer rlProvider.Stop()
 		} else {
-			log.Printf("[rate-limit] Redis rate limit provider init failed: %v Ã¢â‚¬â€ using local counters", err)
+			log.Printf("[rate-limit] Redis rate limit provider init failed: %v -- using local counters", err)
 			_ = rlClient.Close()
 		}
 	} else {
@@ -2198,4 +2198,5 @@ func buildObsDSN(c config.StoreConnection) string {
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
 		c.Host, c.Username, c.Password, c.Database)
 }
+
 

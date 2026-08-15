@@ -36,7 +36,7 @@ func (p *RedisStreamsPublisher) Connect(ctx context.Context) error {
 
 	// Verify connection
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		rdb.Close()
+		_ = rdb.Close()
 		return fmt.Errorf("redis_streams[%s]: failed to connect: %w", p.cfg.Name, err)
 	}
 

@@ -137,8 +137,12 @@ func TestBatchingExecutor_ContextCancelFlushes(t *testing.T) {
 	}
 
 	// Send 2 messages
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[0]})
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[1]})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[0]}); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[1]}); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
 
 	executor.mu.Lock()
 	if len(executor.batch) != 2 {
@@ -206,8 +210,12 @@ func TestBatchingExecutor_MultipleFlushes(t *testing.T) {
 	}
 
 	// Send 2 messages — should flush
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[0]})
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[1]})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[0]}); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[1]}); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
 
 	executor.mu.Lock()
 	batchLen := len(executor.batch)

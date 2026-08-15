@@ -187,6 +187,9 @@ func TestRelease(t *testing.T) {
 
 	// Verify it's gone
 	_, exists, err := store.Get(ctx, "slot:listener1")
+	if err != nil {
+		t.Fatalf("store.Get failed: %v", err)
+	}
 	if exists {
 		t.Fatalf("slot should not exist after release")
 	}
@@ -207,7 +210,9 @@ func TestRenewAll(t *testing.T) {
 	// Get the original expiry
 	data1, _, _ := store.Get(ctx, "slot:listener1")
 	var claim1 SlotClaim
-	json.Unmarshal(data1, &claim1)
+	if err := json.Unmarshal(data1, &claim1); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	originalExpiry := claim1.ExpiresAt
 
 	// Wait a bit
@@ -221,7 +226,9 @@ func TestRenewAll(t *testing.T) {
 	// Get the new expiry
 	data2, _, _ := store.Get(ctx, "slot:listener1")
 	var claim2 SlotClaim
-	json.Unmarshal(data2, &claim2)
+	if err := json.Unmarshal(data2, &claim2); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	newExpiry := claim2.ExpiresAt
 
 	// New expiry should be later than original
@@ -253,7 +260,9 @@ func TestStartHeartbeat(t *testing.T) {
 	// Get expiry after heartbeat
 	data, _, _ := store.Get(ctx, "slot:listener1")
 	var claim SlotClaim
-	json.Unmarshal(data, &claim)
+	if err := json.Unmarshal(data, &claim); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	expiryAfter := claim.ExpiresAt
 
 	// The claim should still exist and be valid

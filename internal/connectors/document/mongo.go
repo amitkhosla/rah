@@ -244,7 +244,7 @@ func (p *MongoProvider) GetMany(ctx context.Context, req GetManyRequest) (map[st
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	results := make(map[string][]byte, len(req.IDs))
 	for cursor.Next(ctx) {
@@ -377,7 +377,7 @@ func (p *MongoProvider) Query(ctx context.Context, req QueryRequest) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("mongo[%s]: query failed: %w", p.cfg.Name, err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	// Collect documents
 	var docs []json.RawMessage

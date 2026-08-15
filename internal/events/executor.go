@@ -77,11 +77,9 @@ func NewEventExecutor(ctx context.Context, fm *engine.FlowManager, flowName, pay
 			}
 
 			// Resolve header slot mappings
-			if headerMappings != nil {
-				for headerName, varName := range headerMappings {
-					if idx, ok := slots[varName]; ok {
-						e.headerSlots[headerName] = idx
-					}
+			for headerName, varName := range headerMappings {
+				if idx, ok := slots[varName]; ok {
+					e.headerSlots[headerName] = idx
 				}
 			}
 		}
