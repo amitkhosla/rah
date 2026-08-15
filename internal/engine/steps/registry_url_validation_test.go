@@ -194,7 +194,7 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 			}
 			t.Logf("âŒ %s → %s", serviceKey, urlStr)
 			for _, issue := range issues {
-				t.Logf("   â""â"€ %s", issue)
+				t.Logf("   |-- %s", issue)
 			}
 		}
 	}
