@@ -42,7 +42,7 @@ type FlowLogConfig struct {
 	DynamicFields []DynamicLogField
 
 	// BufPool is a per-step pool of []byte pre-sized to hold the max payload.
-	// One pool per compiled log step â€” size is exact for this step's shape.
+	// One pool per compiled log step — size is exact for this step's shape.
 	BufPool *sync.Pool
 
 	// GatewayMsg is the plain message string used for gatewaylog.Default
@@ -69,10 +69,10 @@ func FlowLog(cfg FlowLogConfig) engine.Instruction {
 			} else if cfg.Level == gatewaylog.ERROR {
 				gatewaylog.Default.Error(cfg.GatewayMsg)
 			}
-			// debug/info intentionally not sent to gatewaylog.Default â€”
+			// debug/info intentionally not sent to gatewaylog.Default —
 			// they would be silently dropped when the gateway level is INFO+.
 
-			// Emit to ingest pipeline (always â€” not conditional on level).
+			// Emit to ingest pipeline (always — not conditional on level).
 			p := flowLogPipeline.Load()
 			if p == nil {
 				return state.PC + 1
@@ -116,7 +116,7 @@ func FlowLog(cfg FlowLogConfig) engine.Instruction {
 	}
 }
 
-// appendJSONBytes appends b as a JSON string value (without surrounding quotes â€”
+// appendJSONBytes appends b as a JSON string value (without surrounding quotes —
 // caller writes the opening quote via JSONKey and closing quote after this call).
 func appendJSONBytes(dst []byte, b []byte) []byte {
 	for _, c := range b {

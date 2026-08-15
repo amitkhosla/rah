@@ -1,0 +1,15 @@
+flows:
+  - name: school_classes_list
+    action: upsert
+    code: |
+      return(200, '{"classes":[{"id":"c1","name":"10A Mathematics","subject":"Mathematics","teacher":{"id":"t1","name":"Ms. Johnson"},"students":15,"room":"101"},{"id":"c2","name":"10B Physics","subject":"Physics","teacher":{"id":"t2","name":"Mr. Lee"},"students":12,"room":"102"}],"total":2}')
+
+  - name: school_class_get
+    action: upsert
+    code: |
+      return(200, '{"id":"c1","name":"10A Mathematics","subject":"Mathematics","teacher":{"id":"t1","name":"Ms. Johnson"},"students":15,"room":"101","tenant":"alpha-school"}')
+
+  - name: school_class_create
+    action: upsert
+    code: |
+      return(201, '{"id":"c3","name":"10C Chemistry","subject":"Chemistry","teacher":{"id":"t1","name":"Ms. Johnson"},"students":0,"status":"created","tenant":"alpha-school"}')

@@ -1,0 +1,14 @@
+flow:
+  name: my-event-processor-dlq
+  app_name: my-event-processor
+  steps:
+    - name: log_failure
+      kind: log
+      level: error
+      message_slot: error_message
+    - name: store_dlq
+      kind: storage_put
+      provider: s3_primary
+      bucket_slot: dlq_bucket
+      key_slot: event_id
+      value_slot: event_payload

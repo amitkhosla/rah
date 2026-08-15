@@ -162,7 +162,7 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 				}
 			}
 
-			// Scope check â€” if key has scopes and required scopes are configured,
+			// Scope check — if key has scopes and required scopes are configured,
 			// the intersection must cover all required scopes.
 			if len(cfg.RequiredScopes) > 0 && len(entry.Scopes) > 0 {
 				scopeSet := make(map[string]struct{}, len(entry.Scopes))

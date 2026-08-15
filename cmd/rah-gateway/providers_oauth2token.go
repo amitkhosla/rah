@@ -7,7 +7,7 @@ package main
 //
 // To enable:
 //  1. go build -tags oauth2token ./cmd/rah-gateway/
-//     (no extra go get needed â€” golang.org/x/oauth2 is already in go.mod)
+//     (no extra go get needed — golang.org/x/oauth2 is already in go.mod)
 //
 // In gateway.yaml:
 //

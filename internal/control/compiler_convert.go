@@ -17,11 +17,11 @@ import (
 //
 // Step input keys:
 //
-//	src_slot        â€” var name whose ByteSlot contains Avro binary (required)
-//	dst_slot        â€” var name whose ByteSlot will receive Proto binary (required)
-//	avro_schema     â€” Avro JSON schema string for the source (required)
-//	descriptor_set  â€” name of the registered FileDescriptorSet (required)
-//	message         â€” fully-qualified Proto message name (required)
+//	src_slot        — var name whose ByteSlot contains Avro binary (required)
+//	dst_slot        — var name whose ByteSlot will receive Proto binary (required)
+//	avro_schema     — Avro JSON schema string for the source (required)
+//	descriptor_set  — name of the registered FileDescriptorSet (required)
+//	message         — fully-qualified Proto message name (required)
 func (c *Compiler) compileAvroToProto(step StepConfig) error {
 	schemaJSON := step.Input["avro_schema"]
 	if schemaJSON == "" {
@@ -89,11 +89,11 @@ func (c *Compiler) compileAvroToProto(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot        â€” var name whose ByteSlot contains Proto binary (required)
-//	dst_slot        â€” var name whose ByteSlot will receive Avro binary (required)
-//	descriptor_set  â€” name of the registered FileDescriptorSet (required)
-//	message         â€” fully-qualified Proto message name (required)
-//	avro_schema     â€” Avro JSON schema string for the destination (required)
+//	src_slot        — var name whose ByteSlot contains Proto binary (required)
+//	dst_slot        — var name whose ByteSlot will receive Avro binary (required)
+//	descriptor_set  — name of the registered FileDescriptorSet (required)
+//	message         — fully-qualified Proto message name (required)
+//	avro_schema     — Avro JSON schema string for the destination (required)
 func (c *Compiler) compileProtoToAvro(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {

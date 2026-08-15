@@ -56,7 +56,7 @@ func TestProtoToXMLMultiHop(t *testing.T) {
 	t.Skip("XML transcoding with pivot buffer requires full implementation")
 }
 
-// â”€â”€ Basic pool behavior tests (no descriptor required) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Basic pool behavior tests (no descriptor required) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestProtoMsgPoolBasic(t *testing.T) {
 	// Create a minimal test by using a dynamicpb descriptor.
@@ -84,7 +84,7 @@ func TestPivotBufferManagement(t *testing.T) {
 
 	transcode.PutPivot(pb1)
 
-	// Get again â€” should be reset
+	// Get again — should be reset
 	pb2 := transcode.GetPivot()
 	defer transcode.PutPivot(pb2)
 

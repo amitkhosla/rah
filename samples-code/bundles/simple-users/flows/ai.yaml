@@ -1,0 +1,7 @@
+flows:
+  - name: user_ask
+    action: upsert
+    code: |
+      question = body("question")
+      answer = llm(question, model: "school-llm", system: "You are a helpful assistant. Answer concisely in 1-2 sentences.", max_tokens: 200)
+      return(200, answer)

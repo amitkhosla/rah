@@ -25,7 +25,7 @@ func runRoutingInstruction(instr engine.Instruction, ctx *rctx.Context) int16 {
 	return instr.Action(ctx, state)
 }
 
-// â”€â”€ RouteLLM tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ RouteLLM tests â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestRouteLLM_DefaultWhenNoRules(t *testing.T) {
 	ctx := newRoutingContext()
@@ -50,7 +50,7 @@ func TestRouteLLM_DefaultWhenNoRules(t *testing.T) {
 
 func TestRouteLLM_TokenCountRule(t *testing.T) {
 	ctx := newRoutingContext()
-	ctx.IntSlots[0] = 9000 // token count > 8000 â†’ should route to gemini-pro
+	ctx.IntSlots[0] = 9000 // token count > 8000 → should route to gemini-pro
 
 	cfg := RouteLLMConfig{
 		Rules: []RoutingRule{
@@ -75,7 +75,7 @@ func TestRouteLLM_TokenCountRule(t *testing.T) {
 
 func TestRouteLLM_TokenCountRule_NoMatch(t *testing.T) {
 	ctx := newRoutingContext()
-	ctx.IntSlots[0] = 500 // token count < 8000 â†’ should NOT trigger "token_count > 8000" rule
+	ctx.IntSlots[0] = 500 // token count < 8000 → should NOT trigger "token_count > 8000" rule
 
 	cfg := RouteLLMConfig{
 		Rules: []RoutingRule{
@@ -139,7 +139,7 @@ func TestRouteLLM_MetaRule_NoMatch(t *testing.T) {
 
 func TestRouteLLM_FirstMatchWins(t *testing.T) {
 	ctx := newRoutingContext()
-	ctx.IntSlots[0] = 9000 // token_count > 8000 AND meta = premium â†’ first rule (token) wins
+	ctx.IntSlots[0] = 9000 // token_count > 8000 AND meta = premium → first rule (token) wins
 	ctx.ByteSlots[2] = []byte("premium")
 
 	cfg := RouteLLMConfig{
@@ -286,7 +286,7 @@ func TestRouteLLM_MetaNotEqual(t *testing.T) {
 	}
 }
 
-// â”€â”€ LLMCall dynamic model slot tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ LLMCall dynamic model slot tests â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestLLMCall_DynamicModel_FromSlot(t *testing.T) {
 	// Mock server that responds like an Anthropic endpoint
@@ -403,7 +403,7 @@ func TestLLMCall_DynamicModel_SlotEmpty_UsesBakedModel(t *testing.T) {
 
 	ctx := newTestContext()
 	ctx.ByteSlots[0] = []byte("test prompt")
-	// slot 2 is nil/empty â†’ use baked model
+	// slot 2 is nil/empty → use baked model
 
 	bakedModel := config.LLMModelConfig{
 		Alias:     "baked-model",
@@ -422,7 +422,7 @@ func TestLLMCall_DynamicModel_SlotEmpty_UsesBakedModel(t *testing.T) {
 		ResultSlot:   1,
 		SystemSlot:   -1,
 		MaxTokens:    100,
-		ModelSlot:    2, // slot 2 is empty â†’ no override
+		ModelSlot:    2, // slot 2 is empty → no override
 		ModelCatalog: catalog,
 	}
 
@@ -451,7 +451,7 @@ func TestLLMCall_DynamicModel_NilCatalog_UsesBakedModel(t *testing.T) {
 
 	ctx := newTestContext()
 	ctx.ByteSlots[0] = []byte("prompt")
-	ctx.ByteSlots[2] = []byte("some-model") // slot set but catalog nil â†’ no override
+	ctx.ByteSlots[2] = []byte("some-model") // slot set but catalog nil → no override
 
 	bakedModel := config.LLMModelConfig{
 		Alias:    "baked-model",

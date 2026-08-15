@@ -157,6 +157,11 @@ func (f *FanOutObsStore) QueryPayloads(ctx context.Context, traceID uint64) ([]P
 	return f.stores[0].QueryPayloads(ctx, traceID)
 }
 
+// GetDistinctApps returns distinct app names from the primary store.
+func (f *FanOutObsStore) GetDistinctApps(ctx context.Context, fromUnixS int64) ([]string, error) {
+	return f.stores[0].GetDistinctApps(ctx, fromUnixS)
+}
+
 // Close closes all stores and returns the first error encountered.
 func (f *FanOutObsStore) Close() error {
 	var firstErr error

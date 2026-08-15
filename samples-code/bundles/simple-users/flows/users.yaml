@@ -1,0 +1,21 @@
+flows:
+  - name: hello_world
+    action: upsert
+    code: |
+      return(200, '{"message":"hello from rah gateway","version":"1.0","status":"ok"}')
+
+  - name: user_list
+    action: upsert
+    code: |
+      return(200, '{"users":[{"id":"u1","name":"Alice","email":"alice@example.com","role":"admin"},{"id":"u2","name":"Bob","email":"bob@example.com","role":"member"},{"id":"u3","name":"Carol","email":"carol@example.com","role":"member"}],"total":3}')
+
+  - name: user_get
+    action: upsert
+    code: |
+      id = path("id")
+      return(200, '{"id":"u1","name":"Alice","email":"alice@example.com","role":"admin","joined":"2024-01-15"}')
+
+  - name: user_create
+    action: upsert
+    code: |
+      return(201, '{"id":"u-new","status":"created","message":"User created successfully"}')

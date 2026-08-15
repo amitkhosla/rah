@@ -116,7 +116,7 @@ func (c *Compiler) compileGrpcCall(step StepConfig) error {
 	// Wired fully in S10 (main.go). For now, profile stays nil if not resolved.
 	// URL-scheme-based TLS selection in pool.go handles the common case.
 
-	// â”€â”€ mTLS client certificate (opt-in, bake-time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ mTLS client certificate (opt-in, bake-time) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
 		if c.SecretsMgr == nil {
 			return fmt.Errorf("grpc_call: tls_client_cert_ref requires a secrets manager to be configured")

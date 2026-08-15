@@ -32,7 +32,7 @@ type LLMCallConfig struct {
 	SystemSlot   int                              // ByteSlots index for the system prompt; -1 = not used
 	MaxTokens    int                              // max output tokens; falls back to ModelConfig.MaxTokens
 	Temperature  float64                          // 0.0 = use model default
-	OnExceed     string                           // "reject" (default) â€” return 413 when prompt exceeds context
+	OnExceed     string                           // "reject" (default) — return 413 when prompt exceeds context
 	ModelSlot    int                              // >= 0: read model slug from ByteSlots at runtime
 	ModelCatalog map[string]config.LLMModelConfig // full catalog for runtime lookup
 	CatalogKeys  map[string]string                // pre-resolved API keys for catalog entries (alias â†’ literal key)
@@ -78,7 +78,7 @@ type LLMCallConfig struct {
 	// Set to -1 (default) to use PromptSlot.
 	MessagesSlot int
 
-	// â”€â”€ Tool / thinking slots (runtime, read from ctx.ByteSlots) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Tool / thinking slots (runtime, read from ctx.ByteSlots) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// All slot fields default to -1 (disabled). Callers (compiler) must set them
 	// explicitly; zero would silently conflict with a real slot.
 
@@ -96,7 +96,7 @@ type LLMCallConfig struct {
 	// Set to -1 (default) to use the static Thinking field below.
 	ThinkingSlot int
 
-	// â”€â”€ Static bake-time values (used when corresponding slot == -1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Static bake-time values (used when corresponding slot == -1) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 	// ToolChoice is the static tool choice strategy applied when ToolChoiceSlot == -1.
 	// Empty string means use the adapter default.
@@ -106,7 +106,7 @@ type LLMCallConfig struct {
 	// nil means thinking is disabled.
 	Thinking *ThinkingConfig
 
-	// â”€â”€ Output slots (write after successful model call) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Output slots (write after successful model call) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 	// ToolUseSlot: if >= 0, write JSON []ContentBlock (BlockToolUse only) to
 	// ctx.ByteSlots[ToolUseSlot] after a successful call.
@@ -249,7 +249,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 	// Resolve baked params using the baked-in key; runtime slot key applied per-request below.
 	bakedParams, err := resolveCallParams(cfg.ModelConfig, cfg.APIKey)
 	if err != nil {
-		// Misconfiguration caught at bake time â€” return a poisoned instruction
+		// Misconfiguration caught at bake time — return a poisoned instruction
 		// that immediately fails every request with 500.
 		return engine.Instruction{
 			Name: "llm_call[bad_adapter]",
@@ -297,12 +297,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			if cfg.PromptSlot >= 0 && cfg.PromptSlot < len(ctx.ByteSlots) {
 				promptContent = string(ctx.ByteSlots[cfg.PromptSlot])
 			}
-			// When MessagesSlot is configured, allow empty promptContent â€” the messages
+			// When MessagesSlot is configured, allow empty promptContent — the messages
 			// array will supply the actual content. Only skip if both are empty.
 			hasMessages := cfg.MessagesSlot >= 0 && cfg.MessagesSlot < len(ctx.ByteSlots) &&
 				len(ctx.ByteSlots[cfg.MessagesSlot]) > 0
 			if promptContent == "" && !hasMessages {
-				// Nothing to send â€” skip silently, leave result slot empty
+				// Nothing to send — skip silently, leave result slot empty
 				return state.PC + 1
 			}
 
@@ -484,7 +484,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				req.Thinking = cfg.Thinking
 			}
 
-			// 4. Token limit check (reject â€” no truncation)
+			// 4. Token limit check (reject — no truncation)
 			if activeCfg.Capabilities.MaxContextTokens > 0 {
 				est := estimateRequestTokens(req) + maxTokens
 				if est > activeCfg.Capabilities.MaxContextTokens {
@@ -514,7 +514,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 			}
 
 			// 6. Proactive provider rate limit check.
-			// Checks local atomic counters â€” ~20ns, no network call.
+			// Checks local atomic counters — ~20ns, no network call.
 			// If any configured window is exhausted we skip the HTTP loop and fall
 			// through to the fallback chain exactly as a provider-returned 429 would.
 			var lastStatus int
@@ -525,7 +525,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				state.AddTraceAttr("rate_limit_detail", detail) // e.g. "minute:60/60"
 				lastStatus = 429
 			} else {
-				_ = detail // allowed path â€” no detail needed
+				_ = detail // allowed path — no detail needed
 
 				// 7. HTTP call with retry
 				client := getLLMClient(activeCfg.BaseURL, timeoutMs)
@@ -554,7 +554,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					if activeCfg.Adapter == config.AdapterAnthropic || activeCfg.Adapter == config.AdapterBedrock {
 						httpReq.Header.Set("anthropic-version", "2023-06-01")
 					}
-					// Extra headers defined on the model config â€” applied last so they can override defaults.
+					// Extra headers defined on the model config — applied last so they can override defaults.
 					for k, v := range activeCfg.ExtraHeaders {
 						httpReq.Header.Set(k, v)
 					}
@@ -591,7 +591,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							time.Sleep(llmBackoff(attempt))
 							continue
 						}
-						// All retries exhausted â€” break to try fallback chain below.
+						// All retries exhausted — break to try fallback chain below.
 						lastStatus = 502
 						break
 					}
@@ -626,11 +626,11 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							ctx.IntSlots[cfg.OutputTokensSlot] = int64(outTok)
 						}
 						if streamErr != nil {
-							// Streaming already started â€” cannot retry/fallback. Signal done.
+							// Streaming already started — cannot retry/fallback. Signal done.
 							ctx.Failed = true
 							return engine.StopPlan
 						}
-						// Streaming complete â€” skip the buffered response path entirely.
+						// Streaming complete — skip the buffered response path entirely.
 						return state.PC + 1
 					}
 
@@ -656,7 +656,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							time.Sleep(llmBackoff(attempt))
 							continue
 						}
-						// All retries exhausted â€” break to try fallback chain below.
+						// All retries exhausted — break to try fallback chain below.
 						lastStatus = 502
 						break
 					}
@@ -667,7 +667,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							time.Sleep(llmBackoff(attempt))
 							continue
 						}
-						// All retries exhausted â€” break to try fallback chain below.
+						// All retries exhausted — break to try fallback chain below.
 						lastStatus = resp.StatusCode
 						break
 					}
@@ -680,7 +680,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 						}
 						state.AddTraceAttr("provider_error", errSnip)
 						state.AddTraceAttr("provider_status", fmt.Sprintf("%d", resp.StatusCode))
-						// Break to fallback chain â€” a 4xx may be model-specific (bad key,
+						// Break to fallback chain — a 4xx may be model-specific (bad key,
 						// unsupported param, quota) and a different model may succeed.
 						lastStatus = resp.StatusCode
 						lastErrBody = respBody
@@ -817,7 +817,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 
 				fbParams, fbParamErr := resolveCallParams(fb.ModelConfig, fb.APIKey)
 				if fbParamErr != nil {
-					continue // bad adapter config â€” skip to next
+					continue // bad adapter config — skip to next
 				}
 
 				fbEndpointHost := extractUpstreamHost(fbParams.endpoint)
@@ -887,7 +887,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							Err: fbDoErr.Error(), TotalNs: fbElapsed.Nanoseconds(),
 						})
 					}
-					continue // network error â€” try next
+					continue // network error — try next
 				}
 
 				fbRespBody, fbReadErr := io.ReadAll(fbResp.Body)
@@ -917,7 +917,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					continue
 				}
 
-				// Success â€” write result and return.
+				// Success — write result and return.
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					result := []byte(fbLlmResp.Content)
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(result))
@@ -973,7 +973,7 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// All retries and fallback chain exhausted â€” emit diagnosis.
+			// All retries and fallback chain exhausted — emit diagnosis.
 			if len(activeFallback) == 0 {
 				state.AddTraceAttr("fallback_status", "none_configured")
 			} else {
@@ -1016,7 +1016,7 @@ func llmBackoff(attempt int) time.Duration {
 // mergeProviderParams merges extra provider-specific fields into an already-marshalled
 // JSON body. The base JSON is decoded into a map, params are overlaid (overriding any
 // existing key), and the result is re-marshalled. This is the single merge point for
-// all adapters â€” no per-adapter changes needed when new params are added.
+// all adapters — no per-adapter changes needed when new params are added.
 func mergeProviderParams(base []byte, params map[string]any) ([]byte, error) {
 	var m map[string]any
 	if err := json.Unmarshal(base, &m); err != nil {

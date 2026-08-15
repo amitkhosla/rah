@@ -15,16 +15,16 @@ import (
 //
 // Step input keys:
 //
-//	kind               â€” event kind string (required; e.g. "llm_request", "prompt_in")
-//	payload_slot       â€” var name whose slot holds the event payload bytes
-//	model_slot         â€” var name whose slot holds the model name string (optional)
-//	session_slot       â€” var name whose slot holds the session ID string (optional)
-//	input_tokens_slot  â€” var name whose IntSlot holds input token count (optional)
-//	output_tokens_slot â€” var name whose IntSlot holds output token count (optional)
-//	deferred           â€” "true" to emit after HTTP response is committed (default false)
+//	kind               — event kind string (required; e.g. "llm_request", "prompt_in")
+//	payload_slot       — var name whose slot holds the event payload bytes
+//	model_slot         — var name whose slot holds the model name string (optional)
+//	session_slot       — var name whose slot holds the session ID string (optional)
+//	input_tokens_slot  — var name whose IntSlot holds input token count (optional)
+//	output_tokens_slot — var name whose IntSlot holds output token count (optional)
+//	deferred           — "true" to emit after HTTP response is committed (default false)
 func (c *Compiler) compileEmitEvent(step StepConfig) error {
 	if c.IngestPipeline == nil {
-		// Pipeline disabled â€” compile a no-op instruction so flow structure is preserved.
+		// Pipeline disabled — compile a no-op instruction so flow structure is preserved.
 		c.GlobalTable = append(c.GlobalTable, steps.EmitEvent(steps.EmitEventConfig{
 			Pipeline:         nil,
 			InputTokensSlot:  -1,
@@ -102,9 +102,9 @@ func (c *Compiler) compileEmitEvent(step StepConfig) error {
 //
 // Step input keys:
 //
-//	level   â€” log level string: debug|info|warn|error (default: info)
-//	message â€” log message text (required)
-//	field.* â€” any input key prefixed with "field." is treated as a field.
+//	level   — log level string: debug|info|warn|error (default: info)
+//	message — log message text (required)
+//	field.* — any input key prefixed with "field." is treated as a field.
 //	           Static literal values are baked into the pre-built JSON fragments.
 //	           Dynamic values prefixed with "var." resolve from a ByteSlot at runtime.
 func (c *Compiler) compileFlowLog(step StepConfig) error {

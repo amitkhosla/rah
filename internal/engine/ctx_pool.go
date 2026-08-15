@@ -1,6 +1,6 @@
 ﻿package engine
 
-// ctx_pool.go â€” GC-resistant lock-free-read context pool.
+// ctx_pool.go — GC-resistant lock-free-read context pool.
 //
 // Design goals (vs sync.Pool):
 //   sync.Pool is cleared on every GC cycle. Under high RPS, GC runs frequently
@@ -10,12 +10,12 @@
 // This pool holds all contexts in a fixed-size array. The array is a single GC
 // root; all Context pointers inside it are strong references that GC cannot clear.
 //
-// Get â€” fully lock-free:
+// Get — fully lock-free:
 //   1. Atomically CAS the stack top from n to n-1.
-//   2. Return items[n-1] â€” the slot guaranteed written by the matching Put.
+//   2. Return items[n-1] — the slot guaranteed written by the matching Put.
 //   3. If pool empty (n==0), allocate a fresh Context (rare under steady load).
 //
-// Put â€” brief mutex (protects slot-index assignment only):
+// Put — brief mutex (protects slot-index assignment only):
 //   1. Under lock: write items[count], then count++, release lock.
 //   Mutex is held for ~2 instructions. At GOMAXPROCS=2 (GCP n2-std-2) it almost
 //   never contends. Get never waits on it.
@@ -24,7 +24,7 @@
 //   Put:  items[n] = ctx  THEN  count.Store(n+1)
 //   Get:  count.CAS(n, n-1) succeeds only after observing Put's Store(n+1).
 //   By Go's memory model, all writes before an atomic store are visible to any
-//   goroutine that observes that store â€” so items[n-1] is safe to read without
+//   goroutine that observes that store — so items[n-1] is safe to read without
 //   an additional fence.
 
 import (
@@ -59,7 +59,7 @@ func (p *ctxPool) Get() *rctx.Context {
 	for {
 		n := p.count.Load()
 		if n == 0 {
-			return p.newFn() // pool empty â€” allocate; rare under steady load
+			return p.newFn() // pool empty — allocate; rare under steady load
 		}
 		if p.count.CompareAndSwap(n, n-1) {
 			// Slot n-1 was written by Put before count was incremented.
@@ -80,6 +80,6 @@ func (p *ctxPool) Put(ctx *rctx.Context) {
 		p.items[n] = ctx  // write before incrementing count
 		p.count.Store(n + 1) // now visible to Get
 	}
-	// if full: drop â€” GC will collect this context
+	// if full: drop — GC will collect this context
 	p.mu.Unlock()
 }

@@ -1,0 +1,53 @@
+tests:
+  - name: "Hello returns 200 with message"
+    flow_name: "hello_world"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /hello
+      headers: {}
+      body: ""
+    assertions:
+      - type: status
+        expected: 200
+
+  - name: "User list returns 200 with users array"
+    flow_name: "user_list"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /users
+      headers: {}
+      body: ""
+    assertions:
+      - type: status
+        expected: 200
+
+  - name: "User detail returns 200"
+    flow_name: "user_get"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /user/u1
+      headers: {}
+      body: ""
+    assertions:
+      - type: status
+        expected: 200
+
+  - name: "User create returns 201"
+    flow_name: "user_create"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: POST
+      path: /create-user
+      headers:
+        Content-Type: application/json
+      body: '{"name":"Dave","email":"dave@example.com"}'
+    assertions:
+      - type: status
+        expected: 201

@@ -347,7 +347,7 @@ export interface SyncStep {
 
 export interface SyncPayload {
   sync_uuid: string
-  flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' | 'delete' }>
+  flows: Array<{ name: string; instructions: SyncStep[]; action: 'upsert' | 'delete'; constants?: Record<string, string> }>
   apis: Array<{
     name: string
     path: string
@@ -585,9 +585,10 @@ export async function fetchObsMetrics(apiName?: string): Promise<any> {
   return r.json()
 }
 
-export async function fetchObsAccessLog(params?: { api?: string; tenant?: string; status?: number; limit?: number }): Promise<any> {
+export async function fetchObsAccessLog(params?: { api?: string; app?: string; tenant?: string; status?: number; limit?: number }): Promise<any> {
   const q = new URLSearchParams()
   if (params?.api) q.set('api', params.api)
+  if (params?.app) q.set('app', params.app)
   if (params?.tenant) q.set('tenant', params.tenant)
   if (params?.status) q.set('status', String(params.status))
   if (params?.limit) q.set('limit', String(params.limit))
@@ -728,6 +729,29 @@ export function updateApp(id: number, body: Partial<{ name: string; description:
 
 export function deleteApp(id: number): Promise<void> {
   return request<void>(`/api/apps/${id}`, { method: 'DELETE' })
+}
+
+export interface AppBlueprintRequest {
+  type: 'web' | 'api-service' | 'event-processor' | 'webhook'
+  tenant_mode: 'tenant_aware' | 'tenant_agnostic'
+  oauth_provider?: string
+  callback_path?: string
+  login_path?: string
+  logout_path?: string
+}
+
+export interface FlowBlueprint {
+  name: string
+  yaml: string
+}
+
+export interface AppBlueprintResponse {
+  app_name: string
+  flows: FlowBlueprint[]
+}
+
+export async function generateAppBlueprint(appName: string, req: AppBlueprintRequest): Promise<AppBlueprintResponse> {
+  return request<AppBlueprintResponse>('/api/apps/' + appName + '/blueprint', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req) })
 }
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
@@ -1005,7 +1029,8 @@ export interface ScheduleHistory {
 }
 
 export async function listSchedules(): Promise<Schedule[]> {
-  return request<Schedule[]>('/api/schedules')
+  const res = await request<Schedule[] | null>('/api/schedules')
+  return res ?? []
 }
 
 export async function upsertSchedule(s: Schedule): Promise<void> {
@@ -1072,6 +1097,125 @@ export function listRedisSources(): Promise<{ sources: string[] }> {
   return request<{ sources: string[] }>('/api/redis-sources')
 }
 
+// ── Document Connectors ────────────────────────────────────────────────────────
+
+export interface DocumentConnectorDef {
+  name: string
+  kind: string
+}
+
+export function listDocumentConnectors(): Promise<{ connectors: DocumentConnectorDef[] }> {
+  return request<{ connectors: DocumentConnectorDef[] }>('/api/document-connectors')
+}
+
+// ── Data Stores ────────────────────────────────────────────────────────────
+
+export interface DataStoreDef {
+  name: string
+  type: string  // "postgres" | "redis" | "disk"
+  host?: string
+  database?: string
+  path?: string
+}
+
+export interface DataStoreTestResult {
+  ok: boolean
+  latency_ms?: number
+  error?: string
+}
+
+export async function listDataStores(): Promise<{ datastores: DataStoreDef[] }> {
+  return request('/api/config/datastores')
+}
+
+export async function testDataStore(name: string): Promise<DataStoreTestResult> {
+  return request('/api/config/datastores/' + name + '/test', { method: 'POST' })
+}
+
+export async function deleteDataStore(name: string): Promise<void> {
+  await request('/api/config/datastores/' + name, { method: 'DELETE' })
+}
+
+// ── Storage Connectors ──────────────────────────────────────────────────────────
+
+export interface StorageConnectorDef {
+  name: string
+  type: string
+}
+
+export function listStorageConnectors(): Promise<{ connectors: StorageConnectorDef[] }> {
+  return request<{ connectors: StorageConnectorDef[] }>('/api/storage-connectors')
+}
+
+// ── Messaging Publishers ───────────────────────────────────────────────────────
+
+export interface MessagingPublisherDef {
+  name: string
+  kind: string
+}
+
+export function listMessagingPublishers(): Promise<{ publishers: MessagingPublisherDef[] }> {
+  return request<{ publishers: MessagingPublisherDef[] }>('/api/messaging-publishers')
+}
+
+// ── Event Listeners ────────────────────────────────────────────────────────────
+
+export interface EventListenerDef {
+  name: string
+  publisher: string
+  topic: string
+  flow_name: string
+  workers: number
+}
+
+export function listEventListeners(): Promise<{ listeners: EventListenerDef[] }> {
+  return request<{ listeners: EventListenerDef[] }>('/api/event-listeners')
+}
+
+// ── Apps (flow grouping) ───────────────────────────────────────────────────────
+
+export interface AppDef {
+  name: string
+  flows: string[]
+}
+
+export function listAppFlows(): Promise<{ apps: AppDef[] }> {
+  return request<{ apps: AppDef[] }>('/api/apps')
+}
+
+export function listObservabilityApps(): Promise<{ apps: string[] }> {
+  return request<{ apps: string[] }>('/api/observability/apps')
+}
+
+// ── App Releases ────────────────────────────────────────────────────────────
+
+export interface AppRelease {
+  app_name: string
+  version: string
+  channel: string
+  flow_names: string[]
+  notes?: string
+  active: boolean
+  created_at: string
+  created_by?: string
+}
+
+export async function listAppReleases(appName: string): Promise<{ app_name: string; releases: AppRelease[] }> {
+  return request('/api/apps/' + appName + '/releases')
+}
+
+export async function createAppRelease(appName: string, rel: Omit<AppRelease, 'app_name' | 'active' | 'created_at'>): Promise<AppRelease> {
+  return request('/api/apps/' + appName + '/releases', { method: 'POST', body: JSON.stringify(rel), headers: { 'content-type': 'application/json' } })
+}
+
+export async function promoteAppRelease(appName: string, version: string, channel: string): Promise<AppRelease> {
+  return request('/api/apps/' + appName + '/releases/' + version + '/promote', { method: 'POST', body: JSON.stringify({ channel }), headers: { 'content-type': 'application/json' } })
+}
+
+export async function rollbackAppRelease(appName: string, version: string, channel: string): Promise<AppRelease> {
+  return request('/api/apps/' + appName + '/releases/' + version + '/rollback', { method: 'POST', body: JSON.stringify({ channel }), headers: { 'content-type': 'application/json' } })
+}
+
 // ── Named Queries ──────────────────────────────────────────────────────────────
 
 export interface NamedQueryDef {
@@ -1107,4 +1251,186 @@ export interface MigrationStatus {
 
 export function listMigrations(): Promise<{ migrations: MigrationStatus[] }> {
   return request<{ migrations: MigrationStatus[] }>('/api/migrations')
+}
+
+// ── Workflows ──────────────────────────────────────────────────────────────
+
+export interface WorkflowNode {
+  id: string
+  flowName: string
+  label: string
+  x: number
+  y: number
+}
+
+export interface WorkflowEdge {
+  id: string
+  sourceNodeId: string
+  targetNodeId: string
+  listenerName: string
+  label: string
+}
+
+export interface WorkflowDef {
+  name: string
+  description: string
+  appName: string
+  nodes: WorkflowNode[]
+  edges: WorkflowEdge[]
+  createdAt?: number
+  updatedAt?: number
+}
+
+export function listWorkflows(): Promise<{ workflows: string[] }> {
+  return request<{ workflows: string[] }>('/api/workflows')
+}
+
+export function getWorkflow(name: string): Promise<WorkflowDef> {
+  return request<WorkflowDef>(`/api/workflows/${encodeURIComponent(name)}`)
+}
+
+export function upsertWorkflow(wf: WorkflowDef): Promise<WorkflowDef> {
+  return request<WorkflowDef>('/api/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(wf),
+  })
+}
+
+export function deleteWorkflow(name: string): Promise<void> {
+  return request<void>(`/api/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export async function listFlowNames(): Promise<string[]> {
+  const state = await fetchGatewayApis()
+  const names: string[] = []
+  if (state && state.flows) {
+    for (const flow of state.flows) {
+      if (flow.name && !names.includes(flow.name)) names.push(flow.name)
+    }
+  }
+  return names.sort()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+export interface TestInput {
+  method: string
+  path: string
+  headers?: Record<string, string>
+  body?: string
+  tenant_key?: string
+}
+
+export interface TestAssertion {
+  type: 'status' | 'body_contains' | 'latency_ms' | 'step_executed' | 'side_effect'
+  expected?: any
+  path?: string
+  max?: number
+  step?: string
+  key?: string
+}
+
+export interface StepMock {
+  step_name: string
+  status?: number
+  body?: string
+}
+
+export interface TestCase {
+  id: string
+  api_name: string
+  name: string
+  flow_name: string
+  call_mode: 'mock' | 'real' | 'schema_only'
+  input: TestInput
+  mocks?: StepMock[]
+  assertions: TestAssertion[]
+  created_at: number
+}
+
+export interface AssertionResult {
+  type: string
+  passed: boolean
+  expected?: any
+  actual?: any
+  message?: string
+}
+
+export interface TestExecuteResponse {
+  passed: boolean
+  duration_ms: number
+  response: { status: number; body: string }
+  assertions: AssertionResult[]
+}
+
+export interface TestSuite {
+  id: string
+  name: string
+  case_ids: string[]
+  mode: string
+  created_at: number
+}
+
+export interface SuiteCaseResult {
+  case_id: string
+  case_name: string
+  passed: boolean
+  duration_ms: number
+  response: { status: number; body: string }
+  assertions: AssertionResult[]
+  error?: string
+}
+
+export interface SuiteRunResult {
+  suite_id: string
+  run_id: string
+  passed: boolean
+  total_cases: number
+  passed_cases: number
+  results: SuiteCaseResult[]
+  test_tenant_alias?: string
+}
+
+export async function listTestCases(): Promise<TestCase[]> {
+  const res = await request<{ cases: TestCase[] } | TestCase[]>('/api/test/cases')
+  if (Array.isArray(res)) return res
+  return (res as any).cases ?? []
+}
+
+export async function createTestCase(tc: Omit<TestCase, 'id' | 'created_at'>): Promise<TestCase> {
+  return request('/api/test/cases', { method: 'POST', body: JSON.stringify(tc) })
+}
+
+export async function deleteTestCase(id: string): Promise<void> {
+  await request(`/api/test/cases/${id}`, { method: 'DELETE' })
+}
+
+export async function executeTest(req: {
+  flow_name: string
+  mode?: string
+  call_mode?: string
+  input: TestInput
+  mocks?: StepMock[]
+  assertions?: TestAssertion[]
+}): Promise<TestExecuteResponse> {
+  return request('/api/test/execute', { method: 'POST', body: JSON.stringify(req) })
+}
+
+export async function listTestSuites(): Promise<TestSuite[]> {
+  const res = await request<{ suites: TestSuite[] } | TestSuite[]>('/api/test/suites')
+  if (Array.isArray(res)) return res
+  return (res as any).suites ?? []
+}
+
+export async function createTestSuite(suite: { name: string; case_ids: string[] }): Promise<TestSuite> {
+  return request('/api/test/suites', { method: 'POST', body: JSON.stringify(suite) })
+}
+
+export async function runTestSuite(id: string): Promise<SuiteRunResult> {
+  return request(`/api/test/suites/${id}/run`, { method: 'POST' })
+}
+
+export async function deleteTestSuite(id: string): Promise<void> {
+  await request(`/api/test/suites/${id}`, { method: 'DELETE' })
 }

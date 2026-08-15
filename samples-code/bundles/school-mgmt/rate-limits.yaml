@@ -1,0 +1,30 @@
+tiers:
+  - name: school-admin
+    action: upsert
+  - name: school-teacher
+    action: upsert
+  - name: school-student
+    action: upsert
+
+rate_limit_configs_v2:
+  - name: school-admin-rl
+    tier: school-admin
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 300
+    action: upsert
+  - name: school-teacher-rl
+    tier: school-teacher
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 120
+    action: upsert
+  - name: school-student-rl
+    tier: school-student
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 60
+    action: upsert

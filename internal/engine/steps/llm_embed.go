@@ -234,7 +234,7 @@ func EmbedText(cfg EmbedTextConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.Provider, cfg.BaseURL, cfg.Model)
 	if endpoint == "" {
-		// Misconfiguration at bake time â€” return poisoned instruction.
+		// Misconfiguration at bake time — return poisoned instruction.
 		return engine.Instruction{
 			Name: "embed_text[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

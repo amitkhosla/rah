@@ -19,7 +19,7 @@ import (
 // Requires CredMgr to be set on the Compiler (same interface used by load_credential).
 func (c *Compiler) compileLoadLLMKey(step StepConfig) error {
 	if c.CredMgr == nil {
-		return fmt.Errorf("load_llm_key step requires a credential registry â€” set CredMgr on the Compiler")
+		return fmt.Errorf("load_llm_key step requires a credential registry — set CredMgr on the Compiler")
 	}
 
 	credNameSlot, err := c.getSlot(step.KeyIdentifier)

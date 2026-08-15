@@ -1,0 +1,15 @@
+flows:
+  - name: school_teachers_list
+    action: upsert
+    code: |
+      return(200, '{"teachers":[{"id":"t1","name":"Ms. Johnson","subject":"Math","department":"Science","tenant":"alpha-school"},{"id":"t2","name":"Mr. Lee","subject":"Physics","department":"Science","tenant":"alpha-school"}],"total":2}')
+
+  - name: school_teacher_get
+    action: upsert
+    code: |
+      return(200, '{"id":"t1","name":"Ms. Johnson","subject":"Math","email":"johnson@school.com","department":"Science","tenant":"alpha-school"}')
+
+  - name: school_teacher_create
+    action: upsert
+    code: |
+      return(201, '{"id":"t3","name":"New Teacher","subject":"English","status":"created","tenant":"alpha-school"}')

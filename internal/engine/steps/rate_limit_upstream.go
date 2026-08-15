@@ -32,11 +32,11 @@ func (s *CheckUpstreamRateLimit) Execute(ctx *rctx.Context, state *engine.Execut
 		urlBytes = ctx.ByteSlots[s.URLSlotIndex]
 	}
 	if len(urlBytes) == 0 {
-		return int16(s.NextPC) // no URL set â€” nothing to check
+		return int16(s.NextPC) // no URL set — nothing to check
 	}
 	urlStr := string(urlBytes)
 
-	// 2. Registry match â€” applies unmatched policy (fail_open / fail_closed / default).
+	// 2. Registry match — applies unmatched policy (fail_open / fail_closed / default).
 	_, allow := engine.ActiveUpstreamRegistry().MatchWithPolicy(urlStr)
 	if !allow {
 		ctx.ResponseStatus = 429
@@ -55,7 +55,7 @@ func (s *CheckUpstreamRateLimit) Execute(ctx *rctx.Context, state *engine.Execut
 }
 
 // upstreamHost extracts the host portion from a URL like "https://api.openai.com/v1/chat".
-// Returns the full URL string if no "/" after scheme â€” this is fine as a cache key.
+// Returns the full URL string if no "/" after scheme — this is fine as a cache key.
 func upstreamHost(url []byte) string {
 	s := string(url)
 	if i := strings.Index(s, "://"); i >= 0 {

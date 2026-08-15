@@ -1,0 +1,10 @@
+flows:
+  - name: school_timetable_get
+    action: upsert
+    code: |
+      return(200, '{"timetable":[{"day":"Monday","time":"09:00-10:00","subject":"Math","teacher":"Ms. Johnson","class":"10A"},{"day":"Monday","time":"10:00-11:00","subject":"Physics","teacher":"Mr. Lee","class":"10A"}],"tenant":"alpha-school"}')
+
+  - name: school_timetable_set
+    action: upsert
+    code: |
+      return(200, '{"status":"timetable_updated","appliedDate":"2026-08-15","tenant":"alpha-school"}')

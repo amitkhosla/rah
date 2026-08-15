@@ -11,11 +11,11 @@ import (
 
 // SchemaHandler exposes CRUD REST endpoints for FieldSchema sets.
 //
-//	GET    /schemas                   â€” list schema set names
-//	GET    /schemas/{name}            â€” list all fields in a schema set
-//	POST   /schemas/{name}            â€” upsert a field (body: FieldSchema JSON)
-//	DELETE /schemas/{name}/{field}    â€” delete one field
-//	DELETE /schemas/{name}            â€” delete entire schema set
+//	GET    /schemas                   — list schema set names
+//	GET    /schemas/{name}            — list all fields in a schema set
+//	POST   /schemas/{name}            — upsert a field (body: FieldSchema JSON)
+//	DELETE /schemas/{name}/{field}    — delete one field
+//	DELETE /schemas/{name}            — delete entire schema set
 type SchemaHandler struct {
 	dsm *DataStoreManager
 }
@@ -31,7 +31,7 @@ func (h *SchemaHandler) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/schemas/", h.schemasItemHandler)
 }
 
-// setsCollectionHandler handles GET /schemas â€” returns list of unique schema set names.
+// setsCollectionHandler handles GET /schemas — returns list of unique schema set names.
 func (h *SchemaHandler) setsCollectionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

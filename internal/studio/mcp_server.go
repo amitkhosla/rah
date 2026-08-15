@@ -42,11 +42,13 @@ type mcpToolDef struct {
 
 // mcpToolMeta holds routing info used by proxyToolCall.
 type mcpToolMeta struct {
-	HTTPMethod  string // GET, POST, DELETE
-	Path        string // e.g. "/ai/llm/models" — may contain "{param}" placeholder
-	BodyParam   string // argument key holding the JSON body, empty if none
-	PathParam   string // argument key replacing the "{param}" placeholder, empty if none
-	QuerySuffix string // literal query string appended (e.g. "cursor=0&limit=50"), empty if none
+	HTTPMethod  string            // GET, POST, DELETE
+	Path        string            // e.g. "/ai/llm/models" — may contain "{param}" or "{param1}/{param2}" placeholders
+	BodyParam   string            // argument key holding the JSON body, empty if none
+	PathParam   string            // argument key replacing the "{param}" placeholder, empty if none (legacy single param)
+	PathParams  map[string]string // map of {placeholder} name to argument key for multiple path params, empty if none
+	BodyFields  []string          // list of argument keys to include in JSON body (auto-builds body), empty if none
+	QuerySuffix string            // literal query string appended (e.g. "cursor=0&limit=50"), empty if none
 }
 
 var studioMCPTools = []mcpToolDef{
@@ -330,31 +332,68 @@ var studioMCPTools = []mcpToolDef{
 		Description: "List applied database migrations.",
 		InputSchema: emptySchema(),
 	},
+
+	// ── Datastore and app release tools ──────────────────────────────────────
+	{
+		Name:        "list_datastores",
+		Description: "List all configured datastores in the gateway",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "test_datastore",
+		Description: "Test connectivity to a configured datastore by name",
+		InputSchema: paramSchema("name", "datastore name"),
+	},
+	{
+		Name:        "list_apps",
+		Description: "List all apps registered in the gateway",
+		InputSchema: emptySchema(),
+	},
+	{
+		Name:        "generate_app_blueprint",
+		Description: "Generate flow YAML templates for an app based on its type and configuration",
+		InputSchema: multiParamSchema([]string{"app_name", "type", "tenant_mode"}, []string{"oauth_provider", "callback_path", "login_path", "logout_path"}),
+	},
+	{
+		Name:        "list_app_releases",
+		Description: "List all releases for a specific app",
+		InputSchema: paramSchema("app_name", "app name"),
+	},
+	{
+		Name:        "create_app_release",
+		Description: "Create a new release version for an app",
+		InputSchema: multiParamSchema([]string{"app_name", "version", "flow_names"}, []string{"channel", "notes"}),
+	},
+	{
+		Name:        "promote_app_release",
+		Description: "Promote a release version to active status in a channel",
+		InputSchema: multiParamSchema([]string{"app_name", "version"}, []string{"channel"}),
+	},
 }
 
 // toolMetaTable maps tool name → routing metadata.
 var toolMetaTable = map[string]mcpToolMeta{
-	"register_llm_model":   {HTTPMethod: http.MethodPost, Path: "/ai/llm/models", BodyParam: "body"},
-	"list_llm_models":      {HTTPMethod: http.MethodGet, Path: "/ai/llm/models"},
-	"delete_llm_model":     {HTTPMethod: http.MethodDelete, Path: "/ai/llm/models/{alias}", PathParam: "alias"},
-	"register_mcp_server":  {HTTPMethod: http.MethodPost, Path: "/ai/mcp/servers", BodyParam: "body"},
-	"list_mcp_servers":     {HTTPMethod: http.MethodGet, Path: "/ai/mcp/servers"},
-	"delete_mcp_server":    {HTTPMethod: http.MethodDelete, Path: "/ai/mcp/servers/{alias}", PathParam: "alias"},
-	"create_virtual_server": {HTTPMethod: http.MethodPost, Path: "/ai/mcp/virtual", BodyParam: "body"},
-	"list_virtual_servers": {HTTPMethod: http.MethodGet, Path: "/ai/mcp/virtual"},
-	"delete_virtual_server": {HTTPMethod: http.MethodDelete, Path: "/ai/mcp/virtual/{name}", PathParam: "name"},
-	"register_api_tool":    {HTTPMethod: http.MethodPost, Path: "/ai/tools/apis", BodyParam: "body"},
-	"list_api_tools":       {HTTPMethod: http.MethodGet, Path: "/ai/tools/apis"},
-	"delete_api_tool":      {HTTPMethod: http.MethodDelete, Path: "/ai/tools/apis/{name}", PathParam: "name"},
-	"sync_flow":            {HTTPMethod: http.MethodPost, Path: "/sync", BodyParam: "body"},
-	"list_gateway_apis":    {HTTPMethod: http.MethodGet, Path: "/getAllApis"},
-	"create_tenant":        {HTTPMethod: http.MethodPost, Path: "/tenants", BodyParam: "body"},
-	"list_tenants":         {HTTPMethod: http.MethodGet, Path: "/tenants", QuerySuffix: "cursor=0&limit=50"},
-	"delete_tenant":        {HTTPMethod: http.MethodDelete, Path: "/tenants/{alias}", PathParam: "alias"},
-	"get_tenant":            {HTTPMethod: http.MethodGet, Path: "/tenants/{alias}", PathParam: "alias"},
-	"get_rate_limit_config": {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs/{name}", PathParam: "name"},
-	"list_egress_profiles":  {HTTPMethod: http.MethodGet, Path: "/egress/profiles"},
-	"upsert_egress_profile": {HTTPMethod: http.MethodPost, Path: "/egress/profiles", BodyParam: "body"},
+	"register_llm_model":          {HTTPMethod: http.MethodPost, Path: "/ai/llm/models", BodyParam: "body"},
+	"list_llm_models":             {HTTPMethod: http.MethodGet, Path: "/ai/llm/models"},
+	"delete_llm_model":            {HTTPMethod: http.MethodDelete, Path: "/ai/llm/models/{alias}", PathParam: "alias"},
+	"register_mcp_server":         {HTTPMethod: http.MethodPost, Path: "/ai/mcp/servers", BodyParam: "body"},
+	"list_mcp_servers":            {HTTPMethod: http.MethodGet, Path: "/ai/mcp/servers"},
+	"delete_mcp_server":           {HTTPMethod: http.MethodDelete, Path: "/ai/mcp/servers/{alias}", PathParam: "alias"},
+	"create_virtual_server":       {HTTPMethod: http.MethodPost, Path: "/ai/mcp/virtual", BodyParam: "body"},
+	"list_virtual_servers":        {HTTPMethod: http.MethodGet, Path: "/ai/mcp/virtual"},
+	"delete_virtual_server":       {HTTPMethod: http.MethodDelete, Path: "/ai/mcp/virtual/{name}", PathParam: "name"},
+	"register_api_tool":           {HTTPMethod: http.MethodPost, Path: "/ai/tools/apis", BodyParam: "body"},
+	"list_api_tools":              {HTTPMethod: http.MethodGet, Path: "/ai/tools/apis"},
+	"delete_api_tool":             {HTTPMethod: http.MethodDelete, Path: "/ai/tools/apis/{name}", PathParam: "name"},
+	"sync_flow":                   {HTTPMethod: http.MethodPost, Path: "/sync", BodyParam: "body"},
+	"list_gateway_apis":           {HTTPMethod: http.MethodGet, Path: "/getAllApis"},
+	"create_tenant":               {HTTPMethod: http.MethodPost, Path: "/tenants", BodyParam: "body"},
+	"list_tenants":                {HTTPMethod: http.MethodGet, Path: "/tenants", QuerySuffix: "cursor=0&limit=50"},
+	"delete_tenant":               {HTTPMethod: http.MethodDelete, Path: "/tenants/{alias}", PathParam: "alias"},
+	"get_tenant":                  {HTTPMethod: http.MethodGet, Path: "/tenants/{alias}", PathParam: "alias"},
+	"get_rate_limit_config":       {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs/{name}", PathParam: "name"},
+	"list_egress_profiles":        {HTTPMethod: http.MethodGet, Path: "/egress/profiles"},
+	"upsert_egress_profile":       {HTTPMethod: http.MethodPost, Path: "/egress/profiles", BodyParam: "body"},
 	"list_rate_limit_configs_v2":  {HTTPMethod: http.MethodGet, Path: "/rate-limit-configs-v2"},
 	"upsert_rate_limit_config_v2": {HTTPMethod: http.MethodPost, Path: "/rate-limit-configs-v2", BodyParam: "body"},
 	"delete_rate_limit_config_v2": {HTTPMethod: http.MethodDelete, Path: "/rate-limit-configs-v2/{name}", PathParam: "name"},
@@ -383,6 +422,13 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"delete_named_query":          {HTTPMethod: http.MethodDelete, Path: "/named-queries/{name}", PathParam: "name"},
 	"list_redis_sources":          {HTTPMethod: http.MethodGet, Path: "/redis-sources"},
 	"list_migrations":             {HTTPMethod: http.MethodGet, Path: "/migrations"},
+	"list_datastores":             {HTTPMethod: http.MethodGet, Path: "/config/datastores"},
+	"test_datastore":              {HTTPMethod: http.MethodPost, Path: "/config/datastores/{name}/test", PathParam: "name"},
+	"list_apps":                   {HTTPMethod: http.MethodGet, Path: "/apps"},
+	"generate_app_blueprint":      {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/blueprint", PathParam: "app_name", BodyFields: []string{"type", "tenant_mode", "oauth_provider", "callback_path", "login_path", "logout_path"}},
+	"list_app_releases":           {HTTPMethod: http.MethodGet, Path: "/apps/{app_name}/releases", PathParam: "app_name"},
+	"create_app_release":          {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases", PathParam: "app_name", BodyFields: []string{"version", "flow_names", "channel", "notes"}},
+	"promote_app_release":         {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases/{version}/promote", PathParams: map[string]string{"app_name": "app_name", "version": "version"}, BodyFields: []string{"channel"}},
 }
 
 // ── Schema helpers ────────────────────────────────────────────────────────────
@@ -417,6 +463,27 @@ func emptySchema() map[string]any {
 	return map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},
+	}
+}
+
+func multiParamSchema(required []string, optional []string) map[string]any {
+	props := map[string]any{}
+	for _, name := range required {
+		props[name] = map[string]any{
+			"type":        "string",
+			"description": name,
+		}
+	}
+	for _, name := range optional {
+		props[name] = map[string]any{
+			"type":        "string",
+			"description": name,
+		}
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+		"required":   required,
 	}
 }
 
@@ -575,7 +642,7 @@ func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments j
 		}
 	}
 
-	// Build the path — substitute path param placeholder if needed.
+	// Build the path — substitute path param placeholders if needed.
 	path := meta.Path
 	if meta.PathParam != "" {
 		paramVal, ok := args[meta.PathParam]
@@ -583,6 +650,16 @@ func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments j
 			return fmt.Sprintf("missing required argument: %s", meta.PathParam), true
 		}
 		path = strings.ReplaceAll(path, "{"+meta.PathParam+"}", paramVal)
+	}
+	// Support multiple path params via PathParams map
+	if len(meta.PathParams) > 0 {
+		for placeholder, argKey := range meta.PathParams {
+			paramVal, ok := args[argKey]
+			if !ok || strings.TrimSpace(paramVal) == "" {
+				return fmt.Sprintf("missing required argument: %s", argKey), true
+			}
+			path = strings.ReplaceAll(path, "{"+placeholder+"}", paramVal)
+		}
 	}
 
 	// Build request body if needed.
@@ -593,6 +670,25 @@ func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments j
 			return fmt.Sprintf("missing required argument: %s", meta.BodyParam), true
 		}
 		bodyReader = bytes.NewBufferString(bodyStr)
+	}
+	// Support auto-building JSON body from specified fields
+	if len(meta.BodyFields) > 0 {
+		bodyObj := make(map[string]any)
+		for _, field := range meta.BodyFields {
+			if val, ok := args[field]; ok && strings.TrimSpace(val) != "" {
+				// Try to parse as JSON, otherwise treat as string
+				var jsonVal any
+				if err := json.Unmarshal([]byte(val), &jsonVal); err != nil {
+					jsonVal = val
+				}
+				bodyObj[field] = jsonVal
+			}
+		}
+		bodyBytes, err := json.Marshal(bodyObj)
+		if err != nil {
+			return "failed to build request body: " + err.Error(), true
+		}
+		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	// Build target URL.
@@ -606,7 +702,7 @@ func (s *Server) proxyToolCall(ctx context.Context, toolName string, arguments j
 	if err != nil {
 		return "failed to build request: " + err.Error(), true
 	}
-	if meta.BodyParam != "" {
+	if meta.BodyParam != "" || len(meta.BodyFields) > 0 {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 

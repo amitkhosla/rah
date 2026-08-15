@@ -8,10 +8,11 @@ import (
 
 // environmentVersionsHandler handles all version-related endpoints under /api/environments/
 // URL patterns:
-//   GET  /api/environments/{env}/versions           → list versions
-//   GET  /api/environments/{env}/versions/{id}      → get single version
-//   PATCH /api/environments/{env}/versions/{id}     → void version
-//   POST /api/environments/{env}/versions/{id}/rollback → rollback (redeploy)
+//
+//	GET  /api/environments/{env}/versions           → list versions
+//	GET  /api/environments/{env}/versions/{id}      → get single version
+//	PATCH /api/environments/{env}/versions/{id}     → void version
+//	POST /api/environments/{env}/versions/{id}/rollback → rollback (redeploy)
 func (s *Server) environmentVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/environments/")
 	parts := strings.Split(path, "/")

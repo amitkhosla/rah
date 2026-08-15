@@ -16,6 +16,19 @@ type Scheduler struct {
 	Loader   *Loader
 }
 
+// NewWithStore creates a Scheduler with an explicitly provided store.
+// Use this when the backend requires external initialisation (e.g. postgres).
+func NewWithStore(store Store, instanceID string, runner FlowRunner, cfg SchedulerConfig) *Scheduler {
+	executor := NewExecutor(store, instanceID, runner)
+	wheel := NewSchedulerWheel(func(event *ScheduledEvent) { executor.Handle(event) })
+	lookahead := cfg.LookaheadSec
+	if lookahead <= 0 {
+		lookahead = 3600
+	}
+	loader := NewLoader(store, wheel, lookahead)
+	return &Scheduler{Store: store, Wheel: wheel, Executor: executor, Loader: loader}
+}
+
 // New creates a Scheduler from gateway config.
 // runner is injected from main to avoid import cycles.
 func New(cfg SchedulerConfig, instanceID string, runner FlowRunner) *Scheduler {

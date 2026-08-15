@@ -8,7 +8,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func mustEncodeHistory(t *testing.T, msgs []CanonicalMessage) []byte {
 	t.Helper()
@@ -39,7 +39,7 @@ func runTransform(t *testing.T, cfg TransformMessagesConfig, msgs []CanonicalMes
 	return ctx, result
 }
 
-// â”€â”€â”€ StripThinking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ StripThinking â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_StripThinking_RemovesThinkingBlocksKeepsText(t *testing.T) {
 	content := `[{"type":"thinking","thinking":"internal reasoning"},{"type":"text","text":"Hello world"}]`
@@ -89,7 +89,7 @@ func TestTransformMessages_StripThinking_MultipleTextBlocks(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	// Multiple text blocks â†’ re-serialized as array
+	// Multiple text blocks → re-serialized as array
 	var blocks []contentBlock
 	if err := json.Unmarshal([]byte(result[0].Content), &blocks); err != nil {
 		t.Fatalf("expected JSON array content, got %q: %v", result[0].Content, err)
@@ -119,7 +119,7 @@ func TestTransformMessages_StripThinking_PlainStringPassthrough(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ ExtractThinking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ ExtractThinking â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_ExtractThinking_MovesThinkingToSlot(t *testing.T) {
 	content := `[{"type":"thinking","thinking":"my internal thoughts"},{"type":"text","text":"final answer"}]`
@@ -169,7 +169,7 @@ func TestTransformMessages_ExtractThinking_MultipleThinkingBlocks(t *testing.T) 
 	}
 }
 
-// â”€â”€â”€ ExtractSystem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ ExtractSystem â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_ExtractSystem_PullsSystemMessagesOut(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -226,7 +226,7 @@ func TestTransformMessages_ExtractSystem_MultipleSystemMessages(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ InjectSystem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ InjectSystem â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_InjectSystem_PrependSystemMessage(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -282,7 +282,7 @@ func TestTransformMessages_InjectSystem_EmptySystemSlot_NoOp(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ FlattenContent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ FlattenContent â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_FlattenContent_CollapsesContentArray(t *testing.T) {
 	content := `[{"type":"text","text":"Hello"},{"type":"text","text":" world"}]`
@@ -325,7 +325,7 @@ func TestTransformMessages_FlattenContent_PlainStringUnchanged(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ AdaptRoles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ AdaptRoles â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_AdaptRoles_ModelToAssistantForNonGemini(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -387,7 +387,7 @@ func TestTransformMessages_AdaptRoles_FunctionToTool(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ FormatSlot override â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ FormatSlot override â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_FormatSlot_OverridesSourceFormat(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -416,13 +416,13 @@ func TestTransformMessages_FormatSlot_OverridesSourceFormat(t *testing.T) {
 	}
 
 	result := mustDecodeHistoryT(t, ctx.ByteSlots[0])
-	// "model" â†’ "assistant" for openai target (adapt_roles applies based on targetFormat)
+	// "model" → "assistant" for openai target (adapt_roles applies based on targetFormat)
 	if result[0].Role != RoleAssistant {
 		t.Errorf("expected 'assistant' role (FormatSlot didn't block AdaptRoles), got %s", result[0].Role)
 	}
 }
 
-// â”€â”€â”€ Empty history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Empty history â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_EmptyHistory_NoOp_ReturnsPC1(t *testing.T) {
 	ctx := newTestCtx()
@@ -468,10 +468,10 @@ func TestTransformMessages_EmptyJSONArray_NoOp(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Composition: multiple transforms in sequence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Composition: multiple transforms in sequence â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_ComposedTransforms_AppliedInOrder(t *testing.T) {
-	// Simulate an Anthropic â†’ OpenAI conversion:
+	// Simulate an Anthropic → OpenAI conversion:
 	// 1. ExtractSystem pulls system message out
 	// 2. StripThinking removes thinking blocks from assistant
 	// 3. AdaptRoles: no "model" roles here (already "assistant")
@@ -526,7 +526,7 @@ func TestTransformMessages_ComposedTransforms_AppliedInOrder(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Truncation: MaxMessages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Truncation: MaxMessages â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformTruncateByCount(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -553,11 +553,11 @@ func TestTransformTruncateByCount(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Truncation: MaxTokens â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Truncation: MaxTokens â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformTruncateByTokens(t *testing.T) {
-	// Each message: content ~7 chars â†’ estimateTokens = (7+3)/4 = 2, +4 overhead = 6 tokens.
-	// 5 messages â‰ˆ 30 tokens; budget of 15 â†’ should drop oldest until under budget.
+	// Each message: content ~7 chars → estimateTokens = (7+3)/4 = 2, +4 overhead = 6 tokens.
+	// 5 messages â‰ˆ 30 tokens; budget of 15 → should drop oldest until under budget.
 	msgs := []CanonicalMessage{
 		{Role: RoleUser, Content: "turn 1a"},
 		{Role: RoleAssistant, Content: "reply1a"},
@@ -578,11 +578,11 @@ func TestTransformTruncateByTokens(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Truncation: RemoveOrphans â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Truncation: RemoveOrphans â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformRemovesOrphanedToolResults(t *testing.T) {
-	// Full history: user â†’ assistant(tool_use tu_1) â†’ user(tool_result tu_1) â†’ assistant â†’ user
-	// Truncate to last 2: only [assistant("Done"), user("What next?")] â€” no tool_use/tool_result.
+	// Full history: user → assistant(tool_use tu_1) → user(tool_result tu_1) → assistant → user
+	// Truncate to last 2: only [assistant("Done"), user("What next?")] — no tool_use/tool_result.
 	msgs := []CanonicalMessage{
 		{Role: RoleUser, Content: "Do something"},
 		{Role: RoleAssistant, ContentBlocks: []ContentBlock{
@@ -594,7 +594,7 @@ func TestTransformRemovesOrphanedToolResults(t *testing.T) {
 		{Role: RoleAssistant, Content: "Done"},
 		{Role: RoleUser, Content: "What next?"},
 	}
-	// Truncate to last 2 â†’ [assistant("Done"), user("What next?")] â€” no orphans expected
+	// Truncate to last 2 → [assistant("Done"), user("What next?")] — no orphans expected
 	cfg := TransformMessagesConfig{
 		HistorySlot:   0,
 		SystemSlot:    -1,
@@ -612,8 +612,8 @@ func TestTransformRemovesOrphanedToolResults(t *testing.T) {
 		}
 	}
 
-	// Now truncate to last 3 â†’ [user(tool_result tu_1), assistant("Done"), user("What next?")]
-	// tu_1 tool_use is NOT in window â†’ tool_result is orphaned â†’ that message should be removed.
+	// Now truncate to last 3 → [user(tool_result tu_1), assistant("Done"), user("What next?")]
+	// tu_1 tool_use is NOT in window → tool_result is orphaned → that message should be removed.
 	cfg3 := TransformMessagesConfig{
 		HistorySlot:   0,
 		SystemSlot:    -1,
@@ -633,7 +633,7 @@ func TestTransformRemovesOrphanedToolResults(t *testing.T) {
 }
 
 func TestTransformRetainsNonOrphanedToolResults(t *testing.T) {
-	// Truncate to last 4 â†’ tool_use tu_1 IS retained â†’ tool_result tu_1 is NOT orphaned.
+	// Truncate to last 4 → tool_use tu_1 IS retained → tool_result tu_1 is NOT orphaned.
 	msgs := []CanonicalMessage{
 		{Role: RoleUser, Content: "Do something"},
 		{Role: RoleAssistant, ContentBlocks: []ContentBlock{
@@ -655,13 +655,13 @@ func TestTransformRetainsNonOrphanedToolResults(t *testing.T) {
 	}
 	_, result := runTransform(t, cfg, msgs)
 	// After truncation to 4: [assistant(tool_use tu_1), user(tool_result tu_1), assistant("Done"), user("What next?")]
-	// tool_use is present â†’ tool_result is not orphaned â†’ all 4 messages kept.
+	// tool_use is present → tool_result is not orphaned → all 4 messages kept.
 	if len(result) != 4 {
 		t.Errorf("expected 4 messages when tool_use is retained, got %d", len(result))
 	}
 }
 
-// â”€â”€â”€ Truncation: EnsureStartUser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Truncation: EnsureStartUser â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformEnsureStartUser(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -686,7 +686,7 @@ func TestTransformEnsureStartUser(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Truncation: combined StripThinking + MaxMessages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Truncation: combined StripThinking + MaxMessages â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformTruncateAndStripThinking(t *testing.T) {
 	msgs := []CanonicalMessage{
@@ -718,7 +718,7 @@ func TestTransformTruncateAndStripThinking(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ MalformedJSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ MalformedJSON â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTransformMessages_MalformedContentJSON_TreatedAsPlainString(t *testing.T) {
 	msgs := []CanonicalMessage{

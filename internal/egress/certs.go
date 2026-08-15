@@ -71,7 +71,7 @@ func BuildTLSConfig(ctx context.Context, cfg config.EgressProfileConfig, secrets
 			pemStr = resolved
 		}
 
-		// Parse all PEM blocks in the resolved/literal string â€” supports bundles.
+		// Parse all PEM blocks in the resolved/literal string — supports bundles.
 		rest := []byte(pemStr)
 		for {
 			var block *pem.Block
@@ -91,7 +91,7 @@ func BuildTLSConfig(ctx context.Context, cfg config.EgressProfileConfig, secrets
 	}
 
 	if cfg.TLSSkipVerify {
-		log.Printf("[egress] WARNING: TLS verification disabled for profile %q â€” dev/test only", cfg.Name)
+		log.Printf("[egress] WARNING: TLS verification disabled for profile %q — dev/test only", cfg.Name)
 	}
 
 	tlsCfg := &tls.Config{

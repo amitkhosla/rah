@@ -420,7 +420,7 @@ func TestAppendJSONEscapedStringNewlines(t *testing.T) {
 }
 
 func TestAppendJSONEscapedStringBackslash(t *testing.T) {
-	// Test: Escaping backslashes â€” input has 2 backslashes, output has 4; quotes also escaped.
+	// Test: Escaping backslashes — input has 2 backslashes, output has 4; quotes also escaped.
 	dst := []byte{}
 	result := AppendJSONEscapedString(dst, `query { pattern: "a\\b" }`)
 	expected := `query { pattern: \"a\\\\b\" }`

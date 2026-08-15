@@ -76,7 +76,7 @@ func (p *Provider) ResolveTTL(ctx context.Context, ref string) ([]byte, time.Dur
 		return nil, 0, err
 	}
 	if expiry.IsZero() {
-		// Server returned no expiry â€” use zero to let Manager apply its default TTL.
+		// Server returned no expiry — use zero to let Manager apply its default TTL.
 		return tok, 0, nil
 	}
 	ttl := time.Until(expiry) - earlyRefresh
@@ -89,7 +89,7 @@ func (p *Provider) ResolveTTL(ctx context.Context, ref string) ([]byte, time.Dur
 func (p *Provider) fetchToken(ctx context.Context, ref string) ([]byte, time.Time, error) {
 	name := strings.TrimPrefix(ref, "oauth2token://")
 	if name == "" || name == ref {
-		return nil, time.Time{}, fmt.Errorf("oauth2token: invalid URI %q â€” expected oauth2token://client-name", ref)
+		return nil, time.Time{}, fmt.Errorf("oauth2token: invalid URI %q — expected oauth2token://client-name", ref)
 	}
 
 	ccfg, ok := p.clients[name]

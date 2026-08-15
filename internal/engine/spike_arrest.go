@@ -57,9 +57,9 @@ func fnv64a(b []byte) uint64 {
 // rate limit) policy.  At most one request per intervalNs is allowed through per
 // unique (flowID, tenantID [, keySlot-value]) tuple.
 //
-//   - flowID    â€” unique integer allocated by the compiler at bake time.
-//   - intervalNs â€” interval_ms * time.Millisecond, pre-computed at bake time.
-//   - keySlot   â€” index into ctx.ByteSlots used as an extra key dimension;
+//   - flowID    — unique integer allocated by the compiler at bake time.
+//   - intervalNs — interval_ms * time.Millisecond, pre-computed at bake time.
+//   - keySlot   — index into ctx.ByteSlots used as an extra key dimension;
 //     -1 means "tenant only" (no per-value bucketing).
 //
 // On rejection the step sets ctx.ResponseStatus = 429 and returns StopPlan.

@@ -50,7 +50,7 @@ func New(ctx context.Context, cfg config.AWSSMConfig, bootstrap BootstrapResolve
 	var loadOpts []func(*awsconfig.LoadOptions) error
 	loadOpts = append(loadOpts, awsconfig.WithRegion(region))
 
-	// Explicit credentials (optional â€” use IAM role / IRSA when available).
+	// Explicit credentials (optional — use IAM role / IRSA when available).
 	if cfg.AccessKey != "" || cfg.SecretKey != "" {
 		accessKey, err := resolveString(ctx, cfg.AccessKey, bootstrap)
 		if err != nil {
@@ -83,9 +83,9 @@ func (p *Provider) Scheme() string { return "awssm" }
 //
 // URI format:
 //
-//	awssm://secret-name           â€” uses default region
-//	awssm://region/secret-name    â€” overrides region
-//	awssm://[region/]name#field   â€” parse JSON, return field
+//	awssm://secret-name           — uses default region
+//	awssm://region/secret-name    — overrides region
+//	awssm://[region/]name#field   — parse JSON, return field
 func (p *Provider) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	region, name, field, err := parseURI(ref, p.defaultRegion)
 	if err != nil {
@@ -155,7 +155,7 @@ func parseURI(ref, defaultRegion string) (region, name, field string, err error)
 		s = s[:idx]
 	}
 	if s == "" {
-		return "", "", "", fmt.Errorf("awssm: invalid URI %q â€” secret name is empty", ref)
+		return "", "", "", fmt.Errorf("awssm: invalid URI %q — secret name is empty", ref)
 	}
 
 	// Detect region prefix: AWS regions look like "us-east-1", "eu-west-2", etc.

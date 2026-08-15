@@ -7,7 +7,7 @@ package main
 //
 // To enable:
 //  1. go build -tags googletoken ./cmd/rah-gateway/
-//     (no extra go get needed â€” google.golang.org/api is already in go.mod)
+//     (no extra go get needed — google.golang.org/api is already in go.mod)
 //
 // In gateway.yaml:
 //

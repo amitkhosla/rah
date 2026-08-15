@@ -1,0 +1,28 @@
+tests:
+  - name: "Scenario 8: Assign homework returns 201"
+    flow_name: "school_homework_assign"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: POST
+      path: /school/homework
+      headers:
+        X-API-Key: alpha-teacher-sk-change-me
+      body: '{"subject":"English","title":"Essay Assignment","dueDate":"2026-08-25"}'
+    assertions:
+      - type: status
+        expected: 201
+
+  - name: "Scenario 9: List homework returns 200"
+    flow_name: "school_homework_list"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /school/homework
+      headers:
+        X-API-Key: alpha-student-sk-change-me
+      body: ""
+    assertions:
+      - type: status
+        expected: 200

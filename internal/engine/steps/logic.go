@@ -102,7 +102,7 @@ func parseToRPN(cond string, slotMap map[string]int) []int {
 		default:
 			idx, ok := slotMap[tok]
 			if !ok {
-				continue // unknown variable â€” skip
+				continue // unknown variable — skip
 			}
 			result = append(result, idx)
 			if pendingOp != nil {
@@ -183,7 +183,7 @@ func LoopRepeat(gateID int16, iterSlot int) engine.InstructionFunc {
 // LoopGateSlot iterates over a JSON array stored in ctx.ByteSlots[sourceSlot].
 // Each iteration writes the raw JSON element to ctx.ByteSlots[valueSlot].
 // Uses iterSlot (IntSlot) as the loop counter and indexSlot (ByteSlot) as a
-// packed (start,end uint32) index built once at iteration 0 â€” O(1) per step.
+// packed (start,end uint32) index built once at iteration 0 — O(1) per step.
 func LoopGateSlot(sourceSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 		raw := ctx.ByteSlots[sourceSlot]
@@ -203,7 +203,7 @@ func LoopGateSlot(sourceSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exi
 			if count == 0 {
 				return exitID
 			}
-			// Pack (uint32 start, uint32 end) per element â€” 8 bytes each.
+			// Pack (uint32 start, uint32 end) per element — 8 bytes each.
 			buf := ctx.Alloc(count * 8)
 			i := 0
 			arr.ForEach(func(_, v gjson.Result) bool {

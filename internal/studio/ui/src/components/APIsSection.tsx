@@ -713,7 +713,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
     ])
     const flowsPayload = [...flowNamesSet].map(name => {
       const saved = flows.find(f => f.name === name)
-      return { name, instructions: saved?.steps ?? [], action: 'upsert' as const }
+      return { name, instructions: saved?.steps ?? [], action: 'upsert' as const, constants: saved?.constants }
     })
 
     // Build a map of flow names to dynamic upstream URL configs

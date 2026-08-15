@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -309,12 +310,12 @@ func (s *Server) executePhasedRollout(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":        "pending_phase_approval",
-				"release_id":    rec.ReleaseID,
-				"env":           env,
+				"status":          "pending_phase_approval",
+				"release_id":      rec.ReleaseID,
+				"env":             env,
 				"completed_phase": phaseIdx + 1,
-				"next_phase":    phaseIdx + 2,
-				"results_so_far": allResults,
+				"next_phase":      phaseIdx + 2,
+				"results_so_far":  allResults,
 			})
 			return nil, errPausedForApproval
 		}
@@ -394,12 +395,17 @@ func (s *Server) deployToURLs(ctx context.Context, payload []byte, rawURLs []str
 			results = append(results, ReleaseDeployResult{Target: raw, Success: false, Message: err.Error()})
 			continue
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		success := resp.StatusCode >= 200 && resp.StatusCode < 300
 		msg := ""
 		if !success {
-			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			detail := strings.TrimSpace(string(body))
+			if detail == "" {
+				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			} else {
+				msg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, detail)
+			}
 		}
 		results = append(results, ReleaseDeployResult{Target: raw, Success: success, Message: msg})
 	}

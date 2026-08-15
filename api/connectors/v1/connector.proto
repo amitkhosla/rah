@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package connectors.v1;
+
+option go_package = "github.com/amitkhosla/rah/api/connectors/v1;connectorv1";
+
+service RahConnector {
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Put(PutRequest) returns (PutResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    rpc Query(QueryRequest) returns (QueryResponse);
+    rpc Count(CountRequest) returns (CountResponse);
+    rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+    rpc Ping(PingRequest) returns (PingResponse);
+}
+
+message GetRequest {
+    string collection = 1;
+    string id = 2;
+    bytes filter = 3; // JSON
+}
+message GetResponse {
+    bytes document = 1; // JSON; empty if not found
+}
+
+message PutRequest {
+    string collection = 1;
+    bytes document = 2; // JSON
+    string id = 3;
+    bool upsert = 4;
+}
+message PutResponse {
+    string id = 1; // assigned ID
+}
+
+message DeleteRequest {
+    string collection = 1;
+    bytes filter = 2; // JSON
+}
+message DeleteResponse {
+    int64 deleted_count = 1;
+}
+
+message QueryRequest {
+    string collection = 1;
+    bytes filter = 2;     // JSON
+    bytes projection = 3; // JSON
+    bytes sort = 4;       // JSON
+    int32 limit = 5;
+    int32 skip = 6;
+}
+message QueryResponse {
+    bytes documents = 1; // JSON array
+}
+
+message CountRequest {
+    string collection = 1;
+    bytes filter = 2; // JSON
+}
+message CountResponse {
+    int64 count = 1;
+}
+
+message ExecuteRequest {
+    bytes command = 1; // provider-specific JSON command
+}
+message ExecuteResponse {
+    bytes result = 1; // JSON
+}
+
+message PingRequest {}
+message PingResponse {
+    string version = 1;
+}

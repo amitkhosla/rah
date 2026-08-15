@@ -323,6 +323,11 @@ func (s *redisObsStore) QueryPayloads(_ context.Context, _ uint64) ([]PayloadRec
 	return nil, nil
 }
 
+// GetDistinctApps returns an empty slice for the Redis store (not supported).
+func (s *redisObsStore) GetDistinctApps(_ context.Context, _ int64) ([]string, error) {
+	return []string{}, nil
+}
+
 // ── Close ─────────────────────────────────────────────────────────────────────
 
 func (s *redisObsStore) Close() error { return s.closeFn() }

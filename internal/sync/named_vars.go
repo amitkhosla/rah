@@ -17,7 +17,7 @@ import (
 //     Placeholder are preserved.
 //
 //  2. Any remaining field whose Key ends in "_slot" (i.e. has no alias) is
-//     suppressed entirely â€” it is an internal-only field that users should
+//     suppressed entirely — it is an internal-only field that users should
 //     never set directly.
 //
 // Fields that do not end in "_slot" are passed through unchanged.

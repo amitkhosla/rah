@@ -59,11 +59,11 @@ func newPostgreSQLStore(cfg config.StoreConfig, domain string) (KeyValueStore, e
 
 func buildConnString(cfg config.StoreConnection) string {
 	addr := strings.TrimSpace(cfg.EffectiveAddress())
-	// Full DSN / URL â€” pass through directly
+	// Full DSN / URL — pass through directly
 	if strings.HasPrefix(addr, "postgres://") || strings.HasPrefix(addr, "postgresql://") {
 		return addr
 	}
-	// host:port format â€” split and pass separately
+	// host:port format — split and pass separately
 	host := addr
 	port := ""
 	if i := strings.LastIndex(addr, ":"); i >= 0 {

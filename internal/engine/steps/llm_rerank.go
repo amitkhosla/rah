@@ -151,7 +151,7 @@ func Rerank(cfg RerankConfig) engine.Instruction {
 				query = string(ctx.ByteSlots[cfg.QuerySlot])
 			}
 			if query == "" {
-				// Empty query â€” leave result as empty array
+				// Empty query — leave result as empty array
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					emptyResult := []byte("[]")
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(emptyResult))

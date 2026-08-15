@@ -65,10 +65,15 @@ run-local: build-gateway
 studio-run: build-studio
 	$(BINARY_STUDIO) -port 8092 -gateway-management-url http://localhost:8081
 
+## dev: build + run gateway with Redis + Postgres (set POSTGRES_PASSWORD first)
 .PHONY: dev
-dev:
-	docker compose up -d redis postgres
-	$(MAKE) run
+dev: build-gateway
+	$(BINARY_GATEWAY) -port 8080 -mport 8081 -config gateway-dev.yaml
+
+## dev-local: build + run gateway with disk store only (no Redis/Postgres needed)
+.PHONY: dev-local
+dev-local: build-gateway
+	$(BINARY_GATEWAY) -port 8080 -mport 8081 -config gateway-inmem.yaml
 
 ## ── Samples ───────────────────────────────────────────────────────────────────
 
@@ -224,8 +229,9 @@ help:
 	@echo ""
 	@echo "  run              run gateway with gateway.yaml  (needs Redis + Postgres)"
 	@echo "  run-local        run gateway with gateway-local.yaml  (disk only, no deps)"
+	@echo "  dev              run gateway with Redis + Postgres  (set POSTGRES_PASSWORD)"
+	@echo "  dev-local        run gateway with disk store only  (no Redis/Postgres needed)"
 	@echo "  studio-run       run studio pointing at localhost:8081"
-	@echo "  dev              docker compose redis+postgres, then run gateway"
 	@echo ""
 	@echo "  samples-lint     validate samples-code/ locally"
 	@echo "  samples-publish  lint + push samples to studio  (STUDIO_URL=...)"

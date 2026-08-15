@@ -23,7 +23,7 @@ func runFitInstruction(instr engine.Instruction, ctx *rctx.Context) int16 {
 	return instr.Action(ctx, state)
 }
 
-// â”€â”€ Plain text fits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Plain text fits â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_PlainText_Fits(t *testing.T) {
 	ctx := newFitContext()
@@ -57,11 +57,11 @@ func TestCheckContextFit_PlainText_Fits(t *testing.T) {
 	}
 }
 
-// â”€â”€ Plain text exceeds limit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Plain text exceeds limit â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_PlainText_Exceeds(t *testing.T) {
 	ctx := newFitContext()
-	// Build a long string â€” easily > 10 tokens worth
+	// Build a long string — easily > 10 tokens worth
 	ctx.ByteSlots[0] = []byte(strings.Repeat("word ", 200)) // 200 * 5 chars = 1000 chars â‰ˆ 250 tokens
 
 	cfg := CheckContextFitConfig{
@@ -93,7 +93,7 @@ func TestCheckContextFit_PlainText_Exceeds(t *testing.T) {
 	}
 }
 
-// â”€â”€ HistorySlot included â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ HistorySlot included â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_HistorySlot_Included(t *testing.T) {
 	ctx := newFitContext()
@@ -139,7 +139,7 @@ func TestCheckContextFit_HistorySlot_Included(t *testing.T) {
 	}
 }
 
-// â”€â”€ SystemSlot included â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SystemSlot included â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_SystemSlot_Included(t *testing.T) {
 	ctx := newFitContext()
@@ -179,7 +179,7 @@ func TestCheckContextFit_SystemSlot_Included(t *testing.T) {
 	}
 }
 
-// â”€â”€ MaxContextTokens=0 means no limit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ MaxContextTokens=0 means no limit â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_NoLimit_AlwaysFits(t *testing.T) {
 	ctx := newFitContext()
@@ -210,14 +210,14 @@ func TestCheckContextFit_NoLimit_AlwaysFits(t *testing.T) {
 	}
 }
 
-// â”€â”€ MaxOutputTokens reserved â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ MaxOutputTokens reserved â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_MaxOutputTokens_Reserved(t *testing.T) {
 	ctx := newFitContext()
 	// Prompt of exactly 40 tokens (160 chars)
 	ctx.ByteSlots[0] = []byte(strings.Repeat("a", 160))
 
-	// budget = 100 - 80 = 20 tokens; prompt is ~40 â†’ overflow = 20
+	// budget = 100 - 80 = 20 tokens; prompt is ~40 → overflow = 20
 	cfg := CheckContextFitConfig{
 		PromptSlot:       0,
 		SystemSlot:       -1,
@@ -240,7 +240,7 @@ func TestCheckContextFit_MaxOutputTokens_Reserved(t *testing.T) {
 	}
 }
 
-// â”€â”€ JSON messages array in PromptSlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ JSON messages array in PromptSlot â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_JSONMessagesInPromptSlot(t *testing.T) {
 	ctx := newFitContext()
@@ -250,7 +250,7 @@ func TestCheckContextFit_JSONMessagesInPromptSlot(t *testing.T) {
 		{Role: RoleAssistant, Content: "The capital of France is Paris."},
 	}
 	msgsJSON, _ := json.Marshal(msgs)
-	ctx.ByteSlots[0] = msgsJSON // starts with '[' â€” should be decoded
+	ctx.ByteSlots[0] = msgsJSON // starts with '[' — should be decoded
 
 	cfgJSON := CheckContextFitConfig{
 		PromptSlot:       0,
@@ -276,7 +276,7 @@ func TestCheckContextFit_JSONMessagesInPromptSlot(t *testing.T) {
 	}
 }
 
-// â”€â”€ All optional slots absent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ All optional slots absent â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_OnlyPrompt_NoOptionalSlots(t *testing.T) {
 	ctx := newFitContext()
@@ -304,11 +304,11 @@ func TestCheckContextFit_OnlyPrompt_NoOptionalSlots(t *testing.T) {
 	}
 }
 
-// â”€â”€ TotalSlot written correctly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ TotalSlot written correctly â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_TotalSlot_WrittenCorrectly(t *testing.T) {
 	ctx := newFitContext()
-	ctx.ByteSlots[0] = []byte("sixteen characters!!")  // 20 chars â†’ 5 tokens
+	ctx.ByteSlots[0] = []byte("sixteen characters!!")  // 20 chars → 5 tokens
 
 	cfg := CheckContextFitConfig{
 		PromptSlot:       0,
@@ -329,7 +329,7 @@ func TestCheckContextFit_TotalSlot_WrittenCorrectly(t *testing.T) {
 	}
 }
 
-// â”€â”€ Slot out-of-range handled gracefully (no panic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Slot out-of-range handled gracefully (no panic) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_OutOfRangeSlots_NoPanic(t *testing.T) {
 	ctx := newFitContext()
@@ -337,14 +337,14 @@ func TestCheckContextFit_OutOfRangeSlots_NoPanic(t *testing.T) {
 
 	cfg := CheckContextFitConfig{
 		PromptSlot:       0,
-		SystemSlot:       99,  // out of range â€” must not panic
-		HistorySlot:      99,  // out of range â€” must not panic
-		ToolsSlot:        99,  // out of range â€” must not panic
+		SystemSlot:       99,  // out of range — must not panic
+		HistorySlot:      99,  // out of range — must not panic
+		ToolsSlot:        99,  // out of range — must not panic
 		MaxContextTokens: 1000,
 		MaxOutputTokens:  0,
-		FitsSlot:         99, // out of range â€” must not panic
-		OverflowSlot:     99, // out of range â€” must not panic
-		TotalSlot:        99, // out of range â€” must not panic
+		FitsSlot:         99, // out of range — must not panic
+		OverflowSlot:     99, // out of range — must not panic
+		TotalSlot:        99, // out of range — must not panic
 	}
 
 	// Should complete without panicking and return PC+1
@@ -354,7 +354,7 @@ func TestCheckContextFit_OutOfRangeSlots_NoPanic(t *testing.T) {
 	}
 }
 
-// â”€â”€ AlwaysContinues: step never returns StopPlan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ AlwaysContinues: step never returns StopPlan â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCheckContextFit_AlwaysReturnsPCPlus1(t *testing.T) {
 	ctx := newFitContext()

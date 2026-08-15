@@ -40,6 +40,7 @@ const (
 	// Immutable / control-plane data — typically disk or object storage
 	DomainAPIDefinitions DataDomain = "api_definitions" // compiled API + path definitions
 	DomainFlows          DataDomain = "flows"           // instruction sets (compiled flows)
+	DomainWorkflows      DataDomain = "workflows"       // workflow DAG definitions
 
 	// Mutable / management-plane data — typically fast KV or relational
 	DomainApps    DataDomain = "apps"     // App records (stable consumer identities)

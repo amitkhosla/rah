@@ -24,7 +24,7 @@ import (
 //
 //	"complexity" â†’ "var.complexity"  means: parse resp["complexity"] â†’ ByteSlots[getSlot("var.complexity")]
 func (c *Compiler) compileClassifyLLM(step StepConfig) error {
-	// 1. Resolve baked model (required even when model_slot is used â€” serves as catalog default)
+	// 1. Resolve baked model (required even when model_slot is used — serves as catalog default)
 	modelSlug := step.Input["model"]
 	if modelSlug == "" {
 		modelSlug = c.LLMCfg.Default
@@ -64,7 +64,7 @@ func (c *Compiler) compileClassifyLLM(step StepConfig) error {
 		}
 	}
 
-	// 4. Optional dynamic model slot â€” selects classifier at runtime from a preceding route_llm step
+	// 4. Optional dynamic model slot — selects classifier at runtime from a preceding route_llm step
 	modelSlotIdx := -1
 	var modelCatalog map[string]config.LLMModelConfig
 	var catalogKeys map[string]string
@@ -143,7 +143,7 @@ func (c *Compiler) compileClassifyLLM(step StepConfig) error {
 		}
 	}
 
-	// 7. Output field mapping â€” every non-reserved key maps a classifier JSON key â†’ ByteSlot
+	// 7. Output field mapping — every non-reserved key maps a classifier JSON key â†’ ByteSlot
 	reserved := map[string]bool{
 		"model": true, "model_slot": true, "system_slot": true,
 		"prompt_slot": true, "result_slot": true,
@@ -166,7 +166,7 @@ func (c *Compiler) compileClassifyLLM(step StepConfig) error {
 			PromptSlot:      promptSlot,
 			ResultSlot:      resultSlot,
 			SystemSlot:      systemSlot,
-			MaxTokens:       512, // small â€” classification only
+			MaxTokens:       512, // small — classification only
 			Temperature:     0.0, // deterministic JSON output
 			FallbackChain:   classifyFallback,
 			FallbackByModel: classifyFBM,

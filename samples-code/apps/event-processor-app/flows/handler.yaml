@@ -1,0 +1,26 @@
+flow:
+  name: my-event-processor-handler
+  app_name: my-event-processor
+  steps:
+    - name: parse_order
+      kind: json_parse
+      source_slot: event_payload
+      target_slot: order
+    - name: validate_order
+      kind: validate
+      slot: order
+      required_fields:
+        - order_id
+        - customer_id
+        - amount
+    - name: store_order
+      kind: storage_put
+      provider: s3_primary
+      bucket_slot: orders_bucket
+      key_slot: order.order_id
+      value_slot: order
+    - name: emit_processed
+      kind: publish
+      publisher: kafka_primary
+      topic: orders.processed
+      payload_slot: order

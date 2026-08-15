@@ -12,7 +12,7 @@ import (
 // compileEstimateTokens resolves and appends the estimate_tokens instruction.
 //
 // step.KeyIdentifier â†’ sourceSlot (ByteSlots)
-// step.As            â†’ destIntSlot (IntSlots â€” uses unified getSlot index)
+// step.As            â†’ destIntSlot (IntSlots — uses unified getSlot index)
 func (c *Compiler) compileEstimateTokens(step StepConfig) error {
 	sourceSlot, err := c.getSlot(step.KeyIdentifier)
 	if err != nil {

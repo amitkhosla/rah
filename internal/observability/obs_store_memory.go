@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,6 +135,9 @@ func (m *MemObsStore) QueryAccessLog(_ context.Context, f AccessLogFilter) ([]Ac
 		entry := m.accessRing[idx]
 
 		if f.ApiName != "" && !strings.HasPrefix(entry.ApiName, f.ApiName) {
+			continue
+		}
+		if f.AppName != "" && entry.AppName != f.AppName {
 			continue
 		}
 		if f.TenantKey != "" && entry.TenantKey != f.TenantKey {
@@ -336,6 +340,45 @@ func (m *MemObsStore) evictPayloads() {
 	}
 	// Remove evicted entries from payloadOrder.
 	m.payloadOrder = m.payloadOrder[i:]
+}
+
+// GetDistinctApps returns distinct non-empty AppName values from the access log ring
+// within the given time window (fromUnixS).
+func (m *MemObsStore) GetDistinctApps(_ context.Context, fromUnixS int64) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ringCap := len(m.accessRing)
+	head := m.accessHead
+	size := ringCap
+	if !m.accessFull {
+		size = head
+	}
+
+	seen := make(map[string]bool)
+	for i := 0; i < size; i++ {
+		idx := (head - 1 - i + ringCap) % ringCap
+		entry := m.accessRing[idx]
+
+		// Check time window
+		tsS := entry.TimestampNs / 1_000_000_000
+		if fromUnixS > 0 && tsS < fromUnixS {
+			continue
+		}
+
+		// Only include non-empty app names
+		if entry.AppName != "" && !seen[entry.AppName] {
+			seen[entry.AppName] = true
+		}
+	}
+
+	// Convert map to sorted slice
+	apps := make([]string, 0, len(seen))
+	for app := range seen {
+		apps = append(apps, app)
+	}
+	sort.Strings(apps)
+	return apps, nil
 }
 
 // detectPayloadBudget returns the byte budget for in-memory payload storage.

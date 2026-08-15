@@ -1,0 +1,15 @@
+flows:
+  - name: school_fees_list
+    action: upsert
+    code: |
+      return(200, '{"fees":[{"id":"f1","studentId":"st1","amount":5000,"currency":"USD","status":"paid","dueDate":"2026-08-31","tenant":"alpha-school"},{"id":"f2","studentId":"st2","amount":5000,"currency":"USD","status":"pending","dueDate":"2026-08-31","tenant":"alpha-school"}],"total":2}')
+
+  - name: school_fee_record
+    action: upsert
+    code: |
+      return(200, '{"id":"f3","studentId":"st1","amount":5000,"currency":"USD","status":"recorded","recordedAt":"2026-08-15","tenant":"alpha-school"}')
+
+  - name: school_fees_outstanding
+    action: upsert
+    code: |
+      return(200, '{"student_id":"st2","name":"Bob Kumar","outstanding":[{"fee_type":"tuition","amount":5000,"due_date":"2026-09-01","status":"overdue"}],"total_outstanding":5000}')

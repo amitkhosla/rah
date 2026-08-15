@@ -12,7 +12,7 @@ import (
 
 // mergeConflict describes a single merge conflict between two releases.
 type mergeConflict struct {
-	Type    string `json:"type"`    // "api" or "flow"
+	Type    string `json:"type"` // "api" or "flow"
 	Name    string `json:"name"`
 	Message string `json:"message"`
 }
@@ -268,8 +268,14 @@ func (s *Server) releaseCherryPickHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Resolve each requested item from the source.
-	type pickedFlow struct{ name string; val control.FlowUpdate }
-	type pickedAPI struct{ name string; val control.ApiUpdate }
+	type pickedFlow struct {
+		name string
+		val  control.FlowUpdate
+	}
+	type pickedAPI struct {
+		name string
+		val  control.ApiUpdate
+	}
 	var pickedFlows []pickedFlow
 	var pickedAPIs []pickedAPI
 

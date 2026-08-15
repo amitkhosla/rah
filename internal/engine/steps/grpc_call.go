@@ -45,14 +45,14 @@ type MetadataSlotBind struct {
 // GrpcCallConfig holds the bake-time configuration for a grpc_call instruction.
 // All slot indices use -1 to indicate "not configured".
 type GrpcCallConfig struct {
-	// Descriptor / method identity â€” resolved at bake time.
+	// Descriptor / method identity — resolved at bake time.
 	DescriptorSetName string
 	ServiceName       string
 	MethodName        string
-	FullMethod        string                       // "/pkg.Service/Method" â€” precomputed
+	FullMethod        string                       // "/pkg.Service/Method" — precomputed
 	MethodDesc        protoreflect.MethodDescriptor // nil until bake resolves it
 
-	// URL resolution â€” slot takes precedence over static.
+	// URL resolution — slot takes precedence over static.
 	StaticURL string
 	URLSlot   int // -1 = use StaticURL
 
@@ -89,7 +89,7 @@ type GrpcCallConfig struct {
 	// TLSClientCert and TLSClientKey are PEM-encoded bytes resolved at bake time.
 	// Both must be set together to enable mTLS. nil = no client certificate.
 	// These are consumed by NewGrpcCallInstruction to build a runtime-ready
-	// tlsClientCert that is stored in the closure â€” zero per-request cost.
+	// tlsClientCert that is stored in the closure — zero per-request cost.
 	TLSClientCert []byte
 	TLSClientKey  []byte
 }
@@ -98,11 +98,11 @@ type GrpcCallConfig struct {
 //
 // If cfg.TLSClientCert and cfg.TLSClientKey are both non-nil the key pair is
 // parsed once here (bake time).  A synthetic EgressProfile carrying the cert
-// is stored in the closure and passed to the connection pool on each call â€” the
+// is stored in the closure and passed to the connection pool on each call — the
 // pool deduplicates connections by (addr, profileID, useTLS) so the mTLS
 // connection is kept alive and reused across requests at zero extra cost.
 func NewGrpcCallInstruction(cfg GrpcCallConfig) engine.Instruction {
-	// â”€â”€ Parse mTLS client certificate at bake time â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Parse mTLS client certificate at bake time â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if len(cfg.TLSClientCert) > 0 && len(cfg.TLSClientKey) > 0 {
 		cert, err := tls.X509KeyPair(cfg.TLSClientCert, cfg.TLSClientKey)
 		if err != nil {
@@ -137,7 +137,7 @@ func NewGrpcCallInstruction(cfg GrpcCallConfig) engine.Instruction {
 			baseProfile.ID = 255
 		}
 		cfg.EgressProfile = &baseProfile
-		// Clear raw PEM bytes â€” no longer needed.
+		// Clear raw PEM bytes — no longer needed.
 		cfg.TLSClientCert = nil
 		cfg.TLSClientKey = nil
 	}
@@ -153,12 +153,12 @@ func NewGrpcCallInstruction(cfg GrpcCallConfig) engine.Instruction {
 // Execute is the hot-path implementation of a grpc_call step.
 // It is exported so the compiler closure can call it directly without reflection.
 func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-	// â”€â”€ Pre-flight: client disconnect check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Pre-flight: client disconnect check â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if pc, stop := StopIfCancelled(ctx); stop {
 		return pc
 	}
 
-	// â”€â”€ 1. Resolve URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 1. Resolve URL â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	rawURL := g.StaticURL
 	if g.URLSlot >= 0 && g.URLSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[g.URLSlot]) > 0 {
 		rawURL = string(ctx.ByteSlots[g.URLSlot])
@@ -167,7 +167,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		return g.failWith(ctx, codes.Internal, "grpc_call: no URL configured")
 	}
 
-	// â”€â”€ 2. Get connection from pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 2. Get connection from pool â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	pool := GlobalGrpcConnPool
 	if pool == nil {
 		return g.failWith(ctx, codes.Internal, "grpc_call: connection pool not initialized")
@@ -177,7 +177,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		return g.failWith(ctx, codes.Unavailable, "grpc_call: "+err.Error())
 	}
 
-	// â”€â”€ 3. Build call context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 3. Build call context â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	callCtx := ctx.Request.Context()
 	cancel := func() {}
 	if g.TimeoutMs > 0 {
@@ -185,7 +185,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 	}
 	defer cancel()
 
-	// â”€â”€ 4. Build gRPC outgoing metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 4. Build gRPC outgoing metadata â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	md := metadata.MD{}
 	if g.ForwardHeaders && ctx.Request != nil {
 		md = grpcutil.HeadersToMetadata(ctx.Request.Header, g.BlockHeadersMap)
@@ -202,7 +202,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		callCtx = metadata.NewOutgoingContext(callCtx, md)
 	}
 
-	// â”€â”€ 5. Transcode JSON â†’ proto request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 5. Transcode JSON â†’ proto request â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if g.MethodDesc == nil {
 		return g.failWith(ctx, codes.Internal, "grpc_call: method descriptor not resolved (check descriptor_set name)")
 	}
@@ -215,7 +215,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		return g.failWith(ctx, codes.InvalidArgument, "grpc_call: "+err.Error())
 	}
 
-	// â”€â”€ 6. Build call options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 6. Build call options â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	baseOpts := make([]grpc.CallOption, 0, 4)
 	if g.WaitForReady {
 		baseOpts = append(baseOpts, grpc.WaitForReady(true))
@@ -224,7 +224,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		baseOpts = append(baseOpts, grpc.UseCompressor("gzip"))
 	}
 
-	// â”€â”€ 7. Retry loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ 7. Retry loop â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	maxAttempts := g.MaxRetries + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -269,7 +269,7 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 		atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 		if invokeErr == nil {
-			// â”€â”€ Success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+			// â"€â"€ Success â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 			jsonOut, jerr := grpcutil.ProtoToJSON(respMsg)
 			if jerr != nil {
 				return g.failWith(ctx, codes.Internal, "grpc_call: response transcoding: "+jerr.Error())
@@ -292,13 +292,13 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 
 		lastErr = invokeErr
 
-		// â”€â”€ Client disconnected â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Client disconnected â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		if invokeErr == context.Canceled || status.Code(invokeErr) == codes.Canceled {
 			atomic.StoreInt32(&ctx.Cancelled, 1)
 			return engine.StopCancelled
 		}
 
-		// â”€â”€ Check retryability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Check retryability â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		if attempt < maxAttempts && len(g.RetryOnCodes) > 0 {
 			code := status.Code(invokeErr)
 			retryable := false
@@ -312,12 +312,12 @@ func (g *GrpcCallConfig) Execute(ctx *rctx.Context, state *engine.ExecutionState
 				break
 			}
 		} else if attempt < maxAttempts && len(g.RetryOnCodes) == 0 {
-			// No explicit retry codes â€” stop on first failure.
+			// No explicit retry codes — stop on first failure.
 			break
 		}
 	}
 
-	// â”€â”€ All attempts exhausted â€” write error response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ All attempts exhausted — write error response â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	httpStatus := grpcutil.GRPCStatusToHTTP(status.Code(lastErr))
 	errJSON := grpcutil.ErrorToJSON(lastErr)
 	if g.ResponseSlot >= 0 && g.ResponseSlot < len(ctx.ByteSlots) {

@@ -1,6 +1,6 @@
 ﻿package control
 
-// pattern_match_compiler_test.go â€” compiler integration tests for the pattern_match step.
+// pattern_match_compiler_test.go — compiler integration tests for the pattern_match step.
 //
 // Coverage:
 //   - Compile a flow containing pattern_match; verify instruction count
@@ -23,7 +23,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // compileAndRun compiles a flow via the management server, dispatches a single
 // HTTP request with the given headers, and returns the resulting context.
@@ -51,7 +51,7 @@ func thenElseFlows() []FlowUpdate {
 	}
 }
 
-// â”€â”€â”€ Test 1: basic match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 1: basic match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchBasicMatch verifies that a header value matching the pattern
 // routes to the then-flow (200).
@@ -79,7 +79,7 @@ func TestPatternMatchBasicMatch(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 2: basic no-match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 2: basic no-match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchNoMatch verifies that a header value NOT matching the pattern
 // routes to the else-flow (403).
@@ -107,7 +107,7 @@ func TestPatternMatchNoMatch(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 3: empty slot â†’ no-match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 3: empty slot â†’ no-match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchEmptySlot verifies that an absent header (empty bytes) routes
 // to the else-flow, not the then-flow.
@@ -136,7 +136,7 @@ func TestPatternMatchEmptySlot(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 4: case-insensitive flag â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 4: case-insensitive flag â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchCaseInsensitiveFlag verifies that the "i" flag makes the
 // match case-insensitive.
@@ -175,7 +175,7 @@ func TestPatternMatchCaseInsensitiveFlagNoMatch(t *testing.T) {
 			{
 				Action: "pattern_match",
 				Source: "header.x-service",
-				Input:  map[string]string{"pattern": `^API`}, // no flag â€” case sensitive
+				Input:  map[string]string{"pattern": `^API`}, // no flag — case sensitive
 				Then:   "matchFlow",
 				Else:   "noMatchFlow",
 			},
@@ -192,7 +192,7 @@ func TestPatternMatchCaseInsensitiveFlagNoMatch(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 5: multiple flags â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 5: multiple flags â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchMultipleFlags verifies that multiple flags can be combined.
 func TestPatternMatchMultipleFlags(t *testing.T) {
@@ -220,7 +220,7 @@ func TestPatternMatchMultipleFlags(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 6: compile-time error cases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 6: compile-time error cases â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchInvalidRegex verifies that an invalid regex produces a
 // compile-time error, not a panic at runtime.
@@ -318,7 +318,7 @@ func TestPatternMatchMissingPattern(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 7: instruction count verification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 7: instruction count verification â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchInstructionCount verifies that the compiler emits the correct
 // number of instructions for a pattern_match step:
@@ -379,8 +379,8 @@ func TestPatternMatchInstructionCount(t *testing.T) {
 	}
 
 	// Compiler.Compile() layout for mainFlow (stored in FlowLibrary):
-	//   [0] SET_STREAM_RESPONSE_BODY â€” always first; no http_call so streaming=true
-	//   [1] PATTERN_MATCH_REGEX      (gate â€” jumps to thenStart or elseStart)
+	//   [0] SET_STREAM_RESPONSE_BODY — always first; no http_call so streaming=true
+	//   [1] PATTERN_MATCH_REGEX      (gate — jumps to thenStart or elseStart)
 	//   [2] GOTO                     (skip-else; sub-flows live in their own entries)
 	// Total = 3 instructions.
 	const wantCount = 3
@@ -397,7 +397,7 @@ func TestPatternMatchInstructionCount(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 8: dotall flag matches newline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 8: dotall flag matches newline â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchDotAllFlag verifies that the "s" (dot-all) flag makes "."
 // match newlines.
@@ -416,7 +416,7 @@ func TestPatternMatchDotAllFlag(t *testing.T) {
 		},
 	})
 
-	// "line1\nline2" â€” the "." matches "\n" with s flag
+	// "line1\nline2" — the "." matches "\n" with s flag
 	ctx := compileAndRun(t, flows, []ApiUpdate{
 		{Name: "pmApi", Path: "/pm", FlowName: "mainFlow", Action: "upsert"},
 	}, http.MethodGet, "/pm", map[string]string{"x-data": "line1\nline2"})
@@ -426,7 +426,7 @@ func TestPatternMatchDotAllFlag(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ Test 9: step descriptor is registered â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 9: step descriptor is registered â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchStepDescriptorRegistered verifies that the pattern_match
 // step descriptor is present in AllStepDescriptors.
@@ -434,7 +434,7 @@ func TestPatternMatchStepDescriptorRegistered(t *testing.T) {
 	descriptors := AllStepDescriptors()
 	for _, d := range descriptors {
 		if d.Type == "pattern_match" {
-			// Found â€” verify key fields.
+			// Found — verify key fields.
 			if d.Category != "control" {
 				t.Errorf("expected category 'control', got %q", d.Category)
 			}
@@ -453,7 +453,7 @@ func TestPatternMatchStepDescriptorRegistered(t *testing.T) {
 	t.Error("pattern_match descriptor not found in AllStepDescriptors()")
 }
 
-// â”€â”€â”€ Test 10: isControlFlowAction includes pattern_match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Test 10: isControlFlowAction includes pattern_match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchIsControlFlow verifies that pattern_match is correctly
 // excluded from on_error wrapping.
@@ -463,7 +463,7 @@ func TestPatternMatchIsControlFlow(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // containsAny returns true if s contains any of the given substrings.
 func containsAny(s string, subs ...string) bool {

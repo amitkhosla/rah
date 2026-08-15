@@ -30,7 +30,7 @@ func (c *Compiler) compileValidateRoute(step StepConfig) error {
 		// Register pending validate jump for DestJump rules.
 		if rule.DestKind == steps.DestJump && rc.OnMatch.TargetStep != "" {
 			if targetPC, ok := c.FragmentMap[rc.OnMatch.TargetStep]; ok {
-				// Already compiled â€” resolve immediately.
+				// Already compiled — resolve immediately.
 				rule.MatchPC = int(targetPC)
 			} else {
 				// Defer to second pass.
@@ -50,7 +50,7 @@ func (c *Compiler) compileValidateRoute(step StepConfig) error {
 	defaultNext := step.Input["default_next"]
 	if defaultNext != "" {
 		if targetPC, ok := c.FragmentMap[defaultNext]; ok {
-			// Already compiled â€” resolve immediately.
+			// Already compiled — resolve immediately.
 			defaultPC = targetPC
 		} else {
 			// Defer to second pass; ruleIdx=-1 signals DefaultPC patch.

@@ -1,4 +1,4 @@
-﻿package studio
+package studio
 
 import (
 	"bytes"
@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,10 +22,10 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	"github.com/amitkhosla/rah/internal/control"
 	"github.com/amitkhosla/rah/internal/observability"
 	rahsync "github.com/amitkhosla/rah/internal/sync"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed ui/dist
@@ -35,12 +35,12 @@ type ServerConfig struct {
 	Targets      []Target `json:"targets"`
 	StoreKind    string   `json:"store_kind"`
 	StorePath    string   `json:"store_path"`
-	ObsStoreType string   `json:"obs_store_type,omitempty"` // "memory", "postgres", "redis" â€” empty = proxy to gateway
+	ObsStoreType string   `json:"obs_store_type,omitempty"` // "memory", "postgres", "redis" — empty = proxy to gateway
 	ObsStoreDSN  string   `json:"obs_store_dsn,omitempty"`  // connection string for postgres/redis
 	ObsMaxLogs   int      `json:"obs_max_logs,omitempty"`   // max access log entries (default 10000)
 	ObsMaxTraces int      `json:"obs_max_traces,omitempty"` // max trace entries (default 500)
 
-	// Auth â€” Studio's own user store (independent of the gateway management API).
+	// Auth — Studio's own user store (independent of the gateway management API).
 	AuthEnabled   bool             `json:"auth_enabled,omitempty"`    // require login; default false
 	AuthRealm     string           `json:"auth_realm,omitempty"`      // WWW-Authenticate realm
 	AuthUsers     []StudioSeedUser `json:"auth_users,omitempty"`      // config-file seed users (bcrypt hashes)
@@ -67,8 +67,6 @@ type ServerConfig struct {
 	// SCIM configures SCIM 2.0 provisioning from an enterprise IDP.
 	SCIM *SCIMConfig `json:"scim,omitempty" yaml:"scim,omitempty"`
 }
-
-
 
 type DeployRequest struct {
 	ReleaseID             string            `json:"release_id,omitempty"`
@@ -108,16 +106,16 @@ type ReleaseDeployResult struct {
 }
 
 type EnvDeployment struct {
-	DeployedAt      time.Time             `json:"deployed_at"`
-	Status          string                `json:"status"`
-	ByUser          string                `json:"by_user"`
-	Results         []ReleaseDeployResult `json:"results,omitempty"`
-	VersionID       string                `json:"version_id,omitempty"`
-	CurrentPhase    int                   `json:"current_phase,omitempty"`
-	ApprovalStatus  string                `json:"approval_status,omitempty"` // "pending" | "approved" | "expired"
-	ApprovalRequired bool                 `json:"approval_required,omitempty"`
-	ApprovedBy      string                `json:"approved_by,omitempty"`
-	ApprovedAt      *time.Time            `json:"approved_at,omitempty"`
+	DeployedAt       time.Time             `json:"deployed_at"`
+	Status           string                `json:"status"`
+	ByUser           string                `json:"by_user"`
+	Results          []ReleaseDeployResult `json:"results,omitempty"`
+	VersionID        string                `json:"version_id,omitempty"`
+	CurrentPhase     int                   `json:"current_phase,omitempty"`
+	ApprovalStatus   string                `json:"approval_status,omitempty"` // "pending" | "approved" | "expired"
+	ApprovalRequired bool                  `json:"approval_required,omitempty"`
+	ApprovedBy       string                `json:"approved_by,omitempty"`
+	ApprovedAt       *time.Time            `json:"approved_at,omitempty"`
 }
 
 type ReleaseRecord struct {
@@ -238,7 +236,7 @@ type OpenAPIImportRequest struct {
 	Spec string `json:"spec"`
 }
 
-// openAPICondConfig mirrors control.CondConfig â€” local copy to avoid circular import.
+// openAPICondConfig mirrors control.CondConfig — local copy to avoid circular import.
 type openAPICondConfig struct {
 	Op       string              `json:"op,omitempty"`
 	Source   string              `json:"source,omitempty"`
@@ -351,15 +349,20 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		targets:           targets,
 		store:             releaseStoreFromConfig(cfg.StoreKind, cfg.StorePath),
 		chatStore:         newChatHistoryStore(cfg.StoreKind, cfg.StorePath),
-			auditStore:    newAuditStore(cfg.StoreKind, cfg.StorePath),
+		auditStore:        newAuditStore(cfg.StoreKind, cfg.StorePath),
 		baselineStore:     newMemFlowBaselineStore(),
 		versionStore:      newMemVersionHistoryStore(),
 	}
 
+	// Token store is always initialised so machine tokens work even without login auth.
+	tokenStorePath := cfg.TokenStorePath
+	if tokenStorePath == "" {
+		tokenStorePath = ".studio-tokens"
+	}
+	srv.tokenStore = newTokenStore(tokenStorePath, parseEncryptionKey(os.Getenv("RAH_STUDIO_ENCRYPTION_KEY")))
 	if cfg.AuthEnabled {
 		srv.userStore = newStudioUserStore(cfg.AuthStorePath, cfg.AuthUsers)
 		srv.sessions = newSessionStore()
-		srv.tokenStore = newTokenStore(cfg.TokenStorePath, parseEncryptionKey(os.Getenv("RAH_STUDIO_ENCRYPTION_KEY")))
 		if srv.userStore != nil && srv.sessions != nil {
 			// Invalidate sessions immediately when a user's role or envs change.
 			srv.userStore.sessionInvalidator = srv.sessions.deleteByUsername
@@ -378,7 +381,7 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 	}
 
 	// Gateway service-account credential for management API proxy calls.
-	// Separate from Studio users â€” the gateway may have its own auth.
+	// Separate from Studio users — the gateway may have its own auth.
 	if u, p := os.Getenv("RAH_GATEWAY_AUTH_USERNAME"), os.Getenv("RAH_GATEWAY_AUTH_PASSWORD"); u != "" && p != "" {
 		srv.gatewayBasicCred = base64.StdEncoding.EncodeToString([]byte(u + ":" + p))
 	}
@@ -392,7 +395,7 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 			MaxTraces:    cfg.ObsMaxTraces,
 		}
 		obsStore := observability.NewObsStoreFromParams(context.Background(), params)
-		// Create a disabled Telemetry for the handler â€” Studio is read-only, it doesn't generate gateway metrics.
+		// Create a disabled Telemetry for the handler — Studio is read-only, it doesn't generate gateway metrics.
 		tel := observability.New(observability.Config{Enabled: false})
 		srv.obsWriter = observability.NewObsWriter(obsStore, 200, 2*time.Second)
 		srv.obsWriter.Start(context.Background())
@@ -448,8 +451,22 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
 	apiMux.HandleFunc("/api/apps", s.appsMgmtProxy)
 	apiMux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	apiMux.HandleFunc("/api/config/datastores", s.datastoreConfigProxy)
+	apiMux.HandleFunc("/api/config/datastores/", s.datastoreConfigProxy)
 	apiMux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
 	apiMux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
+	apiMux.HandleFunc("/api/document-connectors", s.documentConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/storage-connectors", s.storageConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/messaging-publishers", s.messagingPublishersMgmtProxy)
+	apiMux.HandleFunc("/api/event-listeners", s.eventListenersMgmtProxy)
+	apiMux.HandleFunc("/api/test/", s.testProxy)
+	apiMux.HandleFunc("/api/test/execute", s.testProxy)
+	apiMux.HandleFunc("/api/workflows", s.workflowsMgmtProxy)
+	apiMux.HandleFunc("/api/workflows/", s.workflowsMgmtProxy)
+	apiMux.HandleFunc("/api/redis-sources", s.redisSourcesMgmtProxy)
+	apiMux.HandleFunc("/api/named-queries", s.namedQueriesMgmtProxy)
+	apiMux.HandleFunc("/api/named-queries/", s.namedQueriesMgmtProxy)
+	apiMux.HandleFunc("/api/migrations", s.migrationsMgmtProxy)
 	apiMux.HandleFunc("/api/schemas", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, "/schemas")
 	})
@@ -485,19 +502,21 @@ func (s *Server) Handler() http.Handler {
 	} else {
 		apiMux.HandleFunc("/api/observability/", s.obsGatewayProxy)
 	}
-	// Observability config (GET/POST) â€” always proxy to /debug/observability on the management server.
+	// Observability apps — always proxy to /observability/apps on the management server.
+	apiMux.HandleFunc("/api/observability/apps", s.observabilityAppsMgmtProxy)
+	// Observability config (GET/POST) — always proxy to /debug/observability on the management server.
 	// This endpoint is independent of the obs store presence, so it lives outside the if/else above.
 	apiMux.HandleFunc("/api/observability/config", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, "/debug/observability")
 	})
 
 	// outerMux adds the auth layer:
-	//   /api/auth/login  â€” public (credential validation, session creation)
-	//   /api/auth/logout â€” public (session deletion, cookie clear)
-	//   /api/auth/me     â€” protected (inside apiMux via studioAuthMiddleware)
-	//   /api/*           â€” protected via studioAuthMiddleware
-	//   /mcp             â€” public (MCP protocol handler; uses its own auth if needed)
-	//   /                â€” public (static React SPA â€” login form is rendered client-side)
+	//   /api/auth/login  — public (credential validation, session creation)
+	//   /api/auth/logout — public (session deletion, cookie clear)
+	//   /api/auth/me     — protected (inside apiMux via studioAuthMiddleware)
+	//   /api/*           — protected via studioAuthMiddleware
+	//   /mcp             — public (MCP protocol handler; uses its own auth if needed)
+	//   /                — public (static React SPA — login form is rendered client-side)
 	outerMux := http.NewServeMux()
 	// Auth routes: login + logout are public; change-password and user management are protected.
 	outerMux.HandleFunc("/api/auth/login", s.loginHandler)
@@ -560,7 +579,7 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func defaultBlocks() []PaletteBlock {
 	return []PaletteBlock{
-		// â”€â”€ Core â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Core â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "generate_tid", Title: "Generate TID", Category: "core", Capability: "tracing",
 			Description: "Create a distributed transaction ID and store it in a slot",
@@ -580,7 +599,7 @@ func defaultBlocks() []PaletteBlock {
 			},
 		},
 
-		// â”€â”€ Control flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Control flow â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "if", Title: "If / Else", Category: "control", Capability: "branching", SupportsNested: true,
 			Description: "Branch to one of two sub-flows based on a boolean condition",
@@ -612,14 +631,14 @@ func defaultBlocks() []PaletteBlock {
 		},
 		{
 			Type: "call", Title: "Call Flow", Category: "control", Capability: "sub-flow",
-			Description: "Invoke a named sub-flow inline â€” like a function call",
+			Description: "Invoke a named sub-flow inline — like a function call",
 			Defaults:    map[string]string{"flow_name": ""},
 			Fields: []FieldDef{
 				fld("flow_name", "Flow name", "Name of the sub-flow to invoke; it shares the current slot context", "sub_flow"),
 			},
 		},
 
-		// â”€â”€ HTTP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ HTTP â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "http_call", Title: "HTTP Call", Category: "http", Capability: "upstream",
 			Description: "Make an outbound HTTP request and store the response",
@@ -634,7 +653,7 @@ func defaultBlocks() []PaletteBlock {
 			},
 		},
 
-		// â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Auth â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "token_validation", Title: "Token Validation", Category: "auth", Capability: "jwt-validation",
 			Description: "Validate a JWT. Verifies signature (JWKS), standard claims, required scopes, and arbitrary custom claims. Every parameter supports a static value or a runtime variable loaded by any earlier step.",
@@ -688,7 +707,7 @@ func defaultBlocks() []PaletteBlock {
 			},
 		},
 
-		// â”€â”€ String ops â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ String ops â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "concat", Title: "Concat", Category: "string", Capability: "string-op",
 			Description: "Concatenate two string slots (with optional separator) and store the result",
@@ -737,7 +756,7 @@ func defaultBlocks() []PaletteBlock {
 			},
 		},
 
-		// â”€â”€ Math â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Math â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "add", Title: "Add", Category: "math", Capability: "arithmetic",
 			Description: "Add two numeric slots (key_identifier + source) and store the result",
@@ -779,7 +798,7 @@ func defaultBlocks() []PaletteBlock {
 			},
 		},
 
-		// â”€â”€ Response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Response â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "set_response_header", Title: "Set Response Header", Category: "response", Capability: "response-mod",
 			Description: "Set a response header to the value from a slot",
@@ -807,16 +826,16 @@ func defaultBlocks() []PaletteBlock {
 		},
 		{
 			Type: "echo_request", Title: "Echo Request", Category: "response", Capability: "debug",
-			Description: "Mirror the incoming request back as the response â€” useful for debugging flows",
+			Description: "Mirror the incoming request back as the response — useful for debugging flows",
 			Defaults:    map[string]string{},
 			Fields:      []FieldDef{},
 		},
 
-		// â”€â”€ Encoding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Encoding â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "base64_encode", Title: "Base64 Encode", Category: "encoding", Capability: "encoding",
 			Description: "Encode a byte slot to base64. Variant: std (default), url, raw_url, raw_std.",
-			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Defaults:    map[string]string{"source": "var.input", "as": "encoded"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing bytes to encode", "var.input"),
 				fld("as", "Store as", "Slot for the base64 output", "encoded"),
@@ -826,7 +845,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "base64_decode", Title: "Base64 Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a base64 string slot into raw bytes. Default variant: raw_url (JWT-friendly). Clears result on invalid input.",
-			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.encoded", "as": "decoded"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the base64 string", "var.encoded"),
 				fld("as", "Store as", "Slot for the decoded bytes", "decoded"),
@@ -836,7 +855,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "hex_encode", Title: "Hex Encode", Category: "encoding", Capability: "encoding",
 			Description: "Encode a byte slot as a lowercase hexadecimal string.",
-			Defaults: map[string]string{"source": "var.input", "as": "hex"},
+			Defaults:    map[string]string{"source": "var.input", "as": "hex"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing bytes to encode", "var.input"),
 				fld("as", "Store as", "Slot for the hex string", "hex"),
@@ -845,7 +864,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "hex_decode", Title: "Hex Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a hex string slot into raw bytes. Clears result on invalid input.",
-			Defaults: map[string]string{"source": "var.hex", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.hex", "as": "decoded"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the hex string", "var.hex"),
 				fld("as", "Store as", "Slot for the decoded bytes", "decoded"),
@@ -854,7 +873,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "url_encode", Title: "URL Encode", Category: "encoding", Capability: "encoding",
 			Description: "Percent-encode a string slot (RFC 3986). Space â†’ %20. Unreserved chars pass through.",
-			Defaults: map[string]string{"source": "var.input", "as": "encoded"},
+			Defaults:    map[string]string{"source": "var.input", "as": "encoded"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the string to encode", "var.input"),
 				fld("as", "Store as", "Slot for the percent-encoded output", "encoded"),
@@ -863,18 +882,18 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "url_decode", Title: "URL Decode", Category: "encoding", Capability: "encoding",
 			Description: "Decode a percent-encoded string slot. '+' is decoded as space.",
-			Defaults: map[string]string{"source": "var.encoded", "as": "decoded"},
+			Defaults:    map[string]string{"source": "var.encoded", "as": "decoded"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the percent-encoded string", "var.encoded"),
 				fld("as", "Store as", "Slot for the decoded output", "decoded"),
 			},
 		},
 
-		// â”€â”€ Crypto / Hash â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Crypto / Hash â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		{
 			Type: "sha256_hash", Title: "SHA-256 Hash", Category: "crypto", Capability: "hashing",
-			Description: "Compute SHA-256 of a slot. Output is a lowercase hex string. No key â€” use hmac_sha256 for signed hashes.",
-			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Description: "Compute SHA-256 of a slot. Output is a lowercase hex string. No key — use hmac_sha256 for signed hashes.",
+			Defaults:    map[string]string{"source": "var.input", "as": "digest"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the data to hash", "var.input"),
 				fld("as", "Store as", "Slot for the SHA-256 hex string", "digest"),
@@ -883,17 +902,17 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "hmac_sha256", Title: "HMAC-SHA256", Category: "crypto", Capability: "signing",
 			Description: "Compute HMAC-SHA256 using a bake-time secret key. Output is a lowercase hex string. Used for webhook signatures, request signing.",
-			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Defaults:    map[string]string{"source": "var.payload", "as": "signature"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the data to sign", "var.payload"),
 				fld("as", "Store as", "Slot for the HMAC hex string", "signature"),
-				fld("input.key", "Secret key", "Static HMAC key (baked at compile time â€” store in secrets manager for production)", ""),
+				fld("input.key", "Secret key", "Static HMAC key (baked at compile time — store in secrets manager for production)", ""),
 			},
 		},
 		{
 			Type: "hmac_sha1", Title: "HMAC-SHA1", Category: "crypto", Capability: "signing",
 			Description: "Compute HMAC-SHA1 using a bake-time key. Output is a lowercase hex string. Legacy integrations only.",
-			Defaults: map[string]string{"source": "var.payload", "as": "signature"},
+			Defaults:    map[string]string{"source": "var.payload", "as": "signature"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the data to sign", "var.payload"),
 				fld("as", "Store as", "Slot for the HMAC hex string", "signature"),
@@ -902,8 +921,8 @@ func defaultBlocks() []PaletteBlock {
 		},
 		{
 			Type: "md5_hash", Title: "MD5 Hash", Category: "crypto", Capability: "hashing",
-			Description: "Compute MD5 of a slot. Output is a lowercase hex string. Cryptographically broken â€” use for checksums or legacy compatibility only.",
-			Defaults: map[string]string{"source": "var.input", "as": "digest"},
+			Description: "Compute MD5 of a slot. Output is a lowercase hex string. Cryptographically broken — use for checksums or legacy compatibility only.",
+			Defaults:    map[string]string{"source": "var.input", "as": "digest"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the data to hash", "var.input"),
 				fld("as", "Store as", "Slot for the MD5 hex string", "digest"),
@@ -912,7 +931,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "aes_encrypt", Title: "AES Encrypt (GCM)", Category: "crypto", Capability: "encryption",
 			Description: "Encrypt a slot with AES-GCM. Key is hex-encoded (32 chars = AES-128, 64 = AES-256). Output is nonce||ciphertext.",
-			Defaults: map[string]string{"source": "var.plaintext", "as": "ciphertext"},
+			Defaults:    map[string]string{"source": "var.plaintext", "as": "ciphertext"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing the plaintext", "var.plaintext"),
 				fld("as", "Store as", "Slot for nonce||ciphertext output", "ciphertext"),
@@ -922,7 +941,7 @@ func defaultBlocks() []PaletteBlock {
 		{
 			Type: "aes_decrypt", Title: "AES Decrypt (GCM)", Category: "crypto", Capability: "encryption",
 			Description: "Decrypt AES-GCM ciphertext (nonce||ciphertext). Sets Failed=true on auth failure.",
-			Defaults: map[string]string{"source": "var.ciphertext", "as": "plaintext"},
+			Defaults:    map[string]string{"source": "var.ciphertext", "as": "plaintext"},
 			Fields: []FieldDef{
 				fld("source", "Source slot", "Slot containing nonce||ciphertext", "var.ciphertext"),
 				fld("as", "Store as", "Slot for the decrypted plaintext", "plaintext"),
@@ -935,7 +954,7 @@ func defaultBlocks() []PaletteBlock {
 func (s *Server) schemaHandler(w http.ResponseWriter, r *http.Request) {
 	// Prefer live step catalog from the management server.
 	// This means adding a step to the compiler + step_descriptors.go is
-	// sufficient â€” the Studio palette updates automatically on next load.
+	// sufficient — the Studio palette updates automatically on next load.
 	if s.managementBaseURL != nil {
 		targetURL, err := buildTargetURL(s.managementBaseURL.String(), "/meta/steps", "")
 		if err == nil {
@@ -1785,6 +1804,51 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
+// documentConnectorsMgmtProxy forwards /api/document-connectors → /document-connectors on the management server.
+func (s *Server) documentConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/document-connectors")
+}
+
+// storageConnectorsMgmtProxy forwards /api/storage-connectors → /storage-connectors on the management server.
+func (s *Server) storageConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/storage-connectors")
+}
+
+// messagingPublishersMgmtProxy forwards /api/messaging-publishers → /messaging-publishers on the management server.
+func (s *Server) messagingPublishersMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/messaging-publishers")
+}
+
+// eventListenersMgmtProxy forwards /api/event-listeners → /event-listeners on the management server.
+func (s *Server) eventListenersMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/event-listeners")
+}
+
+// testProxy forwards /api/test/... → /test/... on the management server.
+func (s *Server) testProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// workflowsMgmtProxy forwards /api/workflows[/...] → /workflows[/...] on the management server.
+func (s *Server) workflowsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// redisSourcesMgmtProxy forwards /api/redis-sources → /redis-sources on the management server.
+func (s *Server) redisSourcesMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/redis-sources")
+}
+
+// namedQueriesMgmtProxy forwards /api/named-queries[/...] → /named-queries[/...] on the management server.
+func (s *Server) namedQueriesMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// migrationsMgmtProxy forwards /api/migrations → /migrations on the management server.
+func (s *Server) migrationsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/migrations")
+}
+
 // rateLimitConfigsV2MgmtProxy forwards /api/rate-limit-configs-v2[/...] â†’ /rate-limit-configs-v2[/...].
 func (s *Server) rateLimitConfigsV2MgmtProxy(w http.ResponseWriter, r *http.Request) {
 	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
@@ -1860,6 +1924,15 @@ func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
+func (s *Server) datastoreConfigProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// observabilityAppsMgmtProxy forwards /api/observability/apps â†’ /observability/apps on the management server.
+func (s *Server) observabilityAppsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, "/observability/apps")
+}
+
 // grpcDescriptorsMgmtProxy forwards /api/grpc/descriptors[/...] â†’ /grpc/descriptors[/...].
 func (s *Server) grpcDescriptorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
@@ -1914,6 +1987,7 @@ func (s *Server) proxyPassThrough(w http.ResponseWriter, r *http.Request, target
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
+
 // gatewayCall makes an authenticated HTTP request to a gateway management endpoint.
 func (s *Server) gatewayCall(ctx context.Context, method, targetURL string, body []byte) ([]byte, int, error) {
 	var reqBody io.Reader
@@ -1938,11 +2012,11 @@ func (s *Server) gatewayCall(ctx context.Context, method, targetURL string, body
 }
 
 // preSyncDeploy applies tenants and cache seeds from the bundle to one gateway target
-// before the main /sync call. Errors are logged but non-fatal â€” /sync always runs.
+// before the main /sync call. Errors are logged but non-fatal — /sync always runs.
 func (s *Server) preSyncDeploy(ctx context.Context, targetBase string, payload []byte) {
 	var bundle control.UnifiedSyncRequest
 	if err := json.Unmarshal(payload, &bundle); err != nil {
-		return // unparseable â€” let /sync handle it
+		return // unparseable — let /sync handle it
 	}
 
 	// 1. Tenants
@@ -2023,7 +2097,7 @@ func (s *Server) preSyncDeploy(ctx context.Context, targetBase string, payload [
 	}
 }
 
-// â”€â”€â”€ Release Management (S9) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Release Management (S9) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // releasesHandler dispatches POST /api/releases (create) and GET /api/releases (list).
 func (s *Server) releasesHandler(w http.ResponseWriter, r *http.Request) {
@@ -2038,7 +2112,7 @@ func (s *Server) releasesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // releaseByIDHandler handles GET /api/releases/:id.
-// Sub-paths like /api/releases/:id/deploy are not handled here â€” they will be
+// Sub-paths like /api/releases/:id/deploy are not handled here — they will be
 // added in S10. Unknown sub-paths return 404.
 func (s *Server) releaseByIDHandler(w http.ResponseWriter, r *http.Request) {
 	// strip /api/releases/
@@ -2124,10 +2198,10 @@ func (s *Server) releaseDiffHandler(w http.ResponseWriter, r *http.Request, id s
 
 	// Compute diff: flows/APIs only in rec1, only in rec2, and in both
 	resp := map[string]any{
-		"flows_added":    setDiff(flows2, flows1),
-		"flows_removed":  setDiff(flows1, flows2),
-		"apis_added":     setDiff(apis2, apis1),
-		"apis_removed":   setDiff(apis1, apis2),
+		"flows_added":   setDiff(flows2, flows1),
+		"flows_removed": setDiff(flows1, flows2),
+		"apis_added":    setDiff(apis2, apis1),
+		"apis_removed":  setDiff(apis1, apis2),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2422,7 +2496,7 @@ func (s *Server) parseBundleRequest(r *http.Request) (control.UnifiedSyncRequest
 			return bundle, meta, err
 		}
 
-	default: // application/json or unspecified â€” try envelope, then plain bundle
+	default: // application/json or unspecified — try envelope, then plain bundle
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			return bundle, meta, fmt.Errorf("failed to read request body: %w", err)
@@ -2508,7 +2582,7 @@ func validateStepsNoSlotKeys(steps []control.StepConfig, flowName string) error 
 				if alt == "" {
 					alt = rahsync.SlotKeyAlternative(k)
 				}
-				msg := fmt.Sprintf("flow %q step %d: input key %q is an internal slot index â€” use named variable fields instead of internal slot indices", flowName, i+1, k)
+				msg := fmt.Sprintf("flow %q step %d: input key %q is an internal slot index — use named variable fields instead of internal slot indices", flowName, i+1, k)
 				if alt != "" {
 					msg += fmt.Sprintf(" (use %q instead)", strings.TrimPrefix(alt, "input."))
 				}
@@ -2611,6 +2685,7 @@ func (s *Server) proxyToDefault(w http.ResponseWriter, r *http.Request, method, 
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
+
 // auditLogHandler returns audit records newest-first.
 // Accepts optional ?limit=N query param (default 200, max 1000).
 func (s *Server) auditLogHandler(w http.ResponseWriter, r *http.Request) {

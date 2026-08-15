@@ -188,7 +188,7 @@ func VectorSearch(cfg VectorSearchConfig) engine.Instruction {
 // At runtime:
 //  1. Reads vector JSON from cfg.VectorSlot; if empty, returns PC+1 (no-op)
 //  2. Unmarshals []float64 â†’ []float32
-//  3. Reads content from cfg.ContentSlot (may be empty â€” allowed)
+//  3. Reads content from cfg.ContentSlot (may be empty — allowed)
 //  4. Resolves ID: slot value if IDSlot >= 0 and non-empty, else sha256(content)
 //  5. Resolves metadata: unmarshal from MetadataSlot if >= 0 and non-empty, else nil
 //  6. Resolves collection same as VectorSearch

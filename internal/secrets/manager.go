@@ -33,14 +33,14 @@ type Manager struct {
 // forwarded to all provider factories (e.g. for token-refresh goroutines).
 //
 // Built-in providers (always available, no config required):
-//   - env  â€” "env:VAR", "$VAR", "${VAR}"
-//   - file â€” "file:///path"
+//   - env  — "env:VAR", "$VAR", "${VAR}"
+//   - file — "file:///path"
 //
 // Built-in providers (require config):
-//   - enc  â€” "enc:base64" â€” needs cfg.Encrypted.Enabled + Key
+//   - enc  — "enc:base64" — needs cfg.Encrypted.Enabled + Key
 //
 // Pluggable providers (activated by blank imports in main.go):
-//   - gsm, vault, awssm, â€¦ â€” registered via RegisterProviderFactory in init()
+//   - gsm, vault, awssm, â€¦ — registered via RegisterProviderFactory in init()
 func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 	m := &Manager{
 		providers: make(map[string]Provider),
@@ -48,13 +48,13 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		cacheTTL:  defaultCacheTTL,
 	}
 
-	// Bootstrap providers â€” always registered, no external deps.
+	// Bootstrap providers — always registered, no external deps.
 	// Must be registered first so the encrypted provider and cloud provider
 	// factories can use them to resolve their own bootstrap credentials.
 	m.register(newEnvProvider())
 	m.register(newFileProvider())
 
-	// Encrypted provider â€” built in, needs master key config.
+	// Encrypted provider — built in, needs master key config.
 	if cfg.Encrypted.Enabled {
 		p, err := newEncryptedProvider(ctx, cfg.Encrypted, m)
 		if err != nil {
@@ -63,7 +63,7 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		m.register(p)
 	}
 
-	// Pluggable cloud providers â€” registered via init() in sub-packages.
+	// Pluggable cloud providers — registered via init() in sub-packages.
 	// Copy the global map under lock so concurrent test binaries are safe.
 	globalFactoriesMu.Lock()
 	factories := make(map[string]ProviderFactory, len(globalFactories))
@@ -80,7 +80,7 @@ func New(ctx context.Context, cfg config.SecretsConfig) (*Manager, error) {
 		if p != nil {
 			m.register(p)
 		}
-		// nil return means "not enabled in config" â€” silently skip.
+		// nil return means "not enabled in config" — silently skip.
 	}
 
 	go m.rotationLoop(ctx)
@@ -103,14 +103,14 @@ func (m *Manager) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	v, err, _ := m.sf.Do(ref, func() (any, error) {
 		scheme := parseScheme(ref)
 
-		// Literal â€” no provider needed, return as-is.
+		// Literal — no provider needed, return as-is.
 		if scheme == "" {
 			return []byte(ref), nil
 		}
 
 		p, ok := m.providers[scheme]
 		if !ok {
-			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q â€” "+
+			return nil, fmt.Errorf("secrets: no provider registered for scheme %q in ref %q — "+
 				"is the provider sub-package imported in main.go?", scheme, ref)
 		}
 
@@ -139,7 +139,7 @@ func (m *Manager) Resolve(ctx context.Context, ref string) ([]byte, error) {
 		return nil, err
 	}
 
-	// singleflight returns the same slice to all waiters â€” return a copy so
+	// singleflight returns the same slice to all waiters — return a copy so
 	// each caller can zero their own copy independently.
 	raw := v.([]byte)
 	out := make([]byte, len(raw))

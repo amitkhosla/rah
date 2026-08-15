@@ -83,7 +83,7 @@ func BuildSOAPEnvelopeFromConfig(cfg BuildSOAPEnvelopeStepConfig) engine.Instruc
 }
 
 // buildSOAPEnvelopeConfig is an internal helper kept for bake-time envSizeHint computation
-// on SOAPCallConfig (not a step â€” used only within compileSOAPCall).
+// on SOAPCallConfig (not a step — used only within compileSOAPCall).
 func buildSOAPEnvelopeHint(cfg SOAPCallConfig) SOAPCallConfig {
 	cfg.envSizeHint = 150 + 256
 	return cfg

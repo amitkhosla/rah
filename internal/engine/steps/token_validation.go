@@ -48,7 +48,7 @@ const (
 )
 
 // TokenValidationSlots holds runtime slot indexes for token_validation.
-// -1 means "not configured â€” use static value from TokenValidationConfig".
+// -1 means "not configured — use static value from TokenValidationConfig".
 type TokenValidationSlots struct {
 	Token          int
 	JWKSURI        int

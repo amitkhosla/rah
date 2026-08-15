@@ -559,6 +559,66 @@ type SchedulerConfig struct {
 	LeaderTTLSec   int    `json:"leader_ttl_sec,omitempty"   yaml:"leader_ttl_sec,omitempty"`
 }
 
+// DocumentConnectorConfig configures a named document storage connector.
+type DocumentConnectorConfig struct {
+	Name          string `yaml:"name"           json:"name"`
+	Kind          string `yaml:"kind"           json:"kind"`           // "mongodb" | "postgresql" | "mysql" | "grpc"
+	URI           string `yaml:"uri,omitempty"  json:"uri,omitempty"`  // for mongodb/postgresql/mysql
+	Database      string `yaml:"database"       json:"database"`
+	CredentialRef string `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"` // resolves via SecretLoader
+	PoolSize      int    `yaml:"pool_size,omitempty"      json:"pool_size,omitempty"`      // default 10
+	TLSEnabled    bool   `yaml:"tls_enabled,omitempty"    json:"tls_enabled,omitempty"`
+	TLSCARef      string `yaml:"tls_ca_ref,omitempty"     json:"tls_ca_ref,omitempty"`
+	TimeoutMs     int    `yaml:"timeout_ms,omitempty"     json:"timeout_ms,omitempty"`     // default 5000
+	GRPCEndpoint  string `yaml:"grpc_endpoint,omitempty"  json:"grpc_endpoint,omitempty"` // for kind="grpc"
+	WriteBuffer   bool   `json:"write_buffer,omitempty" yaml:"write_buffer,omitempty"`   // enable read-your-writes buffering (default false)
+}
+
+// PublisherConfig configures a named message publisher connector.
+type PublisherConfig struct {
+	Name          string `yaml:"name"                    json:"name"`
+	Kind          string `yaml:"kind"                    json:"kind"`         // "kafka"|"pubsub"|"rabbitmq"|"sqs"|"redis_streams"
+	Brokers       []string `yaml:"brokers,omitempty"       json:"brokers,omitempty"`       // Kafka broker addresses
+	ProjectID     string `yaml:"project_id,omitempty"    json:"project_id,omitempty"`    // GCP PubSub project
+	URI           string `yaml:"uri,omitempty"           json:"uri,omitempty"`            // RabbitMQ AMQP URI
+	Exchange      string `yaml:"exchange,omitempty"      json:"exchange,omitempty"`       // RabbitMQ exchange name
+	Region        string `yaml:"region,omitempty"        json:"region,omitempty"`         // AWS region for SQS
+	RedisAddr     string `yaml:"redis_addr,omitempty"    json:"redis_addr,omitempty"`     // Redis address for redis_streams
+	RedisDB       int    `yaml:"redis_db,omitempty"      json:"redis_db,omitempty"`       // Redis DB index
+	MaxLen        int64  `yaml:"max_len,omitempty"       json:"max_len,omitempty"`        // Redis Streams MAXLEN (~trimming)
+	CredentialRef string `yaml:"credential_ref,omitempty" json:"credential_ref,omitempty"` // secret ref for credentials
+	TLSEnabled    bool   `yaml:"tls_enabled,omitempty"   json:"tls_enabled,omitempty"`
+	TLSCARef      string `yaml:"tls_ca_ref,omitempty"    json:"tls_ca_ref,omitempty"`
+	TimeoutMs     int    `yaml:"timeout_ms,omitempty"    json:"timeout_ms,omitempty"`
+	// Kafka tuning — only used when Kind == "kafka"
+	LingerMs  int `yaml:"linger_ms,omitempty"  json:"linger_ms,omitempty"`  // sarama Producer.Flush.Frequency (default 0 = no linger)
+	BatchSize int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`  // sarama Producer.Flush.MaxMessages (default 0 = unlimited)
+	// AckRequired controls whether Publish blocks for broker acknowledgement.
+	// Default true (sync). Set false for fire-and-forget (Kafka only for now).
+	AckRequired *bool `yaml:"ack_required,omitempty" json:"ack_required,omitempty"`
+}
+
+// EventListenerConfig configures one inbound event consumer.
+// The gateway subscribes to Topic on the named messaging publisher's broker
+// and executes FlowName for each received message.
+type EventListenerConfig struct {
+	Name           string            `json:"name"                  yaml:"name"`
+	Publisher      string            `json:"publisher"             yaml:"publisher"`              // references a MessagingPublisher by name
+	Topic          string            `json:"topic"                 yaml:"topic"`
+	FlowName       string            `json:"flow_name"             yaml:"flow_name"`
+	PayloadVar     string            `json:"payload_var"           yaml:"payload_var"`            // slot name for message payload bytes
+	KeyVar         string            `json:"key_var,omitempty"     yaml:"key_var,omitempty"`      // slot name for message key bytes (optional)
+	GroupID        string            `json:"group_id,omitempty"    yaml:"group_id,omitempty"`     // Kafka consumer group ID
+	Workers        int               `json:"workers,omitempty"     yaml:"workers,omitempty"`      // concurrent message handlers (default 1)
+	HeaderMappings map[string]string `json:"header_mappings,omitempty" yaml:"header_mappings,omitempty"` // message header name → slot variable name
+	AppName        string `json:"app_name,omitempty"         yaml:"app_name,omitempty"`
+	DedupKey       string `json:"dedup_key,omitempty"        yaml:"dedup_key,omitempty"`
+	DedupWindowSec int    `json:"dedup_window_sec,omitempty" yaml:"dedup_window_sec,omitempty"`
+	BatchSize      int    `json:"batch_size,omitempty"       yaml:"batch_size,omitempty"`
+	BatchWindowMs  int    `json:"batch_window_ms,omitempty"  yaml:"batch_window_ms,omitempty"`
+	BatchPayloadVar string `json:"batch_payload_var,omitempty" yaml:"batch_payload_var,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout           GlobalLayout                        `json:"layout"                   yaml:"layout"`
 	DataStore        DataStoreConfig                     `json:"datastore"                yaml:"datastore"`
@@ -584,10 +644,13 @@ type GatewayConfig struct {
 	WebSocket        WSGatewayConfig                     `json:"websocket,omitempty"        yaml:"websocket,omitempty"`
 	WSUpstreams      []WSUpstreamConfig                  `json:"ws_upstreams,omitempty"     yaml:"ws_upstreams,omitempty"`
 	Scheduler        SchedulerConfig                     `json:"scheduler,omitempty"        yaml:"scheduler,omitempty"`
-	DataSources      []datasource.DataSourceConfig       `json:"data_sources,omitempty"       yaml:"data_sources,omitempty"`
-	RedisSources     []redissource.RedisSourceConfig     `json:"redis_sources,omitempty"     yaml:"redis_sources,omitempty"`
-	EmailProviders   []emailprovider.EmailProviderConfig `json:"email_providers,omitempty"   yaml:"email_providers,omitempty"`
-	StorageProviders []storage.StorageProviderConfig     `json:"storage_providers,omitempty" yaml:"storage_providers,omitempty"`
+	DataSources         []datasource.DataSourceConfig       `json:"data_sources,omitempty"           yaml:"data_sources,omitempty"`
+	RedisSources        []redissource.RedisSourceConfig     `json:"redis_sources,omitempty"         yaml:"redis_sources,omitempty"`
+	EmailProviders      []emailprovider.EmailProviderConfig `json:"email_providers,omitempty"       yaml:"email_providers,omitempty"`
+	StorageProviders    []storage.StorageProviderConfig     `json:"storage_providers,omitempty"     yaml:"storage_providers,omitempty"`
+	DocumentConnectors  []DocumentConnectorConfig           `json:"document_connectors,omitempty"   yaml:"document_connectors,omitempty"`
+	MessagingPublishers []PublisherConfig                   `json:"messaging_publishers,omitempty"  yaml:"messaging_publishers,omitempty"`
+	EventListeners      []EventListenerConfig               `json:"event_listeners,omitempty"       yaml:"event_listeners,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

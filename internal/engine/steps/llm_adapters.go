@@ -25,7 +25,7 @@ type ProviderAdapter interface {
 
 // NewAdapter returns the ProviderAdapter for the given model config.
 // For AdapterCustom, auth header behaviour is driven by cfg.AuthHeaderName
-// and cfg.AuthHeaderPrefix â€” no code change needed to add new providers.
+// and cfg.AuthHeaderPrefix — no code change needed to add new providers.
 // Returns an error if the adapter kind is unknown.
 func NewAdapter(cfg config.LLMModelConfig) (ProviderAdapter, error) {
 	switch cfg.Adapter {
@@ -60,7 +60,7 @@ func NewAdapter(cfg config.LLMModelConfig) (ProviderAdapter, error) {
 	}
 }
 
-// â”€â”€ Anthropic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Anthropic â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type anthropicAdapter struct{}
 
@@ -313,7 +313,7 @@ func (a *anthropicAdapter) AuthHeader(apiKey string) (string, string) {
 	return "x-api-key", apiKey
 }
 
-// â”€â”€ OpenAI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ OpenAI â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type openAIAdapter struct{}
 
@@ -432,7 +432,7 @@ func marshalOpenAIMessage(m CanonicalMessage) (openAIReqMessage, error) {
 	}
 
 	if len(toolCalls) > 0 {
-		// assistant with tool calls â€” content is null
+		// assistant with tool calls — content is null
 		nullJSON := json.RawMessage(`null`)
 		return openAIReqMessage{
 			Role:      string(m.Role),
@@ -587,7 +587,7 @@ func (o *openAIAdapter) AuthHeader(apiKey string) (string, string) {
 	return "Authorization", "Bearer " + apiKey
 }
 
-// â”€â”€ Gemini â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Gemini â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type geminiAdapter struct {
 	// apiVersion is "v1" (default, stable) or "v1beta" (newer models: Gemini 2.0+, Gemma).
@@ -725,7 +725,7 @@ func sanitizeGeminiToolUseID(id string) string {
 // normalizeMessagesForGemini applies Gemini-specific history normalization to a
 // local copy of the messages slice.
 func normalizeMessagesForGemini(messages []CanonicalMessage) []CanonicalMessage {
-	// Work on a copy â€” do not modify the caller's slice.
+	// Work on a copy — do not modify the caller's slice.
 	msgs := make([]CanonicalMessage, len(messages))
 	copy(msgs, messages)
 
@@ -1046,7 +1046,7 @@ func (g *geminiAdapter) Endpoint(baseURL, modelSlug string) string {
 		return base + "/" + modelSlug + ":generateContent"
 	}
 	// If the base_url already contains a version segment (/v1 or /v1beta), the user
-	// has set the version explicitly in base_url â€” honour it, don't add another.
+	// has set the version explicitly in base_url — honour it, don't add another.
 	if strings.Contains(base, "/v1") {
 		return base + "/models/" + modelSlug + ":generateContent"
 	}
@@ -1058,7 +1058,7 @@ func (g *geminiAdapter) AuthHeader(apiKey string) (string, string) {
 	return "x-goog-api-key", apiKey
 }
 
-// â”€â”€ Ollama â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Ollama â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Ollama exposes an OpenAI-compatible chat endpoint with stream:false.
 
 type ollamaAdapter struct{}
@@ -1171,7 +1171,7 @@ func (o *ollamaAdapter) AuthHeader(_ string) (string, string) {
 	return "", "" // Ollama typically runs locally without auth
 }
 
-// â”€â”€ DeepSeek â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ DeepSeek â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // DeepSeek exposes an OpenAI-compatible endpoint; reuses OpenAI wire types.
 
 type deepSeekAdapter struct{}
@@ -1277,7 +1277,7 @@ func (d *deepSeekAdapter) AuthHeader(apiKey string) (string, string) {
 	return "Authorization", "Bearer " + apiKey
 }
 
-// â”€â”€ Custom (OpenAI-compatible wire, config-driven auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Custom (OpenAI-compatible wire, config-driven auth) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Use adapter: custom for any OpenAI-compatible provider without code changes:
 //   HuggingFace TGI, vLLM, LM Studio, Groq, Together AI, Fireworks, etc.
 //
@@ -1364,7 +1364,7 @@ func (c *customAdapter) AuthHeader(apiKey string) (string, string) {
 	return c.authHeaderName, c.authHeaderPrefix + apiKey
 }
 
-// â”€â”€ SSE streaming chunk parsers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SSE streaming chunk parsers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // anthropicStreamEvent holds one parsed Anthropic SSE data line.
 type anthropicStreamEvent struct {

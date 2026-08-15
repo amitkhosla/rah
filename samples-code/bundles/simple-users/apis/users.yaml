@@ -1,0 +1,33 @@
+apis:
+  - name: hello
+    path: /hello
+    flow_name: hello_world
+    skip_rate_limit: true
+    action: upsert
+
+  - name: users-list
+    path: /users
+    flow_name: user_list
+    skip_rate_limit: true
+    action: upsert
+
+  - name: user-detail
+    path: /user
+    flow_name: user_get
+    skip_rate_limit: true
+    action: upsert
+    endpoint_configs:
+      - path: /{id}
+        method: GET
+
+  - name: user-create
+    path: /create-user
+    flow_name: user_create
+    skip_rate_limit: true
+    action: upsert
+
+  - name: ask
+    path: /ask
+    flow_name: user_ask
+    skip_rate_limit: true
+    action: upsert

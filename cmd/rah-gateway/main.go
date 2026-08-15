@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -146,7 +146,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Start async log pipeline â€” eliminates log.Logger mutex from hot path.
+	// Start async log pipeline Ã¢â‚¬â€ eliminates log.Logger mutex from hot path.
 	logPool := gatewaylog.NewBufPool(512)
 	asyncLog := gatewaylog.NewAsyncWriter(os.Stdout, logPool, 65536, 1024)
 	asyncLog.Start()
@@ -183,7 +183,7 @@ func main() {
 
 	enginesteps.StartTimerWheel(gatewayCtx)
 
-	// 1a. Secrets Manager â€” must be initialised before the datastore so that
+	// 1a. Secrets Manager Ã¢â‚¬â€ must be initialised before the datastore so that
 	// credential references in store configs are resolved at startup.
 	secretsMgr, err := secrets.New(gatewayCtx, cfgMgr.Secrets())
 	if err != nil {
@@ -274,7 +274,7 @@ func main() {
 	// 2. Component Initialization
 	// registry is created before the goroutine so the handler closure never
 	// captures a nil pointer. Names are populated at sync time via
-	// ApplyUnifiedSync â†’ registry.GetOrAssignId, and resolved post-response via
+	// ApplyUnifiedSync Ã¢â€ â€™ registry.GetOrAssignId, and resolved post-response via
 	// registry.GetNameByID with no hot-path cost.
 	fm := engine.NewFlowManager(12000, cfg)
 	fm.StartController(gatewayCtx, cfgMgr.Gateway().Concurrency)
@@ -320,8 +320,8 @@ func main() {
 		}
 	}
 	// Wire Enabled / SampleRate from config.
-	// Backward-compat: nil means the access_log section was absent â†’ on by default.
-	// Explicit enabled: false in config â†’ pointer is non-nil and false â†’ disabled.
+	// Backward-compat: nil means the access_log section was absent Ã¢â€ â€™ on by default.
+	// Explicit enabled: false in config Ã¢â€ â€™ pointer is non-nil and false Ã¢â€ â€™ disabled.
 	alCfg := obsCfg.AccessLog
 	accessLogEnabled := alCfg.Enabled == nil || *alCfg.Enabled
 	accessLog.UpdateConfig(accessLogEnabled, alCfg.SampleRate)
@@ -333,7 +333,7 @@ func main() {
 	}
 	registry := control.NewNameRegistry()
 
-	// â”€â”€ S8: OpenTelemetry SDK init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// Ã¢â€â‚¬Ã¢â€â‚¬ S8: OpenTelemetry SDK init Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 	// Enabled via obs.export.otel.enabled in gateway config. No-op when disabled.
 	if obsCfg.Export.OTEL.Enabled {
 		otelCfg := obsCfg.Export.OTEL
@@ -395,7 +395,7 @@ func main() {
 			otelCfg.Endpoint, otelCfg.Insecure, svcName)
 	}
 
-	// 2b. Ingestion pipeline â€” started before the compiler so that
+	// 2b. Ingestion pipeline Ã¢â‚¬â€ started before the compiler so that
 	// IngestPipeline can be wired into baked instruction closures.
 	var ingestPipeline *ingest.Pipeline
 	{
@@ -437,7 +437,7 @@ func main() {
 		log.Printf("[cache-metrics] KindCacheHit/KindCacheMiss ingest emission enabled")
 	}
 
-	// 2b2. Metrics aggregator â€” window-based per-API metric flush to ingest pipeline.
+	// 2b2. Metrics aggregator Ã¢â‚¬â€ window-based per-API metric flush to ingest pipeline.
 	// Enabled when observability.metrics.enabled=true. Starts background goroutines
 	// that flush aggregated snapshots at each configured window boundary.
 	metricWindows := parseMetricWindows(cfgMgr.Gateway().Observability.Metrics.Windows)
@@ -452,7 +452,7 @@ func main() {
 	}
 	obs.Metrics = metricsAgg
 
-	// 2c. Pricing Manager â€” initialize before compiler
+	// 2c. Pricing Manager Ã¢â‚¬â€ initialize before compiler
 	// Loads pricing from config, with fallback to hardcoded defaults
 	// 2d. Cost pricing & metrics
 	// Note: Cost events are emitted via ingest pipeline to external analytics service.
@@ -539,7 +539,7 @@ func main() {
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
 
-	// gRPC â€” create registry and conn pool before Bootstrap so that grpc_call
+	// gRPC Ã¢â‚¬â€ create registry and conn pool before Bootstrap so that grpc_call
 	// steps can resolve method descriptors at bake time (compiler.GrpcRegistry)
 	// and make live calls at runtime (GlobalGrpcConnPool).
 	grpcRegistry := grpcutil.NewDescriptorRegistry()
@@ -559,7 +559,7 @@ func main() {
 	defer grpcPool.Close()
 	log.Printf("[grpc] registry and connection pool initialized")
 
-	// MQTT broker pool â€” optional; controlled by [mqtt] section in config.
+	// MQTT broker pool Ã¢â‚¬â€ optional; controlled by [mqtt] section in config.
 	// Each broker entry creates a persistent paho.Client connected at startup.
 	// Connections are stored in BrokerPool and distributed to request contexts
 	// via fm.MQTTPool, making mqtt_publish and mqtt_call steps available in flows.
@@ -604,7 +604,7 @@ func main() {
 		defer pool.DisconnectAll(250)
 		log.Printf("[mqtt] pool initialized: %d broker(s)", len(mqttCfg.Brokers))
 	} else {
-		log.Printf("[mqtt] no brokers configured â€” mqtt_publish/mqtt_call steps require runtime pool")
+		log.Printf("[mqtt] no brokers configured Ã¢â‚¬â€ mqtt_publish/mqtt_call steps require runtime pool")
 	}
 
 	// Pre-declare regMgr so scheduler and WS closures can capture it by reference.
@@ -773,12 +773,38 @@ func main() {
 			LeaderElection: schedCfg.LeaderElection,
 			LeaderTTLSec:   schedCfg.LeaderTTLSec,
 		}
-		sched = scheduler.New(schedSchedulerCfg, instanceFingerprint, schedRunner)
+		if schedCfg.Backend == "postgres" {
+			if storeCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainAsyncJobs); err == nil {
+				dsn := buildObsDSN(storeCfg.Connection)
+				if poolCfg, err := pgxpool.ParseConfig(dsn); err == nil {
+					if pgPool, err := pgxpool.NewWithConfig(bootstrapCtx, poolCfg); err == nil {
+						if pgStore, err := scheduler.NewPostgresStore(bootstrapCtx, pgPool); err == nil {
+							sched = scheduler.NewWithStore(pgStore, instanceFingerprint, schedRunner, schedSchedulerCfg)
+						} else {
+							log.Printf("[scheduler] postgres store init failed: %v — falling back to memory", err)
+						}
+					} else {
+						log.Printf("[scheduler] postgres pool connect failed: %v — falling back to memory", err)
+					}
+				} else {
+					log.Printf("[scheduler] postgres DSN parse failed: %v — falling back to memory", err)
+				}
+			} else {
+				log.Printf("[scheduler] async_jobs binding not found: %v — falling back to memory", err)
+			}
+		}
+		if sched == nil {
+			// Fallback: always use memory store so the gateway stays healthy
+			// even when the postgres store failed to initialise.
+			fallbackCfg := schedSchedulerCfg
+			fallbackCfg.Backend = "memory"
+			sched = scheduler.New(fallbackCfg, instanceFingerprint, schedRunner)
+		}
 		sched.Start(gatewayCtx)
 		log.Printf(`[scheduler] started (backend=%s)`, schedCfg.Backend)
 	}
 
-	// Avro fingerprint registry — always initialised so avro steps can cache compiled
+	// Avro fingerprint registry â€” always initialised so avro steps can cache compiled
 	// AvroPrograms by schema fingerprint across hot-reload cycles (bake-time only).
 	compiler.AvroRegistry = &avro.SchemaRegistry{}
 
@@ -789,7 +815,7 @@ func main() {
 	compiler.EmailMgr = emailMgr
 	compiler.StorageMgr = storageMgr
 
-	// Pricing manager â€” bootstraps from hardcoded defaults, then merges config overrides.
+	// Pricing manager Ã¢â‚¬â€ bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
 	pricingMgr := pricing.NewPricingManager()
 	if err := pricingMgr.LoadFromConfig(cfgMgr.Gateway().Pricing); err != nil {
@@ -801,22 +827,22 @@ func main() {
 	compiler.PricingManager = pricingMgr
 	log.Printf("Pricing manager ready: %d models in catalog", len(pricingMgr.GetPricing()))
 
-	// EgressManager â€” optional; enables egress profile resolution at bake time.
+	// EgressManager Ã¢â‚¬â€ optional; enables egress profile resolution at bake time.
 	egressMgr := egress.NewEgressManager()
 	compiler.EgressMgr = egressMgr
 	log.Printf("[egress] manager initialized")
 
-	// CredentialRegistry â€” optional; requires DomainCredentials in datastore config.
+	// CredentialRegistry Ã¢â‚¬â€ optional; requires DomainCredentials in datastore config.
 	var credReg *secrets.CredentialRegistry
 	if credStore := control.NewCredentialStore(dataStoreMgr); credStore != nil {
 		credReg = secrets.NewCredentialRegistry(credStore, secretsMgr)
 		compiler.CredMgr = credReg
 		log.Printf("CredentialRegistry enabled (credentials domain configured)")
 	} else {
-		log.Printf("CredentialRegistry disabled (no credentials domain configured â€” add 'credentials' binding to datastore config)")
+		log.Printf("CredentialRegistry disabled (no credentials domain configured Ã¢â‚¬â€ add 'credentials' binding to datastore config)")
 	}
 
-	// Cache â€” optional; controlled by [cache] section in config.
+	// Cache Ã¢â‚¬â€ optional; controlled by [cache] section in config.
 	// When enabled, cache_get/cache_put/cache_get_global/cache_put_global steps are available in flows.
 	var cacheMgr *cache.CacheManager
 	cacheCfg := cfgMgr.Cache()
@@ -847,7 +873,7 @@ func main() {
 			}
 			cacheBackend = b
 		default:
-			// "" or "disk" â€” use disk backend
+			// "" or "disk" Ã¢â‚¬â€ use disk backend
 			if cacheCfg.Backend.Connection.Path != "" {
 				b, err := cache.NewDiskBackend(cacheCfg.Backend.Connection.Path)
 				if err != nil {
@@ -855,7 +881,7 @@ func main() {
 				}
 				cacheBackend = b
 			}
-			// nil â†’ NewCacheManager uses DefaultDiskCachePath ("./icache2")
+			// nil Ã¢â€ â€™ NewCacheManager uses DefaultDiskCachePath ("./icache2")
 		}
 
 		var err error
@@ -868,13 +894,13 @@ func main() {
 		log.Printf("Cache enabled: mem=%dMB sizeClasses=%v ttlTiers=%v backend=%s",
 			cacheCfg.MemBudgetMB, sizeClasses, ttlTiers, cacheCfg.Backend.Kind)
 
-		// CacheManager IS the OpFlusher â€” it decides L1 vs backend based on config.
+		// CacheManager IS the OpFlusher Ã¢â‚¬â€ it decides L1 vs backend based on config.
 		fm.CacheExec = cacheMgr
 
 		// Wire cache invalidation via the ingest eventing pipeline.
-		// Emit side A â€” Put: every successful in-memory Put emits KindCacheInvalidate
+		// Emit side A Ã¢â‚¬â€ Put: every successful in-memory Put emits KindCacheInvalidate
 		// so other instances tombstone their stale L1 slab entries.
-		// Emit side B â€” Invalidate: explicit cache deletes also propagate so that
+		// Emit side B Ã¢â‚¬â€ Invalidate: explicit cache deletes also propagate so that
 		// instances that never held the key don't need to act, but those that do
 		// will remove it.
 		// Self-invalidation is prevented by stamping instanceFingerprint as Model
@@ -915,7 +941,7 @@ func main() {
 					return
 				}
 				if e.Model == instanceFingerprint {
-					return // skip our own events â€” we already hold the new value
+					return // skip our own events Ã¢â‚¬â€ we already hold the new value
 				}
 				_ = cacheMgr.InvalidateLocal(e.TenantID, []byte(e.TxID))
 			})
@@ -924,7 +950,7 @@ func main() {
 		log.Printf("Cache disabled (cache.disabled=true in config)")
 	}
 
-	// Distributed rate limiting via Redis â€” optional; requires DomainRateLimitSync binding.
+	// Distributed rate limiting via Redis Ã¢â‚¬â€ optional; requires DomainRateLimitSync binding.
 	// Fails gracefully: if Redis is not configured or unavailable at startup, the gateway
 	// falls back to local in-memory counters with no impact on request processing.
 	if rlCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainRateLimitSync); err == nil {
@@ -938,14 +964,14 @@ func main() {
 			log.Printf("[rate-limit] distributed rate limiting enabled via Redis (%s)", rlCfg.Connection.Address)
 			defer rlProvider.Stop()
 		} else {
-			log.Printf("[rate-limit] Redis rate limit provider init failed: %v â€” using local counters", err)
+			log.Printf("[rate-limit] Redis rate limit provider init failed: %v Ã¢â‚¬â€ using local counters", err)
 			_ = rlClient.Close()
 		}
 	} else {
-		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) â€” using local counters")
+		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) Ã¢â‚¬â€ using local counters")
 	}
 
-	// Initialize vector stores â€” optional; controlled by [vector_stores] in config.
+	// Initialize vector stores Ã¢â‚¬â€ optional; controlled by [vector_stores] in config.
 	// Each store's API key is resolved through the secrets manager at startup.
 	vectorStores := make(map[string]vectorstore.VectorStore)
 	for _, vsCfg := range cfgMgr.Gateway().VectorStores {
@@ -969,7 +995,7 @@ func main() {
 	}()
 	compiler.VectorStores = vectorStores
 
-	// Registry manager â€” created here (before the gateway goroutine) so that
+	// Registry manager Ã¢â‚¬â€ created here (before the gateway goroutine) so that
 	// RegistryExec can be wired to fm before the first request arrives.
 	regMgr = tenantregistry.NewRegistryManager()
 	// Wire RegistryExec: routes buffered registry PUT ops to RegistryManager.
@@ -983,7 +1009,7 @@ func main() {
 	// observability.TenantTracer via TenantTraceSampleRate.
 	obs.SetTenantTracer(regMgr)
 
-	// Wire TenantID â†’ name resolution for async log workers.
+	// Wire TenantID Ã¢â€ â€™ name resolution for async log workers.
 	obs.SetTenantNamer(regMgr)
 
 	// Wire ingestion pipeline into compiler so emit_event steps capture it
@@ -1063,12 +1089,12 @@ func main() {
 	// 4. The Unified Hot-Path Handler
 	go func() {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			// Always capture start time â€” needed for access log regardless of obs config.
+			// Always capture start time Ã¢â‚¬â€ needed for access log regardless of obs config.
 			reqStart := time.Now()
 
 			// Extract TCP connection accept time injected by ConnContext.
-			// For fresh connections: reqStart - acceptTime â‰ˆ TLS + header parse time.
-			// For keep-alive connections: acceptTime is old â†’ we suppress the value
+			// For fresh connections: reqStart - acceptTime Ã¢â€°Ë† TLS + header parse time.
+			// For keep-alive connections: acceptTime is old Ã¢â€ â€™ we suppress the value
 			// (any setup time > 3 s is almost certainly a reused connection, not a slow handshake).
 			var connSetupMs float64
 			if acceptTime, ok := req.Context().Value(connAcceptKey{}).(time.Time); ok && !acceptTime.IsZero() {
@@ -1078,16 +1104,17 @@ func main() {
 				}
 			}
 
-			// A. Router Lookup â€” load current atomic state so dynamically
+			// A. Router Lookup Ã¢â‚¬â€ load current atomic state so dynamically
 			// registered APIs (via /sync) are always visible.
 			currentState := fm.State.Load()
 			apiId := currentState.Router.Lookup(req.URL.Path)
 			if apiId == 0 {
 				http.NotFound(w, req)
-				// No API name or tenant for 404 â€” pass empty/zero values.
+				// No API name or tenant for 404 Ã¢â‚¬â€ pass empty/zero values.
 				accessLog.Snapshot(
 					"", 0, "", 0,
 					"", 0,
+					"",
 					req.Method, req.URL.RequestURI(),
 					http.StatusNotFound,
 					time.Since(reqStart).Nanoseconds(), 0, 0, 0,
@@ -1097,7 +1124,7 @@ func main() {
 				return
 			}
 
-			// WS upgrade check — separate code path, does not use HTTP context pool.
+			// WS upgrade check â€” separate code path, does not use HTTP context pool.
 			// Runs before the concurrency gate; WebSocket connections are long-lived
 			// and must not block the gate slot for the duration of the connection.
 			if wsCoord != nil && int(apiId) < len(currentState.Definitions) {
@@ -1111,9 +1138,9 @@ func main() {
 				}
 			}
 
-			// B0. Concurrency gate â€” active only when enabled in config or via PATCH /admin/concurrency.
+			// B0. Concurrency gate Ã¢â‚¬â€ active only when enabled in config or via PATCH /admin/concurrency.
 			// When disabled: one atomic load (~1 ns), branch not taken, zero overhead.
-			// IMPORTANT: defer Release() is inside the if-block â€” only registered when TryAcquire succeeds.
+			// IMPORTANT: defer Release() is inside the if-block Ã¢â‚¬â€ only registered when TryAcquire succeeds.
 			if fm.LimiterEnabled() {
 				if !fm.Limiter.TryAcquire() {
 					w.WriteHeader(http.StatusTooManyRequests)
@@ -1124,7 +1151,7 @@ func main() {
 
 			// B. Lifecycle: Get Context and Reset with ResponseWriter Interface
 			ctx := fm.Pool.Get().(*rctx.Context)
-			ctx.Reset(w) // set Writer before any processing â€” new pool contexts have Writer=nil
+			ctx.Reset(w) // set Writer before any processing Ã¢â‚¬â€ new pool contexts have Writer=nil
 
 			ctx.Obs = obs
 			ctx.Timing.StartNs = reqStart.UnixNano()
@@ -1158,7 +1185,7 @@ func main() {
 				processDuration = time.Since(processStarted)
 			}
 
-			// D. Finalize: flush buffered response â€” client receives data here.
+			// D. Finalize: flush buffered response Ã¢â‚¬â€ client receives data here.
 			// If the client disconnected during flow execution, respond with 499
 			// (nginx convention: client closed request) and skip normal finalization.
 			var finalizeStarted time.Time
@@ -1168,7 +1195,7 @@ func main() {
 			if atomic.LoadInt32(&ctx.Cancelled) != 0 {
 				ctx.ResponseStatus = 499
 				ctx.Finalize()
-				// Skip AfterResponse hooks â€” client is gone.
+				// Skip AfterResponse hooks Ã¢â‚¬â€ client is gone.
 				return
 			}
 			ctx.Finalize()
@@ -1177,8 +1204,8 @@ func main() {
 				finalizeDuration = time.Since(finalizeStarted)
 			}
 
-			// clientTotal: captured immediately after the last byte is written â€”
-			// before any post-response work â€” so it correctly spans:
+			// clientTotal: captured immediately after the last byte is written Ã¢â‚¬â€
+			// before any post-response work Ã¢â‚¬â€ so it correctly spans:
 			//   routing overhead (router lookup, pool.Get, trace init) +
 			//   flow execution (fm.ProcessRequest) +
 			//   response flush (ctx.Finalize)
@@ -1209,7 +1236,7 @@ func main() {
 			}
 
 			// E. Post-response: snapshot for async access log and observability.
-			// Client has already received the response â€” none of this adds latency.
+			// Client has already received the response Ã¢â‚¬â€ none of this adds latency.
 			// Use clientTotal (captured right after Finalize) rather than a new time.Since here;
 			// the post-finalize overhead is nanoseconds and not worth a syscall per request.
 			upstreamNs := atomic.LoadInt64(&ctx.Timing.UpstreamTimeNs)
@@ -1226,7 +1253,7 @@ func main() {
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
 			apiName := registry.GetNameByID(ctx.ApiId)
-			// Build runtime extra KV pairs from log_field steps â€” allocated post-response,
+			// Build runtime extra KV pairs from log_field steps Ã¢â‚¬â€ allocated post-response,
 			// outside the hot path, so the small allocation here is acceptable.
 			var runtimeLogFields []observability.KV
 			if ctx.ExtraLogCount > 0 {
@@ -1258,6 +1285,7 @@ func main() {
 				ctx.TenantID,
 				ctx.CallerKey,
 				ctx.CallerID,
+				ctx.AppName,
 				req.Method, req.URL.RequestURI(),
 				ctx.ResponseStatus,
 				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
@@ -1396,7 +1424,7 @@ func main() {
 			gwHandler = adminUserStore.Middleware(handler)
 		}
 		// Use http.Server with ConnContext to capture TCP accept time for connection
-		// setup latency tracking. Zero overhead on the hot path â€” runs once per TCP
+		// setup latency tracking. Zero overhead on the hot path Ã¢â‚¬â€ runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
 		limits := cfgMgr.Layout().DefaultLimits
 		// ReadHeaderTimeoutMs: 0 = disabled (no slowloris guard; safe behind a trusted LB/CDN).
@@ -1420,7 +1448,7 @@ func main() {
 				return context.WithValue(ctx, connAcceptKey{}, time.Now())
 			},
 		}
-		// Optional TLS listener â€” started only when gateway.yaml has a tls: section
+		// Optional TLS listener Ã¢â‚¬â€ started only when gateway.yaml has a tls: section
 		// with cert_file + key_file. Plain HTTP listener above is never disabled;
 		// customer opts in by configuring tls: and routing traffic accordingly.
 		if tlsCfg := cfgMgr.Gateway().TLS; tlsCfg != nil && tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
@@ -1486,7 +1514,7 @@ func main() {
 		// KindDBPut/KindDBDelete with SessionID == "tenant_registry". We apply
 		// those changes to the local in-memory registry WITHOUT re-persisting
 		// (which would emit another event and create a cascade loop).
-		// The self-guard is handled by the instance fingerprint in Model â€” we
+		// The self-guard is handled by the instance fingerprint in Model Ã¢â‚¬â€ we
 		// skip events that we emitted ourselves.
 		if ingestPipeline != nil {
 			const registryDomain = string(config.DomainTenantRegistry)
@@ -1569,10 +1597,17 @@ func main() {
 	}
 
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
+	aks.ExtHandler = func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/blueprint") {
+			ms.BlueprintHandler(w, r)
+		} else {
+			ms.AppReleasesHandler(w, r)
+		}
+	}
 	// Wire the LLM catalog provider so the compiler always sees models registered
 	// via the UI (stored in Postgres) rather than only the gateway.yaml snapshot.
 	ms.LLMProvider = func() config.LLMConfig { return cfgMgr.LLM() }
-	// Wire variable schema persistence: after each API bake, export the slotâ†’name
+	// Wire variable schema persistence: after each API bake, export the slotÃ¢â€ â€™name
 	// mapping and persist it to the obs store for trace annotation.
 	ms.VarSchemaHook = func(_ string, _ uint64, rows []observability.VarSchemaRow) {
 		obsWriter.UpsertVarSchema(rows)
@@ -1602,6 +1637,11 @@ func main() {
 		ms.RedisSourcePool = redisSrcPool
 	}
 
+	// Wire storage manager for GET /storage-connectors
+	if storageMgr != nil {
+		ms.StorageMgr = storageMgr
+	}
+
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
 	// successfully. Without this, bootstrap sees an empty LLM catalog and fails
@@ -1619,7 +1659,7 @@ func main() {
 
 	// Create instanceSync early so fm.InstanceCountFn is set before Bootstrap.
 	// Flows compiled during bootstrap with divide_by_nodes:true need NodeCountFn
-	// to be non-nil at bake time â€” it's captured by value in the closure.
+	// to be non-nil at bake time Ã¢â‚¬â€ it's captured by value in the closure.
 	// Start() is called after bootstrap to avoid the config-poll goroutine
 	// racing with the initial bootstrap load.
 	instanceSync := control.NewInstanceSync(
@@ -1689,7 +1729,7 @@ func main() {
 	regMgr.StartTestTenantSweep(gatewayCtx, 600)
 
 	// Load master key for encrypting credential values stored via the per-tenant API.
-	// Returns NoopEncryptor (passthrough) if no master key is configured â€” safe to use regardless.
+	// Returns NoopEncryptor (passthrough) if no master key is configured Ã¢â‚¬â€ safe to use regardless.
 	encCfg := cfgMgr.Secrets().Encrypted
 	masterKeyEnc, err := secrets.LoadMasterKey(secrets.MasterKeyConfig{
 		KeyEnv:        encCfg.MasterKeyEnv,
@@ -1738,6 +1778,10 @@ func main() {
 	mux.HandleFunc("/named-queries/", ms.NamedQueryDeleteHandler)
 	mux.HandleFunc("/redis-sources", ms.RedisSourcesHandler)
 	mux.HandleFunc("/migrations", ms.MigrationsHandler)
+	mux.HandleFunc("/document-connectors", ms.DocumentConnectorsHandler)
+	mux.HandleFunc("/storage-connectors", ms.StorageConnectorsHandler)
+	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersHandler)
+	mux.HandleFunc("/event-listeners", ms.EventListenersHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {
@@ -1899,13 +1943,13 @@ func main() {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(out)
 	})
-	// â”€â”€ Runtime / GC diagnostics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-	// GET  /debug/runtime â€” lightweight JSON snapshot of goroutine count, heap,
+	// Ã¢â€â‚¬Ã¢â€â‚¬ Runtime / GC diagnostics Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+	// GET  /debug/runtime Ã¢â‚¬â€ lightweight JSON snapshot of goroutine count, heap,
 	//   GC pause, and pool health. Safe to poll; ReadMemStats is non-STW in Go 1.15+.
-	// POST /admin/gc     â€” force an immediate GC cycle + return freed pages to OS.
+	// POST /admin/gc     Ã¢â‚¬â€ force an immediate GC cycle + return freed pages to OS.
 	//   Use after a traffic spike to collapse the heap quickly and restore latency.
-	// /debug/pprof/*     â€” standard pprof endpoints (CPU, heap, goroutine profiles).
-	//   All on the management port (8081) only â€” never exposed on the data plane.
+	// /debug/pprof/*     Ã¢â‚¬â€ standard pprof endpoints (CPU, heap, goroutine profiles).
+	//   All on the management port (8081) only Ã¢â‚¬â€ never exposed on the data plane.
 	mux.HandleFunc("/debug/runtime", func(w http.ResponseWriter, _ *http.Request) {
 		var ms runtime.MemStats
 		runtime.ReadMemStats(&ms) // non-STW in Go 1.15+; safe to call on demand
@@ -1949,7 +1993,7 @@ func main() {
 			gatewaylog.Default.Error("failed to write gc response", gatewaylog.F("error", err.Error()))
 		}
 	})
-	// pprof endpoints â€” registered explicitly on the management mux (not DefaultServeMux).
+	// pprof endpoints Ã¢â‚¬â€ registered explicitly on the management mux (not DefaultServeMux).
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -1961,7 +2005,7 @@ func main() {
 	mux.Handle("/debug/pprof/block", pprof.Handler("block"))
 	mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
 
-	// POST /admin/profiling?block=N&mutex=N â€” enable block/mutex profiling at runtime.
+	// POST /admin/profiling?block=N&mutex=N Ã¢â‚¬â€ enable block/mutex profiling at runtime.
 	// Both are off (rate=0) by default because they add per-op overhead.
 	// Enable just before a load test; disable afterwards.
 	// block=N: record a blocking event if it lasts > N nanoseconds (1 = all events; 1000000 = >1ms).
@@ -1994,6 +2038,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/config/datastores", dataStoreMgr.DataStoreConfigHandler)
+	mux.HandleFunc("/config/datastores/", dataStoreMgr.DataStoreConfigHandler)
 	mux.HandleFunc("/config/log", accessLog.ConfigHandler)
 	mux.HandleFunc("/admin/jwks/flush", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2002,7 +2047,7 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		issuer := r.URL.Query().Get("issuer")
-		// trim leading/trailing whitespace inline â€” no strings import needed
+		// trim leading/trailing whitespace inline Ã¢â‚¬â€ no strings import needed
 		for len(issuer) > 0 && (issuer[0] == ' ' || issuer[0] == '\t') {
 			issuer = issuer[1:]
 		}
@@ -2026,11 +2071,15 @@ func main() {
 
 	// Validation schema CRUD endpoints.
 	control.RegisterSchemaRoutes(mux, dataStoreMgr)
+	// Workflow definition CRUD endpoints.
+	if dataStoreMgr.IsConfigured(config.DomainWorkflows) {
+		control.NewWorkflowHandler(dataStoreMgr).RegisterHandlers(mux)
+	}
 
 	// gRPC FileDescriptorSet CRUD endpoints.
 	control.RegisterGrpcRoutes(mux, grpcRegistry, dataStoreMgr)
 
-	// â”€â”€â”€ Cost Tracking API Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Cost Tracking API Routes Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 	// Requires admin token in X-Admin-Token header or Authorization: Bearer
 	adminToken := os.Getenv("ADMIN_TOKEN")
 	if adminToken == "" {
@@ -2065,7 +2114,7 @@ func main() {
 	control.RegisterAnthropicAdapter(mux, fmt.Sprintf("http://localhost:%d", *port))
 	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
 
-	// Background GC stats logger â€” writes a compact [gc-stats] line to stderr
+	// Background GC stats logger Ã¢â‚¬â€ writes a compact [gc-stats] line to stderr
 	// every 30 seconds. Controlled by gcStatsEnabled atomic flag (togglable at runtime
 	// via PATCH /observability/config or obsCfg.GCStats.Enabled in gateway.yaml).
 	// Reads MemStats (non-STW in Go 1.15+) and includes goroutine count, heap,
@@ -2087,7 +2136,7 @@ func main() {
 				if ms.NumGC > 0 {
 					lastPauseUs = int64(ms.PauseNs[(ms.NumGC+255)%256]) / 1000
 				}
-				// Write directly to stderr â€” bypasses log.SetOutput redirect (ingest pipeline)
+				// Write directly to stderr Ã¢â‚¬â€ bypasses log.SetOutput redirect (ingest pipeline)
 				// so GC diagnostics always reach the container log regardless of ingest config.
 				fmt.Fprintf(os.Stderr,
 					"[gc-stats] goroutines=%d heap_alloc_mb=%.1f heap_sys_mb=%.1f heap_objects=%d"+
@@ -2149,3 +2198,4 @@ func buildObsDSN(c config.StoreConnection) string {
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
 		c.Host, c.Username, c.Password, c.Database)
 }
+

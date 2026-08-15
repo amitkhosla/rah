@@ -13,13 +13,13 @@ import (
 //
 // Step input keys:
 //
-//	src_slot â€” var name whose ByteSlot contains XML bytes (required)
-//	fields   â€” comma-separated list of element names to extract; optional.
+//	src_slot — var name whose ByteSlot contains XML bytes (required)
+//	fields   — comma-separated list of element names to extract; optional.
 //	           Each entry is "elementName" or "elementName:jsonKey" or
 //	           "elementName:jsonKey:N" (N = 0-based occurrence index).
 //	           If empty, a single-op wildcard scan is emitted using the
 //	           element name "item" (passthrough for simple documents).
-//	dst_slot â€” var name whose ByteSlot will receive JSON output (required)
+//	dst_slot — var name whose ByteSlot will receive JSON output (required)
 func (c *Compiler) compileXMLToJSON(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {
@@ -52,11 +52,11 @@ func (c *Compiler) compileXMLToJSON(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot â€” var name whose ByteSlot contains JSON bytes (required)
-//	fields   â€” comma-separated list of "jsonPath:openTag:closeTag" entries
+//	src_slot — var name whose ByteSlot contains JSON bytes (required)
+//	fields   — comma-separated list of "jsonPath:openTag:closeTag" entries
 //	           defining the XML structure. Example: "name:<name>:</name>,age:<age>:</age>".
 //	           If empty, a minimal wrapper op "<root>" is used.
-//	dst_slot â€” var name whose ByteSlot will receive XML output (required)
+//	dst_slot — var name whose ByteSlot will receive XML output (required)
 func (c *Compiler) compileJSONToXML(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {
@@ -89,8 +89,8 @@ func (c *Compiler) compileJSONToXML(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot â€” var name whose ByteSlot contains XML bytes (required)
-//	dst_slot â€” var name whose ByteSlot will receive validated XML (required;
+//	src_slot — var name whose ByteSlot contains XML bytes (required)
+//	dst_slot — var name whose ByteSlot will receive validated XML (required;
 //	           same bytes as src on success, nil on failure)
 func (c *Compiler) compileParseXML(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
@@ -119,9 +119,9 @@ func (c *Compiler) compileParseXML(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot â€” var name whose ByteSlot contains XML bytes (required)
-//	path     â€” XML element name to extract (required; local name, case-sensitive)
-//	dst_slot â€” var name whose ByteSlot will receive the extracted text content (required)
+//	src_slot — var name whose ByteSlot contains XML bytes (required)
+//	path     — XML element name to extract (required; local name, case-sensitive)
+//	dst_slot — var name whose ByteSlot will receive the extracted text content (required)
 func (c *Compiler) compileXMLGet(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {
@@ -154,8 +154,8 @@ func (c *Compiler) compileXMLGet(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot â€” var name whose ByteSlot contains XML bytes to send (required)
-//	status   â€” HTTP status code as decimal string (optional; default 200)
+//	src_slot — var name whose ByteSlot contains XML bytes to send (required)
+//	status   — HTTP status code as decimal string (optional; default 200)
 func (c *Compiler) compileSetXMLResponse(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {
@@ -183,14 +183,14 @@ func (c *Compiler) compileSetXMLResponse(step StepConfig) error {
 //
 // Step input keys:
 //
-//	fields   â€” comma-separated list of "slotName:openTag:closeTag" triples.
+//	fields   — comma-separated list of "slotName:openTag:closeTag" triples.
 //	           slotName is looked up as a ByteSlot; the slot index is baked
 //	           into the XMLBuildOp. Example:
 //	           "order_id:<orderId>:</orderId>,amount:<amount>:</amount>"
 //	           A root wrapper can be added via root_open/root_close keys.
-//	root_open  â€” open tag for root element (optional; e.g. "<Order>")
-//	root_close â€” close tag for root element (optional; e.g. "</Order>")
-//	dst_slot â€” var name whose ByteSlot will receive built XML (required)
+//	root_open  — open tag for root element (optional; e.g. "<Order>")
+//	root_close — close tag for root element (optional; e.g. "</Order>")
+//	dst_slot — var name whose ByteSlot will receive built XML (required)
 func (c *Compiler) compileBuildXML(step StepConfig) error {
 	dstSlotName := step.Input["dst_slot"]
 	if dstSlotName == "" {
@@ -222,10 +222,10 @@ func (c *Compiler) compileBuildXML(step StepConfig) error {
 //
 // Step input keys:
 //
-//	src_slot   â€” var name whose ByteSlot contains the source XML (required)
-//	path       â€” XML element name whose content is to be replaced (required)
-//	value_slot â€” var name whose ByteSlot contains the new content bytes (required)
-//	dst_slot   â€” var name whose ByteSlot will receive the modified XML (required)
+//	src_slot   — var name whose ByteSlot contains the source XML (required)
+//	path       — XML element name whose content is to be replaced (required)
+//	value_slot — var name whose ByteSlot contains the new content bytes (required)
+//	dst_slot   — var name whose ByteSlot will receive the modified XML (required)
 func (c *Compiler) compileXMLSet(step StepConfig) error {
 	srcSlotName := step.Input["src_slot"]
 	if srcSlotName == "" {
@@ -263,7 +263,7 @@ func (c *Compiler) compileXMLSet(step StepConfig) error {
 	return nil
 }
 
-// â”€â”€â”€ program builder helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ program builder helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // buildXMLScanProgram builds an XMLScanProgram from a comma-separated fields string.
 //
@@ -332,7 +332,7 @@ func buildXMLScanProgram(fields string) (xml.XMLScanProgram, error) {
 //
 // Example: "name:<name>:</name>,age:<age>:</age>"
 //
-// An optional root wrapper is not added here â€” add it via root_open/root_close
+// An optional root wrapper is not added here — add it via root_open/root_close
 // in compileBuildXML. For json_to_xml the root comes from the JSON structure.
 func buildXMLBuildProgramFromFields(fields string) (xml.XMLBuildProgram, error) {
 	var b xml.XMLBuildProgramBuilder

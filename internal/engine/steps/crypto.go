@@ -34,7 +34,7 @@ func HMACSha256Step(src, result int, staticKey []byte) engine.Instruction {
 			h := pool.Get().(hash.Hash)
 			h.Reset()
 			h.Write(ctx.ByteSlots[src])
-			// Append digest into arena â€” 32 bytes always fits in inline arena.
+			// Append digest into arena — 32 bytes always fits in inline arena.
 			raw := ctx.Alloc(sha256.Size)
 			raw = h.Sum(raw[:0])
 			pool.Put(h)
@@ -182,10 +182,10 @@ func AESDecryptStep(src, result int, key []byte) (engine.Instruction, error) {
 
 // AESEncryptSlotKeyStep encrypts ByteSlots[src] using a 32-byte AES-256 key read
 // from ByteSlots[keySlot] at runtime. Unlike AESEncryptStep the key is NOT baked
-// at compile time â€” it is read from a slot on every request, enabling per-tenant
+// at compile time — it is read from a slot on every request, enabling per-tenant
 // runtime keys loaded via load_secret_var.
 //
-// Output format: nonce(12) || ciphertext+tag â€” identical to AESEncryptStep.
+// Output format: nonce(12) || ciphertext+tag — identical to AESEncryptStep.
 // Sets ctx.Failed = true and returns StopPlan if the key slot is not 32 bytes.
 func AESEncryptSlotKeyStep(src, keySlot, result int) engine.Instruction {
 	return engine.Instruction{

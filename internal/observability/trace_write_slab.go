@@ -12,7 +12,7 @@ import (
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
 
-// â”€â”€ sizing constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ sizing constants â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 const (
 	// traceSlabSlots is the number of slots per slab in the linked-slab chain.
@@ -40,11 +40,11 @@ const (
 	traceStraggleDeadline = time.Millisecond
 )
 
-// â”€â”€ pooledTraceRec â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ pooledTraceRec â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // pooledTraceRec is borrowed from recPool and stored in traceWriteSlot.
 // instrPCBuf and instrDurBuf are inline backing arrays for rec.InstrPCs and
-// rec.InstrDursNs â€” no heap allocation for â‰¤64 instructions.
+// rec.InstrDursNs — no heap allocation for â‰¤64 instructions.
 type pooledTraceRec struct {
 	rec         TraceRecord
 	instrPCBuf  [64]int16       // inline backing for rec.InstrPCs
@@ -54,7 +54,7 @@ type pooledTraceRec struct {
 
 // buildLLMPayloads walks the LLMCallBlock chain and builds PayloadRecords.
 // Request JSON is scrubbed with ScrubJSON. Response bytes are left as-is
-// (they are already parsed JSON from the provider â€” no sensitive fields expected
+// (they are already parsed JSON from the provider — no sensitive fields expected
 // in the response body since API keys are only in request headers).
 // Content format per record: [4B req_len big-endian][req_bytes][4B res_len big-endian][res_bytes]
 func buildLLMPayloads(traceID uint64, head *LLMCallBlock) []PayloadRecord {
@@ -94,7 +94,7 @@ func buildLLMPayloads(traceID uint64, head *LLMCallBlock) []PayloadRecord {
 	return records
 }
 
-// â”€â”€ traceWriteSlot â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ traceWriteSlot â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // traceWriteSlot is one 64-byte cache line in the slab.
 // The init() function below panics if the struct size drifts from 64 bytes.
@@ -106,20 +106,20 @@ type traceWriteSlot struct {
 
 func init() {
 	if sz := unsafe.Sizeof(traceWriteSlot{}); sz != 64 {
-		panic("observability: traceWriteSlot size changed â€” update _pad to keep it 64 bytes (current: " +
+		panic("observability: traceWriteSlot size changed — update _pad to keep it 64 bytes (current: " +
 			fmt.Sprintf("%d", sz) + ")")
 	}
 }
 
-// â”€â”€ traceWriteSlab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ traceWriteSlab â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // traceWriteSlab is one node in the linked slab chain.
 // The cursor and sealed flag occupy the first 64 bytes (one cache line) so
 // writers accessing the cursor never share a cache line with slot data.
 type traceWriteSlab struct {
 	// First cache line: hot writer state.
-	cursor int64    // atomic â€” claimed slot count
-	sealed uint32   // atomic â€” 1 = drain is processing this slab
+	cursor int64    // atomic — claimed slot count
+	sealed uint32   // atomic — 1 = drain is processing this slab
 	_pad   [52]byte //nolint:unused // pads cursor+sealed to 64 bytes (one cache line)
 
 	next  atomic.Pointer[traceWriteSlab]   // next slab when this one is full
@@ -135,7 +135,7 @@ func init() {
 		_pad   [52]byte
 	}
 	if sz := unsafe.Sizeof(headerOnly{}); sz != 64 {
-		panic("observability: traceWriteSlab header (cursor+sealed+_pad) size changed â€” " +
+		panic("observability: traceWriteSlab header (cursor+sealed+_pad) size changed — " +
 			"update _pad to keep it 64 bytes (current: " + fmt.Sprintf("%d", sz) + ")")
 	}
 }
@@ -157,7 +157,7 @@ func resetSlab(s *traceWriteSlab) {
 	atomic.StoreUint32(&s.sealed, 0)
 }
 
-// â”€â”€ slabPool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ slabPool â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // slabPool pre-allocates slabs and grows on demand up to maxSlabs.
 // mu protects the free list; it is only held during slab hand-off (not on the hot path).
@@ -209,7 +209,7 @@ func (p *slabPool) put(s *traceWriteSlab) {
 	p.mu.Unlock()
 }
 
-// â”€â”€ traceWriteRing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ traceWriteRing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // traceWriteRing is an expandable linked-slab ring for async trace persistence.
 // Writers claim slots via atomic AddInt64; the drain goroutine is the sole
@@ -278,7 +278,7 @@ func (r *traceWriteRing) enqueue(rec TraceRecord) bool {
 		idx := atomic.AddInt64(&slab.cursor, 1) - 1
 
 		if idx < traceSlabSlots {
-			// Slot claimed â€” write and signal.
+			// Slot claimed — write and signal.
 			slot := &slab.slots[idx]
 			slot.ptr.Store(t)
 			atomic.StoreUint32(&slot.ready, 1)
@@ -296,7 +296,7 @@ func (r *traceWriteRing) enqueue(rec TraceRecord) bool {
 
 		// Slab full: try to advance the tail to a new slab.
 		if !r.advanceTail(slab) {
-			// Hard limit hit â€” drop.
+			// Hard limit hit — drop.
 			atomic.AddUint64(&r.dropped, 1)
 			r.recPool.Put(t)
 			return false
@@ -306,7 +306,7 @@ func (r *traceWriteRing) enqueue(rec TraceRecord) bool {
 }
 
 // enqueueWithInstr places rec plus per-instruction timing into the next available
-// slot using the inline buffers inside pooledTraceRec â€” no heap allocation.
+// slot using the inline buffers inside pooledTraceRec — no heap allocation.
 // Returns true on success, false when the hard slab limit is reached.
 func (r *traceWriteRing) enqueueWithInstr(rec TraceRecord, instr InstrSnapshot, llmCalls *LLMCallBlock) bool {
 	t := r.recPool.Get().(*pooledTraceRec)
@@ -318,8 +318,8 @@ func (r *traceWriteRing) enqueueWithInstr(rec TraceRecord, instr InstrSnapshot, 
 	copy(t.instrDurBuf[:n], instr.Durs[:n])
 	t.rec = rec
 	if n > 0 {
-		t.rec.InstrPCs = t.instrPCBuf[:n]    // points into inline buf â€” no heap alloc
-		t.rec.InstrDursNs = t.instrDurBuf[:n] // points into inline buf â€” no heap alloc
+		t.rec.InstrPCs = t.instrPCBuf[:n]    // points into inline buf — no heap alloc
+		t.rec.InstrDursNs = t.instrDurBuf[:n] // points into inline buf — no heap alloc
 	} else {
 		t.rec.InstrPCs = nil
 		t.rec.InstrDursNs = nil
@@ -435,7 +435,7 @@ func (r *traceWriteRing) drainSlab(slab *traceWriteSlab, batch *[]TraceRecord, p
 		// Straggler guard: spin until the writer marks the slot ready.
 		for atomic.LoadUint32(&slot.ready) == 0 {
 			if time.Now().After(deadline) {
-				// Writer is taking too long â€” count as dropped and move on.
+				// Writer is taking too long — count as dropped and move on.
 				atomic.AddUint64(&r.dropped, 1)
 				goto nextSlot
 			}
@@ -447,7 +447,7 @@ func (r *traceWriteRing) drainSlab(slab *traceWriteSlab, batch *[]TraceRecord, p
 			if t != nil {
 				rec := t.rec
 				// If InstrPCs/InstrDursNs point into t's inline buffers, copy them
-				// to heap-allocated slices before returning t to the pool â€” otherwise
+				// to heap-allocated slices before returning t to the pool — otherwise
 				// the batch would alias memory that gets reused.
 				if n := len(rec.InstrPCs); n > 0 {
 					pcs := make([]int16, n)
@@ -544,11 +544,11 @@ func (r *traceWriteRing) drain(stopCh <-chan struct{}, doneCh chan struct{}) {
 				}
 				resetTicker(newSleep)
 			} else if added < traceBatchSize/2 {
-				// Some records but not filling up â€” use medium sleep.
+				// Some records but not filling up — use medium sleep.
 				resetTicker(traceSleepMid)
 				emptyCycles = 0
 			} else {
-				// Healthy throughput â€” keep minimum sleep.
+				// Healthy throughput — keep minimum sleep.
 				resetTicker(traceMinSleepDur)
 				emptyCycles = 0
 			}

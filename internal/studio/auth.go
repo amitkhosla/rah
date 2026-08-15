@@ -137,11 +137,13 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, ok := s.userStore.Authenticate(req.Username, req.Password)
 	if !ok {
-		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: req.Username, Action: "login", ResourceType: "session",
-			Status: "failure", Summary: req.Username + " login failed",
-		}) }()
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: req.Username, Action: "login", ResourceType: "session",
+				Status: "failure", Summary: req.Username + " login failed",
+			})
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
@@ -149,11 +151,13 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	token := s.sessions.create(user.Username, user.Role)
 	setSessionCookie(w, token)
-	go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
-		ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-		Actor: user.Username, Action: "login", ResourceType: "session",
-		Status: "success", Summary: user.Username + " logged in",
-	}) }()
+	go func() {
+		_ = s.auditStore.Append(context.Background(), AuditRecord{
+			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+			Actor: user.Username, Action: "login", ResourceType: "session",
+			Status: "success", Summary: user.Username + " logged in",
+		})
+	}()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meResponse{
 		Username:           user.Username,
@@ -176,11 +180,13 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 			actor = entry.Username
 		}
 		s.sessions.delete(c.Value)
-		go func() { _ = s.auditStore.Append(context.Background(), AuditRecord{
-			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
-			Actor: actor, Action: "logout", ResourceType: "session",
-			Status: "success", Summary: actor + " logged out",
-		}) }()
+		go func() {
+			_ = s.auditStore.Append(context.Background(), AuditRecord{
+				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
+				Actor: actor, Action: "logout", ResourceType: "session",
+				Status: "success", Summary: actor + " logged out",
+			})
+		}()
 	}
 	clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)

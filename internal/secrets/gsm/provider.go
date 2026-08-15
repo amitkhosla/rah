@@ -24,12 +24,12 @@ type BootstrapResolver interface {
 // Provider resolves "gsm://..." references via the Google Secret Manager API.
 type Provider struct {
 	client  *secretmanager.Client
-	project string // default GCP project â€” used for short-form URIs
+	project string // default GCP project — used for short-form URIs
 }
 
 // New creates a GSM Provider from config.
 // bootstrap resolves cfg.CredentialsFile (must be env: or file:// only).
-// Returns (nil, nil) when cfg.Enabled is false â€” caller skips registration.
+// Returns (nil, nil) when cfg.Enabled is false — caller skips registration.
 func New(ctx context.Context, cfg config.GSMConfig, bootstrap BootstrapResolver) (*Provider, error) {
 	if !cfg.Enabled {
 		return nil, nil
@@ -47,7 +47,7 @@ func New(ctx context.Context, cfg config.GSMConfig, bootstrap BootstrapResolver)
 		clear(keyJSON) // zero after handing to the SDK
 	}
 	// No opts â†’ SDK uses ADC (Workload Identity, GOOGLE_APPLICATION_CREDENTIALS,
-	// gcloud user credentials â€” whichever is available in the environment).
+	// gcloud user credentials — whichever is available in the environment).
 
 	client, err := secretmanager.NewClient(ctx, opts...)
 	if err != nil {
@@ -80,7 +80,7 @@ func (p *Provider) Resolve(ctx context.Context, ref string) ([]byte, error) {
 		return nil, fmt.Errorf("gsm: accessing %q: %w", name, err)
 	}
 
-	// Copy the payload â€” the SDK may reuse the underlying buffer.
+	// Copy the payload — the SDK may reuse the underlying buffer.
 	payload := result.Payload.GetData()
 	out := make([]byte, len(payload))
 	copy(out, payload)
@@ -103,17 +103,17 @@ func resourceName(ref, defaultProject string) (string, error) {
 	path := strings.TrimPrefix(ref, "gsm://")
 
 	if strings.HasPrefix(path, "projects/") {
-		// Full form â€” already a valid resource name prefix.
+		// Full form — already a valid resource name prefix.
 		if !strings.Contains(path, "/versions/") {
 			path += "/versions/latest"
 		}
 		return path, nil
 	}
 
-	// Short form â€” requires a default project from config.
+	// Short form — requires a default project from config.
 	if defaultProject == "" {
 		return "", fmt.Errorf("gsm: ref %q uses short form but no default project is "+
-			"configured â€” set secrets.gsm.project in gateway config", ref)
+			"configured — set secrets.gsm.project in gateway config", ref)
 	}
 
 	if strings.Contains(path, "/versions/") {

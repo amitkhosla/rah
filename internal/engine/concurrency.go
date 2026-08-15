@@ -16,14 +16,14 @@ import (
 // nBuckets is the number of latency histogram buckets.
 //
 // Layout (gateway overhead in ms):
-//   0â€“ 9 ms : 1 ms steps  â†’ 10 buckets (indices  0â€“ 9)
-//  10â€“99 ms : 10 ms steps â†’  9 buckets (indices 10â€“18)
-// 100â€“999 ms: 100 ms steps â†’  9 buckets (indices 19â€“27)
+//   0— 9 ms : 1 ms steps  â†’ 10 buckets (indices  0— 9)
+//  10—99 ms : 10 ms steps â†’  9 buckets (indices 10—18)
+// 100—999 ms: 100 ms steps â†’  9 buckets (indices 19—27)
 //    1000 ms+: overflow    â†’  1 bucket  (index   28)
 const nBuckets = 29
 
 // latencyHist is one generation of the rolling histogram.
-// All fields are updated via atomics â€” no mutex on the hot path.
+// All fields are updated via atomics — no mutex on the hot path.
 type latencyHist struct {
 	buckets [nBuckets]atomic.Int64
 	count   atomic.Int64
@@ -65,13 +65,13 @@ func bucketFor(ms int64) int {
 		return 0
 	}
 	if ms < 10 {
-		return int(ms) // indices 0â€“9
+		return int(ms) // indices 0—9
 	}
 	if ms < 100 {
-		return 10 + int((ms-10)/10) // indices 10â€“18
+		return 10 + int((ms-10)/10) // indices 10—18
 	}
 	if ms < 1000 {
-		return 19 + int((ms-100)/100) // indices 19â€“27
+		return 19 + int((ms-100)/100) // indices 19—27
 	}
 	return 28 // overflow
 }
@@ -96,15 +96,15 @@ func bucketUpperMs(i int) int64 {
 // The controller calls Rotate() each tick to freeze the current generation
 // and start a fresh one, then reads p99 from the frozen generation.
 //
-// Hot path (Record): one atomic load + one atomic add â€” ~10 ns, no lock.
-// Controller path (Rotate + p99Ms): 30 atomic stores + 29 atomic loads â€” ~1 Âµs, once per tick.
+// Hot path (Record): one atomic load + one atomic add — ~10 ns, no lock.
+// Controller path (Rotate + p99Ms): 30 atomic stores + 29 atomic loads — ~1 Âµs, once per tick.
 type LatencyRing struct {
 	gens    [2]latencyHist
 	current atomic.Uint32 // index of the generation currently being written to (0 or 1)
 }
 
 // Record adds one gateway-overhead sample in milliseconds.
-// Called post-response on the request goroutine â€” never blocks.
+// Called post-response on the request goroutine — never blocks.
 func (r *LatencyRing) Record(ms int64) {
 	r.gens[r.current.Load()].record(ms)
 }
@@ -122,7 +122,7 @@ func (r *LatencyRing) Rotate() *latencyHist {
 
 // ConcurrencyLimiter is a lock-free semaphore with an atomically adjustable limit.
 //
-// TryAcquire: CAS loop, ~10â€“20 ns, no allocation, no blocking.
+// TryAcquire: CAS loop, ~10—20 ns, no allocation, no blocking.
 // Release:    single atomic add, ~5 ns.
 // SetLimit:   single atomic store, visible to all goroutines immediately.
 type ConcurrencyLimiter struct {
@@ -143,7 +143,7 @@ func (l *ConcurrencyLimiter) TryAcquire() bool {
 		if l.active.CompareAndSwap(cur, cur+1) {
 			return true
 		}
-		// another goroutine won the CAS â€” retry with the updated value
+		// another goroutine won the CAS — retry with the updated value
 	}
 }
 
@@ -173,7 +173,7 @@ func (fm *FlowManager) StartController(ctx context.Context, cfg config.Concurren
 
 	if !cfg.Enabled {
 		fm.limiterEnabled.Store(false)
-		log.Printf("[concurrency] disabled â€” gate inactive, no 429s")
+		log.Printf("[concurrency] disabled — gate inactive, no 429s")
 		return
 	}
 
@@ -207,7 +207,7 @@ func (fm *FlowManager) StartController(ctx context.Context, cfg config.Concurren
 		cfg.CooldownTicks = 3
 	}
 
-	// Store filled config before enabling the gate â€” goroutine reads liveConfig.
+	// Store filled config before enabling the gate — goroutine reads liveConfig.
 	fm.liveConfig.Store(cfg)
 	fm.Limiter.SetLimit(cfg.InitialLimit)
 	fm.limiterEnabled.Store(true) // gate is now live; must be last
@@ -241,7 +241,7 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context) {
 		case <-ticker.C:
 			cfg := fm.liveConfig.Load().(config.ConcurrencyConfig)
 
-			// Gate disabled at runtime â€” drain ring to prevent stale samples,
+			// Gate disabled at runtime — drain ring to prevent stale samples,
 			// then idle. No limit adjustment.
 			if !fm.limiterEnabled.Load() {
 				fm.LatencyRing.Rotate()
@@ -249,7 +249,7 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context) {
 				continue
 			}
 
-			// Fixed-limit mode â€” gate is active but AIMD is off.
+			// Fixed-limit mode — gate is active but AIMD is off.
 			if cfg.Disabled {
 				fm.LatencyRing.Rotate()
 				continue
@@ -296,9 +296,9 @@ func (fm *FlowManager) runConcurrencyController(ctx context.Context) {
 
 // ConcurrencyHandler handles the /admin/concurrency management endpoint.
 //
-//	GET         â€” returns extended JSON: enabled, limit, active, rejected, adaptive params.
-//	POST ?limit=N â€” legacy manual limit override.
-//	PATCH       â€” JSON body runtime update of any concurrency config fields.
+//	GET         — returns extended JSON: enabled, limit, active, rejected, adaptive params.
+//	POST ?limit=N — legacy manual limit override.
+//	PATCH       — JSON body runtime update of any concurrency config fields.
 func (fm *FlowManager) ConcurrencyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 

@@ -1,0 +1,14 @@
+tests:
+  - name: "Scenario 7: Check outstanding fees for a student returns 200 with fee details"
+    flow_name: "school_fees_outstanding"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /school/fees/outstanding
+      headers:
+        X-API-Key: alpha-admin-sk-change-me
+      body: ""
+    assertions:
+      - type: status
+        expected: 200

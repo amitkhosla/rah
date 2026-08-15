@@ -98,7 +98,7 @@ func HexDecodeStep(src, result int) engine.Instruction {
 }
 
 // URLEncodeStep percent-encodes ByteSlots[src] (RFC 3986 unreserved pass-through).
-// Two-pass: count encoded length, then write â€” avoids over-allocation.
+// Two-pass: count encoded length, then write — avoids over-allocation.
 func URLEncodeStep(src, result int) engine.Instruction {
 	return engine.Instruction{
 		Name: "URL_ENCODE",
@@ -157,7 +157,7 @@ func URLDecodeStep(src, result int) engine.Instruction {
 						i += 3
 						continue
 					}
-					// Invalid sequence â€” pass through verbatim.
+					// Invalid sequence — pass through verbatim.
 					out[pos] = b
 					pos++
 					i++

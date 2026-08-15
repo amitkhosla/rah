@@ -17,6 +17,8 @@ interface Props {
   setSteps: (steps: FlowStep[]) => void
   flowName: string
   setFlowName: (name: string) => void
+  flowConstants?: Record<string, string>
+  setFlowConstants?: (constants: Record<string, string>) => void
   savedFlows: SavedFlow[]
   onSaveFlow: () => void
   onNavigateToFlow?: (name: string) => void
@@ -300,7 +302,7 @@ function serializeCases(cases: SwitchCase[]): string {
 
 // ── Component ─────────────────────────────────────────────────────
 export default function FlowDesigner({
-  blocks, steps, setSteps, flowName, setFlowName, savedFlows, onSaveFlow, onNavigateToFlow,
+  blocks, steps, setSteps, flowName, setFlowName, flowConstants = {}, setFlowConstants, savedFlows, onSaveFlow, onNavigateToFlow,
   navStack = [], onNavigateBack, impactMap, onNavigateToApis, onOpenFlow, onDeleteFlow,
 }: Props) {
   const [filter, setFilter]             = useState('')
@@ -3190,6 +3192,49 @@ export default function FlowDesigner({
                   placeholder="my_flow_name"
                   style={{ flex: 1, fontSize: 13, fontFamily: 'monospace', padding: '4px 10px', background: 'rgba(0,0,0,0.28)', color: 'var(--fg)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 6, outline: 'none' }}
                 />
+              </div>
+              {/* ── Constants ── */}
+              <div style={{ border: '1px solid rgba(255,255,255,0.10)', borderRadius: 8, overflow: 'hidden' }}>
+                <div style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.04)', fontSize: 12, fontWeight: 600, color: 'var(--fg)' }}>
+                  Constants
+                </div>
+                <div style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {Object.entries(flowConstants).map(([k, v]) => (
+                    <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input
+                        value={k}
+                        readOnly
+                        style={{ width: 120, fontSize: 12, fontFamily: 'monospace', padding: '3px 8px', background: 'rgba(0,0,0,0.28)', color: 'var(--fg)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4 }}
+                      />
+                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>=</span>
+                      <input
+                        value={v}
+                        onChange={e => {
+                          if (!setFlowConstants) return
+                          setFlowConstants({ ...flowConstants, [k]: e.target.value })
+                        }}
+                        style={{ flex: 1, fontSize: 12, fontFamily: 'monospace', padding: '3px 8px', background: 'rgba(0,0,0,0.28)', color: 'var(--fg)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4 }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (!setFlowConstants) return
+                          const next = { ...flowConstants }
+                          delete next[k]
+                          setFlowConstants(next)
+                        }}
+                        style={{ padding: '2px 7px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, color: '#f38ba8', fontSize: 11, cursor: 'pointer' }}
+                      >✕</button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      if (!setFlowConstants) return
+                      const key = `key${Object.keys(flowConstants).length + 1}`
+                      setFlowConstants({ ...flowConstants, [key]: '' })
+                    }}
+                    style={{ alignSelf: 'flex-start', padding: '3px 10px', background: 'rgba(137,180,250,0.10)', border: '1px solid rgba(137,180,250,0.25)', borderRadius: 4, color: '#89b4fa', fontSize: 12, cursor: 'pointer' }}
+                  >+ Add constant</button>
+                </div>
               </div>
               <textarea
                 spellCheck={false}

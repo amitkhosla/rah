@@ -119,7 +119,7 @@ func TestValidateTemplatePattern_SuffixMatch(t *testing.T) {
 
 func TestValidateTemplatePattern_PrefixSuffixExtract_Match(t *testing.T) {
 	alloc, _ := newTestAllocSlot()
-	// Pattern: literal_prefix + (capture) + literal_suffix â†’ StrategyPrefixSuffixExtract
+	// Pattern: literal_prefix + (capture) + literal_suffix → StrategyPrefixSuffixExtract
 	ctp := mustParse(t, "pre_(cap)_suf", nil, alloc)
 
 	ctx := newCtx()

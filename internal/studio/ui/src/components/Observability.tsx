@@ -4,6 +4,7 @@ import {
   fetchObsDetailLogConfig, updateObsDetailLogConfig,
   fetchObsConfig, updateObsConfig,
   fetchInstrSchema,
+  listObservabilityApps,
   type ObsRuntimeConfig,
   type InstrSchemaRow,
 } from '../api'
@@ -30,6 +31,7 @@ interface NameLatency {
 interface AccessLogRecord {
   timestamp_ns: number
   api_name: string
+  app_name?: string
   tenant_id: number
   tenant_key: string
   method: string
@@ -284,6 +286,8 @@ export default function Observability() {
 
   // Filters
   const [apiFilter, setApiFilter] = useState<string>('')
+  const [appFilter, setAppFilter] = useState<string>('')
+  const [availableApps, setAvailableApps] = useState<string[]>([])
   const [tenantFilter, setTenantFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [logsOpen, setLogsOpen] = useState(true)
@@ -345,6 +349,7 @@ export default function Observability() {
     try {
       const data = await fetchObsAccessLog({
         api: apiFilter || undefined,
+        app: appFilter || undefined,
         tenant: tenantFilter || undefined,
         status: statusCodeForFilter(statusFilter),
         limit: limit ?? logLimit,
@@ -444,10 +449,20 @@ export default function Observability() {
     }
   }
 
+  async function loadObservabilityApps() {
+    try {
+      const data = await listObservabilityApps()
+      setAvailableApps(data?.apps ?? [])
+    } catch {
+      // tolerate
+    }
+  }
+
   useEffect(() => {
     loadAll()
     loadDetailLogConfig()
     loadObsConfig()
+    loadObservabilityApps()
 
     metricsTimerRef.current = setInterval(loadMetrics, 10_000)
     logTimerRef.current = setInterval(() => { loadAccessLog(); loadApis() }, 5_000)
@@ -461,7 +476,7 @@ export default function Observability() {
   // Reload access log when filters change
   useEffect(() => {
     loadAccessLog()
-  }, [apiFilter, tenantFilter, statusFilter])
+  }, [apiFilter, appFilter, tenantFilter, statusFilter])
 
   // Reload metrics when api filter changes
   useEffect(() => {
@@ -514,8 +529,8 @@ export default function Observability() {
   // ── Sort API perf by request count (from upstream_top_slow name counts) ──
   const sortedApis = [...apiPerf].sort((a, b) => b.count - a.count)
 
-  // accessLog is already fetched with the user-selected logLimit — no additional slicing needed.
-  const displayLog = accessLog
+  // accessLog is already fetched with the user-selected logLimit — apply client-side app filter
+  const displayLog = accessLog.filter(r => !appFilter || r.app_name === appFilter)
 
   // ── Distinct APIs for dropdown ─────────────────────────────────
   const apiNames = Array.from(new Set([
@@ -913,6 +928,14 @@ export default function Observability() {
                   <option value="">All APIs</option>
                   {apiNames.map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
+                <select
+                  value={appFilter}
+                  onChange={e => setAppFilter(e.target.value)}
+                  style={{ padding: '4px 10px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, cursor: 'pointer' }}
+                >
+                  <option value="">All Apps</option>
+                  {availableApps.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
                 <input
                   type="text"
                   placeholder="Filter tenant…"
@@ -938,7 +961,7 @@ export default function Observability() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
-                      {['Time', 'Method', 'Path', 'Status', 'Total ms', 'Gateway ms', 'Upstream ms', 'Tenant', 'Bytes'].map(h => (
+                      {['Time', 'Method', 'Path', 'Status', 'Total ms', 'Gateway ms', 'Upstream ms', 'Tenant', 'App', 'Bytes'].map(h => (
                         <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: 'var(--muted)', fontWeight: 600, fontSize: 11, borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}
                     </tr>
@@ -968,18 +991,20 @@ export default function Observability() {
                             <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{rec.gateway_ms?.toFixed(2) ?? '—'}</td>
                             <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{rec.upstream_ms?.toFixed(2) ?? '—'}</td>
                             <td style={{ padding: '6px 12px', color: 'var(--muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.tenant_key || rec.tenant_id || '—'}</td>
+                            <td style={{ padding: '6px 12px', color: 'var(--muted)', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.app_name || '—'}</td>
                             <td style={{ padding: '6px 12px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                               {rec.res_bytes > 0 ? fmtNum(rec.res_bytes) : '—'}
                             </td>
                           </tr>
                           {isExpanded && (
                             <tr key={`exp-${i}`} style={{ borderBottom: '1px solid var(--border)' }}>
-                              <td colSpan={9} style={{ padding: '8px 16px 12px 24px', background: 'rgba(0,0,0,0.18)' }}>
+                              <td colSpan={10} style={{ padding: '8px 16px 12px 24px', background: 'rgba(0,0,0,0.18)' }}>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 28px', fontSize: 11 }}>
                                   <span><span style={{ color: 'var(--muted)' }}>TTFB:</span> <span style={{ color: 'var(--text)' }}>{rec.ttfb_ms?.toFixed(2) ?? '—'} ms</span></span>
                                   <span><span style={{ color: 'var(--muted)' }}>Response bytes:</span> <span style={{ color: 'var(--text)' }}>{rec.res_bytes ?? '—'}</span></span>
                                   <span><span style={{ color: 'var(--muted)' }}>Request bytes:</span> <span style={{ color: 'var(--text)' }}>{rec.req_bytes ?? '—'}</span></span>
                                   <span><span style={{ color: 'var(--muted)' }}>API:</span> <span style={{ color: 'var(--text)' }}>{rec.api_name || '—'}</span></span>
+                                  {rec.app_name && <span><span style={{ color: 'var(--muted)' }}>App:</span> <span style={{ color: 'var(--text)' }}>{rec.app_name}</span></span>}
                                   <span><span style={{ color: 'var(--muted)' }}>Tenant:</span> <span style={{ color: 'var(--text)' }}>{rec.tenant_key || rec.tenant_id || '—'}</span></span>
                                   <span><span style={{ color: 'var(--muted)' }}>Total (client):</span> <span style={{ color: 'var(--text)', fontWeight: 600 }}>{rec.total_ms?.toFixed(3) ?? '—'} ms</span></span>
                                   <span><span style={{ color: 'var(--muted)' }}>Gateway only:</span> <span style={{ color: 'var(--text)' }}>{rec.gateway_ms?.toFixed(3) ?? '—'} ms</span></span>

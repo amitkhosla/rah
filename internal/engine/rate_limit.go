@@ -113,7 +113,7 @@ func (cs *CounterStore) FixedWindow(idx uint32, limit uint32) bool {
 //   - epoch == currentEpoch: CAS-increment the lower 32 bits.
 //   - epoch != currentEpoch: CAS-reset to [currentEpoch | 1] (new window).
 //
-// No background goroutine required â€” slots self-reset on first access in a
+// No background goroutine required — slots self-reset on first access in a
 // new time bucket. Collisions between (tenant, config, bucket) triples are
 // benign: worst case is a marginally tighter limit for one request.
 //
@@ -125,7 +125,7 @@ func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32)
 		storedEpoch := uint32(old >> 32)
 
 		if storedEpoch != epoch {
-			// New time window â€” reset slot to [epoch | 1].
+			// New time window — reset slot to [epoch | 1].
 			newSlot := (uint64(epoch) << 32) | 1
 			if atomic.CompareAndSwapUint64(&cs.Arena[idx], old, newSlot) {
 				remaining := uint32(0)
@@ -134,10 +134,10 @@ func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32)
 				}
 				return true, remaining // first request in this window
 			}
-			continue // another goroutine won the CAS â€” retry
+			continue // another goroutine won the CAS — retry
 		}
 
-		// Same window â€” check current count before incrementing.
+		// Same window — check current count before incrementing.
 		count := uint32(old & 0xFFFFFFFF)
 		if count >= limit {
 			return false, 0 // limit already reached
@@ -151,7 +151,7 @@ func (cs *CounterStore) FixedWindowEpoch(idx uint32, epoch uint32, limit uint32)
 			}
 			return true, remaining
 		}
-		// CAS failed (concurrent increment) â€” retry
+		// CAS failed (concurrent increment) — retry
 	}
 }
 
@@ -299,7 +299,7 @@ type ExternalRateLimitProvider interface {
 	Stop()
 }
 
-// â”€â”€â”€ Multi-window Rate Limiting â€” new design (S1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Multi-window Rate Limiting — new design (S1) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // OnEmptyKey controls what happens when the rate limit key slot is empty at
 // request time (e.g. the slot variable was never bound during this request).
@@ -316,13 +316,13 @@ const (
 type RateLimitCountByKind uint8
 
 const (
-	CountByTenant    RateLimitCountByKind = 0 // TenantID direct index â€” zero hash collisions
+	CountByTenant    RateLimitCountByKind = 0 // TenantID direct index — zero hash collisions
 	CountByIP        RateLimitCountByKind = 1 // client IP from X-Forwarded-For or RemoteAddr
 	CountBySlot      RateLimitCountByKind = 2 // value in a named ByteSlot
 	CountByStatic    RateLimitCountByKind = 3 // static string baked at compile time
 	CountByComposite RateLimitCountByKind = 4 // concatenation of multiple slot values
 	CountByGlobal    RateLimitCountByKind = 5 // single global counter (all tenants share one bucket)
-	CountByApp       RateLimitCountByKind = 6 // ctx.CallerID (AppID) â€” stable across key rotation
+	CountByApp       RateLimitCountByKind = 6 // ctx.CallerID (AppID) — stable across key rotation
 )
 
 // RateLimitCountBy is the compiled "count-by" specification baked into a rate
@@ -338,15 +338,15 @@ type RateLimitCountBy struct {
 	FailFast    bool       // if true: stop on first failure; if false: count all windows even after failure
 }
 
-// â”€â”€â”€ Per-tenant multiplier store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Per-tenant multiplier store â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // tenantMultipliers maps TenantID â†’ multiplier (fixed-point Ã—100; 100 = 1.0Ã—).
-// 0 means "no multiplier set" â€” treated as 100 (1.0Ã—) at read time.
+// 0 means "no multiplier set" — treated as 100 (1.0Ã—) at read time.
 // Written only at bake time (single-goroutine); read lock-free on hot path.
 var tenantMultipliers [65536]uint32
 
 // SetTenantMultiplier records the rate-limit multiplier for a tenant.
-// Must be called only at bake/startup time â€” not concurrent-safe.
+// Must be called only at bake/startup time — not concurrent-safe.
 // multiplierX100: 100 = 1.0Ã—, 200 = 2.0Ã—, 50 = 0.5Ã—.
 func SetTenantMultiplier(tenantID uint16, multiplierX100 uint32) {
 	tenantMultipliers[tenantID] = multiplierX100

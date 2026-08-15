@@ -88,7 +88,7 @@ type HttpActionConfig struct {
 type URLPolicy uint8
 
 const (
-	// URLPolicyPassthrough skips all URL checks â€" transport errors surface as-is.
+	// URLPolicyPassthrough skips all URL checks — transport errors surface as-is.
 	URLPolicyPassthrough URLPolicy = 0
 	// URLPolicyCorrect trims whitespace and lowercases the scheme before the call.
 	// If the URL is still invalid after correction, the call fails with 502.
@@ -215,8 +215,8 @@ func flowBool(flowInput map[string]string, key string, fallback bool) bool {
 	return fallback
 }
 
-// statusBitset covers HTTP status codes 400â€"655 (256 bits = 4Ã—uint64, 32 bytes).
-// Replaces map[int]struct{} in httpClientConfig â€" value type, no heap, no GC, O(1) lookup.
+// statusBitset covers HTTP status codes 400—655 (256 bits = 4Ã—uint64, 32 bytes).
+// Replaces map[int]struct{} in httpClientConfig — value type, no heap, no GC, O(1) lookup.
 type statusBitset [4]uint64
 
 func (b *statusBitset) set(code int) {
@@ -250,7 +250,7 @@ type httpClientConfig struct {
 	RequestTimeout        time.Duration
 	// ResponseBodyTimeout caps the body-read phase only (after headers arrive).
 	// 0 = no separate body deadline (total RequestTimeout covers everything).
-	// On expiry: resp.Body.Close() is called â€" HTTP/1 drops the TCP connection
+	// On expiry: resp.Body.Close() is called — HTTP/1 drops the TCP connection
 	// (partial read, not returned to pool); HTTP/2 sends RST_STREAM.
 	ResponseBodyTimeout   time.Duration
 	RetryMaxAttempts      int
@@ -283,7 +283,7 @@ type transportShard struct {
 }
 
 // release signals a connection was returned to this shard's pool.
-// Only call when the shard was obtained via acquire() â€" never on the MTLS path.
+// Only call when the shard was obtained via acquire() — never on the MTLS path.
 func (s *transportShard) release() {
 	if s.available.Load() < s.max {
 		s.available.Add(1)
@@ -318,7 +318,7 @@ func (p *upstreamTransportPool) acquire() (*http.Client, *transportShard) {
 			return s.client, s
 		}
 	}
-	// All candidates appear exhausted â€" use base shard; counter may go briefly
+	// All candidates appear exhausted — use base shard; counter may go briefly
 	// negative and self-corrects as release() calls come in.
 	s := &p.shards[base&p.mask]
 	s.available.Add(-1)
@@ -457,7 +457,7 @@ func buildTransportPool(profile *egress.EgressProfile, cfg httpClientConfig) *up
 	n = max(n, 2)
 	shardCfg := cfg
 	// Divide global idle cap so total memory across all shards stays bounded.
-	// Per-host limit is NOT divided â€" each shard keeps the full value so connections
+	// Per-host limit is NOT divided — each shard keeps the full value so connections
 	// are reused under burst load (dividing it was the root cause of the large-payload
 	// regression: burst completions evicted connections because the per-shard pool was tiny).
 	if shardCfg.MaxIdleConns > 0 {
@@ -576,7 +576,7 @@ func flowDurationMs(flowInput map[string]string, key string, fallback time.Durat
 func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string) httpClientConfig {
 	_ = upstreamHost
 	base := getDefaultHTTPConfig()
-	cfg := base // statusBitset copies by value â€" no allocation
+	cfg := base // statusBitset copies by value — no allocation
 
 	cfg.MaxIdleConns = flowInt(flowInput, "http.max_idle_conns", cfg.MaxIdleConns)
 	cfg.MaxIdleConnsPerHost = flowInt(flowInput, "http.max_idle_conns_per_host", cfg.MaxIdleConnsPerHost)
@@ -601,7 +601,7 @@ func resolveHTTPConfigForTarget(upstreamHost string, flowInput map[string]string
 }
 
 func configFingerprint(cfg httpClientConfig) string {
-	// statusBitset encoded as 4 hex words â€" no sorting needed, deterministic.
+	// statusBitset encoded as 4 hex words — no sorting needed, deterministic.
 	statusKey := strconv.FormatUint(cfg.RetryOnStatuses[0], 16) + "," +
 		strconv.FormatUint(cfg.RetryOnStatuses[1], 16) + "," +
 		strconv.FormatUint(cfg.RetryOnStatuses[2], 16) + "," +
@@ -719,7 +719,7 @@ func GetClientFromPool() *http.Client {
 }
 
 func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition string, maxRetries int, flowInput map[string]string) engine.Instruction {
-	// Pre-compute at bake time â€" flowInput is fixed, so cfg and fingerprint never change.
+	// Pre-compute at bake time — flowInput is fixed, so cfg and fingerprint never change.
 	bakedCfg := resolveHTTPConfigForTarget("", flowInput)
 	bakedFingerprint := configFingerprint(bakedCfg)
 	bakedMaxCacheEntries := flowInt(flowInput, "http.max_client_cache_entries", 2048)
@@ -732,7 +732,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 		staticPool = p.Pool
 	}
 
-	// Bake-time timeout flags â€" see HttpActionFromConfig for full design notes.
+	// Bake-time timeout flags — see HttpActionFromConfig for full design notes.
 	haActionTotalMs := timeout
 	if haActionTotalMs == 0 && bakedCfg.RequestTimeout > 0 {
 		haActionTotalMs = uint32(bakedCfg.RequestTimeout / time.Millisecond)
@@ -794,13 +794,13 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 				var dnsStart, connectStart, tlsStart, wroteReqStart, firstByteStart time.Time
 
-				// Detect client disconnect before each attempt â€" avoids hitting
+				// Detect client disconnect before each attempt — avoids hitting
 				// the upstream on behalf of an already-gone caller.
 				if pc, stop := StopIfCancelled(ctx); stop {
 					return pc
 				}
 
-				// Total timeout (bake-time flag: haActionHasTotal) â€" single bool check.
+				// Total timeout (bake-time flag: haActionHasTotal) — single bool check.
 				var deadlineTimer wheelHandle
 				if haActionHasTotal {
 					capturedGen := ctx.SetUpstreamTimeout(haActionTotalDur)
@@ -884,7 +884,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				}
 
 				resp, err := httpClient.Do(req)
-				// Stop timer â€" if it already fired, Cancel was already called (fine;
+				// Stop timer — if it already fired, Cancel was already called (fine;
 				// the request was aborted). If it hasn't fired yet, stop it from firing
 				// after ctx is returned to the pool. Unlike context.WithTimeout.cancel(),
 				// stopping our timer never marks the connection as broken.
@@ -902,7 +902,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 				atomic.AddInt32(&ctx.Timing.UpstreamCalls, 1)
 
 				if err != nil {
-					// Client disconnected during upstream call â€" mark and stop cleanly.
+					// Client disconnected during upstream call — mark and stop cleanly.
 					if errors.Is(err, context.Canceled) {
 						atomic.StoreInt32(&ctx.Cancelled, 1)
 						return engine.StopCancelled
@@ -1002,7 +1002,7 @@ func HttpAction(urlSlot int, staticURL string, timeout uint32, retryCondition st
 					if bundle.Cfg.HonorRetryAfter {
 						if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
 							if ra > bundle.Cfg.RetryAfterMaxWait {
-								// Upstream wants us to wait longer than we allow â€" mark cooldown and stop.
+								// Upstream wants us to wait longer than we allow — mark cooldown and stop.
 								if bundle.Cfg.UpstreamCooldown {
 									markCooldown(upstreamHost, time.Now().Add(ra))
 								}
@@ -1058,7 +1058,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 		bakedAttempts = 1
 	}
 
-	// For static URLs the upstream host is known â€" build and cache the *upstreamTransportPool
+	// For static URLs the upstream host is known — build and cache the *upstreamTransportPool
 	// once here. Per-request cost becomes a single pool.get() call from the closure.
 	// Also validate static URLs at bake time so mis-configured flows surface immediately.
 	if cfg.StaticURL != "" && cfg.URLSlot < 0 && cfg.URLPolicy != URLPolicyPassthrough {
@@ -1168,7 +1168,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					ResponseHeaderTimeout: bakedCfg.ResponseHeaderTimeout,
 					ExpectContinueTimeout: bakedCfg.ExpectContinueTimeout,
 				},
-				// Timeout: 0 â€" per-request timeout managed via ctx.SetUpstreamTimeout.
+				// Timeout: 0 — per-request timeout managed via ctx.SetUpstreamTimeout.
 			}
 		})
 		return mtlsClient
@@ -1265,7 +1265,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 			// mTLS: dedicated client (lazy sync.Once). Static URL: pool baked at
 			// instruction creation. Dynamic URL: sync.Map.Load with baked fingerprint.
 			var httpClient *http.Client
-			var activeShard *transportShard // nil on MTLS path â€" no pool tracking there
+			var activeShard *transportShard // nil on MTLS path — no pool tracking there
 			if mtlsCert != nil {
 				httpClient = getMTLSClient()
 			} else if hasStaticURL {
@@ -1309,7 +1309,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				event := observability.UpstreamEvent{Host: upstreamHost, URL: url, Attempt: attempt}
 
 				// â"€â"€ Total timeout (bake-time flag: hasTotalTimeout) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-				// Single bool check â€" no per-request conditional evaluation.
+				// Single bool check — no per-request conditional evaluation.
 				// Covers the full request: dial + TLS + headers + body.
 				// Replaces http.Client.Timeout (now 0): avoids the cancelCtx alloc
 				// + prepareTransportCancel goroutine that http.Client creates per call.
@@ -1483,7 +1483,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				}
 
 				resp, doErr := httpClient.Do(req)
-				// Stop timer immediately â€" unlike context.WithTimeout.cancel(), stopping
+				// Stop timer immediately — unlike context.WithTimeout.cancel(), stopping
 				// our timer never marks the connection as broken, preserving connection reuse.
 				deadlineTimer.cancel()
 				deadlineTimer = wheelHandle{}
@@ -1593,7 +1593,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				//   HTTP/1  â†’ partial read â†’ connection NOT returned to pool â†’ TCP closed.
 				//   HTTP/2  â†’ RST_STREAM sent; TCP connection stays alive for other streams.
 				//   gRPC    â†’ RST_STREAM; server-side handler receives cancellation.
-				// The total timer (above) was stopped after Do() returned â€" this is the
+				// The total timer (above) was stopped after Do() returned — this is the
 				// only timeout protecting the body-read phase when hasBodyTimeout is true.
 				var bodyTimer wheelHandle
 				if hasBodyTimeout {
@@ -1635,7 +1635,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				} else if cfg.ResponseBodySlot >= 0 && cfg.ResponseBodySlot < len(ctx.ByteSlots) {
 					cl := resp.ContentLength
 					if cl > 0 {
-						// Fast path: known Content-Length â€" allocate exactly.
+						// Fast path: known Content-Length — allocate exactly.
 						bodyBuf := ctx.Alloc(int(cl))
 						n, readErr := io.ReadFull(resp.Body, bodyBuf)
 						respBytes = int64(n)
@@ -1664,7 +1664,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 						}
 						ctx.ByteSlots[cfg.ResponseBodySlot] = bodyBuf[:n]
 					} else {
-						// Unknown Content-Length â€" use pool buffer.
+						// Unknown Content-Length — use pool buffer.
 						buf := responseBodyPool.Get().(*bytes.Buffer)
 						buf.Reset()
 						var bodyPreview []byte
@@ -1709,7 +1709,7 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 					}
 				}
 
-				// Stop body timer â€" if it already fired, resp.Body is already closed
+				// Stop body timer — if it already fired, resp.Body is already closed
 				// (idempotent); the body read returned an error and we're on the error path.
 				bodyTimer.cancel()
 				bodyTimer = wheelHandle{}

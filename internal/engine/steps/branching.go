@@ -205,7 +205,7 @@ func SetRequestHeader(name string, valueSlot int) engine.Instruction {
 
 // SetRequestBody stages a request body for the next http_call. The body is read from
 // ByteSlots[srcSlot] at runtime; the Content-Type is baked at compile time.
-// This does NOT send the request â€” it only stages for the next http_call step.
+// This does NOT send the request — it only stages for the next http_call step.
 func SetRequestBody(srcSlot int, contentType []byte) engine.Instruction {
 	return engine.Instruction{
 		Name: "SET_REQUEST_BODY",
@@ -229,7 +229,7 @@ func BindRequestURL(dstSlot int, includeQuery bool) engine.Instruction {
 				ctx.ByteSlots[dstSlot] = path
 				return state.PC + 1
 			}
-			// path + "?" + rawQuery â€” one arena allocation
+			// path + "?" + rawQuery — one arena allocation
 			buf := ctx.Alloc(len(path) + 1 + len(ctx.RawQuery))
 			n := copy(buf, path)
 			buf[n] = '?'
@@ -316,7 +316,7 @@ func RenameRequestHeader(srcHeader, dstHeader string) engine.Instruction {
 }
 
 // scanQuery finds the raw value for key in a query string like "a=1&b=2&c=3".
-// Returns a slice directly into the raw query bytes â€” zero allocation.
+// Returns a slice directly into the raw query bytes — zero allocation.
 // No URL-decoding is applied; values are raw as received from the wire.
 func scanQuery(query, key []byte) []byte {
 	for len(query) > 0 {

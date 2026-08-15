@@ -1,12 +1,12 @@
 ﻿package control
 
-// rate_limit_integration_test.go â€” integration tests for per-tenant dynamic
+// rate_limit_integration_test.go — integration tests for per-tenant dynamic
 // rate limiting via switch + check_rate_limit_v2.
 //
 // Tests validate:
 //   1. check_rate_limit_v2 inside a switch case stops the flow on denial (DeniedPC=-1).
 //   2. Per-tenant plan dispatch: enterprise=1000/min, pro=200/min, free=3/min (low for testing).
-//   3. Tenants are isolated â€” hitting free-plan limit doesn't affect enterprise requests.
+//   3. Tenants are isolated — hitting free-plan limit doesn't affect enterprise requests.
 //   4. Rate limit configs must be sent via /sync (not direct REST) to allocate counter arenas.
 
 import (
@@ -173,7 +173,7 @@ func TestPerTenantIsolation(t *testing.T) {
 
 // TestRateLimitWindowReset verifies that the counter resets in a new time window.
 // This test manipulates the epoch by sending requests and verifying the window
-// logic â€” not a real-time test (epoch = now/60, so windows are real minutes;
+// logic — not a real-time test (epoch = now/60, so windows are real minutes;
 // this test just confirms the counter behaves correctly within a single window).
 func TestRateLimitCountPerTenant(t *testing.T) {
 	fm, _ := setupRLTestStack(t)
@@ -227,9 +227,9 @@ func TestRateLimitAllPlansCorrect(t *testing.T) {
 			if status != http.StatusTooManyRequests {
 				t.Errorf("tenant %s: expected 429 after %d requests, got %d", tc.tenant, tc.limit, status)
 			}
-			fmt.Printf("  âœ“ %s: allowed %d, then 429\n", tc.tenant, tc.limit)
+			fmt.Printf("  * %s: allowed %d, then 429\n", tc.tenant, tc.limit)
 		} else {
-			fmt.Printf("  âœ“ %s: %d requests all 200 (limit=%d/min)\n", tc.tenant, tc.limit, []int{1000, 200}[func() int {
+			fmt.Printf("  * %s: %d requests all 200 (limit=%d/min)\n", tc.tenant, tc.limit, []int{1000, 200}[func() int {
 				if tc.tenant == "tenant-enterprise" {
 					return 0
 				}

@@ -16,8 +16,8 @@ import (
 // (declared in exemptPaths in auth_middleware.go).
 func RegisterAdminUserRoutes(mux *http.ServeMux, store *AdminUserStore) {
 
-	// â”€â”€ Public utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-	// Always exempt â€” lets operators generate hashes before credentials exist.
+	// â"€â"€ Public utility â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+	// Always exempt — lets operators generate hashes before credentials exist.
 	mux.HandleFunc("POST /admin/users/hash", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Password string `json:"password"`
@@ -34,14 +34,14 @@ func RegisterAdminUserRoutes(mux *http.ServeMux, store *AdminUserStore) {
 		writeJSON(w, http.StatusOK, map[string]any{"hash": hash})
 	})
 
-	// â”€â”€ User CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ User CRUD â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-	// GET /admin/users â€” list all users (no hashes).
+	// GET /admin/users — list all users (no hashes).
 	mux.HandleFunc("GET /admin/users", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"users": store.List()})
 	})
 
-	// POST /admin/users â€” create or update a user.
+	// POST /admin/users — create or update a user.
 	// Body: {"username":"alice","password":"s3cr3t","role":"deployer"}
 	// Role must match a configured role or built-in "admin"/"readonly".
 	mux.HandleFunc("POST /admin/users", func(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +76,7 @@ func RegisterAdminUserRoutes(mux *http.ServeMux, store *AdminUserStore) {
 		writeJSON(w, http.StatusOK, map[string]any{"username": u.Username, "role": u.Role})
 	})
 
-	// DELETE /admin/users/{name} â€” remove a user.
+	// DELETE /admin/users/{name} — remove a user.
 	// Guards: cannot delete yourself; cannot delete the last admin-role user.
 	mux.HandleFunc("DELETE /admin/users/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -106,14 +106,14 @@ func RegisterAdminUserRoutes(mux *http.ServeMux, store *AdminUserStore) {
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": name})
 	})
 
-	// â”€â”€ Role inspection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Role inspection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-	// GET /admin/roles â€” list all roles (built-in + custom) with their permissions.
+	// GET /admin/roles — list all roles (built-in + custom) with their permissions.
 	mux.HandleFunc("GET /admin/roles", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"roles": store.ListRoles()})
 	})
 
-	// POST /admin/roles â€” create or update a role, persisted to DB if configured.
+	// POST /admin/roles — create or update a role, persisted to DB if configured.
 	// Body: {"name":"deployer","description":"CI/CD role","permissions":["POST:/sync","GET:/observability/*"]}
 	mux.HandleFunc("POST /admin/roles", func(w http.ResponseWriter, r *http.Request) {
 		var rc config.RoleConfig
@@ -128,7 +128,7 @@ func RegisterAdminUserRoutes(mux *http.ServeMux, store *AdminUserStore) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": rc.Name, "permissions": rc.Permissions})
 	})
 
-	// DELETE /admin/roles/{name} â€” remove a role.
+	// DELETE /admin/roles/{name} — remove a role.
 	// Returns 400 if any user is currently assigned to this role.
 	mux.HandleFunc("DELETE /admin/roles/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

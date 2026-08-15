@@ -11,6 +11,8 @@ import (
 	"sync"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/connectors/document"
+	"github.com/amitkhosla/rah/internal/connectors/messaging"
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/egress"
@@ -177,7 +179,9 @@ type Compiler struct {
 	QueryLibrary   map[string]datasource.NamedQueryConfig // optional; enables named query resolution
 	EmailMgr       *emailprovider.EmailManager         // optional; enables send_email steps
 	StorageMgr     *storage.StorageManager             // optional; enables storage_get/storage_put/storage_delete steps
-	RedisSourcePool *redissource.RedisSourcePool      // optional; enables redis_* steps
+	RedisSourcePool      *redissource.RedisSourcePool             // optional; enables redis_* steps
+	DocumentConnectorMgr *document.DocumentConnectorManager       // optional; enables doc_get/doc_put/doc_delete/doc_query/doc_count/doc_execute steps
+	MessagingPublisherMgr *messaging.MessagePublisherManager      // optional; enables message_publish steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig
@@ -209,6 +213,10 @@ type Compiler struct {
 	// gatewayUpstreamDefaults holds the global-level UpstreamPassthroughConfig.
 	// Set by BakeAll before compiling flows/APIs.
 	gatewayUpstreamDefaults *UpstreamPassthroughConfig
+
+	// eventFlowMode indicates that CompileEventFlow() is active and well-known event
+	// slots (__event__, __event_key__, __event_topic__) should be pre-allocated.
+	eventFlowMode bool
 }
 
 // resolveAPIKey resolves a credential reference (e.g. "env:OPENAI_KEY", "file:///run/secrets/key")
@@ -460,7 +468,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if step.ContentType != "" {
 			cfg.StaticContentType = step.ContentType
 		}
-		// â”€â”€ Egress profile resolution (bake-time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ Egress profile resolution (bake-time) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		if c.EgressMgr != nil {
 			lookup := step.Input["profile"]
 			if lookup == "" {
@@ -473,7 +481,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				}
 			}
 		}
-		// â”€â”€ URL policy (opt-in, bake-time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ URL policy (opt-in, bake-time) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		switch strings.ToLower(strings.TrimSpace(step.URLPolicy)) {
 		case "correct":
 			cfg.URLPolicy = steps.URLPolicyCorrect
@@ -481,7 +489,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			cfg.URLPolicy = steps.URLPolicyStrict
 		// "" / "passthrough" â†’ default 0 (URLPolicyPassthrough), no action needed
 		}
-		// â”€â”€ mTLS client certificate (opt-in, bake-time) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+		// â"€â"€ mTLS client certificate (opt-in, bake-time) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 		if step.TLSClientCertRef != "" && step.TLSClientKeyRef != "" {
 			if c.SecretsMgr == nil {
 				return fmt.Errorf("http_call: tls_client_cert_ref requires a secrets manager to be configured")
@@ -662,7 +670,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "load_service_url":
 		// Loads the named URL for the current tenant into the slot named by "as".
 		// EnsureURLKeyID pre-resolves the radix walk once at bake time; hot path is a
-		// single array index (2â€“5 ns) regardless of how many URL keys exist.
+		// single array index (2—5 ns) regardless of how many URL keys exist.
 		destSlot, err := c.getSlot(step.As)
 		if err != nil {
 			return err
@@ -675,9 +683,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "load_service_url_var":
 		// Loads a service URL using a runtime key name from keySlot.
-		// The key name is read from ByteSlots[keySlot] at request time â€” radix walk ~50â€“100 ns.
+		// The key name is read from ByteSlots[keySlot] at request time — radix walk ~50—100 ns.
 		// Use when the key differs per API (e.g. set via route constants). Prefer load_service_url
-		// (~2â€“5 ns) when the key is known at compile time.
+		// (~2—5 ns) when the key is known at compile time.
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
 			return err
@@ -705,7 +713,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// Writes a service URL for the current tenant into the URLs store.
 		// key: URL name e.g. "primary", "fallback".
 		// source: slot name holding the value to write.
-		// Management-plane write â€” use in admin/onboarding flows, not hot request loops.
+		// Management-plane write — use in admin/onboarding flows, not hot request loops.
 		if c.RegMgr == nil {
 			return fmt.Errorf("set_service_url requires a RegistryManager (not available in standalone mode)")
 		}
@@ -761,7 +769,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "delete_service_url":
 		// Deletes a service URL for the current tenant from the URLs store.
 		// key: URL name e.g. "primary", "fallback".
-		// Management-plane write â€” use in admin/onboarding flows, not hot request loops.
+		// Management-plane write — use in admin/onboarding flows, not hot request loops.
 		if c.RegMgr == nil {
 			return fmt.Errorf("delete_service_url requires a RegistryManager (not available in standalone mode)")
 		}
@@ -903,12 +911,12 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			}
 
 			if !emittedV2 {
-				log.Printf("[Compiler] check_rate_limit: no V2 config resolved â€” step skipped (configure a V2 rate-limit config)")
+				log.Printf("[Compiler] check_rate_limit: no V2 config resolved — step skipped (configure a V2 rate-limit config)")
 			}
 		}
 
 	case "check_rate_limit_global":
-		log.Printf("[Compiler] check_rate_limit_global: deprecated â€” use check_rate_limit_v2 with count_by=global instead; step skipped")
+		log.Printf("[Compiler] check_rate_limit_global: deprecated — use check_rate_limit_v2 with count_by=global instead; step skipped")
 
 	case "check_rate_limit_v2":
 		// V2 multi-window rate limit enforcement. Resolves config name â†’ configID at bake
@@ -1056,7 +1064,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 
 		if len(groupMap) == 0 {
-			log.Printf("[Compiler] check_rate_limit_tier: no tiers with a config_name found â€” step skipped")
+			log.Printf("[Compiler] check_rate_limit_tier: no tiers with a config_name found — step skipped")
 			break
 		}
 
@@ -1092,7 +1100,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			}
 
 			if len(tierWindows) == 0 {
-				log.Printf("[Compiler] check_rate_limit_tier: tier %q config %q has no windows â€” skipped", tier.Name, tier.ConfigName)
+				log.Printf("[Compiler] check_rate_limit_tier: tier %q config %q has no windows — skipped", tier.Name, tier.ConfigName)
 				continue
 			}
 
@@ -1168,7 +1176,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "assign_quota_group":
 		// Reads ByteSlots[key_identifier] and maps the string value to a QuotaGroupID.
 		// step.Input: {"free": "1", "pro": "2", "enterprise": "3"}
-		// Keys are string tier names, values are group IDs (uint8 1â€“255).
+		// Keys are string tier names, values are group IDs (uint8 1—255).
 		srcSlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
 			return err
@@ -1357,7 +1365,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.BindJSON(srcSlot, jPath, destSlot))
 
 	case "bind_header":
-		// Explicit header binding â€” equivalent to the auto-discovered header dependency
+		// Explicit header binding — equivalent to the auto-discovered header dependency
 		// but usable anywhere in a flow as an explicit step.
 		// key / key_identifier: HTTP header name, e.g. "X-Session-Id"
 		// as:                   slot name
@@ -1501,6 +1509,12 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		path := step.Input["path"]
 		c.GlobalTable = append(c.GlobalTable, steps.RemoveResponseCookie(cookieName, path))
+
+	case "set_cookie":
+		return c.compileSetCookie(step)
+
+	case "redirect":
+		return c.compileRedirect(step)
 
 	case "json_set":
 		srcSlot, err := c.getSlot(step.Source)
@@ -1781,7 +1795,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "foreach":
 		// Allocate hidden iterSlot (IntSlot index) for the loop counter and
-		// indexSlot (ByteSlot) for the packed (start,end) array index â€” O(1) per step.
+		// indexSlot (ByteSlot) for the packed (start,end) array index — O(1) per step.
 		if c.nextSlot+1 >= rctx.BaseByteSlots {
 			return fmt.Errorf("slot limit exceeded at foreach iterator: max %d", rctx.BaseByteSlots)
 		}
@@ -2227,7 +2241,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.ByteLengthStep(src, dest))
 
-	// â”€â”€ Encoding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Encoding â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 	case "base64_encode":
 		src, err := c.getSlot(step.Source)
@@ -2313,7 +2327,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.URLDecodeStep(src, result))
 
-	// â”€â”€ Crypto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Crypto â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 	case "hmac_sha256":
 		src, err := c.getSlot(step.Source)
@@ -2465,7 +2479,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		//         (e.g. "gsm://...", "env:MY_VAR", "vault://...").
 		// as:     slot to write the resolved secret bytes into.
 		if c.SecretsMgr == nil {
-			return fmt.Errorf("load_secret_var requires a secrets manager â€” set SecretsMgr on the Compiler")
+			return fmt.Errorf("load_secret_var requires a secrets manager — set SecretsMgr on the Compiler")
 		}
 		srcSlot, err := c.getSlot(step.Source)
 		if err != nil {
@@ -2540,7 +2554,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "set_response_header":
 		var src int
 		if _, known := c.slotMap[step.Source]; !known {
-			// Source is not a slot variable â€” treat the raw string as a literal value.
+			// Source is not a slot variable — treat the raw string as a literal value.
 			litSlot, err := c.getSlot(step.Source)
 			if err != nil {
 				return err
@@ -2576,7 +2590,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "set_response_body":
 		var src int
 		if _, known := c.slotMap[step.Source]; !known {
-			// Source is not a slot variable â€” treat the raw string as a literal value.
+			// Source is not a slot variable — treat the raw string as a literal value.
 			litSlot, err := c.getSlot(step.Source)
 			if err != nil {
 				return err
@@ -2602,7 +2616,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, steps.SetResponseStatusStep(code))
 
 	case "set_security_headers":
-		// All fields are independently opt-in â€” only configured headers are written.
+		// All fields are independently opt-in — only configured headers are written.
 		// Values are pre-baked as []byte at compile time: zero allocations at request time.
 		var hstsVal []byte
 		if maxAge := strings.TrimSpace(step.Input["security_headers.hsts_max_age"]); maxAge != "" {
@@ -2697,7 +2711,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "load_secret":
 		if c.SecretsMgr == nil {
-			return fmt.Errorf("load_secret step requires a secrets manager â€” set SecretsMgr on the Compiler")
+			return fmt.Errorf("load_secret step requires a secrets manager — set SecretsMgr on the Compiler")
 		}
 		if step.Source == "" {
 			return fmt.Errorf("load_secret: 'source' (secret reference) is required")
@@ -2710,7 +2724,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "load_credential":
 		if c.CredMgr == nil {
-			return fmt.Errorf("load_credential step requires a credential registry â€” set CredMgr on the Compiler")
+			return fmt.Errorf("load_credential step requires a credential registry — set CredMgr on the Compiler")
 		}
 		if step.Source == "" {
 			return fmt.Errorf("load_credential: 'source' (credential name) is required")
@@ -2723,7 +2737,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_get":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_get step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_get step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2737,7 +2751,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_put":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_put step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_put step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2751,7 +2765,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_get_global":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_get_global step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_get_global step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2765,7 +2779,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_put_global":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_put_global step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_put_global step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2779,7 +2793,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_delete":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_delete step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_delete step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2789,7 +2803,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "cache_delete_global":
 		if c.CacheMgr == nil {
-			return fmt.Errorf("cache_delete_global step requires a cache manager â€” enable the cache in config")
+			return fmt.Errorf("cache_delete_global step requires a cache manager — enable the cache in config")
 		}
 		keySlot, err := c.getSlot(step.KeyIdentifier)
 		if err != nil {
@@ -2996,7 +3010,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CopyHeader(srcName, dstName))
 
-	// â”€â”€ Resilience â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Resilience â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 	case "spike_arrest":
 		intervalMs := uint32(100) // default: 1 req / 100 ms
@@ -6171,6 +6185,32 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			},
 		})
 
+	// ── Document connector steps ──────────────────────────────────────────────
+
+	case "doc_get":
+		return c.compileDocumentGet(step)
+	case "doc_put":
+		return c.compileDocumentPut(step)
+	case "doc_delete":
+		return c.compileDocumentDelete(step)
+	case "doc_query":
+		return c.compileDocumentQuery(step)
+	case "doc_count":
+		return c.compileDocumentCount(step)
+	case "doc_execute":
+		return c.compileDocumentExecute(step)
+
+	// ── Messaging steps ───────────────────────────────────────────────────────
+
+	case "message_publish":
+		return c.compileMessagePublish(step)
+
+	// ── Crypto steps ──────────────────────────────────────────────────────────
+
+	case "crypto_aes_encrypt", "crypto_aes_decrypt", "crypto_aes_encrypt_var", "crypto_aes_decrypt_var",
+		"crypto_hmac_sha256", "crypto_hmac_sha1", "crypto_sha256", "crypto_md5":
+		return c.compileCryptoStep(step)
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -6190,7 +6230,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				if errPC, ok := c.FragmentMap[flowName]; ok {
 					c.GlobalTable[lastIdx] = steps.WrapOnErrorJump(last, errPC)
 				} else {
-					// Flow not yet compiled â€” record for second pass
+					// Flow not yet compiled — record for second pass
 					c.pendingJumps = append(c.pendingJumps, pendingJump{
 						instrIdx: lastIdx,
 						flowName: flowName,
@@ -6206,7 +6246,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 	}
 
-	// â”€â”€ Per-step observability hooks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Per-step observability hooks â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// Applied after the step's own instruction(s) and any on_error wrapper.
 	// Control-flow steps (if, switch, call, return, fail) are skipped because
 	// they don't produce a single output variable in the conventional sense.
@@ -6326,7 +6366,7 @@ func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]S
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
 
-	// Emit stream-response-body flag as first instruction â€” set once at flow start.
+	// Emit stream-response-body flag as first instruction — set once at flow start.
 	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBodyWithFragments(flow, fragments)))
 
 	// Auto-bind preamble: discover and bind header/query dependencies.
@@ -6423,6 +6463,17 @@ func (c *Compiler) SnapshotSlots() (map[string]int, int) {
 	return snap, c.nextSlot
 }
 
+// SlotSnapshot returns a copy of the current slot name→index map.
+// Must be called immediately after Compile() or CompileExecutable(), before
+// resetSlots() is called. Used to populate FlowSlotRegistry in EngineState.
+func (c *Compiler) SlotSnapshot() map[string]int {
+	out := make(map[string]int, len(c.slotMap))
+	for k, v := range c.slotMap {
+		out[k] = v
+	}
+	return out
+}
+
 // RestoreSlots replaces the current slot map with a fresh copy of snap and
 // resets nextSlot. Used to restore the default-flow slot context before
 // allocating constants for a no-override endpoint in the same API.
@@ -6438,7 +6489,7 @@ func (c *Compiler) RestoreSlots(snap map[string]int, nextSlot int) {
 
 // UpstreamUrlSlotName is the canonical slot name used for the upstream URL.
 // Flows that reference the upstream URL via `url_var: upstream_url` will map
-// to this same slot â€” keeping gateway-native injection and flow-level references
+// to this same slot — keeping gateway-native injection and flow-level references
 // in sync without requiring any special coordination.
 const UpstreamUrlSlotName = "upstream_url"
 
@@ -6482,7 +6533,7 @@ func (c *Compiler) AllocConstantSlots(constants map[string]string) ([]engine.Con
 //	else:    flow name to execute when the pattern does not match (optional)
 //
 // The regex is compiled once at bake time; runtime cost is a single
-// *regexp.Regexp.Match call on the raw []byte in the slot â€” zero allocations.
+// *regexp.Regexp.Match call on the raw []byte in the slot — zero allocations.
 func (c *Compiler) compilePatternMatch(step StepConfig, fragments map[string][]StepConfig) error {
 	// --- Field validation -------------------------------------------------------
 	if step.Source == "" {
@@ -6513,7 +6564,7 @@ func (c *Compiler) compilePatternMatch(step StepConfig, fragments map[string][]S
 				return fmt.Errorf("pattern_match: unsupported regex flag %q (supported: i, m, s, x)", string(ch))
 			}
 		}
-		// Prepend (?flags) â€” Go's regexp supports inline flags at the start.
+		// Prepend (?flags) — Go's regexp supports inline flags at the start.
 		finalPattern = "(?" + flags + ")" + pattern
 	}
 
@@ -6527,7 +6578,7 @@ func (c *Compiler) compilePatternMatch(step StepConfig, fragments map[string][]S
 	elseBlock := c.simulateBake(fragments[step.Else], fragments)
 
 	// Layout:
-	//   [N]   PATTERN_MATCH_REGEX   (gate â€” jumps to thenStart or elseStart)
+	//   [N]   PATTERN_MATCH_REGEX   (gate — jumps to thenStart or elseStart)
 	//   [N+1 .. N+len(then)]        then-branch instructions
 	//   [N+1+len(then)]             GOTO postElse
 	//   [N+2+len(then) .. ...]      else-branch instructions
@@ -6562,7 +6613,7 @@ func (c *Compiler) compilePatternMatch(step StepConfig, fragments map[string][]S
 //
 //	source:          slot name whose value is tested
 //	input.pattern:   template pattern string (literals, (capture), {ref}, *)
-//	as:              result slot name â€” set to []byte{1} on match, nil on no-match
+//	as:              result slot name — set to []byte{1} on match, nil on no-match
 func (c *Compiler) compileValidatePattern(step StepConfig) error {
 	if step.Source == "" {
 		return fmt.Errorf("validate_pattern: 'source' is required")
@@ -6601,7 +6652,7 @@ func (c *Compiler) compileValidatePattern(step StepConfig) error {
 // Fields:
 //
 //	source:          slot name whose value is parsed
-//	input.pattern:   template pattern string â€” capture groups (name) write to named slots
+//	input.pattern:   template pattern string — capture groups (name) write to named slots
 //
 // Note: 'as' is NOT used for extract_pattern; capture slot names are declared
 // inside the pattern via the (name) syntax.
@@ -6635,8 +6686,8 @@ func (c *Compiler) compileExtractPattern(step StepConfig) error {
 // slice of RenderSeg values ready for the RenderTemplate instruction.
 //
 // Syntax:
-//   - ${varname} â€” replaced at runtime with the value of the named slot
-//   - everything else â€” emitted verbatim as a literal byte sequence
+//   - ${varname} — replaced at runtime with the value of the named slot
+//   - everything else — emitted verbatim as a literal byte sequence
 //
 // All ${varname} references must name slots already present in slotMap;
 // an error is returned for unknown variable names (catches typos at bake time).
@@ -6663,7 +6714,7 @@ func parseRenderTemplate(tmpl string, slotMap map[string]int) ([]steps.RenderSeg
 		varName := rest[:end]
 		slotIdx, ok := slotMap[varName]
 		if !ok {
-			return nil, fmt.Errorf("unknown variable %q â€” bind it with a prior step before using it in render_template", varName)
+			return nil, fmt.Errorf("unknown variable %q — bind it with a prior step before using it in render_template", varName)
 		}
 		segs = append(segs, steps.RenderSeg{Lit: nil, SlotIdx: slotIdx})
 		remaining = rest[end+1:]
@@ -6681,7 +6732,7 @@ func isControlFlowAction(action string) bool {
 	return false
 }
 
-// â”€â”€â”€ Rate Limit Policy Helpers (S7: auto-inject + position-aware injection) â”€â”€
+// â"€â"€â"€ Rate Limit Policy Helpers (S7: auto-inject + position-aware injection) â"€â"€
 
 // rateLimitStepActions is the set of step action names that count as rate limit
 // steps when walking the flow tree for the auto-inject / marker decision.
@@ -6779,7 +6830,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 			// Sorting the mapping keys ensures deterministic instruction order and
 			// stable quota group IDs across recompilations.
 			if entry.Dynamic == nil || len(entry.Dynamic.Mappings) == 0 {
-				log.Printf("[Compiler] api_rate_limits dynamic entry: empty mapping â€” skipped")
+				log.Printf("[Compiler] api_rate_limits dynamic entry: empty mapping — skipped")
 				continue
 			}
 			sortedKeys := make([]string, 0, len(entry.Dynamic.Mappings))
@@ -6804,7 +6855,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 				gid := uint8(i + 1)
 				mappedConfigName := entry.Dynamic.Mappings[runtimeVal]
 				if mappedConfigName == "" {
-					log.Printf("[Compiler] api_rate_limits dynamic: group %q maps to empty config â€” skipped", runtimeVal)
+					log.Printf("[Compiler] api_rate_limits dynamic: group %q maps to empty config — skipped", runtimeVal)
 					continue
 				}
 				var configID uint16
@@ -6828,7 +6879,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 					}
 				}
 				if len(windows) == 0 {
-					log.Printf("[Compiler] api_rate_limits dynamic: config %q (group %q) not found or has no windows â€” skipped", mappedConfigName, runtimeVal)
+					log.Printf("[Compiler] api_rate_limits dynamic: config %q (group %q) not found or has no windows — skipped", mappedConfigName, runtimeVal)
 					continue
 				}
 				var remoteRL engine.ExternalRateLimitProvider
@@ -6868,7 +6919,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 					},
 				})
 			}
-			continue // dynamic entries are fully emitted above â€” skip the shared emit below
+			continue // dynamic entries are fully emitted above — skip the shared emit below
 
 		case RLEntryNamed, RLEntryFixed:
 			// configName is already set from entry.Config (resolved by management server).
@@ -6878,7 +6929,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		}
 
 		if configName == "" {
-			log.Printf("[Compiler] api_rate_limits entry (kind=%s): no config name â€” skipped", entry.Kind)
+			log.Printf("[Compiler] api_rate_limits entry (kind=%s): no config name — skipped", entry.Kind)
 			continue
 		}
 
@@ -6904,7 +6955,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 			}
 		}
 		if len(windows) == 0 {
-			log.Printf("[Compiler] api_rate_limits: config %q not found or has no windows â€” skipped", configName)
+			log.Printf("[Compiler] api_rate_limits: config %q not found or has no windows — skipped", configName)
 			continue
 		}
 
@@ -6944,7 +6995,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		capturedNodeCount := nodeCountFn
 		capturedTBucket := tbucket
 		// NextPC: the instruction immediately following this check (continue flow).
-		// DeniedPC: -1 (StopPlan) â€” halt execution immediately when denied.
+		// DeniedPC: -1 (StopPlan) — halt execution immediately when denied.
 		// This is safe because we set ctx.ResponseStatus = 429 before returning.
 		nextPC := len(c.GlobalTable) + 1
 		const deniedPC = -1 // StopPlan: halt flow on denial
@@ -6962,7 +7013,7 @@ func (c *Compiler) emitRLPoliciesIntoTable(policies []APIRateLimitEntry) {
 		}
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name:    "CHECK_RATE_LIMIT_V2",
-			StepIdx: -1, // system instruction â€” not a user-defined flow step
+			StepIdx: -1, // system instruction — not a user-defined flow step
 			Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 				return capturedStep3.Execute(ctx, s)
 			},
@@ -7357,7 +7408,14 @@ func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
 	c.GlobalTable = make([]engine.Instruction, 0)
 	c.resetSlots()
 
-	// Emit stream-response-body flag as first instruction â€” set once at flow start.
+	// Pre-allocate well-known event slots if in event flow mode
+	if c.eventFlowMode {
+		c.getSlot("__event__")
+		c.getSlot("__event_key__")
+		c.getSlot("__event_topic__")
+	}
+
+	// Emit stream-response-body flag as first instruction — set once at flow start.
 	// fragments=nil: standalone compilation, no sub-flow recursion available.
 	c.GlobalTable = append(c.GlobalTable, steps.SetStreamResponseBodyStep(canStreamResponseBodyWithFragments(flow, nil)))
 
@@ -7365,6 +7423,17 @@ func (c *Compiler) Compile(flow []StepConfig) ([]engine.Instruction, error) {
 		return nil, err
 	}
 	return c.GlobalTable, nil
+}
+
+// CompileEventFlow compiles a flow with well-known event slots pre-allocated.
+// Slots __event__ (payload), __event_key__ (message key), and __event_topic__ (topic)
+// are reserved first, guaranteeing their indices are 0, 1, 2 respectively.
+// Call this instead of Compile() for flows referenced by event listeners.
+func (c *Compiler) CompileEventFlow(f []StepConfig) ([]engine.Instruction, error) {
+	c.eventFlowMode = true
+	result, err := c.Compile(f)
+	c.eventFlowMode = false
+	return result, err
 }
 
 func (c *Compiler) ResetLocalScope() {
@@ -7416,7 +7485,7 @@ func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
 // canStreamResponseBody returns true when the compiler determines the http_call's
 // response body does not need to be captured into a slot for downstream processing.
 // When true, the runtime will pipe the upstream response body directly to the client
-// socket instead of buffering it â€” transparent to the customer's flow definition.
+// socket instead of buffering it — transparent to the customer's flow definition.
 //
 // Rule: streaming is safe when no http_call anywhere in the flow tree (including
 // if/then/else and call sub-flows) captures its response into a slot for downstream

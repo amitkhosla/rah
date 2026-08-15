@@ -103,7 +103,7 @@ func ExecutePlan(cfg ExecutePlanConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "execute_plan[" + cfg.MCPConfig.URL + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// 1. Read plan JSON from slot â€” if empty, no-op.
+			// 1. Read plan JSON from slot — if empty, no-op.
 			if cfg.PlanSlot < 0 || cfg.PlanSlot >= len(ctx.ByteSlots) {
 				return state.PC + 1
 			}
@@ -126,7 +126,7 @@ func ExecutePlan(cfg ExecutePlanConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 			if len(plan.Plan) == 0 {
-				// Empty plan â€” write empty object and continue.
+				// Empty plan — write empty object and continue.
 				empty := []byte("{}")
 				if cfg.ResultSlot >= 0 && cfg.ResultSlot < len(ctx.ByteSlots) {
 					ctx.ByteSlots[cfg.ResultSlot] = ctx.Alloc(len(empty))
@@ -272,7 +272,7 @@ func executeGraph(
 			if !cfg.SkipNewToolRequired {
 				return nil, fmt.Errorf("step %d requires new tool %q which is not available", task.Step, task.ToolName)
 			}
-			// Skip â€” record nil result and unlock children.
+			// Skip — record nil result and unlock children.
 			results[currentID] = nil
 			for _, childID := range task.nextSteps {
 				waitingFor[childID]--
@@ -342,7 +342,7 @@ func executeGraph(
 
 // injectValue replaces placeholder strings in params with the given value.
 // It marshals the params to JSON, performs string replacement, then unmarshals
-// back â€” the same approach used in the Python orchestrator.
+// back — the same approach used in the Python orchestrator.
 func injectValue(params map[string]interface{}, value interface{}) map[string]interface{} {
 	if value == nil {
 		return params

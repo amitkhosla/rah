@@ -13,7 +13,7 @@ import (
 
 // AuthzConfig configures the optional external authorization service.
 type AuthzConfig struct {
-	Provider  string            `json:"provider"   yaml:"provider"`   // "external" or ""
+	Provider  string            `json:"provider"   yaml:"provider"` // "external" or ""
 	Endpoint  string            `json:"endpoint"   yaml:"endpoint"`
 	TimeoutMs int               `json:"timeout_ms" yaml:"timeout_ms"` // default 500
 	OnTimeout string            `json:"on_timeout" yaml:"on_timeout"` // "deny"|"allow"

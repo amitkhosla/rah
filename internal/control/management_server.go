@@ -15,6 +15,7 @@ import (
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
 	"github.com/amitkhosla/rah/internal/router"
 	"github.com/amitkhosla/rah/internal/scheduler"
+	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"net/http"
@@ -77,6 +78,10 @@ type ManagementServer struct {
 
 	// RedisSourcePool enables access to customer Redis sources for redis_* steps.
 	RedisSourcePool *redissource.RedisSourcePool
+
+	WorkflowHandler *WorkflowHandler // optional; nil if workflows domain not configured
+
+	StorageMgr *storage.StorageManager
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -1720,6 +1725,9 @@ func (s *ManagementServer) SchedulesListHandler(w http.ResponseWriter, r *http.R
 		http.Error(w, "failed to list schedules: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if schedules == nil {
+		schedules = []*scheduler.Schedule{}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1934,6 +1942,98 @@ func (s *ManagementServer) MigrationsHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"migrations": []any{}})
+}
+
+// DocumentConnectorsHandler serves GET /document-connectors.
+func (s *ManagementServer) DocumentConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type item struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var out []item
+	if s.cfgMgr != nil {
+		for _, c := range s.cfgMgr.Gateway().DocumentConnectors {
+			out = append(out, item{Name: c.Name, Type: c.Kind})
+		}
+	}
+	if out == nil {
+		out = []item{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+}
+
+// StorageConnectorsHandler serves GET /storage-connectors.
+func (s *ManagementServer) StorageConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type item struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var out []item
+	if s.cfgMgr != nil {
+		for _, c := range s.cfgMgr.Gateway().StorageProviders {
+			out = append(out, item{Name: c.Name, Type: c.Type})
+		}
+	}
+	if out == nil {
+		out = []item{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+}
+
+// MessagingPublishersHandler serves GET /messaging-publishers.
+func (s *ManagementServer) MessagingPublishersHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type item struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var out []item
+	if s.cfgMgr != nil {
+		for _, c := range s.cfgMgr.Gateway().MessagingPublishers {
+			out = append(out, item{Name: c.Name, Type: c.Kind})
+		}
+	}
+	if out == nil {
+		out = []item{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"publishers": out})
+}
+
+// EventListenersHandler serves GET /event-listeners.
+func (s *ManagementServer) EventListenersHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type item struct {
+		Name      string `json:"name"`
+		Publisher string `json:"publisher"`
+	}
+	var out []item
+	if s.cfgMgr != nil {
+		for _, c := range s.cfgMgr.Gateway().EventListeners {
+			out = append(out, item{Name: c.Name, Publisher: c.Publisher})
+		}
+	}
+	if out == nil {
+		out = []item{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"listeners": out})
 }
 
 // getStoredQueries retrieves named queries from the registry store.

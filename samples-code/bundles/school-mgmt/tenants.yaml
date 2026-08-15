@@ -1,0 +1,5 @@
+tenants:
+  - aliases: [alpha-school, alpha]
+    action: upsert
+  - aliases: [beta-academy, beta]
+    action: upsert

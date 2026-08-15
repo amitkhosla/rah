@@ -86,7 +86,7 @@ func ExtractJWTClaim(cfg ExtractJWTClaimConfig) engine.Instruction {
 			// Coerce to string representation.
 			var result string
 			if err := json.Unmarshal(rawClaim, &result); err != nil {
-				// Not a JSON string â€” use raw bytes (handles numbers, booleans).
+				// Not a JSON string — use raw bytes (handles numbers, booleans).
 				result = strings.Trim(string(rawClaim), `"`)
 			}
 

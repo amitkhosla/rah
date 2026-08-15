@@ -132,7 +132,7 @@ func TestSOAPCall_MissingBody(t *testing.T) {
 		IntSlots:  make([]int64, 4),
 		BoolSlots: make([]bool, 4),
 	}
-	// Don't set ByteSlots[0] â€” leave it nil/empty
+	// Don't set ByteSlots[0] — leave it nil/empty
 
 	state := &engine.ExecutionState{PC: 0}
 	pc := instr.Action(ctx, state)

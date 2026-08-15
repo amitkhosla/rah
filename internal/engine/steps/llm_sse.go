@@ -32,7 +32,7 @@ func SendSSEEvent(cfg SSEEventConfig) engine.Instruction {
 
 			type flusher interface{ Flush() }
 
-			// Build SSE frame into stack buffer â€” no heap alloc for typical payloads
+			// Build SSE frame into stack buffer — no heap alloc for typical payloads
 			var buf [4096]byte
 			n := 0
 

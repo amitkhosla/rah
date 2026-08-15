@@ -1,6 +1,6 @@
 ﻿package steps
 
-// quota.go â€” QuotaGroup assignment step.
+// quota.go — QuotaGroup assignment step.
 //
 // A QuotaGroup maps a runtime string value (e.g. a tenant's "tier" metadata:
 // "free", "pro", "enterprise") to a specific RateLimitConfigId at bake time.
@@ -27,7 +27,7 @@ import (
 // AssignQuotaGroup reads a string value from srcSlot, maps it to a quota
 // group ID using the bake-time groupMap, and sets ctx.QuotaGroupID.
 //
-// groupMap: string label â†’ group ID (uint8, 1â€“255; 0 is reserved for "no group").
+// groupMap: string label â†’ group ID (uint8, 1—255; 0 is reserved for "no group").
 // If the slot value is not in the map, QuotaGroupID is left unchanged (stays 0).
 //
 // The groupMap is built by the compiler from the flow's "group_map" field:
@@ -54,8 +54,8 @@ func AssignQuotaGroup(srcSlot int, groupMap map[string]uint8) engine.Instruction
 
 // AssignTierGroup reads the tenant's tier name from the registry at request time
 // and maps it to a quota group ID using the bake-time groupMap.
-// Unlike AssignQuotaGroup, this bypasses slot reads â€” the registry is authoritative.
-// groupMap: tier name â†’ group ID (uint8, 1â€“255; 0 is reserved for "no group").
+// Unlike AssignQuotaGroup, this bypasses slot reads — the registry is authoritative.
+// groupMap: tier name â†’ group ID (uint8, 1—255; 0 is reserved for "no group").
 func AssignTierGroup(groupMap map[string]uint8) engine.Instruction {
 	return engine.Instruction{
 		Name: "ASSIGN_TIER_GROUP",

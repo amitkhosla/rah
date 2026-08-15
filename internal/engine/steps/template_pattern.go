@@ -17,9 +17,9 @@ type SegKind int
 
 const (
 	SegLiteral  SegKind = iota // static bytes to match
-	SegSlotRef                 // {name} â€” read existing ByteSlot at runtime
-	SegCapture                 // (name) â€” write result to ByteSlot at runtime
-	SegWildcard                // * â€” match any bytes, discard
+	SegSlotRef                 // {name} — read existing ByteSlot at runtime
+	SegCapture                 // (name) — write result to ByteSlot at runtime
+	SegWildcard                // * — match any bytes, discard
 )
 
 // Segment is one token in a parsed template pattern.
@@ -54,10 +54,10 @@ type CompiledTemplatePattern struct {
 // ParseTemplatePattern parses a pattern string into a CompiledTemplatePattern.
 //
 // Token syntax:
-//   - (name)  â€” capture group: calls allocSlot(name) to obtain a slot index for writing
-//   - {name}  â€” slot reference: looks up name in slotMap; error if not found
-//   - *       â€” wildcard: matches any bytes, result discarded
-//   - everything else â€” literal bytes
+//   - (name)  — capture group: calls allocSlot(name) to obtain a slot index for writing
+//   - {name}  — slot reference: looks up name in slotMap; error if not found
+//   - *       — wildcard: matches any bytes, result discarded
+//   - everything else — literal bytes
 //
 // After parsing, the optimal MatchStrategy is auto-detected from the segment structure.
 func ParseTemplatePattern(
@@ -78,7 +78,7 @@ func ParseTemplatePattern(
 
 		switch ch {
 		case '(':
-			// Capture group â€” find matching ')'
+			// Capture group — find matching ')'
 			if i+1 < n && pattern[i+1] == '(' {
 				return nil, fmt.Errorf("template pattern: nested parentheses not supported at position %d", i)
 			}
@@ -104,7 +104,7 @@ func ParseTemplatePattern(
 			i = j + 1
 
 		case '{':
-			// Slot reference â€” find matching '}'
+			// Slot reference — find matching '}'
 			j := i + 1
 			for j < n && pattern[j] != '}' {
 				if pattern[j] == '{' {
@@ -184,7 +184,7 @@ func detectStrategy(segs []Segment) MatchStrategy {
 		}
 	}
 
-	// Pure literal â€” no special tokens
+	// Pure literal — no special tokens
 	if nCaptures == 0 && nSlotRefs == 0 && nWildcards == 0 {
 		return StrategyExact
 	}
@@ -344,7 +344,7 @@ func matchPrefix(val []byte, segs []Segment) bool {
 			}
 			val = val[len(s.Literal):]
 		}
-		// SegWildcard: match anything â€” prefix check is satisfied
+		// SegWildcard: match anything — prefix check is satisfied
 	}
 	return true
 }
@@ -359,14 +359,14 @@ func matchSuffix(val []byte, segs []Segment) bool {
 			}
 			val = val[:len(val)-len(s.Literal)]
 		}
-		// SegWildcard: leading wildcard â€” suffix check is satisfied
+		// SegWildcard: leading wildcard — suffix check is satisfied
 	}
 	return true
 }
 
 // matchPrefixSuffixExtract handles StrategyPrefixSuffixExtract (literal prefix + single
 // capture + literal suffix, all static). Returns the captured slices and whether it matched.
-// The returned slices are views into val â€” zero copy.
+// The returned slices are views into val — zero copy.
 func matchPrefixSuffixExtract(val []byte, prefix, suffix []byte) ([][]byte, bool) {
 	if !bytes.HasPrefix(val, prefix) || !bytes.HasSuffix(val, suffix) {
 		return nil, false
@@ -443,14 +443,14 @@ func findEndOfFlexibleSeg(val []byte, pos int, remaining []Segment, ctx *rctx.Co
 		case SegSlotRef:
 			slotVal := ctx.ByteSlots[s.SlotIdx]
 			if len(slotVal) == 0 {
-				continue // empty slot â€” treat as transparent, look further
+				continue // empty slot — treat as transparent, look further
 			}
 			idx := bytes.Index(val[pos:], slotVal)
 			if idx < 0 {
 				return -1
 			}
 			return pos + idx
-		// SegCapture, SegWildcard: flexible â€” continue scanning for next anchor
+		// SegCapture, SegWildcard: flexible — continue scanning for next anchor
 		}
 	}
 	return len(val)
@@ -511,7 +511,7 @@ func matchSequential(val []byte, segs []Segment, ctx *rctx.Context) ([][]byte, b
 
 // ValidateTemplatePattern returns an Instruction that matches the value at srcSlot
 // against the compiled template pattern and writes []byte{1} (truthy) or nil to
-// resultSlot. It never branches â€” the caller uses the existing 'if' step for that.
+// resultSlot. It never branches — the caller uses the existing 'if' step for that.
 func ValidateTemplatePattern(
 	srcSlot int,
 	pattern *CompiledTemplatePattern,

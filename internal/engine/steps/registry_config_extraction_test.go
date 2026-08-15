@@ -525,7 +525,7 @@ func TestExtractAndStoreServiceConfig(t *testing.T) {
 			t.Fatalf("tenant %s: expected products in response", tenant.alias)
 		}
 
-		t.Logf("âœ“ Tenant %s: loaded config with %d products", tenant.alias, len(resp.Products))
+		t.Logf("✓ Tenant %s: loaded config with %d products", tenant.alias, len(resp.Products))
 	}
 }
 
@@ -584,7 +584,7 @@ func TestExtractServiceURLsFromMultipleProducts(t *testing.T) {
 		}
 	}
 
-	t.Logf("âœ“ Extracted %d services: %v", len(allServices), allServices)
+	t.Logf("✓ Extracted %d services: %v", len(allServices), allServices)
 }
 
 // TestExtractOnlyAssignedServices filters out "unassigned" service URLs.
@@ -620,7 +620,7 @@ func TestExtractOnlyAssignedServices(t *testing.T) {
 		}
 	}
 
-	t.Logf("âœ“ Found %d assigned services and %d unassigned services", assignedCount, unassignedCount)
+	t.Logf("✓ Found %d assigned services and %d unassigned services", assignedCount, unassignedCount)
 
 	if assignedCount == 0 {
 		t.Error("expected to find at least one assigned service")

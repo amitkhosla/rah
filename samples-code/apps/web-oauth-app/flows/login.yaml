@@ -1,0 +1,12 @@
+flow:
+  name: my-web-app-login
+  app_name: my-web-app
+  steps:
+    - name: build_oauth_url
+      kind: set_slot
+      slot: oauth_url
+      value: "https://accounts.google.com/o/oauth2/v2/auth?client_id={{CLIENT_ID}}&redirect_uri=https://myapp.example.com/callback&scope=openid%20email%20profile&response_type=code&state=random_state"
+    - name: redirect_to_oauth
+      kind: http_redirect
+      location_slot: oauth_url
+      status_code: 302

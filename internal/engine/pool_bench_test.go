@@ -1,14 +1,14 @@
 ﻿package engine
 
-// pool_bench_test.go â€” compares three pool strategies for rctx.Context (~10.6 KB):
+// pool_bench_test.go — compares three pool strategies for rctx.Context (~10.6 KB):
 //
-//   sync.Pool     â€” built-in; per-P local lists (very fast), but GC clears idle
+//   sync.Pool     — built-in; per-P local lists (very fast), but GC clears idle
 //                   items every cycle. Under high RPS, pool is often cold â†’ allocs.
 //
-//   chanPool      â€” buffered channel; GC-resistant (strong ref), but every Get/Put
+//   chanPool      — buffered channel; GC-resistant (strong ref), but every Get/Put
 //                   acquires the channel's internal mutex. Slow under concurrency.
 //
-//   atomicPool    â€” lock-free array of atomic.Pointer slots; GC-resistant (strong
+//   atomicPool    — lock-free array of atomic.Pointer slots; GC-resistant (strong
 //                   ref) AND no locks. Each slot is cache-line padded to prevent
 //                   false sharing. Get scans Lâ†’R, Put scans Râ†’L to reduce collision.
 //
@@ -16,9 +16,9 @@
 //   go test -bench=. -benchmem -count=3 ./internal/engine/
 //
 // Key columns:
-//   ns/op       â€” average time per Get+Put pair
-//   B/op        â€” bytes allocated per operation (0 = pool always hit; non-zero = allocs)
-//   allocs/op   â€” integer-rounded allocation count per op
+//   ns/op       — average time per Get+Put pair
+//   B/op        — bytes allocated per operation (0 = pool always hit; non-zero = allocs)
+//   allocs/op   — integer-rounded allocation count per op
 //
 // NOTE: allocs/op rounds to 0 for small fractions. Always check B/op alongside it.
 // Example: at 1 alloc per 100 ops, allocs/op=0 but B/opâ‰ˆ106 (10.6KBÃ·100).
@@ -32,7 +32,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€ Context constructor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Context constructor â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // newBenchContext matches the allocation pattern in FlowManager.Pool.New:
 // two heap slices + inline slot init. The struct itself (~10.6 KB) escapes to heap.
@@ -45,11 +45,11 @@ func newBenchContext() *rctx.Context {
 	return ctx
 }
 
-// â”€â”€ Pool 1: channel-based (lock-based, GC-resistant) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Pool 1: channel-based (lock-based, GC-resistant) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // Kept for reference. The channel provides strong references so pool items
 // survive GC cycles (0 B/op under GC pressure). However, every Get and Put
-// acquires the channel's internal mutex â€” bad under high concurrency.
+// acquires the channel's internal mutex — bad under high concurrency.
 
 type chanPool struct {
 	ch    chan *rctx.Context
@@ -80,19 +80,19 @@ func (p *chanPool) Put(ctx *rctx.Context) {
 	}
 }
 
-// â”€â”€ Pool 2: lock-free atomic pool (GC-resistant, no locks) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Pool 2: lock-free atomic pool (GC-resistant, no locks) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // Each slot is an atomic.Pointer[rctx.Context] padded to one CPU cache line
 // (64 bytes) to prevent false sharing between adjacent slots.
 //
 // Without padding: 8 slots share one 64-byte cache line. When goroutines A and B
 // hit "different" slots that share a line, every write by A invalidates B's
-// cached copy of that line â€” forcing a round-trip to main memory (~200 cycles).
+// cached copy of that line — forcing a round-trip to main memory (~200 cycles).
 // This is false sharing: logically independent operations become serialized at
 // the hardware level.
 //
 // With 64-byte padding: each slot occupies its own cache line. Goroutines on
-// different slots never share a cache line â€” true independence.
+// different slots never share a cache line — true independence.
 //
 // Get (leftâ†’right scan):
 //   1. Load slot: cheap read (~4 cycles, no bus lock) to skip nil slots fast.
@@ -104,7 +104,7 @@ func (p *chanPool) Put(ctx *rctx.Context) {
 //   1. CompareAndSwap(nil, ctx): deposit into the first empty slot found.
 //   Reverse direction reduces head-on collision with concurrent Gets.
 //
-// GC safety: slots hold *rctx.Context pointers â€” strong references. The GC
+// GC safety: slots hold *rctx.Context pointers — strong references. The GC
 // cannot clear them regardless of how frequently it runs. 0 B/op under any
 // GC pressure level.
 
@@ -139,13 +139,13 @@ func (p *atomicPool) Get() *rctx.Context {
 		if p.slots[i].v.Load() == nil {
 			continue
 		}
-		// Attempt to claim. Another goroutine may have beaten us â€” if Swap
+		// Attempt to claim. Another goroutine may have beaten us — if Swap
 		// returns nil, we lost the race; continue to the next slot.
 		if ctx := p.slots[i].v.Swap(nil); ctx != nil {
 			return ctx
 		}
 	}
-	return p.newFn() // all slots empty â€” allocate
+	return p.newFn() // all slots empty — allocate
 }
 
 func (p *atomicPool) Put(ctx *rctx.Context) {
@@ -154,10 +154,10 @@ func (p *atomicPool) Put(ctx *rctx.Context) {
 			return
 		}
 	}
-	// All slots occupied â€” drop; GC will collect this context.
+	// All slots occupied — drop; GC will collect this context.
 }
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func prewarmSyncPool(pool *sync.Pool, n int) {
 	tmp := make([]*rctx.Context, n)
@@ -169,14 +169,14 @@ func prewarmSyncPool(pool *sync.Pool, n int) {
 	}
 }
 
-// â”€â”€ Section 1: warm pool, no GC pressure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 1: warm pool, no GC pressure â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // All pools pre-warmed. Measures raw Get+Put throughput without interference.
 //
 // Expected ranking: sync.Pool â‰« atomicPool > chanPool
 //   sync.Pool: per-P local lists, zero contention when one goroutine per P.
-//   atomicPool: 2 atomic ops (Load + Swap) for a warm hit â€” no lock, very fast.
-//   chanPool: channel mutex on every Get and Put â€” slowest.
+//   atomicPool: 2 atomic ops (Load + Swap) for a warm hit — no lock, very fast.
+//   chanPool: channel mutex on every Get and Put — slowest.
 
 func BenchmarkSyncPool(b *testing.B) {
 	pool := &sync.Pool{New: func() any { return newBenchContext() }}
@@ -209,14 +209,14 @@ func BenchmarkChanPool(b *testing.B) {
 	}
 }
 
-// â”€â”€ Section 2: GC pressure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 2: GC pressure â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // runtime.GC() every 100 ops simulates high-RPS conditions where allocation
 // rate triggers frequent GC cycles.
 //
 // sync.Pool: GC clears idle pool items. Next Get() after GC must call New().
 //   Expect non-zero B/op (â‰ˆ 10.6KB Ã· 100 ops â‰ˆ 106 B/op).
-//   allocs/op rounds to 0 at this frequency â€” check B/op for the real story.
+//   allocs/op rounds to 0 at this frequency — check B/op for the real story.
 //
 // atomicPool + chanPool: slots are strongly referenced; GC has zero effect.
 //   Expect 0 B/op regardless of GC frequency.
@@ -244,7 +244,7 @@ func BenchmarkAtomicPoolGCPressure(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if i%100 == 0 {
-			runtime.GC() // slots hold strong refs â€” pool unaffected
+			runtime.GC() // slots hold strong refs — pool unaffected
 		}
 		ctx := pool.Get()
 		pool.Put(ctx)
@@ -257,24 +257,24 @@ func BenchmarkChanPoolGCPressure(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if i%100 == 0 {
-			runtime.GC() // channel holds strong refs â€” pool unaffected
+			runtime.GC() // channel holds strong refs — pool unaffected
 		}
 		ctx := pool.Get()
 		pool.Put(ctx)
 	}
 }
 
-// â”€â”€ Section 3: parallel (concurrent goroutines, no GC pressure) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 3: parallel (concurrent goroutines, no GC pressure) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // b.RunParallel spawns GOMAXPROCS goroutines, each calling Get+Put in a tight loop.
 // This is the closest approximation to the gateway's concurrent request handling.
 //
 // Expected ranking: sync.Pool â‰« atomicPool â‰« chanPool
-//   sync.Pool: per-P local lists â€” GOMAXPROCS goroutines access different lists,
+//   sync.Pool: per-P local lists — GOMAXPROCS goroutines access different lists,
 //     minimal cross-P stealing, extremely low contention.
-//   atomicPool: cache-line-padded slots â€” different goroutines hit different slots,
+//   atomicPool: cache-line-padded slots — different goroutines hit different slots,
 //     no false sharing, CAS contention is low when pool is warm.
-//   chanPool: single mutex for all goroutines â€” all contend on the same lock.
+//   chanPool: single mutex for all goroutines — all contend on the same lock.
 
 func BenchmarkSyncPoolParallel(b *testing.B) {
 	pool := &sync.Pool{New: func() any { return newBenchContext() }}
@@ -313,7 +313,7 @@ func BenchmarkChanPoolParallel(b *testing.B) {
 	})
 }
 
-// â”€â”€ Section 4: parallel + GC pressure (the real gateway scenario) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 4: parallel + GC pressure (the real gateway scenario) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // Concurrent goroutines + frequent GC: this is the 19K RPS cliff scenario.
 //
@@ -380,7 +380,7 @@ func BenchmarkChanPoolParallelGCPressure(b *testing.B) {
 	})
 }
 
-// â”€â”€ Section 5: false sharing demonstration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 5: false sharing demonstration â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // Shows the penalty of NOT padding slots to cache-line size.
 // Two versions of atomicPool: one padded (64-byte slots), one unpadded (8-byte).
@@ -453,7 +453,7 @@ func BenchmarkAtomicPoolParallelUnpadded(b *testing.B) {
 	})
 }
 
-// â”€â”€ Section 6: ctxPool (array-backed, lock-free Get, mutex-on-Put) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Section 6: ctxPool (array-backed, lock-free Get, mutex-on-Put) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 //
 // Design: fixed [ctxPoolCap]*rctx.Context array = one GC root.
 // All context pointers are strong references; GC cannot clear them.
@@ -471,7 +471,7 @@ func BenchmarkAtomicPoolParallelUnpadded(b *testing.B) {
 //
 // Expected vs prior pools:
 //   Warm single:      slower than sync.Pool (CAS vs per-P list), faster than atomicPool (1 CAS vs 64-slot scan)
-//   GC pressure:      0 B/op (strong array refs survive GC) â€” like chanPool/atomicPool
+//   GC pressure:      0 B/op (strong array refs survive GC) — like chanPool/atomicPool
 //   Parallel warm:    faster than chanPool (no channel mutex), faster than atomicPool (no scan)
 //   Parallel+GC:      0 B/op + lower ns/op than atomicPool (single CAS per Get)
 

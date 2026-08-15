@@ -186,6 +186,6 @@ func TestUpstreamRegistry_GlobalAtomic(t *testing.T) {
 		t.Fatalf("expected configID=7, got id=%d found=%v", id, found)
 	}
 
-	// Clean up â€” restore nil so other tests start fresh.
+	// Clean up — restore nil so other tests start fresh.
 	globalUpstreamRegistry.Store(nil)
 }

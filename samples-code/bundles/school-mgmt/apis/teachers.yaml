@@ -1,0 +1,21 @@
+apis:
+  - name: school-teachers-list
+    path: /school/teachers
+    method: GET
+    flow_name: school_teachers_list
+    rate_limit_config: school-teacher-rl
+    action: upsert
+
+  - name: school-teachers-create
+    path: /school/teachers
+    method: POST
+    flow_name: school_teacher_create
+    rate_limit_config: school-admin-rl
+    action: upsert
+
+  - name: school-teachers-get
+    path: /school/teachers/{id}
+    method: GET
+    flow_name: school_teacher_get
+    rate_limit_config: school-teacher-rl
+    action: upsert

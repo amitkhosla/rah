@@ -1,0 +1,21 @@
+apis:
+  - name: school-homework-list
+    path: /school/homework
+    method: GET
+    flow_name: school_homework_list
+    rate_limit_config: school-student-rl
+    action: upsert
+
+  - name: school-homework-assign
+    path: /school/homework
+    method: POST
+    flow_name: school_homework_assign
+    rate_limit_config: school-teacher-rl
+    action: upsert
+
+  - name: school-homework-submit
+    path: /school/homework/{id}/submit
+    method: POST
+    flow_name: school_homework_submit
+    rate_limit_config: school-student-rl
+    action: upsert

@@ -11,11 +11,11 @@ import (
 	"github.com/amitkhosla/rah/internal/engine"
 )
 
-// â”€â”€ EstimateTokens â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ EstimateTokens â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestEstimateTokens_WritesToIntSlot(t *testing.T) {
 	ctx := newTestContext()
-	// 16 chars â†’ (16+3)/4 = 4 tokens
+	// 16 chars → (16+3)/4 = 4 tokens
 	ctx.ByteSlots[0] = []byte("hello world test")
 
 	instr := EstimateTokens(0, 2)
@@ -30,7 +30,7 @@ func TestEstimateTokens_WritesToIntSlot(t *testing.T) {
 	}
 }
 
-// â”€â”€ SanitizePrompt â€” PII â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SanitizePrompt — PII â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestSanitizePrompt_PIIStrip(t *testing.T) {
 	ctx := newTestContext()
@@ -81,7 +81,7 @@ func TestSanitizePrompt_PIIReject(t *testing.T) {
 	}
 }
 
-// â”€â”€ SanitizePrompt â€” injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SanitizePrompt — injection â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestSanitizePrompt_InjectionReject(t *testing.T) {
 	ctx := newTestContext()
@@ -104,7 +104,7 @@ func TestSanitizePrompt_InjectionReject(t *testing.T) {
 	}
 }
 
-// â”€â”€ SanitizePrompt â€” max_tokens â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SanitizePrompt — max_tokens â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestSanitizePrompt_MaxTokens_Reject(t *testing.T) {
 	ctx := newTestContext()
@@ -129,7 +129,7 @@ func TestSanitizePrompt_MaxTokens_Reject(t *testing.T) {
 	}
 }
 
-// â”€â”€ SanitizePrompt â€” flag mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ SanitizePrompt — flag mode â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestSanitizePrompt_FlagMode(t *testing.T) {
 	ctx := newTestContext()
@@ -156,7 +156,7 @@ func TestSanitizePrompt_FlagMode(t *testing.T) {
 	}
 }
 
-// â”€â”€ CompressPrompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ CompressPrompt â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestCompressPrompt_AlreadyUnderLimit_Skips(t *testing.T) {
 	ctx := newTestContext()
@@ -204,7 +204,7 @@ func TestCompressPrompt_CompressesViaLLM(t *testing.T) {
 
 	ctx := newTestContext()
 	// Build a prompt that exceeds 5 tokens (>20 chars), with a low target.
-	longPrompt := strings.Repeat("word ", 30) // 30*5=150 chars â†’ ~37 tokens
+	longPrompt := strings.Repeat("word ", 30) // 30*5=150 chars → ~37 tokens
 	ctx.ByteSlots[0] = []byte(longPrompt)
 
 	cfg := CompressPromptConfig{

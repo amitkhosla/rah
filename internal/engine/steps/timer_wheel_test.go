@@ -41,7 +41,7 @@ func TestTimerWheelCtxFiresAfterDuration(t *testing.T) {
 	handle := scheduleCtx(ctx, gen, 1*time.Second)
 
 	if handle.idx == 0 {
-		t.Fatal("scheduleCtx returned zero handle â€” pool or slot exhausted")
+		t.Fatal("scheduleCtx returned zero handle — pool or slot exhausted")
 	}
 
 	time.Sleep(2500 * time.Millisecond)
@@ -121,7 +121,7 @@ func TestTimerWheelConcurrentScheduleNoRace(t *testing.T) {
 			gen := ctx.SetUpstreamTimeout(10 * time.Second)
 			handle := scheduleCtx(ctx, gen, 1*time.Second)
 			if handle.idx == 0 {
-				return // pool exhausted â€” skip; not a correctness failure
+				return // pool exhausted — skip; not a correctness failure
 			}
 
 			if idx%2 == 0 {
