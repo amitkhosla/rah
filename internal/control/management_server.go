@@ -630,6 +630,18 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 		}
 	}
 
+	// Process event listeners before flows.
+	if len(req.EventListeners) > 0 && s.cfgMgr != nil {
+		for _, el := range req.EventListeners {
+			// EventListeners are matched by Name for updates/deletes
+			if el.Name == "" {
+				continue
+			}
+			// Upsert the event listener into the live config
+			s.cfgMgr.UpsertEventListener(el)
+		}
+	}
+
 	// Apply V2 rate limit configs â€” store config + assign stable integer ID +
 	// register counter arenas so the compiled CheckRateLimitV2 step can count.
 	for _, cfg := range req.RateLimitConfigsV2 {

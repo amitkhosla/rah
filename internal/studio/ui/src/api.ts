@@ -1180,7 +1180,13 @@ export interface AppDef {
 }
 
 export function listAppFlows(): Promise<{ apps: AppDef[] }> {
-  return request<{ apps: AppDef[] }>('/api/apps')
+  return request<{ items: any[]; count: number }>('/api/apps')
+    .then(res => ({
+      apps: (res.items ?? []).map(item => ({
+        name: item.name || item.Name || '',
+        flows: [] // flows array will be empty as the /api/apps endpoint doesn't include flow data
+      }))
+    }))
 }
 
 export function listObservabilityApps(): Promise<{ apps: string[] }> {

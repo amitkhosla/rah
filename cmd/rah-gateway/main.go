@@ -9,6 +9,8 @@ import (
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/connectors/document"
+	"github.com/amitkhosla/rah/internal/connectors/messaging"
 	"github.com/amitkhosla/rah/internal/control"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/datastore"
@@ -16,6 +18,7 @@ import (
 	"github.com/amitkhosla/rah/internal/emailprovider"
 	"github.com/amitkhosla/rah/internal/engine"
 	enginesteps "github.com/amitkhosla/rah/internal/engine/steps"
+	"github.com/amitkhosla/rah/internal/events"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 	grpcutil "github.com/amitkhosla/rah/internal/grpc"
 	"github.com/amitkhosla/rah/internal/ingest"
@@ -724,6 +727,75 @@ func main() {
 		emailMgr = emailprovider.New(cfgMgr.Gateway().EmailProviders)
 	}
 
+	// Initialize document connector manager.
+	var docConnMgr *document.DocumentConnectorManager
+	if len(cfgMgr.Gateway().DocumentConnectors) > 0 {
+		var docErr error
+		docConnMgr, docErr = document.New(gatewayCtx, cfgMgr.Gateway().DocumentConnectors, secretsMgr)
+		if docErr != nil {
+			gatewaylog.Default.Error("[DocumentConnector] init failed", gatewaylog.F("error", docErr.Error()))
+			os.Exit(1)
+		}
+		if err := docConnMgr.Start(gatewayCtx); err != nil {
+			gatewaylog.Default.Error("[DocumentConnector] startup failed", gatewaylog.F("error", err.Error()))
+			os.Exit(1)
+		}
+		defer docConnMgr.Stop()
+		log.Printf("[document] manager initialized with %d connector(s)", len(cfgMgr.Gateway().DocumentConnectors))
+	}
+
+	// Initialize messaging publisher manager.
+	var msgPubMgr *messaging.MessagePublisherManager
+	if len(cfgMgr.Gateway().MessagingPublishers) > 0 {
+		var msgErr error
+		msgPubMgr, msgErr = messaging.New(gatewayCtx, cfgMgr.Gateway().MessagingPublishers, secretsMgr)
+		if msgErr != nil {
+			gatewaylog.Default.Error("[MessagePublisher] init failed", gatewaylog.F("error", msgErr.Error()))
+			os.Exit(1)
+		}
+		if err := msgPubMgr.Start(gatewayCtx); err != nil {
+			gatewaylog.Default.Error("[MessagePublisher] startup failed", gatewaylog.F("error", err.Error()))
+			os.Exit(1)
+		}
+		defer msgPubMgr.Stop()
+		log.Printf("[messaging] manager initialized with %d publisher(s)", len(cfgMgr.Gateway().MessagingPublishers))
+	}
+
+	// Initialize event listener manager.
+	var eventListenerMgr *events.EventListenerManager
+	var eventRedisClient goredis.UniversalClient
+	if len(cfgMgr.Gateway().EventListeners) > 0 {
+		// Resolve optional Redis client for distributed dedup/claiming.
+		if rlStoreCfg, err := cfgMgr.Gateway().DataStore.ResolveStore(config.DomainRateLimitSync); err == nil {
+			eventRedisClient = goredis.NewClient(&goredis.Options{
+				Addr:     rlStoreCfg.Connection.Address,
+				Password: rlStoreCfg.Connection.Password,
+				PoolSize: rlStoreCfg.Connection.PoolSize,
+			})
+		}
+
+		var eventErr error
+		eventListenerMgr, eventErr = events.NewEventListenerManager(
+			gatewayCtx,
+			cfgMgr.Gateway().EventListeners,
+			cfgMgr.Gateway().MessagingPublishers,
+			fm,
+			secretsMgr,
+			eventRedisClient,
+			nil, // registry: optional for distributed claiming; not configured here
+		)
+		if eventErr != nil {
+			gatewaylog.Default.Error("[EventListener] init failed", gatewaylog.F("error", eventErr.Error()))
+			os.Exit(1)
+		}
+		eventListenerMgr.Start(gatewayCtx)
+		defer eventListenerMgr.Stop()
+		if eventRedisClient != nil {
+			defer eventRedisClient.Close()
+		}
+		log.Printf("[events] listener manager initialized with %d listener(s)", len(cfgMgr.Gateway().EventListeners))
+	}
+
 	// Initialize storage providers.
 	var storageMgr *storage.StorageManager
 	if len(cfgMgr.Gateway().StorageProviders) > 0 {
@@ -814,6 +886,8 @@ func main() {
 	compiler.RedisSourcePool = redisSrcPool
 	compiler.EmailMgr = emailMgr
 	compiler.StorageMgr = storageMgr
+	compiler.DocumentConnectorMgr = docConnMgr
+	compiler.MessagingPublisherMgr = msgPubMgr
 
 	// Pricing manager Ã¢â‚¬â€ bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.

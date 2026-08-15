@@ -273,8 +273,25 @@ func (s *ManagementServer) rollbackAppRelease(w http.ResponseWriter, r *http.Req
 	rel.Active = true
 	rel.Channel = req.Channel
 
-	// Store as active pointer
+	// Read current active version (if any) and deactivate
 	activeKey := fmt.Sprintf("release:%s:active:%s", appName, req.Channel)
+	if currentActiveData, ok, _ := s.dataStore.GetGlobal(ctx, config.DomainApps, activeKey); ok {
+		var activeRel AppRelease
+		if err := json.Unmarshal(currentActiveData, &activeRel); err == nil {
+			activeRel.Active = false
+			if oldData, err := json.Marshal(activeRel); err == nil {
+				oldKey := fmt.Sprintf("release:%s:%s", appName, activeRel.Version)
+				_ = s.dataStore.PutGlobal(ctx, config.DomainApps, oldKey, oldData)
+			}
+		}
+	}
+
+	// Store rollback version as active
+	if newData, err := json.Marshal(rel); err == nil {
+		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, releaseKey, newData)
+	}
+
+	// Store pointer to active version
 	if ptrData, err := json.Marshal(rel); err == nil {
 		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, activeKey, ptrData)
 	}
