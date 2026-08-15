@@ -163,7 +163,7 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 			} else {
 				t.Logf("âŒ %s → %s", key, urlVal)
 				for _, issue := range issues {
-					t.Logf("   â""â"€ Issue: %s", issue)
+						t.Logf("   |-- Issue: %s", issue)
 				}
 			}
 		}
