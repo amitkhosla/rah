@@ -65,7 +65,9 @@ func TestWorkflowHandler_ListEmpty(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	workflows, _ := result["workflows"].([]interface{})
 	if len(workflows) != 0 {
 		t.Fatalf("expected empty list, got %d items", len(workflows))
@@ -91,7 +93,9 @@ func TestWorkflowHandler_CreateValidWorkflow(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var result config.WorkflowDefinition
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if result.Name != "pay-flow" {
 		t.Fatalf("expected name 'pay-flow', got %q", result.Name)
 	}
@@ -168,7 +172,9 @@ func TestWorkflowHandler_GetWorkflow(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	var result config.WorkflowDefinition
-	json.Unmarshal(w.Body.Bytes(), &result)
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if result.Name != "my-wf" {
 		t.Fatalf("expected 'my-wf', got %q", result.Name)
 	}

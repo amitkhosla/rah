@@ -83,17 +83,9 @@ func (s *ManagementServer) BlueprintHandler(w http.ResponseWriter, r *http.Reque
 
 // generateWebFlows produces login, callback, and logout flows for OAuth web apps.
 func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
-	loginPath := req.LoginPath
-	if loginPath == "" {
-		loginPath = "/login"
-	}
 	callbackPath := req.CallbackPath
 	if callbackPath == "" {
 		callbackPath = "/callback"
-	}
-	logoutPath := req.LogoutPath
-	if logoutPath == "" {
-		logoutPath = "/logout"
 	}
 
 	var flows []FlowBlueprint

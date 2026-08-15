@@ -226,8 +226,12 @@ func TestBatchingExecutor_MultipleFlushes(t *testing.T) {
 	}
 
 	// Send 2 more messages — should flush again
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[2]})
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[3]})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[2]}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payloads[3]}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	executor.mu.Lock()
 	batchLen = len(executor.batch)
@@ -255,7 +259,9 @@ func TestBatchingExecutor_WindowFiresBeforeSize(t *testing.T) {
 
 	// Send 3 messages (less than batchSize=5)
 	for _, p := range payloads {
-		executor.Handle(ctx, messaging.ConsumedMessage{Payload: p})
+		if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: p}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
 	}
 
 	executor.mu.Lock()

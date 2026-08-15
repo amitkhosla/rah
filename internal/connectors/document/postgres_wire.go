@@ -413,11 +413,10 @@ func (p *PostgresProvider) Query(ctx context.Context, req QueryRequest) ([]byte,
 	if len(req.Filter) > 0 {
 		query += fmt.Sprintf(` WHERE doc @> $%d::jsonb`, argIndex)
 		args = append(args, string(req.Filter))
-		argIndex++
 	}
 
 	// Add ORDER BY if sort provided
-	if req.Sort != nil && len(req.Sort) > 0 {
+	if len(req.Sort) > 0 {
 		sortClause, err := buildSortClause(req.Sort)
 		if err != nil {
 			return nil, fmt.Errorf("postgres[%s]: invalid sort: %w", p.cfg.Name, err)
@@ -494,7 +493,7 @@ func (p *PostgresProvider) Count(ctx context.Context, req QueryRequest) (int64, 
 	args := []interface{}{}
 
 	// Add WHERE clause if filter provided
-	if req.Filter != nil && len(req.Filter) > 0 {
+	if len(req.Filter) > 0 {
 		query += ` WHERE doc @> $1::jsonb`
 		args = append(args, string(req.Filter))
 	}
@@ -515,7 +514,7 @@ func (p *PostgresProvider) Execute(ctx context.Context, req ExecuteRequest) ([]b
 		return nil, err
 	}
 
-	if req.Command == nil || len(req.Command) == 0 {
+	if len(req.Command) == 0 {
 		return nil, fmt.Errorf("postgres[%s]: command is required", p.cfg.Name)
 	}
 

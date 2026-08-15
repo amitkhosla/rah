@@ -49,12 +49,14 @@ func (p *RabbitMQPublisher) Connect(ctx context.Context) error {
 		}
 
 		conn, err = amqp091.DialTLS(uri, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("rabbitmq[%s]: failed to connect: %w", p.cfg.Name, err)
+		}
 	} else {
 		conn, err = amqp091.Dial(uri)
-	}
-
-	if err != nil {
-		return fmt.Errorf("rabbitmq[%s]: failed to connect: %w", p.cfg.Name, err)
+		if err != nil {
+			return fmt.Errorf("rabbitmq[%s]: failed to connect: %w", p.cfg.Name, err)
+		}
 	}
 
 	ch, err := conn.Channel()

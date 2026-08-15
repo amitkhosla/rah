@@ -968,7 +968,7 @@ func main() {
 			_ = rlClient.Close()
 		}
 	} else {
-		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) Ã¢â‚¬â€ using local counters")
+		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config)  --  using local counters")
 	}
 
 	// Initialize vector stores Ã¢â‚¬â€ optional; controlled by [vector_stores] in config.
