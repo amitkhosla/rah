@@ -350,6 +350,20 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps])
 
+  // Called from Apps (App Platform) when user designs a flow in the embedded modal
+  function saveFlowFromApp(name: string, flowSteps: FlowStep[], constants: Record<string, string>) {
+    if (!name.trim()) return
+    setSavedFlows(prev => {
+      const idx = prev.findIndex(f => f.name === name)
+      const entry: SavedFlow = { name, steps: [...flowSteps], groups: [], stepLabels: {}, constants }
+      if (idx >= 0) { const updated = [...prev]; updated[idx] = entry; return updated }
+      return [...prev, entry]
+    })
+    if (flowSteps.length > 0) {
+      syncFlows({ sync_uuid: crypto.randomUUID(), flows: [{ name, instructions: flowSteps as any, action: 'upsert', constants }], apis: [] }).catch(() => {})
+    }
+  }
+
   // Called from APIsSection when user creates a flow name without going to designer
   function createNamedFlow(name: string) {
     setSavedFlows(prev => {
@@ -832,7 +846,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'observability'      && <Observability />}
         {tab === 'audit-log'          && <AuditLog />}
         {tab === 'tenants'           && <Tenants />}
-        {tab === 'apps'              && <Apps />}
+        {tab === 'apps'              && <Apps flowNames={savedFlows.map(f => f.name)} savedFlows={savedFlows} blocks={blocks} onSaveFlow={saveFlowFromApp} />}
         {tab === 'app-releases'      && <AppReleases />}
         {tab === 'app-explorer'      && <AppExplorer />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}

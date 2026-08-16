@@ -734,6 +734,7 @@ export function deleteApp(id: number): Promise<void> {
 export interface AppBlueprintRequest {
   type: 'web' | 'api-service' | 'event-processor' | 'webhook'
   tenant_mode: 'tenant_aware' | 'tenant_agnostic'
+  auth_flow?: 'oauth_code' | 'form_login'
   oauth_provider?: string
   callback_path?: string
   login_path?: string

@@ -11,7 +11,8 @@ import (
 type BlueprintRequest struct {
 	Type          string `json:"type"`                     // "web" | "api-service" | "event-processor" | "webhook"
 	TenantMode    string `json:"tenant_mode"`              // "tenant_aware" | "tenant_agnostic"
-	OAuthProvider string `json:"oauth_provider,omitempty"` // e.g. "google", "github"
+	AuthFlow      string `json:"auth_flow,omitempty"`      // "oauth_code" | "form_login" (web only; defaults to "oauth_code")
+	OAuthProvider string `json:"oauth_provider,omitempty"` // e.g. "google", "github" (oauth_code only)
 	CallbackPath  string `json:"callback_path,omitempty"`  // e.g. "/callback"
 	LoginPath     string `json:"login_path,omitempty"`     // e.g. "/login"
 	LogoutPath    string `json:"logout_path,omitempty"`    // e.g. "/logout"
@@ -60,6 +61,9 @@ func (s *ManagementServer) BlueprintHandler(w http.ResponseWriter, r *http.Reque
 	var flows []FlowBlueprint
 	switch req.Type {
 	case "web":
+		if req.AuthFlow == "" {
+			req.AuthFlow = "oauth_code"
+		}
 		flows = generateWebFlows(appName, req)
 	case "api-service":
 		flows = generateAPIServiceFlows(appName)
@@ -81,16 +85,26 @@ func (s *ManagementServer) BlueprintHandler(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// generateWebFlows produces login, callback, and logout flows for OAuth web apps.
+// generateWebFlows produces login, callback/logout flows for web apps.
+// Supports two auth flows: "oauth_code" (default) and "form_login".
 func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
+	if req.AuthFlow == "form_login" {
+		return generateFormLoginFlows(appName, req)
+	}
+	return generateOAuthCodeFlows(appName, req)
+}
+
+// generateOAuthCodeFlows generates OAuth 2.0 Authorization Code flow blueprints.
+func generateOAuthCodeFlows(appName string, req BlueprintRequest) []FlowBlueprint {
 	callbackPath := req.CallbackPath
 	if callbackPath == "" {
 		callbackPath = "/callback"
 	}
+	provider := req.OAuthProvider
+	if provider == "" {
+		provider = "YOUR_PROVIDER"
+	}
 
-	var flows []FlowBlueprint
-
-	// Login flow: build OAuth2 authorize URL and redirect
 	loginYAML := fmt.Sprintf(`steps:
   - name: build_oauth_url
     kind: set_slot
@@ -108,12 +122,6 @@ func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
     status_code: 302
 `, callbackPath)
 
-	flows = append(flows, FlowBlueprint{
-		Name: fmt.Sprintf("%s-login", appName),
-		YAML: loginYAML,
-	})
-
-	// Callback flow: exchange code for tokens and set session cookie
 	callbackYAML := fmt.Sprintf(`steps:
   - name: extract_code
     kind: extract_query_param
@@ -139,14 +147,8 @@ func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
     kind: http_redirect
     location: /
     status_code: 302
-`, req.OAuthProvider, callbackPath)
+`, provider, callbackPath)
 
-	flows = append(flows, FlowBlueprint{
-		Name: fmt.Sprintf("%s-callback", appName),
-		YAML: callbackYAML,
-	})
-
-	// Logout flow: clear session cookie and redirect
 	logoutYAML := `steps:
   - name: clear_session_cookie
     kind: set_cookie
@@ -161,12 +163,84 @@ func generateWebFlows(appName string, req BlueprintRequest) []FlowBlueprint {
     status_code: 302
 `
 
-	flows = append(flows, FlowBlueprint{
-		Name: fmt.Sprintf("%s-logout", appName),
-		YAML: logoutYAML,
-	})
+	return []FlowBlueprint{
+		{Name: fmt.Sprintf("%s-login", appName), YAML: loginYAML},
+		{Name: fmt.Sprintf("%s-callback", appName), YAML: callbackYAML},
+		{Name: fmt.Sprintf("%s-logout", appName), YAML: logoutYAML},
+	}
+}
 
-	return flows
+// generateFormLoginFlows generates username/password form login blueprints.
+func generateFormLoginFlows(appName string, req BlueprintRequest) []FlowBlueprint {
+	loginPath := req.LoginPath
+	if loginPath == "" {
+		loginPath = "/login"
+	}
+	logoutPath := req.LogoutPath
+	if logoutPath == "" {
+		logoutPath = "/logout"
+	}
+
+	loginYAML := fmt.Sprintf(`steps:
+  - name: extract_username
+    kind: extract_body_field
+    field: username
+    target_slot: username
+  - name: extract_password
+    kind: extract_body_field
+    field: password
+    target_slot: password
+  - name: validate_credentials
+    kind: comment
+    comment: "Look up user by username in your datastore and verify password hash"
+  - name: set_session_cookie
+    kind: set_cookie
+    name: session_token
+    value_slot: session_id
+    max_age_sec: 3600
+    http_only: true
+    secure: true
+    same_site: Strict
+  - name: redirect_to_app
+    kind: http_redirect
+    location: /
+    status_code: 302
+# Route: POST %s
+`, loginPath)
+
+	logoutYAML := fmt.Sprintf(`steps:
+  - name: clear_session_cookie
+    kind: set_cookie
+    name: session_token
+    value: ""
+    max_age_sec: -1
+    http_only: true
+    secure: true
+  - name: redirect_to_login
+    kind: http_redirect
+    location: %s
+    status_code: 302
+`, loginPath)
+
+	authCheckYAML := `steps:
+  - name: extract_session_cookie
+    kind: extract_cookie
+    cookie_name: session_token
+    target_slot: session_token
+  - name: validate_session
+    kind: comment
+    comment: "Validate session_token against your session store; set user_id slot"
+  - name: reject_if_invalid
+    kind: comment
+    comment: "If session invalid, redirect to login or return 401"
+# Use this flow as a sub-flow in protected routes via: kind: call_flow
+`
+
+	return []FlowBlueprint{
+		{Name: fmt.Sprintf("%s-login", appName), YAML: loginYAML},
+		{Name: fmt.Sprintf("%s-logout", appName), YAML: logoutYAML},
+		{Name: fmt.Sprintf("%s-auth-check", appName), YAML: authCheckYAML},
+	}
 }
 
 // generateAPIServiceFlows produces a basic auth validation flow.
