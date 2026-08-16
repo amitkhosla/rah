@@ -133,6 +133,12 @@ jobs:
           set -e
           echo "$OUTPUT"
 
+          # Exit code 1 with a network error means the vuln DB was unreachable — treat as warning.
+          if [ "$SCAN_EXIT" -eq 1 ] && echo "$OUTPUT" | grep -q "fetching vulnerabilities"; then
+            echo "::warning::govulncheck could not reach vuln.go.dev (network error) -- skipping vulnerability scan"
+            exit 0
+          fi
+
           if [ "$SCAN_EXIT" -ne 3 ]; then exit "$SCAN_EXIT"; fi
 
           # Modules whose go.mod line was added or version-bumped in this PR.

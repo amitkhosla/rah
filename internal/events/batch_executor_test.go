@@ -533,7 +533,9 @@ func TestBatchingExecutor_BatchJSONFormat(t *testing.T) {
 	}
 
 	for _, p := range payloads {
-		executor.Handle(ctx, messaging.ConsumedMessage{Payload: p})
+		if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: p}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
 	}
 
 	executor.mu.Lock()
