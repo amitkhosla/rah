@@ -437,7 +437,9 @@ func TestBatchingExecutor_PayloadOrder(t *testing.T) {
 	}
 
 	for _, payload := range expected {
-		executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(payload)})
+		if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(payload)}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
 	}
 
 	executor.mu.Lock()
@@ -463,8 +465,12 @@ func TestBatchingExecutor_JSONMarshalError(t *testing.T) {
 	payload1 := []byte(`{"data":"test"}`)
 	payload2 := []byte(`{"data":"test2"}`)
 
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload1})
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload2})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload1}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload2}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	// Batch should be flushed and JSON marshalled successfully
 	executor.mu.Lock()
