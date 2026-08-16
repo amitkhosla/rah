@@ -293,7 +293,9 @@ func TestBatchingExecutor_NoWindowNoSize(t *testing.T) {
 	payload := []byte(`{"msg":1}`)
 
 	// Send message
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: payload}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	executor.mu.Lock()
 	if len(executor.batch) != 1 {
@@ -332,8 +334,12 @@ func TestBatchingExecutor_LargePayloads(t *testing.T) {
 		largePayload2[i] = 'B'
 	}
 
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: largePayload1})
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: largePayload2})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: largePayload1}); err != nil {
+		t.Fatalf("Handle largePayload1: %v", err)
+	}
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: largePayload2}); err != nil {
+		t.Fatalf("Handle largePayload2: %v", err)
+	}
 
 	// After 2 messages, batch should be flushed
 	executor.mu.Lock()

@@ -740,7 +740,7 @@ func main() {
 			gatewaylog.Default.Error("[DocumentConnector] startup failed", gatewaylog.F("error", err.Error()))
 			os.Exit(1)
 		}
-		defer docConnMgr.Stop()
+		defer func() { _ = docConnMgr.Stop() }()
 		log.Printf("[document] manager initialized with %d connector(s)", len(cfgMgr.Gateway().DocumentConnectors))
 	}
 
@@ -757,7 +757,7 @@ func main() {
 			gatewaylog.Default.Error("[MessagePublisher] startup failed", gatewaylog.F("error", err.Error()))
 			os.Exit(1)
 		}
-		defer msgPubMgr.Stop()
+		defer func() { _ = msgPubMgr.Stop() }()
 		log.Printf("[messaging] manager initialized with %d publisher(s)", len(cfgMgr.Gateway().MessagingPublishers))
 	}
 
@@ -791,7 +791,7 @@ func main() {
 		eventListenerMgr.Start(gatewayCtx)
 		defer eventListenerMgr.Stop()
 		if eventRedisClient != nil {
-			defer eventRedisClient.Close()
+			defer func() { _ = eventRedisClient.Close() }()
 		}
 		log.Printf("[events] listener manager initialized with %d listener(s)", len(cfgMgr.Gateway().EventListeners))
 	}
@@ -1042,7 +1042,7 @@ func main() {
 			_ = rlClient.Close()
 		}
 	} else {
-		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config)  --  using local counters")
+		log.Printf("[rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) -- using local counters")
 	}
 
 	// Initialize vector stores Ã¢â‚¬â€ optional; controlled by [vector_stores] in config.

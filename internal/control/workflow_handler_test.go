@@ -203,7 +203,9 @@ func TestWorkflowHandler_DeleteWorkflow(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest("GET", "/workflows", nil))
 	var list map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &list)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if len(list["workflows"].([]interface{})) != 1 {
 		t.Fatal("expected 1 workflow before delete")
 	}
@@ -218,7 +220,9 @@ func TestWorkflowHandler_DeleteWorkflow(t *testing.T) {
 	// Verify gone
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest("GET", "/workflows", nil))
-	json.Unmarshal(w.Body.Bytes(), &list)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
 	if len(list["workflows"].([]interface{})) != 0 {
 		t.Fatal("expected empty list after delete")
 	}
