@@ -635,6 +635,7 @@ export interface CredentialListResponse {
 export interface FlowImpact {
   flows: string[]   // names of flows that call this flow
   apis:  string[]   // names of APIs whose defaultFlow or endpoint flowName points here
+  apps?: { app_name: string; version: string; channel: string }[]  // active app releases using this flow
 }
 
 // ── Gateway live state ────────────────────────────────────────────

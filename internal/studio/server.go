@@ -459,6 +459,7 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/storage-connectors", s.storageConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/messaging-publishers", s.messagingPublishersMgmtProxy)
 	apiMux.HandleFunc("/api/event-listeners", s.eventListenersMgmtProxy)
+	apiMux.HandleFunc("/api/app-usages", s.appUsagesHandler)
 	apiMux.HandleFunc("/api/test/", s.testProxy)
 	apiMux.HandleFunc("/api/test/execute", s.testProxy)
 	apiMux.HandleFunc("/api/workflows", s.workflowsMgmtProxy)
@@ -1822,6 +1823,83 @@ func (s *Server) messagingPublishersMgmtProxy(w http.ResponseWriter, r *http.Req
 // eventListenersMgmtProxy forwards /api/event-listeners → /event-listeners on the management server.
 func (s *Server) eventListenersMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, "/event-listeners")
+}
+
+// appUsagesHandler computes which flows are owned by active app releases.
+// It calls the gateway's raw /apps and /apps/{name}/releases endpoints and
+// aggregates the result here in the Studio — the gateway serves raw data only.
+func (s *Server) appUsagesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx := r.Context()
+	base := ""
+	if s.managementBaseURL != nil {
+		base = s.managementBaseURL.String()
+	}
+
+	type appRef struct {
+		AppName string `json:"app_name"`
+		Version string `json:"version"`
+		Channel string `json:"channel"`
+	}
+	flowUsages := map[string][]appRef{}
+
+	// 1. Fetch all registered app names from the gateway.
+	appsURL := base + "/apps"
+	appsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, appsURL, nil)
+	if err == nil {
+		if resp, err := s.httpClient.Do(appsReq); err == nil {
+			defer func() { _ = resp.Body.Close() }()
+			var appsResp struct {
+				Items []struct {
+					Name string `json:"name"`
+				} `json:"items"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&appsResp) == nil {
+				// 2. For each app, fetch its releases and index active ones.
+				for _, app := range appsResp.Items {
+					relURL := base + "/apps/" + app.Name + "/releases"
+					relReq, err := http.NewRequestWithContext(ctx, http.MethodGet, relURL, nil)
+					if err != nil {
+						continue
+					}
+					relResp, err := s.httpClient.Do(relReq)
+					if err != nil {
+						continue
+					}
+					var relBody struct {
+						Releases []struct {
+							AppName   string   `json:"app_name"`
+							Version   string   `json:"version"`
+							Channel   string   `json:"channel"`
+							FlowNames []string `json:"flow_names"`
+							Active    bool     `json:"active"`
+						} `json:"releases"`
+					}
+					if json.NewDecoder(relResp.Body).Decode(&relBody) == nil {
+						for _, rel := range relBody.Releases {
+							if !rel.Active {
+								continue
+							}
+							for _, fn := range rel.FlowNames {
+								flowUsages[fn] = append(flowUsages[fn], appRef{
+									AppName: rel.AppName,
+									Version: rel.Version,
+									Channel: rel.Channel,
+								})
+							}
+						}
+					}
+					_ = relResp.Body.Close()
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"flow_usages": flowUsages})
 }
 
 // testProxy forwards /api/test/... → /test/... on the management server.

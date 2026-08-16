@@ -425,7 +425,7 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"list_datastores":             {HTTPMethod: http.MethodGet, Path: "/config/datastores"},
 	"test_datastore":              {HTTPMethod: http.MethodPost, Path: "/config/datastores/{name}/test", PathParam: "name"},
 	"list_apps":                   {HTTPMethod: http.MethodGet, Path: "/apps"},
-	"generate_app_blueprint":      {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/blueprint", PathParam: "app_name", BodyFields: []string{"type", "tenant_mode", "oauth_provider", "callback_path", "login_path", "logout_path"}},
+	"generate_app_blueprint":      {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/blueprint", PathParam: "app_name", BodyFields: []string{"type", "tenant_mode", "auth_flow", "oauth_provider", "callback_path", "login_path", "logout_path"}},
 	"list_app_releases":           {HTTPMethod: http.MethodGet, Path: "/apps/{app_name}/releases", PathParam: "app_name"},
 	"create_app_release":          {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases", PathParam: "app_name", BodyFields: []string{"version", "flow_names", "channel", "notes"}},
 	"promote_app_release":         {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases/{version}/promote", PathParams: map[string]string{"app_name": "app_name", "version": "version"}, BodyFields: []string{"channel"}},

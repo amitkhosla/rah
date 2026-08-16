@@ -253,10 +253,6 @@ func (s *ManagementServer) rollbackAppRelease(w http.ResponseWriter, r *http.Req
 		req.Channel = "production"
 	}
 
-	// For simplicity: treat rollback as a re-promotion of a previous version.
-	// In a full implementation, you'd track rollback history or maintain versioning chains.
-	// Here we just activate the specified version (same as promote).
-
 	releaseKey := fmt.Sprintf("release:%s:%s", appName, version)
 	relData, ok, err := s.dataStore.GetGlobal(ctx, config.DomainApps, releaseKey)
 	if err != nil || !ok {

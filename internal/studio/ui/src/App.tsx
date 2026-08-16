@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchSchema, syncFlows } from './api'
+import { fetchSchema, listAppUsages, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
+import type { AppUsageEntry } from './api'
 export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'app-releases' | 'app-explorer' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'datastores' | 'document-connectors' | 'storage-connectors' | 'messaging-publishers' | 'event-listeners' | 'migrations' | 'tests' | 'settings' | 'workflow-designer'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
@@ -349,6 +350,20 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps])
 
+  // Called from Apps (App Platform) when user designs a flow in the embedded modal
+  function saveFlowFromApp(name: string, flowSteps: FlowStep[], constants: Record<string, string>) {
+    if (!name.trim()) return
+    setSavedFlows(prev => {
+      const idx = prev.findIndex(f => f.name === name)
+      const entry: SavedFlow = { name, steps: [...flowSteps], groups: [], stepLabels: {}, constants }
+      if (idx >= 0) { const updated = [...prev]; updated[idx] = entry; return updated }
+      return [...prev, entry]
+    })
+    if (flowSteps.length > 0) {
+      syncFlows({ sync_uuid: crypto.randomUUID(), flows: [{ name, instructions: flowSteps as any, action: 'upsert', constants }], apis: [] }).catch(() => {})
+    }
+  }
+
   // Called from APIsSection when user creates a flow name without going to designer
   function createNamedFlow(name: string) {
     setSavedFlows(prev => {
@@ -416,6 +431,15 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   // APIs — each carries its own flow_name
   const [apis, setApis] = useState<ApiDef[]>([])
 
+  // App usages: flow name → list of active app releases using it
+  const [appUsages, setAppUsages] = useState<Record<string, AppUsageEntry[]>>({})
+
+  useEffect(() => {
+    listAppUsages()
+      .then(r => setAppUsages(r.flow_usages ?? {}))
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem('rah_studio_v1')
@@ -459,10 +483,20 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
     return () => clearTimeout(id)
   }, [savedFlows, apis, accent])
 
-  // Reverse dependency map: flow name → { flows, apis } that reference it
+  // Reverse dependency map: flow name → { flows, apis, apps } that reference it
   const impactMap = useMemo(
-    () => buildImpactMap(savedFlows, apis),
-    [savedFlows, apis],
+    () => {
+      const m = buildImpactMap(savedFlows, apis)
+      // Merge active app release info
+      for (const [flowName, apps] of Object.entries(appUsages)) {
+        if (apps.length === 0) continue
+        const e = m.get(flowName) ?? { flows: [], apis: [] }
+        e.apps = apps
+        m.set(flowName, e)
+      }
+      return m
+    },
+    [savedFlows, apis, appUsages],
   )
 
   const connLabel: Record<ConnStatus, string> = {
@@ -473,14 +507,57 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   const connClass = conn === 'ok' ? ' ok' : conn === 'error' ? ' err' : ''
   const connColor = conn === 'ok' ? '#22c55e' : conn === 'error' ? '#ef4444' : '#f59e0b'
 
+  // Which top-level section is the current tab under?
+  const SECTION_TABS: Record<string, TabId> = {
+    gateway: 'flows',
+    app:      'apps',
+    workflow: 'workflow-designer',
+  }
+  const GATEWAY_TABS = new Set<TabId>(['dashboard','flows','apis','flowmap','ai','deploy','releases','gateway','observability','audit-log','rate-limits','rl-overrides','tiers','upstream-services','egress','schemas','grpc','cache','concurrency','tenants','tokens','settings','tests'])
+  const APP_TABS     = new Set<TabId>(['apps','app-releases','app-explorer'])
+  const WORKFLOW_TABS = new Set<TabId>(['schedules','ws-endpoints','ws-upstreams','event-listeners','messaging-publishers','document-connectors','storage-connectors','datastores','redis-sources','named-queries','workflow-designer','migrations'])
+  const activeSection = APP_TABS.has(tab) ? 'app' : WORKFLOW_TABS.has(tab) ? 'workflow' : 'gateway'
+
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+      {/* ── Top section bar ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 2,
+        padding: '0 12px',
+        height: 36, flexShrink: 0,
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--panel)',
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginRight: 8, letterSpacing: '0.06em' }}>RAH</span>
+        {(['gateway', 'app', 'workflow'] as const).map(section => {
+          const labels: Record<string, string> = { gateway: 'AI / Agentic Gateway', app: 'App Platform', workflow: 'Workflow Engine' }
+          const isActive = activeSection === section
+          return (
+            <button
+              key={section}
+              onClick={() => setTab(SECTION_TABS[section])}
+              style={{
+                fontSize: 12, fontWeight: isActive ? 700 : 500,
+                padding: '4px 14px',
+                borderRadius: 6,
+                border: isActive ? '1px solid var(--accent)' : '1px solid transparent',
+                background: isActive ? 'rgba(87,181,255,0.12)' : 'transparent',
+                color: isActive ? 'var(--accent)' : 'var(--muted)',
+                cursor: 'pointer',
+              }}
+            >
+              {labels[section]}
+            </button>
+          )
+        })}
+      </div>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
       {/* ── Sidebar ── */}
       <aside className="sidebar" style={{ width: sidebarCollapsed ? 48 : 180 }}>
         {/* Title */}
         {sidebarCollapsed
-          ? <div style={{ height: 53, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>⊛</div>
-          : <div className="sidebar-title">RAH Studio</div>
+          ? <div style={{ height: 36, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>⊛</div>
+          : <div className="sidebar-title" style={{ height: 36 }}>Studio</div>
         }
 
         <nav style={{ flex: 1, overflowY: 'auto' }}>
@@ -653,6 +730,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
             onLoadFlow={loadNamedFlow}
             onNavigateToDesigner={navigateToDesigner}
             onNavigateToDeploy={() => setTab('deploy')}
+            impactMap={impactMap}
           />
         </div>
         {tab === 'flowmap' && (
@@ -768,7 +846,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'observability'      && <Observability />}
         {tab === 'audit-log'          && <AuditLog />}
         {tab === 'tenants'           && <Tenants />}
-        {tab === 'apps'              && <Apps />}
+        {tab === 'apps'              && <Apps flowNames={savedFlows.map(f => f.name)} savedFlows={savedFlows} blocks={blocks} onSaveFlow={saveFlowFromApp} />}
         {tab === 'app-releases'      && <AppReleases />}
         {tab === 'app-explorer'      && <AppExplorer />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
@@ -799,6 +877,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
 
       {/* ── Global AI Assistant — floating on every screen ── */}
       <GlobalAIAssistant currentTab={tab} />
+      </div>
     </div>
   )
 }

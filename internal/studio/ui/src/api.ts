@@ -734,6 +734,7 @@ export function deleteApp(id: number): Promise<void> {
 export interface AppBlueprintRequest {
   type: 'web' | 'api-service' | 'event-processor' | 'webhook'
   tenant_mode: 'tenant_aware' | 'tenant_agnostic'
+  auth_flow?: 'oauth_code' | 'form_login'
   oauth_provider?: string
   callback_path?: string
   login_path?: string
@@ -1220,6 +1221,14 @@ export async function promoteAppRelease(appName: string, version: string, channe
 
 export async function rollbackAppRelease(appName: string, version: string, channel: string): Promise<AppRelease> {
   return request('/api/apps/' + appName + '/releases/' + version + '/rollback', { method: 'POST', body: JSON.stringify({ channel }), headers: { 'content-type': 'application/json' } })
+}
+
+// ── App Usages (flows/APIs belonging to deployed apps) ────────────────────
+
+export interface AppUsageEntry { app_name: string; version: string; channel: string }
+export interface AppUsages { flow_usages: Record<string, AppUsageEntry[]> }
+export function listAppUsages(): Promise<AppUsages> {
+  return request<AppUsages>('/api/app-usages')
 }
 
 // ── Named Queries ──────────────────────────────────────────────────────────────
