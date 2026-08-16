@@ -602,21 +602,21 @@ type PublisherConfig struct {
 // The gateway subscribes to Topic on the named messaging publisher's broker
 // and executes FlowName for each received message.
 type EventListenerConfig struct {
-	Name           string            `json:"name"                  yaml:"name"`
-	Publisher      string            `json:"publisher"             yaml:"publisher"`              // references a MessagingPublisher by name
-	Topic          string            `json:"topic"                 yaml:"topic"`
-	FlowName       string            `json:"flow_name"             yaml:"flow_name"`
-	PayloadVar     string            `json:"payload_var"           yaml:"payload_var"`            // slot name for message payload bytes
-	KeyVar         string            `json:"key_var,omitempty"     yaml:"key_var,omitempty"`      // slot name for message key bytes (optional)
-	GroupID        string            `json:"group_id,omitempty"    yaml:"group_id,omitempty"`     // Kafka consumer group ID
-	Workers        int               `json:"workers,omitempty"     yaml:"workers,omitempty"`      // concurrent message handlers (default 1)
-	HeaderMappings map[string]string `json:"header_mappings,omitempty" yaml:"header_mappings,omitempty"` // message header name → slot variable name
-	AppName        string `json:"app_name,omitempty"         yaml:"app_name,omitempty"`
-	DedupKey       string `json:"dedup_key,omitempty"        yaml:"dedup_key,omitempty"`
-	DedupWindowSec int    `json:"dedup_window_sec,omitempty" yaml:"dedup_window_sec,omitempty"`
-	BatchSize      int    `json:"batch_size,omitempty"       yaml:"batch_size,omitempty"`
-	BatchWindowMs  int    `json:"batch_window_ms,omitempty"  yaml:"batch_window_ms,omitempty"`
-	BatchPayloadVar string `json:"batch_payload_var,omitempty" yaml:"batch_payload_var,omitempty"`
+	Name            string            `json:"name"                   yaml:"name"`
+	Publisher       string            `json:"publisher"              yaml:"publisher"`              // references a MessagingPublisher by name
+	Topic           string            `json:"topic"                  yaml:"topic"`
+	FlowName        string            `json:"flow_name"              yaml:"flow_name"`
+	PayloadVar      string            `json:"payload_var"            yaml:"payload_var"`            // slot name for message payload bytes
+	KeyVar          string            `json:"key_var,omitempty"      yaml:"key_var,omitempty"`      // slot name for message key bytes (optional)
+	GroupID         string            `json:"group_id,omitempty"     yaml:"group_id,omitempty"`     // Kafka consumer group ID
+	Workers         int               `json:"workers,omitempty"      yaml:"workers,omitempty"`      // concurrent message handlers (default 1)
+	HeaderMappings  map[string]string `json:"header_mappings,omitempty" yaml:"header_mappings,omitempty"` // message header name → slot variable name
+	AppName         string            `json:"app_name,omitempty"     yaml:"app_name,omitempty"`
+	DedupKey        string            `json:"dedup_key,omitempty"    yaml:"dedup_key,omitempty"`
+	DedupWindowSec  int               `json:"dedup_window_sec,omitempty" yaml:"dedup_window_sec,omitempty"`
+	BatchSize       int               `json:"batch_size,omitempty"   yaml:"batch_size,omitempty"`
+	BatchWindowMs   int               `json:"batch_window_ms,omitempty" yaml:"batch_window_ms,omitempty"`
+	BatchPayloadVar string            `json:"batch_payload_var,omitempty" yaml:"batch_payload_var,omitempty"`
 }
 
 type GatewayConfig struct {

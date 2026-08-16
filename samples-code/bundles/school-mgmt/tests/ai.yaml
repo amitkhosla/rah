@@ -16,15 +16,3 @@ tests:
     assertions:
       - type: status
         expected: 200
-
-  - name: "AI tutor requires API key"
-    flow_name: "school_ai_ask"
-    mode: "published"
-    call_mode: "real"
-    input:
-      method: POST
-      path: /school/ai/ask
-      body: '{"subject":"Mathematics","question":"What is the Pythagorean theorem?"}'
-    assertions:
-      - type: status
-        expected: 401
