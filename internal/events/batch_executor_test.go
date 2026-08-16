@@ -366,7 +366,9 @@ func TestBatchingExecutor_BatchAccumulation(t *testing.T) {
 	}
 
 	for _, p := range payloads {
-		executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(p)})
+		if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(p)}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
 	}
 
 	// Verify accumulation
@@ -394,7 +396,9 @@ func TestBatchingExecutor_TimerManagement(t *testing.T) {
 	executor := newBatchingEventExecutor(ctx, fm, "batch-flow", 0, 50, windowMs)
 
 	// First message should start timer
-	executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(`{"msg":1}`)})
+	if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(`{"msg":1}`)}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	executor.mu.Lock()
 	if executor.timer == nil {
@@ -404,7 +408,9 @@ func TestBatchingExecutor_TimerManagement(t *testing.T) {
 
 	// Batch size flush should stop timer
 	for i := 0; i < 49; i++ {
-		executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(`{"msg":2}`)})
+		if err := executor.Handle(ctx, messaging.ConsumedMessage{Payload: []byte(`{"msg":2}`)}); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
 	}
 
 	executor.mu.Lock()
