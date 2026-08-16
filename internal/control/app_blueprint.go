@@ -220,7 +220,8 @@ func generateFormLoginFlows(appName string, req BlueprintRequest) []FlowBlueprin
     kind: http_redirect
     location: %s
     status_code: 302
-`, loginPath)
+# Route: POST %s
+`, loginPath, logoutPath)
 
 	authCheckYAML := `steps:
   - name: extract_session_cookie
