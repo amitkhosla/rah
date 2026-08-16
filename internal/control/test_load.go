@@ -168,7 +168,7 @@ func runLoadTest(req LoadTestRequest, table []engine.Instruction) ([]int64, int)
 			select {
 			case sem <- struct{}{}:
 			default:
-				// At capacity â€” skip this tick rather than queue unboundedly.
+				// At capacity — skip this tick rather than queue unboundedly.
 				continue
 			}
 

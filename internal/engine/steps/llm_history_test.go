@@ -11,7 +11,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func newHistoryCtx(numSlots int) (*rctx.Context, *engine.ExecutionState) {
 	ctx := &rctx.Context{
@@ -40,7 +40,7 @@ func decodeSlotHistory(t *testing.T, ctx *rctx.Context, slot int) []CanonicalMes
 	return msgs
 }
 
-// â”€â”€â”€ memStore â€” in-memory KeyValueStore for tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ memStore — in-memory KeyValueStore for tests â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type memStore struct {
 	data   map[string][]byte
@@ -87,7 +87,7 @@ func (s *ttlMemStore) PutWithTTL(_ context.Context, tenant datastore.Tenant, key
 	return s.memStore.Put(context.Background(), tenant, key, value)
 }
 
-// â”€â”€â”€ append_message â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ append_message â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestAppendMessage_BasicUser(t *testing.T) {
 	ctx, state := newHistoryCtx(3)
@@ -122,7 +122,7 @@ func TestAppendMessage_Accumulates(t *testing.T) {
 
 func TestAppendMessage_MaxTurnsTrim(t *testing.T) {
 	// Build 4 turn pairs (user+assistant x4), then append a 5th user message
-	// with maxTurns=2 â†’ oldest pairs trimmed, only 2 pairs remain.
+	// with maxTurns=2 → oldest pairs trimmed, only 2 pairs remain.
 	var existing []CanonicalMessage
 	for i := 0; i < 4; i++ {
 		existing = append(existing, CanonicalMessage{Role: RoleUser, Content: "u"})
@@ -146,14 +146,14 @@ func TestAppendMessage_MaxTurnsTrim(t *testing.T) {
 
 func TestAppendMessage_EmptyContent_Skip(t *testing.T) {
 	ctx, state := newHistoryCtx(2)
-	// contentSlot is empty â†’ skip
+	// contentSlot is empty → skip
 	AppendMessage(0, 1, RoleUser, 0).Action(ctx, state)
 	if len(ctx.ByteSlots[0]) != 0 {
 		t.Fatal("expected history slot to remain empty")
 	}
 }
 
-// â”€â”€â”€ trim_history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ trim_history â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestTrimHistory_ByTurns(t *testing.T) {
 	var msgs []CanonicalMessage
@@ -190,14 +190,14 @@ func TestTrimHistory_ByTokens(t *testing.T) {
 
 func TestTrimHistory_Empty_Noop(t *testing.T) {
 	ctx, state := newHistoryCtx(2)
-	// Empty slot â€” no panic, no write.
+	// Empty slot — no panic, no write.
 	TrimHistory(0, 5, 100).Action(ctx, state)
 	if len(ctx.ByteSlots[0]) != 0 {
 		t.Fatal("expected slot to remain empty")
 	}
 }
 
-// â”€â”€â”€ load_history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ load_history â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestLoadHistory_NilStore_WritesEmpty(t *testing.T) {
 	ctx, state := newHistoryCtx(3)
@@ -246,7 +246,7 @@ func TestLoadHistory_KeyNotFound_WritesEmpty(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ save_history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ save_history â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func TestSaveHistory_NilStore_Noop(t *testing.T) {
 	ctx, state := newHistoryCtx(3)

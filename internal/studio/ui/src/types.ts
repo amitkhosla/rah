@@ -158,6 +158,7 @@ export interface SavedFlow {
   steps: FlowStep[]
   groups?: StepGroup[]
   stepLabels?: Record<string, string>
+  constants?: Record<string, string>
 }
 
 // Sub-path + method entry under an API

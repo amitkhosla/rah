@@ -1,0 +1,21 @@
+apis:
+  - name: school-fees-list
+    path: /school/fees
+    method: GET
+    flow_name: school_fees_list
+    rate_limit_config: school-student-rl
+    action: upsert
+
+  - name: school-fees-record
+    path: /school/fees
+    method: POST
+    flow_name: school_fee_record
+    rate_limit_config: school-admin-rl
+    action: upsert
+
+  - name: school-fees-outstanding
+    path: /school/fees/outstanding
+    method: GET
+    flow_name: school_fees_outstanding
+    rate_limit_config: school-admin-rl
+    action: upsert

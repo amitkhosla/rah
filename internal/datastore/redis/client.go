@@ -126,7 +126,7 @@ func newClientBundle(cfg config.StoreConfig, topology Topology) (*clientBundle, 
 
 // parseBackoff converts a config backoff string to a time.Duration for go-redis.
 //   - ""  or "0"  â†’ 0 (go-redis uses its own default: 8ms min, 512ms max)
-//   - "-1"        â†’ -1 (go-redis disables backoff â€” retries immediately)
+//   - "-1"        â†’ -1 (go-redis disables backoff — retries immediately)
 //   - "50ms" etc. â†’ parsed duration
 func parseBackoff(s string) time.Duration {
 	s = strings.TrimSpace(s)

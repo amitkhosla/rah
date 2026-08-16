@@ -40,7 +40,7 @@ type pubSubEvent struct {
 	TTL      uint32 `json:"ttl,omitempty"`
 }
 
-// â”€â”€ Publisher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Publisher â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // RedisPubSubPublisher publishes cache.WriteEvents to a Redis channel via PUBLISH.
 // The caller owns and manages the Redis client's lifecycle.
@@ -68,7 +68,7 @@ func NewRedisPubSubPublisher(client goredis.UniversalClient, channel string, tim
 func (p *RedisPubSubPublisher) Handler(name string, filter func(cache.WriteEvent) bool) Handler {
 	return Handler{
 		Name:   name,
-		Async:  true, // PUBLISH is I/O â€” must not stall the cache dispatch loop
+		Async:  true, // PUBLISH is I/O — must not stall the cache dispatch loop
 		Filter: filter,
 		Handle: p.publish,
 	}
@@ -99,7 +99,7 @@ func (p *RedisPubSubPublisher) publish(ev cache.WriteEvent) {
 	}
 }
 
-// â”€â”€ Subscriber â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Subscriber â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // RedisPubSubSubscriber SUBSCRIBEs to a Redis channel and delivers received
 // WriteEvents to onEvent. Reconnects automatically on channel closure.

@@ -1,0 +1,4 @@
+upstream_services:
+  - name: school-backend
+    base_url: http://school-api.internal:8000
+    action: upsert

@@ -111,13 +111,13 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		InputTokensSlot:  -1, // disabled by default
 		OutputTokensSlot: -1, // disabled by default
 		MessagesSlot:     -1, // disabled by default
-		// Tool / thinking slots â€” disabled by default
+		// Tool / thinking slots — disabled by default
 		ToolsSlot:       -1,
 		ToolChoiceSlot:  -1,
 		ThinkingSlot:    -1,
 		ToolUseSlot:     -1,
 		ThinkingOutSlot: -1,
-		// Prompt caching â€” disabled by default
+		// Prompt caching — disabled by default
 		PromptCacheEnabled: false,
 		PromptCacheUpTo:    -1,
 		CacheReadSlot:      -1,

@@ -1,0 +1,14 @@
+apis:
+  - name: school-timetable-get
+    path: /school/timetable
+    method: GET
+    flow_name: school_timetable_get
+    rate_limit_config: school-student-rl
+    action: upsert
+
+  - name: school-timetable-set
+    path: /school/timetable
+    method: POST
+    flow_name: school_timetable_set
+    rate_limit_config: school-admin-rl
+    action: upsert

@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS rah_system.obs_access_log (
     id          BIGSERIAL PRIMARY KEY,
     ts          BIGINT    NOT NULL,
     api_name    TEXT,
+    app_name    TEXT,
     tenant_id   SMALLINT,
     tenant_key  TEXT,
     method      TEXT,
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS rah_system.obs_access_log (
 );
 CREATE INDEX IF NOT EXISTS obs_access_log_ts_idx     ON rah_system.obs_access_log(ts DESC);
 CREATE INDEX IF NOT EXISTS obs_access_log_api_idx    ON rah_system.obs_access_log(api_name, ts DESC);
+CREATE INDEX IF NOT EXISTS obs_access_log_app_idx    ON rah_system.obs_access_log(app_name, ts DESC);
 CREATE INDEX IF NOT EXISTS obs_access_log_tenant_idx ON rah_system.obs_access_log(tenant_key, ts DESC);
 CREATE INDEX IF NOT EXISTS obs_access_log_status_idx ON rah_system.obs_access_log(status, ts DESC);
 
@@ -237,12 +239,12 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 		return nil
 	}
 
-	const cols = 14
+	const cols = 15
 	args := make([]any, 0, len(records)*cols)
 	var sb strings.Builder
 	sb.WriteString(
 		`INSERT INTO rah_system.obs_access_log` +
-			`(ts,api_name,tenant_id,tenant_key,method,path,status,` +
+			`(ts,api_name,app_name,tenant_id,tenant_key,method,path,status,` +
 			`total_ms,gateway_ms,upstream_ms,ttfb_ms,req_bytes,res_bytes,extra) VALUES `)
 
 	for i, r := range records {
@@ -250,9 +252,9 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 			sb.WriteByte(',')
 		}
 		base := i * cols
-		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-			base+1, base+2, base+3, base+4, base+5, base+6, base+7,
-			base+8, base+9, base+10, base+11, base+12, base+13, base+14)
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8,
+			base+9, base+10, base+11, base+12, base+13, base+14, base+15)
 
 		// Serialise Extra map to JSON; nil map → NULL.
 		var extraJSON []byte
@@ -264,6 +266,7 @@ func (s *postgresObsStore) WriteAccessLog(ctx context.Context, records []AccessL
 		args = append(args,
 			r.TimestampNs,
 			nilIfEmpty(r.ApiName),
+			nilIfEmpty(r.AppName),
 			int16(r.TenantID),
 			nilIfEmpty(r.TenantKey),
 			nilIfEmpty(r.Method),
@@ -538,6 +541,9 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 	if f.ApiName != "" {
 		qb.add("api_name = $%d", f.ApiName)
 	}
+	if f.AppName != "" {
+		qb.add("app_name = $%d", f.AppName)
+	}
 	if f.TenantKey != "" {
 		qb.add("tenant_key = $%d", f.TenantKey)
 	}
@@ -553,7 +559,7 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 	}
 	qb.add("TRUE LIMIT $%d", limit) // always append limit as last placeholder
 
-	query := `SELECT ts,api_name,tenant_id,tenant_key,method,path,status,` +
+	query := `SELECT ts,api_name,app_name,tenant_id,tenant_key,method,path,status,` +
 		`total_ms,gateway_ms,upstream_ms,ttfb_ms,req_bytes,res_bytes,extra ` +
 		`FROM rah_system.obs_access_log` + qb.whereClause() + ` ORDER BY ts DESC`
 
@@ -572,11 +578,11 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 		var tenantID, status int16
 		var totalMs, gatewayMs, upstreamMs, ttfbMs float32
 		// All TEXT columns are nullable (written via nilIfEmpty); use *string to handle NULLs.
-		var apiName, tenantKey, method, path *string
+		var apiName, appName, tenantKey, method, path *string
 		var extraJSON []byte
 
 		if err := rows.Scan(
-			&r.TimestampNs, &apiName, &tenantID, &tenantKey,
+			&r.TimestampNs, &apiName, &appName, &tenantID, &tenantKey,
 			&method, &path, &status,
 			&totalMs, &gatewayMs, &upstreamMs, &ttfbMs,
 			&r.ReqBytes, &r.ResBytes, &extraJSON,
@@ -585,6 +591,9 @@ func (s *postgresObsStore) QueryAccessLog(ctx context.Context, f AccessLogFilter
 		}
 		if apiName != nil {
 			r.ApiName = *apiName
+		}
+		if appName != nil {
+			r.AppName = *appName
 		}
 		if tenantKey != nil {
 			r.TenantKey = *tenantKey
@@ -1001,6 +1010,39 @@ func (s *postgresObsStore) QueryPayloads(ctx context.Context, traceID uint64) ([
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// ── GetDistinctApps ───────────────────────────────────────────────────────────
+
+// GetDistinctApps returns distinct non-empty AppName values from the access log
+// within the given time window (fromUnixS).
+func (s *postgresObsStore) GetDistinctApps(ctx context.Context, fromUnixS int64) ([]string, error) {
+	query := `SELECT DISTINCT app_name FROM rah_system.obs_access_log
+	          WHERE app_name != '' AND app_name IS NOT NULL`
+	args := []any{}
+
+	if fromUnixS > 0 {
+		query += ` AND ts >= $1`
+		args = append(args, fromUnixS*1_000_000_000)
+	}
+
+	query += ` ORDER BY app_name ASC`
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var apps []string
+	for rows.Next() {
+		var appName string
+		if err := rows.Scan(&appName); err != nil {
+			return nil, err
+		}
+		apps = append(apps, appName)
+	}
+	return apps, rows.Err()
 }
 
 // ── Close ─────────────────────────────────────────────────────────────────────

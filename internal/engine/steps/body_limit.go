@@ -1,6 +1,6 @@
 ﻿package steps
 
-// body_limit â€” Enforces a maximum request body size per flow.
+// body_limit — Enforces a maximum request body size per flow.
 //
 // Performs two checks:
 //  1. Fast-path: if Content-Length is present and exceeds the limit, reject immediately.
@@ -9,11 +9,11 @@
 //
 // Config keys:
 //
-//	body.max_bytes   â€” max body size in bytes (integer or with suffix: kb/mb)
-//	body.max_kb      â€” convenience alias: value in kilobytes
-//	body.max_mb      â€” convenience alias: value in megabytes
-//	body.failure_status â€” HTTP status on rejection (default 413)
-//	body.failure_body   â€” response body on rejection (default "request body too large")
+//	body.max_bytes   — max body size in bytes (integer or with suffix: kb/mb)
+//	body.max_kb      — convenience alias: value in kilobytes
+//	body.max_mb      — convenience alias: value in megabytes
+//	body.failure_status — HTTP status on rejection (default 413)
+//	body.failure_body   — response body on rejection (default "request body too large")
 
 import (
 	"fmt"
@@ -103,7 +103,7 @@ func ParseBodyLimitConfig(input map[string]string) BodyLimitConfig {
 }
 
 // limitedReadCloser wraps an io.ReadCloser and returns an error once maxBytes
-// have been read.  It does NOT close on overflow â€” the caller still needs to
+// have been read.  It does NOT close on overflow — the caller still needs to
 // close the underlying body.
 type limitedReadCloser struct {
 	rc       io.ReadCloser
@@ -125,11 +125,11 @@ func (l *limitedReadCloser) Read(p []byte) (int, error) {
 		var buf [1]byte
 		_, overErr := l.rc.Read(buf[:])
 		if overErr == nil {
-			// There is more data â€” body exceeds the limit.
+			// There is more data — body exceeds the limit.
 			l.exceeded = true
 			return n, fmt.Errorf("request body too large")
 		}
-		// overErr is io.EOF (or another error) â€” body fits exactly.
+		// overErr is io.EOF (or another error) — body fits exactly.
 	}
 	return n, err
 }

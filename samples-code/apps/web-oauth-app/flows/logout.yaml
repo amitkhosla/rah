@@ -1,0 +1,15 @@
+flow:
+  name: my-web-app-logout
+  app_name: my-web-app
+  steps:
+    - name: clear_session
+      kind: set_cookie
+      cookie_name: session_token
+      value: ""
+      max_age_sec: -1
+      http_only: true
+      secure: true
+    - name: redirect_home
+      kind: http_redirect
+      location: /
+      status_code: 302

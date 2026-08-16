@@ -41,11 +41,11 @@ func (s *Server) tokenListCreateHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		var req struct {
-			Name        string   `json:"name"`
-			Role        string   `json:"role"`
-			AllowedEnvs []string `json:"allowed_envs,omitempty"`
-			Scope       string   `json:"scope,omitempty"`
-			ExpiresInDays int    `json:"expires_in_days,omitempty"`
+			Name          string   `json:"name"`
+			Role          string   `json:"role"`
+			AllowedEnvs   []string `json:"allowed_envs,omitempty"`
+			Scope         string   `json:"scope,omitempty"`
+			ExpiresInDays int      `json:"expires_in_days,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
 			http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)

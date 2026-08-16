@@ -141,7 +141,7 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 	urls := mockMgr.ServiceURLs["global"]
 
 	if urls == nil || len(urls) == 0 {
-		t.Log("âš ï¸  No URLs extracted (may be due to nested structure issues)")
+		t.Log("[WARN] No URLs extracted (may be due to nested structure issues)")
 		t.Log("\nTesting direct extraction from config instead...\n")
 
 		// Direct extraction from config
@@ -159,11 +159,11 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 		for key, urlVal := range allURLs {
 			issues := ValidateURL(urlVal)
 			if len(issues) == 0 {
-				t.Logf("âœ… %s â†’ %s", key, urlVal)
+				t.Logf("[OK] %s → %s", key, urlVal)
 			} else {
-				t.Logf("âŒ %s â†’ %s", key, urlVal)
+				t.Logf("[FAIL] %s → %s", key, urlVal)
 				for _, issue := range issues {
-					t.Logf("   â””â”€ Issue: %s", issue)
+						t.Logf("   |-- Issue: %s", issue)
 				}
 			}
 		}
@@ -184,7 +184,7 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 
 		if len(issues) == 0 {
 			validCount++
-			t.Logf("âœ… %s â†’ %s", serviceKey, urlStr)
+			t.Logf("[OK] %s → %s", serviceKey, urlStr)
 		} else {
 			invalidCount++
 			issueMap[serviceKey] = &URLIssue{
@@ -192,9 +192,9 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 				URL:        urlStr,
 				Issues:     issues,
 			}
-			t.Logf("âŒ %s â†’ %s", serviceKey, urlStr)
+			t.Logf("[FAIL] %s → %s", serviceKey, urlStr)
 			for _, issue := range issues {
-				t.Logf("   â””â”€ %s", issue)
+				t.Logf("   |-- %s", issue)
 			}
 		}
 	}
@@ -202,8 +202,8 @@ func TestDiagnosticURLExtraction(t *testing.T) {
 	t.Log("\n" + strings.Repeat("=", 80))
 	t.Log("URL VALIDATION SUMMARY")
 	t.Log(strings.Repeat("=", 80))
-	t.Logf("âœ… Valid URLs: %d", validCount)
-	t.Logf("âŒ Invalid URLs: %d", invalidCount)
+	t.Logf("[OK] Valid URLs: %d", validCount)
+	t.Logf("[FAIL] Invalid URLs: %d", invalidCount)
 	t.Logf("Total: %d\n", len(urls))
 
 	if invalidCount > 0 {
@@ -255,7 +255,7 @@ func TestURLFilteringAndSanitization(t *testing.T) {
 					validURLsOnly[key] = svc.ServiceURL
 					mockMgr.AddServiceURL("global", key, []byte(svc.ServiceURL))
 				} else {
-					t.Logf("FILTERED OUT: %s â†’ %s (issues: %v)", key, svc.ServiceURL, issues)
+					t.Logf("FILTERED OUT: %s → %s (issues: %v)", key, svc.ServiceURL, issues)
 				}
 			}
 		}
@@ -273,12 +273,12 @@ func TestURLFilteringAndSanitization(t *testing.T) {
 	if len(urls) > 0 {
 		t.Log("\nFiltered Valid URLs:")
 		for key, urlVal := range urls {
-			t.Logf("  âœ… %s â†’ %s", key, urlVal)
+			t.Logf("  [OK] %s → %s", key, urlVal)
 		}
 	}
 
 	if len(urls) == len(validURLsOnly) {
-		t.Log("\nâœ… All URLs are valid - no filtering needed")
+		t.Log("\n[OK] All URLs are valid - no filtering needed")
 	}
 
 	t.Log(strings.Repeat("=", 80) + "\n")
@@ -374,13 +374,13 @@ func TestEdgeCaseURLs(t *testing.T) {
 		if isValid == tc.valid {
 			passed++
 			if tc.valid {
-				t.Logf("âœ… %s â†’ VALID", tc.name)
+				t.Logf("[OK] %s → VALID", tc.name)
 			} else {
-				t.Logf("âœ… %s â†’ INVALID (detected: %v)", tc.name, issues)
+				t.Logf("[OK] %s → INVALID (detected: %v)", tc.name, issues)
 			}
 		} else {
 			failed++
-			t.Errorf("âŒ %s â†’ Expected: %v, Got: %v (issues: %v)", tc.name, tc.valid, isValid, issues)
+			t.Errorf("[FAIL] %s → Expected: %v, Got: %v (issues: %v)", tc.name, tc.valid, isValid, issues)
 		}
 	}
 
@@ -442,9 +442,9 @@ func TestURLFormatConsistency(t *testing.T) {
 	}
 
 	if len(issues) == 0 {
-		t.Log("\nâœ… All URLs follow consistent format")
+		t.Log("\n[OK] All URLs follow consistent format")
 	} else {
-		t.Log("\nâŒ Format inconsistencies found:")
+		t.Log("\n[FAIL] Format inconsistencies found:")
 		for _, issue := range issues {
 			t.Logf("  - %s", issue)
 		}
@@ -488,10 +488,10 @@ func TestURLSchemaValidation(t *testing.T) {
 				}
 
 				if matched {
-					t.Logf("âœ… %s â†’ %s (matches schema)", key, url)
+					t.Logf("[OK] %s → %s (matches schema)", key, url)
 					validCount++
 				} else {
-					t.Logf("âš ï¸  %s â†’ %s (doesn't match expected pattern)", key, url)
+					t.Logf("[WARN] %s -> %s (doesn't match expected pattern)", key, url)
 					invalidCount++
 				}
 			}
@@ -528,11 +528,11 @@ func TestURLValueCorrectness(t *testing.T) {
 		issues := ValidateURL(expectedURL)
 
 		if len(issues) == 0 {
-			t.Logf("âœ… %s", key)
+			t.Logf("[OK] %s", key)
 			t.Logf("   Expected: %s", expectedURL)
 			t.Logf("   Status: CORRECT\n")
 		} else {
-			t.Logf("âŒ %s", key)
+			t.Logf("[FAIL] %s", key)
 			t.Logf("   Expected: %s", expectedURL)
 			t.Logf("   Issues: %v\n", issues)
 		}
@@ -540,3 +540,5 @@ func TestURLValueCorrectness(t *testing.T) {
 
 	t.Log(strings.Repeat("=", 80) + "\n")
 }
+
+

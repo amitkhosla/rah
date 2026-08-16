@@ -233,7 +233,7 @@ func ProtoToXMLInstruction(cfg ProtoToXMLConfig) engine.Instruction {
 	}
 }
 
-// â”€â”€ Instruction factories (called from compiler) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Instruction factories (called from compiler) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // NewProtoToJSONInstruction creates a proto_to_json instruction.
 func NewProtoToJSONInstruction(cfg ProtoToJSONConfig) engine.Instruction {

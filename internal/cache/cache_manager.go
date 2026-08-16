@@ -22,8 +22,8 @@ share hash prefixes.
 
 Design:
   - Two index lanes:
-    tinyIdx  â€” lossless tag for keys â‰¤ 6 bytes (exact match, no hash).
-    hashIdx  â€” real-byte H2 tag for keys > 6 bytes (or 6B with high bytes).
+    tinyIdx  — lossless tag for keys â‰¤ 6 bytes (exact match, no hash).
+    hashIdx  — real-byte H2 tag for keys > 6 bytes (or 6B with high bytes).
   - Single region matrix [SizeClass][TTLTier]: fixed-stride circular slabs.
     Both lanes share the same regions; lane routing happens at Put/Get time.
   - EntryHeader.XSlotPtrB: 6-byte back-pointer written after every Put so the
@@ -196,7 +196,7 @@ func (cm *CacheManager) allocateRegions() {
 	}
 }
 
-// â”€â”€ backend sweep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ backend sweep â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 const backendSweepInterval = 5 * time.Minute
 
@@ -213,7 +213,7 @@ func (cm *CacheManager) backendSweepLoop() {
 	}
 }
 
-// â”€â”€ cleaner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ cleaner â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 const cleanerBatchSize = 256 // slots examined per region per sweep pass
 
@@ -308,7 +308,7 @@ func (cm *CacheManager) sweepBatch(ci, ti int, now uint32) int {
 	return cleaned
 }
 
-// â”€â”€ lane helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ lane helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // isHashLane reports whether key must use hashIdx.
 // Returns true for keys > 6 bytes, or 6-byte keys with any byte â‰¥ 128
@@ -336,7 +336,7 @@ func middleByte(key []byte) uint8 {
 	return key[len(key)/2]
 }
 
-// â”€â”€ index and region routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ index and region routing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func (cm *CacheManager) selectSizeClass(valueLen int) int {
 	for i, size := range cm.sizeClasses {
@@ -361,7 +361,7 @@ func (cm *CacheManager) getTenantCounter(tenantID uint16) *tenantCounter {
 	return val.(*tenantCounter)
 }
 
-// â”€â”€ async backend write â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ async backend write â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // enqueueWrite sends a backend write to the async queue.
 // Returns true if the write was successfully handed off (enqueued or written
@@ -415,7 +415,7 @@ func (cm *CacheManager) asyncWriteLoop() {
 	}
 }
 
-// â”€â”€ event bus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ event bus â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Subscribe registers h to be called after every successful Put.
 // Handlers are invoked sequentially in a dedicated goroutine; they must not
@@ -454,7 +454,7 @@ func (cm *CacheManager) eventDispatchLoop() {
 	}
 }
 
-// â”€â”€ Put / Update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Put / Update â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Put inserts value into the cache.
 //
@@ -588,7 +588,7 @@ func (cm *CacheManager) subUsage(tenantID uint16, entrySize uint64) {
 	subtractUint64(&cm.globalUsed, entrySize)
 }
 
-// â”€â”€ Get â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Get â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Get retrieves a value from the cache.
 //
@@ -657,7 +657,7 @@ func (cm *CacheManager) Get(tenantID uint16, key []byte) ([]byte, bool) {
 //   - GET: L1 checked first; on miss the configured backend is consulted.
 //     Result is populated before Done is closed.
 //
-// fm.CacheExec should be set to the CacheManager directly â€” no wrapper needed.
+// fm.CacheExec should be set to the CacheManager directly — no wrapper needed.
 func (cm *CacheManager) Submit(batch rctx.Batch) {
 	var puts []BackendEntry
 
@@ -701,7 +701,7 @@ func (cm *CacheManager) Stats() uint64 {
 }
 
 // NowSec returns the current unix-second from the coarse cached clock.
-// One atomic load (~1 ns) â€” safe to call from any goroutine at any rate.
+// One atomic load (~1 ns) — safe to call from any goroutine at any rate.
 func (cm *CacheManager) NowSec() uint32 {
 	return cm.clock.now()
 }
@@ -709,7 +709,7 @@ func (cm *CacheManager) NowSec() uint32 {
 // Invalidate removes (tenantID, key) from the L1 index and deletes it from
 // the backend, then calls OnInvalidate so the caller can propagate the
 // deletion to other instances via the ingest pipeline.
-// Safe to call when the entry does not exist â€” both operations are no-ops.
+// Safe to call when the entry does not exist — both operations are no-ops.
 func (cm *CacheManager) Invalidate(tenantID uint16, key []byte) error {
 	cm.deleteKey(tenantID, key)
 	if cm.OnInvalidate != nil {
@@ -730,7 +730,7 @@ func (cm *CacheManager) InvalidateLocal(tenantID uint16, key []byte) error {
 //  1. Resets the tenant quota counter (deleted from tenantUsage sync.Map).
 //  2. Delegates to the backend to remove all persisted entries for the tenant.
 //
-// In-memory slab entries are NOT swept â€” they are bounded by test workload
+// In-memory slab entries are NOT swept — they are bounded by test workload
 // size and will be naturally overwritten by the circular buffer. The index
 // entries for the deleted tenant will become harmless misses at read time.
 func (cm *CacheManager) DeleteTenant(tenantID uint16) error {
@@ -755,10 +755,10 @@ func (cm *CacheManager) deleteKey(tenantID uint16, key []byte) bool {
 	return cm.tinyIdx.DeleteTag(makeTagTiny(tenantID, key))
 }
 
-// â”€â”€ Advanced operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Advanced operations â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Exists reports whether (tenantID, key) is present and not expired in the L1 cache.
-// Does NOT check the backend â€” approximately 2x faster than Get.
+// Does NOT check the backend — approximately 2x faster than Get.
 // Returns false if the entry is found but has expired.
 func (cm *CacheManager) Exists(tenantID uint16, key []byte) bool {
 	hashLane := isHashLane(key)

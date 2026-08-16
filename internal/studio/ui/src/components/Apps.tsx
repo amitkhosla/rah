@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   listApps, createApp, updateApp, deleteApp,
   listKeys, generateKey, updateKey, revokeKey, rotateKey,
+  generateAppBlueprint, type AppBlueprintRequest, type AppBlueprintResponse,
 } from '../api'
 import type { App, APIKeyView, APIKeyCreateResponse } from '../types'
 
@@ -10,6 +11,179 @@ import type { App, APIKeyView, APIKeyCreateResponse } from '../types'
 function fmtDate(ts: number): string {
   if (!ts) return '—'
   return new Date(ts * 1000).toLocaleString()
+}
+
+// ── Blueprint wizard modal ────────────────────────────────────────────────────
+
+function BlueprintWizard({ appName, onClose }: { appName: string; onClose: () => void }) {
+  const [appType, setAppType] = useState<'web' | 'api-service' | 'event-processor' | 'webhook'>('web')
+  const [tenantMode, setTenantMode] = useState<'tenant_aware' | 'tenant_agnostic'>('tenant_aware')
+  const [oauthProvider, setOauthProvider] = useState('')
+  const [loginPath, setLoginPath] = useState('/login')
+  const [callbackPath, setCallbackPath] = useState('/oauth/callback')
+  const [logoutPath, setLogoutPath] = useState('/logout')
+  const [generating, setGenerating] = useState(false)
+  const [err, setErr] = useState('')
+  const [result, setResult] = useState<AppBlueprintResponse | null>(null)
+  const [copiedFlowIndex, setCopiedFlowIndex] = useState(-1)
+
+  async function handleGenerate() {
+    setGenerating(true); setErr('')
+    try {
+      const req: AppBlueprintRequest = {
+        type: appType,
+        tenant_mode: tenantMode,
+      }
+      if (appType === 'web') {
+        req.oauth_provider = oauthProvider.trim() || undefined
+        if (loginPath.trim()) req.login_path = loginPath.trim()
+        if (callbackPath.trim()) req.callback_path = callbackPath.trim()
+        if (logoutPath.trim()) req.logout_path = logoutPath.trim()
+      }
+      const resp = await generateAppBlueprint(appName, req)
+      setResult(resp)
+    } catch (e) { setErr(String(e)) }
+    finally { setGenerating(false) }
+  }
+
+  function copyFlowYaml(index: number) {
+    const flow = result?.flows[index]
+    if (!flow) return
+    navigator.clipboard.writeText(flow.yaml).then(() => {
+      setCopiedFlowIndex(index)
+      setTimeout(() => setCopiedFlowIndex(-1), 2000)
+    })
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{
+        background: 'var(--block-bg)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 24, width: 560, maxWidth: '90vw', maxHeight: '85vh', overflowY: 'auto',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>App Blueprint: {appName}</div>
+
+        {!result ? (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6, fontWeight: 600 }}>App Type</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {(['web', 'api-service', 'event-processor', 'webhook'] as const).map(t => (
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', fontSize: 13, cursor: 'pointer', gap: 4 }}>
+                    <input type="radio" name="appType" value={t} checked={appType === t} onChange={e => setAppType(e.target.value as typeof t)} />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6, fontWeight: 600 }}>Tenant Mode</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {(['tenant_aware', 'tenant_agnostic'] as const).map(t => (
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', fontSize: 13, cursor: 'pointer', gap: 4 }}>
+                    <input type="radio" name="tenantMode" value={t} checked={tenantMode === t} onChange={e => setTenantMode(e.target.value as typeof t)} />
+                    {t}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {appType === 'web' && (
+              <>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>OAuth Provider (optional)</label>
+                  <input
+                    className="input"
+                    style={{ width: '100%', boxSizing: 'border-box' }}
+                    placeholder="e.g. google, github, okta"
+                    value={oauthProvider}
+                    onChange={e => { setOauthProvider(e.target.value); setErr('') }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Login Path</label>
+                  <input
+                    className="input"
+                    style={{ width: '100%', boxSizing: 'border-box' }}
+                    value={loginPath}
+                    onChange={e => { setLoginPath(e.target.value); setErr('') }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Callback Path</label>
+                  <input
+                    className="input"
+                    style={{ width: '100%', boxSizing: 'border-box' }}
+                    value={callbackPath}
+                    onChange={e => { setCallbackPath(e.target.value); setErr('') }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Logout Path</label>
+                  <input
+                    className="input"
+                    style={{ width: '100%', boxSizing: 'border-box' }}
+                    value={logoutPath}
+                    onChange={e => { setLogoutPath(e.target.value); setErr('') }}
+                  />
+                </div>
+              </>
+            )}
+
+            {err && <div style={{ color: '#f87171', fontSize: 12, marginBottom: 12 }}>{err}</div>}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={handleGenerate} disabled={generating} style={{ flex: 1 }}>
+                {generating ? 'Generating...' : 'Generate'}
+              </button>
+              <button className="btn" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>Generated {result.flows.length} flow(s):</div>
+            {result.flows.map((flow, idx) => (
+              <div key={idx} style={{
+                background: 'var(--sidebar-bg, #0f1117)', border: '1px solid var(--border)',
+                borderRadius: 6, padding: 12, marginBottom: 12,
+              }}>
+                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{flow.name}</span>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 11 }}
+                    onClick={() => copyFlowYaml(idx)}
+                  >
+                    {copiedFlowIndex === idx ? 'Copied!' : 'Copy YAML'}
+                  </button>
+                </div>
+                <pre style={{
+                  fontFamily: 'monospace', fontSize: 11,
+                  background: 'var(--block-bg)', border: '1px solid var(--border)',
+                  borderRadius: 4, padding: '8px 10px', overflow: 'auto', maxHeight: 200,
+                  margin: 0, color: 'inherit', userSelect: 'all',
+                }}>
+                  {flow.yaml}
+                </pre>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={() => setResult(null)} style={{ flex: 1 }}>Back</button>
+              <button className="btn" onClick={onClose} style={{ flex: 1 }}>Close</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ── Raw-key modal ─────────────────────────────────────────────────────────────
@@ -284,6 +458,7 @@ function AppPanel({ app, onDeleted }: { app: App; onDeleted: () => void }) {
   const [saving, setSaving]         = useState(false)
   const [delConfirm, setDelConfirm] = useState(false)
   const [delErr, setDelErr]         = useState('')
+  const [showBlueprint, setShowBlueprint] = useState(false)
 
   // Reset local edit state when the selected app changes
   useEffect(() => {
@@ -293,6 +468,7 @@ function AppPanel({ app, onDeleted }: { app: App; onDeleted: () => void }) {
     setSaveErr('')
     setDelConfirm(false)
     setDelErr('')
+    setShowBlueprint(false)
   }, [app.app_id, app.name, app.description])
 
   async function handleSave() {
@@ -316,6 +492,10 @@ function AppPanel({ app, onDeleted }: { app: App; onDeleted: () => void }) {
 
   return (
     <div style={{ padding: 20, overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
+      {showBlueprint && (
+        <BlueprintWizard appName={app.name} onClose={() => setShowBlueprint(false)} />
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
         <div>
@@ -324,7 +504,10 @@ function AppPanel({ app, onDeleted }: { app: App; onDeleted: () => void }) {
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {!editMode && (
-            <button className="btn" style={{ fontSize: 12 }} onClick={() => setEditMode(true)}>Edit</button>
+            <>
+              <button className="btn" style={{ fontSize: 12 }} onClick={() => setEditMode(true)}>Edit</button>
+              <button className="btn" style={{ fontSize: 12 }} onClick={() => setShowBlueprint(true)}>Blueprint</button>
+            </>
           )}
           <button
             className="btn"

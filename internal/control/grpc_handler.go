@@ -14,12 +14,12 @@ import (
 
 // GrpcHandler exposes CRUD REST endpoints for gRPC FileDescriptorSet management.
 //
-//	POST   /grpc/descriptors              â€” upload raw FileDescriptorSet bytes
+//	POST   /grpc/descriptors              — upload raw FileDescriptorSet bytes
 //	                                        body: raw binary (.pb file)
 //	                                        header X-Descriptor-Name: <name> (required)
-//	GET    /grpc/descriptors              â€” list all sets [{name, services, uploaded_at}]
-//	GET    /grpc/descriptors/{name}       â€” detail: {name, services:[{full_name, methods}], uploaded_at}
-//	DELETE /grpc/descriptors/{name}       â€” delete set from store and registry
+//	GET    /grpc/descriptors              — list all sets [{name, services, uploaded_at}]
+//	GET    /grpc/descriptors/{name}       — detail: {name, services:[{full_name, methods}], uploaded_at}
+//	DELETE /grpc/descriptors/{name}       — delete set from store and registry
 type GrpcHandler struct {
 	dsm      *DataStoreManager
 	registry *grpcutil.DescriptorRegistry
@@ -77,7 +77,7 @@ func BootstrapGrpcDescriptors(dsm *DataStoreManager, registry *grpcutil.Descript
 	return nil
 }
 
-// â”€â”€â”€ Collection handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Collection handler â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func (h *GrpcHandler) collectionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -90,7 +90,7 @@ func (h *GrpcHandler) collectionHandler(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// â”€â”€â”€ Item handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Item handler â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func (h *GrpcHandler) itemHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/grpc/descriptors/")
@@ -108,7 +108,7 @@ func (h *GrpcHandler) itemHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// â”€â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Handlers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func (h *GrpcHandler) listSets(w http.ResponseWriter, r *http.Request) {
 	names := h.registry.ListSets()

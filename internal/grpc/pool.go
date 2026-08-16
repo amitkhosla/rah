@@ -18,14 +18,14 @@ import (
 // connKey uniquely identifies a gRPC connection by its target address and the
 // egress profile that governs it. profileID=0 means no profile (default creds).
 type connKey struct {
-	addr      string // normalized "host:port" â€” no scheme
+	addr      string // normalized "host:port" — no scheme
 	profileID uint8
 	useTLS    bool // grpcs:// vs grpc://
 }
 
 // ConnPool maintains a pool of reusable *grpc.ClientConn instances keyed by
 // (normalizedAddr, profileID, useTLS). A single ClientConn handles thousands of
-// concurrent RPCs via HTTP/2 stream multiplexing â€” no per-request dialing.
+// concurrent RPCs via HTTP/2 stream multiplexing — no per-request dialing.
 //
 // ConnPool is safe for concurrent use.
 type ConnPool struct {
@@ -193,7 +193,7 @@ func parseGRPCURL(rawURL string) (addr string, useTLS bool, err error) {
 	case strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://"):
 		return "", false, fmt.Errorf("grpc pool: URL %q must use grpc:// or grpcs:// scheme", rawURL)
 	default:
-		// Bare host:port â€” treat as insecure gRPC.
+		// Bare host:port — treat as insecure gRPC.
 		return rawURL, false, nil
 	}
 }

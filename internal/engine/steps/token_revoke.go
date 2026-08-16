@@ -1,6 +1,6 @@
 ﻿package steps
 
-// Token revocation â€” jti blocklist check (RFC 7519 Â§4.1.7 / RFC 7009 companion).
+// Token revocation — jti blocklist check (RFC 7519 Â§4.1.7 / RFC 7009 companion).
 //
 // check_token_revoked looks up the JWT's jti claim in a datastore-backed blocklist.
 // The management API writes to the blocklist when a token is explicitly revoked.
@@ -78,16 +78,16 @@ func ParseTokenRevokeConfig(input map[string]string) TokenRevokeConfig {
 //
 // Step config keys:
 //
-//	revoke.datastore      â€” named datastore for the blocklist (default "default")
-//	revoke.key_prefix     â€” key prefix (default "revoked:jti:")
-//	revoke.on_failure     â€” "stop" (default) or "continue"
-//	revoke.failure_status â€” HTTP status when revoked (default 401)
-//	revoke.failure_body   â€” body when revoked (default "token revoked")
+//	revoke.datastore      — named datastore for the blocklist (default "default")
+//	revoke.key_prefix     — key prefix (default "revoked:jti:")
+//	revoke.on_failure     — "stop" (default) or "continue"
+//	revoke.failure_status — HTTP status when revoked (default 401)
+//	revoke.failure_body   — body when revoked (default "token revoked")
 //
 // Slot config keys:
 //
-//	key_identifier        â€” slot holding the jti claim value (required)
-//	revoke.result_var     â€” slot to write "true" (not revoked) / "false" (revoked) in continue mode
+//	key_identifier        — slot holding the jti claim value (required)
+//	revoke.result_var     — slot to write "true" (not revoked) / "false" (revoked) in continue mode
 func CheckTokenRevoked(ds datastore.KeyValueStore, slots TokenRevokeSlots, cfg TokenRevokeConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "CHECK_TOKEN_REVOKED",
@@ -120,22 +120,22 @@ func CheckTokenRevoked(ds datastore.KeyValueStore, slots TokenRevokeSlots, cfg T
 			}
 
 			if slots.JTI < 0 || slots.JTI >= len(ctx.ByteSlots) {
-				return s.PC + 1 // no jti slot configured â€” skip check
+				return s.PC + 1 // no jti slot configured — skip check
 			}
 			jti := strings.TrimSpace(string(ctx.ByteSlots[slots.JTI]))
 			if jti == "" {
-				return s.PC + 1 // no jti value â€” skip check (token may not have jti)
+				return s.PC + 1 // no jti value — skip check (token may not have jti)
 			}
 
 			key := cfg.KeyPrefix + jti
 			tenant := datastore.Tenant(ctx.TenantKey)
 			val, found, err := ds.Get(context.Background(), tenant, key)
 			if err != nil {
-				// Datastore error â€” fail closed (treat as revoked) for security.
+				// Datastore error — fail closed (treat as revoked) for security.
 				return stopFail()
 			}
 			if found && len(val) > 0 {
-				// jti found in blocklist â€” token is revoked.
+				// jti found in blocklist — token is revoked.
 				return stopFail()
 			}
 

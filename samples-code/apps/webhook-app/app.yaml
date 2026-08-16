@@ -1,0 +1,6 @@
+# Webhook receiver app with HMAC signature verification
+app:
+  name: my-webhook-receiver
+  type: webhook
+  tenant_mode: tenant_agnostic
+  release_channel: production

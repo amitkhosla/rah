@@ -36,7 +36,7 @@ type accessLogConfig struct {
 	extraFields []ExtraField
 	insights    InsightConfig
 	enabled     bool    // mirrors ObsAccessLogConfig.Enabled; default true
-	sampleRate  float64 // 0.0â€“1.0; 0 means "not set" â†’ treated as 1.0
+	sampleRate  float64 // 0.0—1.0; 0 means "not set" â†’ treated as 1.0
 }
 
 // AccessLogEntry is the snapshot sent to the drain goroutine.
@@ -49,6 +49,7 @@ type AccessLogEntry struct {
 	TenantID  uint16
 	CallerKey string // API key alias; empty when no key auth was used
 	CallerID  uint32 // App ID (ctx.CallerID); 0 when no key auth was used
+	AppName   string // logical app name from flow constants; empty when not set
 
 	// Request
 	Method   string
@@ -81,6 +82,7 @@ func (e *AccessLogEntry) reset() {
 	e.TenantID = 0
 	e.CallerKey = ""
 	e.CallerID = 0
+	e.AppName = ""
 	e.Method = ""
 	e.Path = ""
 	e.ReqBytes = 0
@@ -191,7 +193,7 @@ func (l *AccessLogger) UpdateConfig(enabled bool, sampleRate float64) {
 }
 
 // shouldSample returns true if this request should be included in the access log.
-// Uses a fast atomic counter â€” no rand, no allocation, no mutex.
+// Uses a fast atomic counter — no rand, no allocation, no mutex.
 func (l *AccessLogger) shouldSample(rate float64) bool {
 	if rate <= 0 {
 		return false
@@ -218,6 +220,7 @@ func (l *AccessLogger) Snapshot(
 	tenantID uint16,
 	callerKey string,
 	callerID uint32,
+	appName string,
 	method, path string,
 	status int,
 	totalNs, gatewayNs, upstreamNs, ttfbNs, reqBytes, resBytes int64,
@@ -230,7 +233,7 @@ func (l *AccessLogger) Snapshot(
 	if !cfg.enabled {
 		return
 	}
-	// Counter-based sampling â€” no rand, no allocation.
+	// Counter-based sampling — no rand, no allocation.
 	if !l.shouldSample(cfg.sampleRate) {
 		return
 	}
@@ -246,6 +249,7 @@ func (l *AccessLogger) Snapshot(
 	entry.TenantID = tenantID
 	entry.CallerKey = callerKey
 	entry.CallerID = callerID
+	entry.AppName = appName
 	entry.Method = method
 	entry.Path = path
 	entry.Status = status
@@ -256,7 +260,7 @@ func (l *AccessLogger) Snapshot(
 	entry.ReqBytes = reqBytes
 	entry.ResBytes = resBytes
 
-	// Resolve extra fields from the original request â€” safe because req is still
+	// Resolve extra fields from the original request — safe because req is still
 	// valid at this point (handler goroutine has not returned yet).
 	if req != nil && len(cfg.extraFields) > 0 {
 		var queryVals url.Values // parsed lazily, at most once per request
@@ -300,7 +304,7 @@ func (l *AccessLogger) Snapshot(
 	select {
 	case l.ch <- entry:
 	default:
-		// Channel full â€” return entry to pool rather than leaking it.
+		// Channel full — return entry to pool rather than leaking it.
 		l.pool.Put(entry)
 		l.dropped.Add(1)
 	}
@@ -381,26 +385,29 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			sb.WriteString("[access]")
 			writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
 
-			// API identity â€” prefer name over internal ID
+			// API identity — prefer name over internal ID
 			if entry.ApiName != "" {
 				writeKV(&sb, "api", entry.ApiName)
 			} else {
 				writeKVUint(&sb, "api_id", uint64(entry.ApiID))
 			}
 
-			// Tenant identity â€” prefer key over internal ID
+			// Tenant identity — prefer key over internal ID
 			if entry.TenantKey != "" {
 				writeKV(&sb, "tenant", entry.TenantKey)
 			} else if entry.TenantID != 0 {
 				writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
 			}
 
-			// Caller identity â€” omit when no API key auth was used
+			// Caller identity — omit when no API key auth was used
 			if entry.CallerKey != "" {
 				writeKV(&sb, "caller_key", entry.CallerKey)
 			}
 			if entry.CallerID != 0 {
 				writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
+			}
+			if entry.AppName != "" {
+				writeKV(&sb, "app", entry.AppName)
 			}
 
 			writeKV(&sb, "method", entry.Method)
@@ -428,7 +435,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			}
 
 			// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
-			// Signing happens in the async drain goroutine â€” allocation here is acceptable.
+			// Signing happens in the async drain goroutine — allocation here is acceptable.
 			if kp := l.signingKey.Load(); kp != nil {
 				mac := hmac.New(sha256.New, *kp)
 				mac.Write([]byte(sb.String()))
@@ -436,14 +443,14 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 			}
 
 			sb.WriteByte('\n')
-			_, _ = out.WriteString(sb.String()) // copies to bufio buffer â€” no syscall in the common case
+			_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
 
 			// Emit to ingest pipeline BEFORE reset so fields are still populated.
 			if p := l.pipeline.Load(); p != nil {
 				emitAccessLogEvent(p, entry)
 			}
 
-			// Reset and return to pool â€” slice backing arrays are preserved.
+			// Reset and return to pool — slice backing arrays are preserved.
 			entry.reset()
 			l.pool.Put(entry)
 
@@ -461,26 +468,29 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					sb.WriteString("[access]")
 					writeKV(&sb, "time", time.Unix(0, entry.Time).UTC().Format(time.RFC3339))
 
-					// API identity â€” prefer name over internal ID
+					// API identity — prefer name over internal ID
 					if entry.ApiName != "" {
 						writeKV(&sb, "api", entry.ApiName)
 					} else {
 						writeKVUint(&sb, "api_id", uint64(entry.ApiID))
 					}
 
-					// Tenant identity â€” prefer key over internal ID
+					// Tenant identity — prefer key over internal ID
 					if entry.TenantKey != "" {
 						writeKV(&sb, "tenant", entry.TenantKey)
 					} else if entry.TenantID != 0 {
 						writeKVUint(&sb, "tenant_id", uint64(entry.TenantID))
 					}
 
-					// Caller identity â€” omit when no API key auth was used
+					// Caller identity — omit when no API key auth was used
 					if entry.CallerKey != "" {
 						writeKV(&sb, "caller_key", entry.CallerKey)
 					}
 					if entry.CallerID != 0 {
 						writeKVUint(&sb, "caller_id", uint64(entry.CallerID))
+					}
+					if entry.AppName != "" {
+						writeKV(&sb, "app", entry.AppName)
 					}
 
 					writeKV(&sb, "method", entry.Method)
@@ -508,7 +518,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					}
 
 					// HMAC-SHA256 tamper-evidence: sign the full line and append sig=<hex>.
-					// Signing happens in the async drain goroutine â€” allocation here is acceptable.
+					// Signing happens in the async drain goroutine — allocation here is acceptable.
 					if kp := l.signingKey.Load(); kp != nil {
 						mac := hmac.New(sha256.New, *kp)
 						mac.Write([]byte(sb.String()))
@@ -516,14 +526,14 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 					}
 
 					sb.WriteByte('\n')
-					_, _ = out.WriteString(sb.String()) // copies to bufio buffer â€” no syscall in the common case
+					_, _ = out.WriteString(sb.String()) // copies to bufio buffer — no syscall in the common case
 
 					// Emit to ingest pipeline BEFORE reset so fields are still populated.
 					if p := l.pipeline.Load(); p != nil {
 						emitAccessLogEvent(p, entry)
 					}
 
-					// Reset and return to pool â€” slice backing arrays are preserved.
+					// Reset and return to pool — slice backing arrays are preserved.
 					entry.reset()
 					l.pool.Put(entry)
 				default:
@@ -539,7 +549,7 @@ func (l *AccessLogger) drainLoop(stopCh <-chan struct{}, doneCh chan struct{}) {
 }
 
 // emitAccessLogEvent marshals entry as JSON and emits a KindAccessLog event
-// into the ingest pipeline. Runs in the drain goroutine â€” allocations are fine.
+// into the ingest pipeline. Runs in the drain goroutine — allocations are fine.
 // AccessLogEntry fields do not have JSON tags; json.Marshal will use field names as-is.
 func emitAccessLogEvent(p *ingest.Pipeline, entry *AccessLogEntry) {
 	n := p.NumSinksForKind(ingest.KindAccessLog)

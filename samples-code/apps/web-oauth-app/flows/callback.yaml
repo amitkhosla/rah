@@ -1,0 +1,28 @@
+flow:
+  name: my-web-app-callback
+  app_name: my-web-app
+  steps:
+    - name: extract_code
+      kind: extract_query_param
+      param_name: code
+      target_slot: auth_code
+    - name: exchange_tokens
+      kind: oauth2token
+      provider: google
+      code_slot: auth_code
+      redirect_uri: https://myapp.example.com/callback
+      client_id_slot: client_id
+      client_secret_slot: client_secret
+      target_slot: tokens
+    - name: set_session_cookie
+      kind: set_cookie
+      cookie_name: session_token
+      value_slot: tokens.access_token
+      max_age_sec: 3600
+      http_only: true
+      secure: true
+      same_site: Lax
+    - name: redirect_to_app
+      kind: http_redirect
+      location: /
+      status_code: 302

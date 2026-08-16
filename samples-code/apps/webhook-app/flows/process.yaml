@@ -1,0 +1,26 @@
+flow:
+  name: my-webhook-receiver-process
+  app_name: my-webhook-receiver
+  steps:
+    - name: parse_payload
+      kind: json_parse
+      source_slot: request_body
+      target_slot: event
+    - name: route_by_type
+      kind: condition
+      condition_slot: event.type
+      cases:
+        - value: payment.succeeded
+          steps:
+            - name: handle_payment
+              kind: log
+              message: "Payment succeeded"
+        - value: payment.failed
+          steps:
+            - name: handle_failure
+              kind: log
+              message: "Payment failed"
+    - name: respond
+      kind: http_response
+      status_code: 200
+      body: '{"status":"received"}'

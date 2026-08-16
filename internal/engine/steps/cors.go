@@ -8,7 +8,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// Pre-baked header name/value bytes â€” allocated once at package init.
+// Pre-baked header name/value bytes — allocated once at package init.
 // Zero cost at request time: no string conversion, no per-request alloc.
 var (
 	corsHdrACAllowOrigin      = []byte("Access-Control-Allow-Origin")
@@ -32,13 +32,13 @@ var (
 //
 //   - Wildcard origin (allowedOrigins nil/empty): sets Access-Control-Allow-Origin: *
 //   - Specific origins: compares request Origin against the allowlist; on match reflects
-//     the request Origin header via unsafe.Slice â€” zero copy into request header memory.
+//     the request Origin header via unsafe.Slice — zero copy into request header memory.
 //   - Unknown origin: no CORS headers set, continues normally.
 //   - OPTIONS preflight: sets 204 status + CORS headers then halts (StopPlan).
 //   - Other methods with Origin: sets CORS headers, continues to next instruction.
 //   - No Origin header: instant no-op, continues.
 //
-// Typical hot-path cost: ~40â€“80 ns (1 header lookup + 4â€“7 SetResponseHeader calls).
+// Typical hot-path cost: ~40—80 ns (1 header lookup + 4—7 SetResponseHeader calls).
 // No allocations for wildcard; zero-copy reflect for specific origin lists.
 func CORSStep(
 	allowedOrigins [][]byte, // nil/empty = wildcard (*); non-empty = explicit allowlist
@@ -63,7 +63,7 @@ func CORSStep(
 				// Wildcard: static bytes, zero cost.
 				originValue = corsValWildcard
 			} else {
-				// Zero-copy view into the request header string â€” no alloc.
+				// Zero-copy view into the request header string — no alloc.
 				originBytes := unsafe.Slice(unsafe.StringData(origin), len(origin))
 				for _, allowed := range allowedOrigins {
 					if bytes.Equal(allowed, originBytes) {
@@ -77,7 +77,7 @@ func CORSStep(
 				}
 			}
 
-			// Write CORS headers â€” all name/value []byte slices are pre-baked.
+			// Write CORS headers — all name/value []byte slices are pre-baked.
 			ctx.SetResponseHeader(corsHdrACAllowOrigin, originValue)
 			ctx.SetResponseHeader(corsHdrACAllowMethods, methodsValue)
 			ctx.SetResponseHeader(corsHdrACAllowHeaders, headersValue)
@@ -96,7 +96,7 @@ func CORSStep(
 				ctx.SetResponseHeader(corsHdrVary, corsValVaryOrigin)
 			}
 
-			// Preflight (OPTIONS): respond 204 and halt â€” no upstream call needed.
+			// Preflight (OPTIONS): respond 204 and halt — no upstream call needed.
 			if bytes.Equal(ctx.Method, corsMethodOPTIONS) {
 				ctx.ResponseStatus = 204
 				return engine.StopPlan

@@ -1,6 +1,6 @@
 ﻿package control
 
-// pattern_match_e2e_test.go â€” SESSION-7 end-to-end tests.
+// pattern_match_e2e_test.go — SESSION-7 end-to-end tests.
 //
 // Goal: prove the entire pattern_match feature works across all layers:
 //
@@ -16,14 +16,14 @@
 //   - Branch jump (then/else) verified via HTTP response status
 //
 // Test index:
-//   E2E-1:  Basic match path â€” header matches pattern â†’ then-branch (200)
-//   E2E-2:  Basic no-match path â€” header absent/wrong â†’ else-branch (404)
+//   E2E-1:  Basic match path — header matches pattern â†’ then-branch (200)
+//   E2E-2:  Basic no-match path — header absent/wrong â†’ else-branch (404)
 //   E2E-3:  Case-insensitive flag in E2E (uppercase header, i flag)
 //   E2E-4:  Multiple sequential pattern steps chained via sub-flows
 //   E2E-5:  Complex regex (groups, alternation, quantifiers) in E2E
 //   E2E-6:  Compile error: invalid regex â†’ sync returns 400
 //   E2E-7:  Full management server lifecycle (POST /sync â†’ router â†’ execute)
-//   E2E-8:  Performance â€” pattern match stays within <1Âµs budget
+//   E2E-8:  Performance — pattern match stays within <1Âµs budget
 //   E2E-9:  Body-prefix routing via query param slot
 //   E2E-10: Pattern match in nested sub-flow called from parent flow
 
@@ -41,7 +41,7 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€â”€ E2E-1: Basic match path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-1: Basic match path â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EBasicMatchPath exercises the full lifecycle for the happy
 // path: Studio export â†’ /sync â†’ router lookup â†’ ProcessRequest â†’ 200.
@@ -49,8 +49,8 @@ import (
 // Flow topology:
 //
 //	mainFlow  â†’  pattern_match(header.x-service, "^api-.*")
-//	                â”œâ”€â”€ matchBranch  â†’ set_response_status 200
-//	                â””â”€â”€ noMatchBranch â†’ set_response_status 404
+//	                â"œâ"€â"€ matchBranch  â†’ set_response_status 200
+//	                â""â"€â"€ noMatchBranch â†’ set_response_status 404
 func TestPatternMatchE2EBasicMatchPath(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
@@ -89,7 +89,7 @@ func TestPatternMatchE2EBasicMatchPath(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-2: No-match path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-2: No-match path â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2ENoMatchPath verifies that a header not matching the pattern
 // routes to the else-branch (404) through the full gateway stack.
@@ -135,7 +135,7 @@ func TestPatternMatchE2ENoMatchPath(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-3: Regex flags in E2E â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-3: Regex flags in E2E â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2ERegexFlags verifies that the "i" flag (case-insensitive)
 // works correctly through the full gateway stack.
@@ -189,7 +189,7 @@ func TestPatternMatchE2ERegexFlags(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-4: Multiple sequential pattern steps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-4: Multiple sequential pattern steps â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EMultiplePatternSteps verifies that multiple pattern_match
 // steps can be chained across sub-flows, each acting as an independent gate.
@@ -197,10 +197,10 @@ func TestPatternMatchE2ERegexFlags(t *testing.T) {
 // Topology:
 //
 //	entryFlow â†’ pattern_match(x-region, "^us-.*")
-//	               â”œâ”€â”€ usRegionFlow â†’ pattern_match(x-tier, "^(pro|enterprise)$")
-//	               â”‚                     â”œâ”€â”€ premiumFlow â†’ 200
-//	               â”‚                     â””â”€â”€ freeFlow    â†’ 402
-//	               â””â”€â”€ otherRegionFlow â†’ 503
+//	               â"œâ"€â"€ usRegionFlow â†’ pattern_match(x-tier, "^(pro|enterprise)$")
+//	               â"‚                     â"œâ"€â"€ premiumFlow â†’ 200
+//	               â"‚                     â""â"€â"€ freeFlow    â†’ 402
+//	               â""â"€â"€ otherRegionFlow â†’ 503
 func TestPatternMatchE2EMultiplePatternSteps(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
@@ -252,8 +252,8 @@ func TestPatternMatchE2EMultiplePatternSteps(t *testing.T) {
 		{"us pro", "us-east-1", "pro", 200},
 		{"us enterprise", "us-west-2", "enterprise", 200},
 		{"us free", "us-central", "free", 402},
-		{"eu pro â€” wrong region", "eu-west-1", "pro", 503},
-		{"ap enterprise â€” wrong region", "ap-east-1", "enterprise", 503},
+		{"eu pro — wrong region", "eu-west-1", "pro", 503},
+		{"ap enterprise — wrong region", "ap-east-1", "enterprise", 503},
 	}
 
 	for _, tt := range tests {
@@ -270,7 +270,7 @@ func TestPatternMatchE2EMultiplePatternSteps(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-5: Complex regex in E2E â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-5: Complex regex in E2E â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EComplexRegex verifies that production-grade patterns
 // (UUID validation, semantic versioning) work correctly end-to-end.
@@ -312,9 +312,9 @@ func TestPatternMatchE2EComplexRegex(t *testing.T) {
 	}{
 		{"valid uuid v4", "550e8400-e29b-41d4-a716-446655440000", 200},
 		{"valid uuid uppercase", "550E8400-E29B-41D4-A716-446655440000", 200},
-		{"not uuid â€” too short", "550e8400-e29b-41d4", 400},
-		{"not uuid â€” wrong version", "550e8400-e29b-31d4-a716-446655440000", 400},
-		{"not uuid â€” no dashes", "550e8400e29b41d4a716446655440000", 400},
+		{"not uuid — too short", "550e8400-e29b-41d4", 400},
+		{"not uuid — wrong version", "550e8400-e29b-31d4-a716-446655440000", 400},
+		{"not uuid — no dashes", "550e8400e29b41d4a716446655440000", 400},
 		{"empty", "", 400},
 	}
 
@@ -332,11 +332,11 @@ func TestPatternMatchE2EComplexRegex(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-6: Compile error â€” invalid regex â†’ sync returns 400 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-6: Compile error — invalid regex â†’ sync returns 400 â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EInvalidRegexSyncError verifies that an invalid regex in the
 // DSL is rejected at compile time by the /sync endpoint with a 400 status and a
-// clear error message â€” not a runtime panic.
+// clear error message — not a runtime panic.
 func TestPatternMatchE2EInvalidRegexSyncError(t *testing.T) {
 	_, _, server, _ := newTestStack(t)
 
@@ -446,7 +446,7 @@ func TestPatternMatchE2EMissingSourceSyncError(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-7: Full management server lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-7: Full management server lifecycle â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EFullManagementServerLifecycle exercises the complete
 // management-server-driven workflow:
@@ -460,7 +460,7 @@ func TestPatternMatchE2EMissingSourceSyncError(t *testing.T) {
 func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
-	// â”€â”€ Step 1: Initial sync with pattern "^internal-.*" â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 1: Initial sync with pattern "^internal-.*" â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "e2e-lifecycle-v1",
 		Flows: []FlowUpdate{
@@ -485,7 +485,7 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 		},
 	})
 
-	// â”€â”€ Step 2: Verify engine state after first sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 2: Verify engine state after first sync â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	state := fm.State.Load()
 	if state == nil {
 		t.Fatal("E2E-7: engine state is nil after sync")
@@ -494,7 +494,7 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 		t.Fatal("E2E-7: route /e2e/lifecycle not found in router after sync")
 	}
 
-	// â”€â”€ Step 3: Execute with matching header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 3: Execute with matching header â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	ctx := runRequest(t, fm, http.MethodGet, "/e2e/lifecycle", map[string]string{
 		"x-client": "internal-svc",
 	})
@@ -502,7 +502,7 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 		t.Errorf("E2E-7 v1 match: expected 200, got %d", ctx.ResponseStatus)
 	}
 
-	// â”€â”€ Step 4: Execute with non-matching header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 4: Execute with non-matching header â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	ctx2 := runRequest(t, fm, http.MethodGet, "/e2e/lifecycle", map[string]string{
 		"x-client": "external-partner",
 	})
@@ -510,7 +510,7 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 		t.Errorf("E2E-7 v1 no-match: expected 403, got %d", ctx2.ResponseStatus)
 	}
 
-	// â”€â”€ Step 5: Re-sync with a broader pattern â€” hot reload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 5: Re-sync with a broader pattern — hot reload â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// New pattern accepts both internal-* and partner-* clients.
 	mustSync(t, server, UnifiedSyncRequest{
 		SyncUUID: "e2e-lifecycle-v2",
@@ -537,7 +537,7 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 		},
 	})
 
-	// â”€â”€ Step 6: Verify hot-reloaded pattern takes effect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Step 6: Verify hot-reloaded pattern takes effect â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// "external-*" still denied.
 	ctx3 := runRequest(t, fm, http.MethodGet, "/e2e/lifecycle", map[string]string{
 		"x-client": "external-random",
@@ -555,13 +555,13 @@ func TestPatternMatchE2EFullManagementServerLifecycle(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-8: Performance check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-8: Performance check â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EPerformance verifies that the full pattern match instruction
 // execution (not the router lookup or request building overhead) stays within
 // the <2µs latency budget.
 //
-// We benchmark the instruction Action() directly â€” the hot path â€” to isolate
+// We benchmark the instruction Action() directly — the hot path — to isolate
 // the regex evaluation cost from test infrastructure overhead.
 func TestPatternMatchE2EPerformance(t *testing.T) {
 	pattern := regexp.MustCompile(`^(api|data|internal)-[a-z0-9-]+$`)
@@ -633,7 +633,7 @@ func BenchmarkPatternMatchE2EInstruction(b *testing.B) {
 }
 
 // BenchmarkPatternMatchE2ECompileAndExecute benchmarks the full compile + 1
-// request execution cycle. This is the "cold path" â€” useful for measuring
+// request execution cycle. This is the "cold path" — useful for measuring
 // how long a config update + first request takes.
 func BenchmarkPatternMatchE2ECompileAndExecute(b *testing.B) {
 	b.ReportAllocs()
@@ -688,7 +688,7 @@ func BenchmarkPatternMatchE2ECompileAndExecute(b *testing.B) {
 	}
 }
 
-// â”€â”€â”€ E2E-9: Query-param-based pattern routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-9: Query-param-based pattern routing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EQueryParamSource verifies that pattern_match can match
 // against a query parameter value (not just a header) through the full stack.
@@ -751,7 +751,7 @@ func TestPatternMatchE2EQueryParamSource(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-10: Pattern match in nested sub-flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-10: Pattern match in nested sub-flow â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2ENestedSubflow verifies that pattern_match works correctly
 // when the step lives inside a sub-flow that is called from a parent flow.
@@ -760,9 +760,9 @@ func TestPatternMatchE2EQueryParamSource(t *testing.T) {
 // Topology:
 //
 //	apiFlow  â†’  call(authCheckFlow)
-//	               â””â”€â”€ authCheckFlow â†’ pattern_match(x-token, "^Bearer .*")
-//	                                       â”œâ”€â”€ authorizedFlow â†’ 200
-//	                                       â””â”€â”€ unauthorizedFlow â†’ 401
+//	               â""â"€â"€ authCheckFlow â†’ pattern_match(x-token, "^Bearer .*")
+//	                                       â"œâ"€â"€ authorizedFlow â†’ 200
+//	                                       â""â"€â"€ unauthorizedFlow â†’ 401
 func TestPatternMatchE2ENestedSubflow(t *testing.T) {
 	fm, _, server, _ := newTestStack(t)
 
@@ -822,7 +822,7 @@ func TestPatternMatchE2ENestedSubflow(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ E2E-11: Dotall flag in E2E (multiline header values) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ E2E-11: Dotall flag in E2E (multiline header values) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // TestPatternMatchE2EDotallFlag verifies that the "s" flag (dot-all: "." matches
 // newlines) works correctly through the full gateway stack.
@@ -883,7 +883,7 @@ func TestPatternMatchE2EDotallFlag(t *testing.T) {
 	}
 }
 
-// â”€â”€â”€ helpers specific to E2E test file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ helpers specific to E2E test file â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // mustSyncB is mustSync adapted for *testing.B.
 func mustSyncB(b *testing.B, server *ManagementServer, req UnifiedSyncRequest) {
@@ -897,6 +897,6 @@ func mustSyncB(b *testing.B, server *ManagementServer, req UnifiedSyncRequest) {
 	}
 }
 
-// Sentinel imports â€” ensure packages are used (some helpers may come from other test files).
+// Sentinel imports — ensure packages are used (some helpers may come from other test files).
 var _ = (*rctx.Context)(nil)
 var _ = httptest.NewRecorder

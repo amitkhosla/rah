@@ -1,0 +1,6 @@
+# API service app with API key and Bearer token validation
+app:
+  name: my-api-service
+  type: api-service
+  tenant_mode: tenant_agnostic
+  release_channel: production

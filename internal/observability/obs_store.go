@@ -23,6 +23,7 @@ type MetricSnapshot struct {
 type AccessLogRecord struct {
 	TimestampNs int64             `json:"timestamp_ns"`
 	ApiName     string            `json:"api_name"`
+	AppName     string            `json:"app_name"`
 	TenantID    uint16            `json:"tenant_id"`
 	TenantKey   string            `json:"tenant_key"`
 	Method      string            `json:"method"`
@@ -110,6 +111,7 @@ type VarSchemaRow struct {
 // AccessLogFilter filters access log queries.
 type AccessLogFilter struct {
 	ApiName   string
+	AppName   string
 	TenantKey string
 	Status    int
 	FromUnixS int64
@@ -194,6 +196,10 @@ type ObsStore interface {
 	// QueryPayloads returns all payload records for a given trace ID.
 	QueryPayloads(ctx context.Context, traceID uint64) ([]PayloadRecord, error)
 
+	// GetDistinctApps returns distinct non-empty AppName values from the access log store
+	// within the given time window (fromUnixS).
+	GetDistinctApps(ctx context.Context, fromUnixS int64) ([]string, error)
+
 	// Close releases any held resources.
 	Close() error
 }
@@ -225,5 +231,8 @@ func (NoopObsStore) QueryVarSchema(_ context.Context, _ string) ([]VarSchemaRow,
 func (NoopObsStore) WritePayloadBatch(_ context.Context, _ []PayloadRecord) error { return nil }
 func (NoopObsStore) QueryPayloads(_ context.Context, _ uint64) ([]PayloadRecord, error) {
 	return nil, nil
+}
+func (NoopObsStore) GetDistinctApps(_ context.Context, _ int64) ([]string, error) {
+	return []string{}, nil
 }
 func (NoopObsStore) Close() error { return nil }

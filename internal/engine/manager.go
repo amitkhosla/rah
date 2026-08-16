@@ -38,8 +38,8 @@ type UpstreamUrlSource uint8
 
 const (
 	UpstreamUrlSourceStatic     UpstreamUrlSource = 0 // literal URL, written to slot directly
-	UpstreamUrlSourceRegistry   UpstreamUrlSource = 1 // registry URL key â€” resolved per-tenant
-	UpstreamUrlSourceCache      UpstreamUrlSource = 2 // cache key â€” looked up at request time
+	UpstreamUrlSourceRegistry   UpstreamUrlSource = 1 // registry URL key — resolved per-tenant
+	UpstreamUrlSourceCache      UpstreamUrlSource = 2 // cache key — looked up at request time
 	UpstreamUrlSourceHeader     UpstreamUrlSource = 3 // HTTP request header name
 	UpstreamUrlSourceQueryParam UpstreamUrlSource = 4 // query parameter name
 )
@@ -57,6 +57,7 @@ type EngineState struct {
 	Router              *router.RahRouter
 	Definitions         []*ApiDefinition
 	FlowLibrary         map[string][]Instruction
+	FlowSlotRegistry    map[string]map[string]int // flow name → var name → slot index; populated at compile time
 	RouteConstants      map[uint64][]ConstantSlot  // key: apiID<<8|endpointID; nil = no constants
 	RouteUpstreamUrls   map[uint64]*UpstreamUrlInfo // key: apiID<<8|endpointID; nil = no upstream URL override
 }
@@ -68,6 +69,15 @@ func (s *EngineState) GetFlowByName(name string) []Instruction {
 		return nil
 	}
 	return s.FlowLibrary[name]
+}
+
+// GetFlowSlots returns the slot name→index map for a named flow.
+// Returns nil if the flow has no slot registry entry.
+func (s *EngineState) GetFlowSlots(flowName string) map[string]int {
+	if s.FlowSlotRegistry == nil {
+		return nil
+	}
+	return s.FlowSlotRegistry[flowName]
 }
 
 // OverflowMetrics counts how often requests exceeded the inline arena.
@@ -86,7 +96,7 @@ type OpFlusher interface {
 type FlowManager struct {
 	State   atomic.Pointer[EngineState]
 	// DraftState holds a compiled but not-yet-live EngineState submitted via
-	// POST /sync?draft=true. Never used by the live router â€” only /test/execute
+	// POST /sync?draft=true. Never used by the live router — only /test/execute
 	// reads from it. Nil until a draft is submitted.
 	DraftState atomic.Pointer[EngineState]
 	Pool    sync.Pool
@@ -99,7 +109,7 @@ type FlowManager struct {
 
 	// limiterEnabled is true when the concurrency gate is active.
 	// Set by StartController; updated atomically at runtime via PATCH /admin/concurrency.
-	// Read on every request â€” must be a single atomic load (~1 ns).
+	// Read on every request — must be a single atomic load (~1 ns).
 	limiterEnabled atomic.Bool
 
 	// liveConfig holds the current ConcurrencyConfig read by the AIMD goroutine
@@ -131,7 +141,7 @@ type FlowManager struct {
 	// RegistryExec dispatches buffered registry PUT ops. Nil = no batching.
 	RegistryExec OpFlusher
 	// RemoteRL is the distributed rate limit provider (e.g. Redis-backed).
-	// Nil when distributed rate limiting is not configured â€” falls back to local counters.
+	// Nil when distributed rate limiting is not configured — falls back to local counters.
 	RemoteRL ExternalRateLimitProvider
 	// InstanceCountFn returns the number of live gateway instances in this environment.
 	// Used by CheckRateLimitV2 in approximate mode with DivideByNodes=true to split
@@ -174,6 +184,7 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		Router:            router.New(),
 		Definitions:       make([]*ApiDefinition, maxAPIs),
 		FlowLibrary:       make(map[string][]Instruction),
+		FlowSlotRegistry:  make(map[string]map[string]int),
 		RouteUpstreamUrls: make(map[uint64]*UpstreamUrlInfo),
 	}
 	fm.State.Store(initialState)
@@ -181,7 +192,7 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 	fm.Pool.New = func() any {
 		ctx := &rctx.Context{
 			// MutationLog and ResponseHeaders are one-time pool allocations
-			// (not per-request) â€” acceptable make() here.
+			// (not per-request) — acceptable make() here.
 			MutationLog:     make([]rctx.HeaderMutation, 0, 16),
 			ResponseHeaders: make([]rctx.HeaderMutation, 32),
 		}
@@ -193,7 +204,7 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 			ctx.MaxOps = rctx.DefaultMaxOps
 			ctx.OnFlush = fm.flushOps
 		}
-		// Wire MQTT pool â€” nil when MQTT is not configured.
+		// Wire MQTT pool — nil when MQTT is not configured.
 		ctx.MQTTPool = fm.MQTTPool
 		return ctx
 	}
@@ -223,7 +234,7 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	}
 
 	// 2a. Inject route constants (pre-baked at deploy time, zero alloc at request time).
-	// Direct array writes (~2 ns each) â€” no map lookup, no string key, no allocation.
+	// Direct array writes (~2 ns each) — no map lookup, no string key, no allocation.
 	routeKey := uint64(ctx.ApiId)<<8 | uint64(ctx.EndpointId)
 	if state.RouteConstants != nil {
 		if slots := state.RouteConstants[routeKey]; len(slots) > 0 {
@@ -266,7 +277,7 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 		if ctx.Trace != nil {
 			traced = 1
 		}
-		// Build InstrBatch by value â€” Write takes it by value too, so no
+		// Build InstrBatch by value — Write takes it by value too, so no
 		// pointer into ctx or into this stack frame is retained. ctx can be
 		// returned to the pool the moment ProcessRequest returns.
 		var batch observability.InstrBatch
@@ -307,11 +318,11 @@ func (fm *FlowManager) ProcessFlow(ctx *rctx.Context, flowName string) {
 // destination ByteSlot before the flow executes.
 //
 // Resolution order matches UpstreamUrlSource:
-//   static      â€” write the pre-baked literal URL directly (zero alloc, ~2 ns).
-//   registry    â€” look up the per-tenant URL by pre-resolved KeyID (~2â€“5 ns).
-//   cache       â€” perform a synchronous Get using info.Value as the key (~500 ns).
-//   header      â€” read the named HTTP header (zero-copy via unsafe.Slice).
-//   queryparam  â€” scan raw query string for the named parameter.
+//   static      — write the pre-baked literal URL directly (zero alloc, ~2 ns).
+//   registry    — look up the per-tenant URL by pre-resolved KeyID (~2—5 ns).
+//   cache       — perform a synchronous Get using info.Value as the key (~500 ns).
+//   header      — read the named HTTP header (zero-copy via unsafe.Slice).
+//   queryparam  — scan raw query string for the named parameter.
 func (fm *FlowManager) injectUpstreamUrl(ctx *rctx.Context, req *http.Request, info *UpstreamUrlInfo) {
 	dest := info.SlotIdx
 	switch info.Source {
@@ -493,7 +504,7 @@ func (fm *FlowManager) flushOps(ctx *rctx.Context) {
 }
 
 // LimiterEnabled reports whether the concurrency gate is currently active.
-// Called on every request â€” single atomic load, ~1 ns, no allocation.
+// Called on every request — single atomic load, ~1 ns, no allocation.
 func (fm *FlowManager) LimiterEnabled() bool { return fm.limiterEnabled.Load() }
 
 // RunInBackground detaches a context from the request lifecycle and executes

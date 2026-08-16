@@ -10,7 +10,7 @@ import (
 	"github.com/amitkhosla/rah/internal/xml"
 )
 
-// â”€â”€â”€ xml_to_json â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ xml_to_json â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // XMLToJSONConfig holds state for the xml_to_json instruction.
 // Converts XML bytes from SrcSlot to JSON bytes in DstSlot using XMLScanProgram.
@@ -43,7 +43,7 @@ func NewXMLToJSONStep(srcSlot, dstSlot int, prog xml.XMLScanProgram) engine.Inst
 	return engine.Instruction{Name: "XML_TO_JSON", Action: cfg.Action}
 }
 
-// â”€â”€â”€ json_to_xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ json_to_xml â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // JSONToXMLConfig holds state for the json_to_xml instruction.
 // Converts JSON bytes from SrcSlot to XML bytes in DstSlot using XMLBuildProgram.
@@ -76,7 +76,7 @@ func NewJSONToXMLStep(srcSlot, dstSlot int, prog xml.XMLBuildProgram) engine.Ins
 	return engine.Instruction{Name: "JSON_TO_XML", Action: cfg.Action}
 }
 
-// â”€â”€â”€ parse_xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ parse_xml â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // ParseXMLConfig holds state for the parse_xml instruction.
 // Validates XML structure by scanning through it; if valid, stores the source
@@ -112,7 +112,7 @@ func NewParseXMLStep(srcSlot, dstSlot int) engine.Instruction {
 	return engine.Instruction{Name: "PARSE_XML", Action: cfg.Action}
 }
 
-// â”€â”€â”€ xml_get â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ xml_get â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // XMLGetConfig holds state for the xml_get instruction.
 // Extracts the text content of the first element matching ElementName
@@ -163,7 +163,7 @@ func NewXMLGetStep(srcSlot, dstSlot int, elementName string) engine.Instruction 
 	return engine.Instruction{Name: "XML_GET", Action: cfg.Action}
 }
 
-// â”€â”€â”€ set_xml_response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ set_xml_response â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // SetXMLResponseConfig holds state for the set_xml_response instruction.
 // Writes the XML bytes from SrcSlot to ctx.ResponseBuffer and sets
@@ -202,7 +202,7 @@ func NewSetXMLResponseStep(srcSlot, defaultStatus int) engine.Instruction {
 	return engine.Instruction{Name: "SET_XML_RESPONSE", Action: cfg.Action}
 }
 
-// â”€â”€â”€ build_xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ build_xml â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // BuildXMLConfig holds state for the build_xml instruction.
 // Builds an XML document from prog using ByteSlot values as leaf content.
@@ -261,7 +261,7 @@ func NewBuildXMLStep(dstSlot int, prog xml.XMLBuildProgram) engine.Instruction {
 	return engine.Instruction{Name: "BUILD_XML", Action: cfg.Action}
 }
 
-// â”€â”€â”€ xml_set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ xml_set â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // XMLSetConfig holds state for the xml_set instruction.
 // Replaces the text content of the first element matching ElementName in the
@@ -274,8 +274,8 @@ type XMLSetConfig struct {
 	SrcSlot     int
 	ValueSlot   int
 	DstSlot     int
-	OpenPrefix  []byte // "<ElementName" â€” baked at compile time
-	CloseTag    []byte // "</ElementName>" â€” baked at compile time
+	OpenPrefix  []byte // "<ElementName" — baked at compile time
+	CloseTag    []byte // "</ElementName>" — baked at compile time
 	ScratchPool *sync.Pool
 }
 
@@ -298,7 +298,7 @@ func (cfg *XMLSetConfig) Action(ctx *rctx.Context, state *engine.ExecutionState)
 	// Find the open tag boundary using pre-computed prefix (no runtime alloc).
 	openTagStart := bytes.Index(src, cfg.OpenPrefix)
 	if openTagStart < 0 {
-		// Element not found â€” copy src unchanged.
+		// Element not found — copy src unchanged.
 		ctx.ByteSlots[cfg.DstSlot] = src
 		return state.PC + 1
 	}

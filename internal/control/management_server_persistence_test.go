@@ -230,7 +230,7 @@ func TestBootstrapFromDataStore(t *testing.T) {
 		t.Fatalf("seed api: %v", err)
 	}
 
-	// Bootstrap â€” must be called before SetDataStore to avoid redundant re-writes.
+	// Bootstrap — must be called before SetDataStore to avoid redundant re-writes.
 	s := newTestMS(t)
 	if err := s.Bootstrap(ctx, dsm); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -268,7 +268,7 @@ func TestBootstrapFromEmptyDataStoreIsNoop(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Incremental sync â€” datastore accumulates across partial calls
+// Incremental sync — datastore accumulates across partial calls
 // ---------------------------------------------------------------------------
 
 // TestIncrementalSyncAccumulates verifies the scenario:
@@ -302,7 +302,7 @@ func TestIncrementalSyncAccumulates(t *testing.T) {
 		t.Fatalf("call 1 failed: %v", err)
 	}
 
-	// Call 2: 2 more flows + 2 more APIs (partial â€” no mention of a1/a2/a3)
+	// Call 2: 2 more flows + 2 more APIs (partial — no mention of a1/a2/a3)
 	if err := s.ApplyUnifiedSync(UnifiedSyncRequest{
 		Flows: []FlowUpdate{
 			{Name: "f4", Instructions: echoFlow(), Action: "upsert"},

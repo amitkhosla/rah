@@ -1,0 +1,15 @@
+flows:
+  - name: school_homework_list
+    action: upsert
+    code: |
+      return(200, '{"homework":[{"id":"hw1","subject":"Math","title":"Algebra Chapter 5","dueDate":"2026-08-20","status":"assigned","teacher":"Ms. Johnson"},{"id":"hw2","subject":"Physics","title":"Motion and Forces","dueDate":"2026-08-22","status":"assigned","teacher":"Mr. Lee"}],"total":2}')
+
+  - name: school_homework_assign
+    action: upsert
+    code: |
+      return(201, '{"id":"hw3","subject":"English","title":"Essay Assignment","status":"assigned","createdAt":"2026-08-15","dueDate":"2026-08-25"}')
+
+  - name: school_homework_submit
+    action: upsert
+    code: |
+      return(200, '{"id":"hw1","status":"submitted","submittedAt":"2026-08-19","submittedBy":"st1"}')

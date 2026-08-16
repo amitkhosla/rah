@@ -34,7 +34,7 @@ func (a *credentialStoreAdapter) List(ctx context.Context, tenant string) ([]str
 }
 
 // NewCredentialStore wraps dsm for use as a secrets.CredentialStore.
-// Returns nil if the credentials domain is not configured â€” callers should
+// Returns nil if the credentials domain is not configured — callers should
 // check before passing to NewCredentialRegistry.
 func NewCredentialStore(dsm *DataStoreManager) secrets.CredentialStore {
 	if !dsm.IsConfigured(config.DomainCredentials) {
@@ -45,10 +45,10 @@ func NewCredentialStore(dsm *DataStoreManager) secrets.CredentialStore {
 
 // CredentialHandler exposes CRUD REST endpoints for the CredentialRegistry.
 //
-//	POST   /credentials            â€” create or update a credential
-//	GET    /credentials            â€” list credentials (?tenant=alias)
-//	GET    /credentials/{name}     â€” get a single credential (?tenant=alias)
-//	DELETE /credentials/{name}     â€” delete a credential (?tenant=alias)
+//	POST   /credentials            — create or update a credential
+//	GET    /credentials            — list credentials (?tenant=alias)
+//	GET    /credentials/{name}     — get a single credential (?tenant=alias)
+//	DELETE /credentials/{name}     — delete a credential (?tenant=alias)
 //
 // All write operations that omit "tenant" operate on the global scope,
 // which is the fallback for all tenants.

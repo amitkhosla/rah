@@ -1,0 +1,12 @@
+flow:
+  name: my-api-service-auth
+  app_name: my-api-service
+  steps:
+    - name: validate_api_key
+      kind: validate_apikey
+      header_name: X-API-Key
+      error_on_missing: true
+    - name: set_caller_context
+      kind: set_slot
+      slot: caller_app
+      value_slot: apikey.app_name

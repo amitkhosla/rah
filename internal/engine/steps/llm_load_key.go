@@ -53,7 +53,7 @@ func LoadLLMKey(cfg LoadLLMKeyConfig) engine.Instruction {
 			// Resolve: tenant-specific first, then global fallback.
 			plaintext, err := cfg.Reg.Resolve(context.Background(), string(credName), ctx.TenantKey)
 			if err != nil || len(plaintext) == 0 {
-				// Silent fallback â€” baked key will be used by llm_call.
+				// Silent fallback — baked key will be used by llm_call.
 				return state.PC + 1
 			}
 

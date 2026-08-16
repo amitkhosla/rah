@@ -23,7 +23,7 @@ type EmitEventConfig struct {
 }
 
 // EmitEvent returns an engine.Instruction that fires an ingest event.
-// The instruction always returns state.PC+1 â€” it never stops the plan.
+// The instruction always returns state.PC+1 — it never stops the plan.
 // The actual channel write is non-blocking; dropped events are silently discarded.
 func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 	return engine.Instruction{
@@ -59,7 +59,7 @@ func EmitEvent(cfg EmitEventConfig) engine.Instruction {
 				}
 			}
 
-			// Caller identity â€” always copy directly from context.
+			// Caller identity — always copy directly from context.
 			e.CallerID = ctx.CallerID
 			e.CallerKey = ctx.CallerKey
 

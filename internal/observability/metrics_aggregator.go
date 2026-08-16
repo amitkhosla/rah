@@ -170,7 +170,7 @@ func (a *MetricsAggregator) flush(window time.Duration) {
 
 	now := time.Now().Unix()
 
-	// Swap the map under write lock â€” callers that arrive mid-flush will
+	// Swap the map under write lock — callers that arrive mid-flush will
 	// create entries in the new map. The old map is processed below without
 	// holding the lock.
 	a.writeMu.Lock()

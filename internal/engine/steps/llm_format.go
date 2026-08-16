@@ -62,14 +62,14 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 			case hasMessages && hasSystem:
 				format = "anthropic"
 			case hasMessages && hasMaxTokens:
-				// Anthropic format with no system prompt â€” max_tokens is required in
+				// Anthropic format with no system prompt — max_tokens is required in
 				// the Anthropic API but optional in OpenAI, so its presence is a
 				// reliable signal that the caller is using the Anthropic wire format.
 				format = "anthropic"
 			case hasMessages:
 				format = "openai"
 			default:
-				// Not a recognised LLM request format â€” skip silently.
+				// Not a recognised LLM request format — skip silently.
 				// This allows parse_message_format to be placed in generic flows
 				// where the request body may not be an LLM payload.
 				return state.PC + 1
@@ -113,7 +113,7 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 					copy(ctx.ErrorMsg, msg)
 					return engine.StopPlan
 				}
-				// Resolve system â€” string or []content_block
+				// Resolve system — string or []content_block
 				if len(req.System) > 0 && req.System[0] == '"' {
 					_ = json.Unmarshal(req.System, &systemText)
 				} else if len(req.System) > 0 && req.System[0] == '[' {
@@ -244,7 +244,7 @@ func ParseMessageFormat(cfg ParseMessageFormatConfig) engine.Instruction {
 													if tr.Content[0] == '"' {
 														json.Unmarshal(tr.Content, &resultText) //nolint:errcheck
 													} else if tr.Content[0] == '[' {
-														// Array of text blocks â€” concatenate.
+														// Array of text blocks — concatenate.
 														var innerBlocks []struct {
 															Type string `json:"type"`
 															Text string `json:"text"`
@@ -702,7 +702,7 @@ func mapStopReason(reason, format string) string {
 
 // assembleAnthropicSSE writes a complete Anthropic streaming response as SSE events to dst.
 // Claude Code (and other clients that send stream:true) expect this format.
-// The entire response is assembled in one buffer â€” no goroutines needed.
+// The entire response is assembled in one buffer — no goroutines needed.
 func assembleAnthropicSSE(dst []byte, txid [2]uint64, content, stopReason, model string, in, out int64, toolUseBlocks []ContentBlock, thinkingText string) []byte {
 	// Override stop_reason when tool use blocks are present.
 	if len(toolUseBlocks) > 0 {
@@ -977,11 +977,11 @@ func assembleGemini(dst []byte, content, finishReason, model string, in, out int
 // request to Gemini or OpenAI internally.
 //
 // Hot-path design:
-//   - Template assembly via append â€” no encoding/json overhead (~10Ã— faster)
-//   - sync.Pool for the output buffer â€” zero allocation per request
+//   - Template assembly via append — no encoding/json overhead (~10Ã— faster)
+//   - sync.Pool for the output buffer — zero allocation per request
 //   - 256-byte lookup table for JSON string escaping
 //   - Switch-based stop-reason mapping (~2 ns, jump table)
-//   - strconv.AppendInt for integer fields â€” stack only
+//   - strconv.AppendInt for integer fields — stack only
 func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "format_response",
@@ -1000,7 +1000,7 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 				}
 			}
 			if format == "" || format == "unknown" {
-				format = "openai" // safest default â€” broadest client compatibility
+				format = "openai" // safest default — broadest client compatibility
 			}
 
 			// 3. Resolve model slug (runtime slot overrides bake-time field).
@@ -1053,11 +1053,11 @@ func FormatResponse(cfg FormatResponseConfig) engine.Instruction {
 			buf := (*bufPtr)[:0]
 
 			if isStream {
-				// SSE streaming â€” emit format-specific events.
+				// SSE streaming — emit format-specific events.
 				// SSE is a transport wrapper; format selects which event schema to use.
 				switch format {
 				case "gemini":
-					// Gemini streaming not yet implemented â€” fall back to plain JSON.
+					// Gemini streaming not yet implemented — fall back to plain JSON.
 					buf = assembleGemini(buf, content, stopReason, model, inputTokens, outputTokens)
 				case "openai":
 					buf = assembleOpenAISSE(buf, ctx.InternalTxID, content, stopReason, model, inputTokens, outputTokens)

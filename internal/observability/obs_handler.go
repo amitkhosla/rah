@@ -85,6 +85,7 @@ func RegisterObsRoutes(mux *http.ServeMux, writer *ObsWriter, obs *Telemetry, na
 	mux.HandleFunc("/observability/apis/", h.APIDetailHandler)
 	mux.HandleFunc("/observability/tenants/", h.TenantDetailHandler)
 	mux.HandleFunc("/observability/api-schemas", h.APISchemaHandler)
+	mux.HandleFunc("/observability/apps", h.AppsHandler)
 	mux.HandleFunc("/observability/instr-schema", h.InstrSchemaHandler)
 	return h
 }
@@ -132,6 +133,31 @@ func (h *ObsHandler) APISchemaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.schemaProvider())
+}
+
+// AppsHandler serves GET /observability/apps — returns distinct app names seen in access logs.
+func (h *ObsHandler) AppsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if isNoop(h.writer.Store()) {
+		writeJSON(w, http.StatusOK, map[string]any{"apps": []string{}})
+		return
+	}
+	q := r.URL.Query()
+	from := parseFrom(q.Get("from"))
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	apps, err := h.writer.Store().GetDistinctApps(ctx, from)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if apps == nil {
+		apps = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
 }
 
 // parseFrom parses the ?from query param: tries duration first, then RFC3339.
@@ -223,6 +249,7 @@ func (h *ObsHandler) AccessLogHandler(w http.ResponseWriter, r *http.Request) {
 
 	f := AccessLogFilter{
 		ApiName:   q.Get("api"),
+		AppName:   q.Get("app"),
 		TenantKey: q.Get("tenant"),
 		Status:    status,
 		FromUnixS: parseFrom(q.Get("from")),

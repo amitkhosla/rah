@@ -1,0 +1,10 @@
+# Event-driven processor app with deduplication and batching
+app:
+  name: my-event-processor
+  type: event-processor
+  tenant_mode: tenant_aware
+  release_channel: production
+  event_bindings:
+    - publisher: kafka_primary
+      topic: orders.created
+      flow_name: my-event-processor-handler

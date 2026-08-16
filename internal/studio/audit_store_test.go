@@ -438,7 +438,6 @@ func TestRecordingProxy_StatusCapture(t *testing.T) {
 	}
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration tests for Server with audit trail
 // ─────────────────────────────────────────────────────────────────────────────
@@ -996,12 +995,12 @@ func TestInMemoryAuditStore_LargePayload(t *testing.T) {
 	// Create record with large summary
 	largeText := strings.Repeat("x", 10000)
 	rec := AuditRecord{
-		ID:        "large-1",
-		Actor:     "user",
-		Action:    "action",
-		Status:    "ok",
-		Summary:   largeText,
-		Metadata:  map[string]string{"key": largeText},
+		ID:       "large-1",
+		Actor:    "user",
+		Action:   "action",
+		Status:   "ok",
+		Summary:  largeText,
+		Metadata: map[string]string{"key": largeText},
 	}
 
 	if err := store.Append(ctx, rec); err != nil {

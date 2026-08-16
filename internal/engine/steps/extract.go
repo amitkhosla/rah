@@ -7,7 +7,7 @@ import (
 )
 
 // ExtractOp describes one field extraction and the op to emit for it.
-// All fields except DestSlot are captured at compile (bake) time â€” zero
+// All fields except DestSlot are captured at compile (bake) time — zero
 // runtime parsing overhead.
 type ExtractOp struct {
 	// Path is the gjson path to extract from the JSON body.
@@ -49,7 +49,7 @@ type ExtractOp struct {
 
 // JSONExtractEmit extracts multiple fields from a JSON body in one gjson scan
 // and emits one op per field into the op buffer. No intermediate slots are
-// consumed for extracted values â€” keys are built directly into ctx.opKeysBuf.
+// consumed for extracted values — keys are built directly into ctx.opKeysBuf.
 //
 // bodySlot: index of ByteSlot holding the JSON body bytes.
 // ops: slice of ExtractOp descriptors, captured at bake time.
@@ -107,7 +107,7 @@ func JSONExtractEmit(bodySlot int, ops []ExtractOp) engine.Instruction {
 
 // JSONForeachEmit iterates over a JSON array (found at arrayPath in the body)
 // and emits one batch of ops per array element. Handles unbounded arrays
-// transparently â€” the op buffer auto-flushes when full (via ctx.OnFlush).
+// transparently — the op buffer auto-flushes when full (via ctx.OnFlush).
 //
 // bodySlot: index of ByteSlot holding the JSON body bytes.
 // arrayPath: gjson path to the array. Example: "items", "data.services"
@@ -199,7 +199,7 @@ func JsonSetStep(srcSlot, dstSlot int, path string, staticValue []byte, valueSlo
 
 			// Replace the found value with val.
 			// r.Index is the byte offset into src where the value begins.
-			// r.Raw is the matched text (as a string) â€” we need len(r.Raw) to find the end.
+			// r.Raw is the matched text (as a string) — we need len(r.Raw) to find the end.
 			startIdx := r.Index
 			endIdx := r.Index + len(r.Raw)
 

@@ -40,9 +40,9 @@ type mcpCallRPCResponse struct {
 // an MCP server and writes the result content array (as JSON) to cfg.ResultSlot.
 //
 // At runtime:
-//  1. Reads tool name from ctx.ByteSlots[cfg.ToolNameSlot] â€” skips if empty.
-//  2. Reads args from ctx.ByteSlots[cfg.ArgsSlot] â€” uses {} if empty.
-//  3. Validates args is valid JSON object â€” returns 400 + StopPlan if invalid.
+//  1. Reads tool name from ctx.ByteSlots[cfg.ToolNameSlot] — skips if empty.
+//  2. Reads args from ctx.ByteSlots[cfg.ArgsSlot] — uses {} if empty.
+//  3. Validates args is valid JSON object — returns 400 + StopPlan if invalid.
 //  4. Posts JSON-RPC 2.0 tools/call to cfg.ServerURL with retry on 429/5xx.
 //  5. On JSON-RPC error â†’ returns 502 + StopPlan.
 //  6. On success â†’ writes result.content JSON array to cfg.ResultSlot.
@@ -55,7 +55,7 @@ func MCPCallTool(cfg MCPCallToolConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "mcp_call_tool[" + cfg.ServerURL + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// 1. Read tool name â€” skip if empty.
+			// 1. Read tool name — skip if empty.
 			if cfg.ToolNameSlot < 0 || cfg.ToolNameSlot >= len(ctx.ByteSlots) {
 				return state.PC + 1
 			}
@@ -64,7 +64,7 @@ func MCPCallTool(cfg MCPCallToolConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// 2. Read args â€” default to {}.
+			// 2. Read args — default to {}.
 			var argsRaw json.RawMessage
 			if cfg.ArgsSlot >= 0 && cfg.ArgsSlot < len(ctx.ByteSlots) && len(ctx.ByteSlots[cfg.ArgsSlot]) > 0 {
 				argsRaw = json.RawMessage(ctx.ByteSlots[cfg.ArgsSlot])

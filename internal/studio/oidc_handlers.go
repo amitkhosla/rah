@@ -196,4 +196,3 @@ func (s *Server) findOIDCProvider(name string) (OIDCProvider, bool) {
 	}
 	return OIDCProvider{}, false
 }
-

@@ -12,10 +12,10 @@ import (
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
-// â”€â”€ No-op ResponseWriter for branch contexts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ No-op ResponseWriter for branch contexts â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // branchWriter is a singleton no-op rctx.ResponseWriter.
-// Branch contexts must not write to the parent HTTP response â€” all their output
+// Branch contexts must not write to the parent HTTP response — all their output
 // stays in their own slots. The noop writer satisfies the interface contract
 // without any memory allocation per branch.
 type branchWriterT struct{}
@@ -26,7 +26,7 @@ func (branchWriterT) Header() http.Header          { return make(http.Header) }
 
 var branchWriter rctx.ResponseWriter = branchWriterT{}
 
-// â”€â”€ Branch context pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Branch context pool â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // branchCtxPool pools rctx.Context objects for parallel branch execution.
 // Reuse avoids per-request allocation of the ~3 KB Context struct.
@@ -73,7 +73,7 @@ func releaseBranchCtx(bc *rctx.Context) {
 	branchCtxPool.Put(bc)
 }
 
-// â”€â”€ Worker pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Worker pool â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // workerPool is a goroutine pool that spawns workers on demand up to maxSize.
 // Workers stay alive for idleTimeout to service back-to-back requests without
@@ -106,7 +106,7 @@ func newWorkerPool(maxSize int) *workerPool {
 func (p *workerPool) Submit(f func()) {
 	p.tasks <- f
 	select {
-	case p.sem <- struct{}{}: // got a slot â€” spawn a worker
+	case p.sem <- struct{}{}: // got a slot — spawn a worker
 		go p.run()
 	default: // max workers already live; one will pick up the task
 	}
@@ -137,12 +137,12 @@ func (p *workerPool) run() {
 			}
 			timer.Reset(p.idleTimeout)
 		case <-timer.C:
-			return // idle timeout â€” release slot
+			return // idle timeout — release slot
 		}
 	}
 }
 
-// â”€â”€ Branch execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Branch execution â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // executeBranchTable runs a pre-compiled instruction table against bc.
 // It mirrors the core loop of engine.Execute without observability hooks
@@ -165,7 +165,7 @@ func executeBranchTable(bc *rctx.Context, table []engine.Instruction) {
 	}
 }
 
-// â”€â”€ Result type â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Result type â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 type branchResult struct {
 	bc        *rctx.Context
@@ -173,7 +173,7 @@ type branchResult struct {
 	failed    bool
 }
 
-// â”€â”€ ParallelStep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ ParallelStep â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // ParallelStep returns an engine.Instruction that executes multiple pre-compiled
 // instruction sub-tables concurrently and waits for all of them to complete (or
@@ -186,9 +186,9 @@ type branchResult struct {
 //
 //	C1: each branch owns its slot backing (values deep-copied at fork)
 //	C2: wg.Wait() in the drainer goroutine before any context release
-//	C3: sync.Once wraps cancelCh close â€” no close-of-closed-channel panic
+//	C3: sync.Once wraps cancelCh close — no close-of-closed-channel panic
 //	C4: defer recover() inside every worker goroutine
-//	C5: resultCh buffered to N â€” workers never block on send
+//	C5: resultCh buffered to N — workers never block on send
 func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast bool) engine.Instruction {
 	if timeoutMs == 0 {
 		timeoutMs = 3000

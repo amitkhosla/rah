@@ -1,0 +1,28 @@
+apis:
+  - name: school-students-list
+    path: /school/students
+    method: GET
+    flow_name: school_students_list
+    rate_limit_config: school-student-rl
+    action: upsert
+
+  - name: school-students-get
+    path: /school/students/{id}
+    method: GET
+    flow_name: school_student_get
+    rate_limit_config: school-student-rl
+    action: upsert
+
+  - name: school-students-create
+    path: /school/students
+    method: POST
+    flow_name: school_student_create
+    rate_limit_config: school-admin-rl
+    action: upsert
+
+  - name: school-students-update
+    path: /school/students/{id}
+    method: PUT
+    flow_name: school_student_update
+    rate_limit_config: school-admin-rl
+    action: upsert

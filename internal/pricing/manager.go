@@ -231,7 +231,7 @@ func (pm *PricingManager) ForceRefresh() {
 }
 
 // mergeFetchedPricing merges newly fetched pricing into the cache.
-// Entries whose Source is "config" or "llm_config" are never overwritten â€”
+// Entries whose Source is "config" or "llm_config" are never overwritten —
 // operator-supplied pricing always takes precedence.
 func (pm *PricingManager) mergeFetchedPricing(incoming map[string]PricingInfo) {
 	pm.mu.Lock()
@@ -241,7 +241,7 @@ func (pm *PricingManager) mergeFetchedPricing(incoming map[string]PricingInfo) {
 	for modelID, info := range incoming {
 		existing, exists := pm.cache[modelID]
 		if exists && (existing.Source == "config" || existing.Source == "llm_config") {
-			// Config/llm_config entries are authoritative â€” skip.
+			// Config/llm_config entries are authoritative — skip.
 			continue
 		}
 		pm.cache[modelID] = info
@@ -261,10 +261,10 @@ func (pm *PricingManager) backgroundRefresh() {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("Pricing TTL expired â€” fetching fresh data from litellm-community")
+			log.Println("Pricing TTL expired — fetching fresh data from litellm-community")
 			all, err := pm.fetcher.FetchFromLiteLLM()
 			if err != nil {
-				log.Printf("Warning: pricing background refresh failed: %v â€” keeping existing cache", err)
+				log.Printf("Warning: pricing background refresh failed: %v — keeping existing cache", err)
 				continue
 			}
 			pm.mergeFetchedPricing(all)

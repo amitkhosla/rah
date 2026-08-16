@@ -116,8 +116,8 @@ func (p *Provider) Scheme() string { return "vault" }
 //
 // URI format:
 //
-//	vault://mount/path          â€” returns all fields marshalled as JSON
-//	vault://mount/path#field    â€” returns the value of a single field
+//	vault://mount/path          — returns all fields marshalled as JSON
+//	vault://mount/path#field    — returns the value of a single field
 func (p *Provider) Resolve(ctx context.Context, ref string) ([]byte, error) {
 	mount, secretPath, field, err := parseURI(ref)
 	if err != nil {
@@ -167,10 +167,10 @@ func parseURI(ref string) (mount, path, field string, err error) {
 		mount = s[:idx]
 		path = s[idx+1:]
 	} else {
-		return "", "", "", fmt.Errorf("vault: invalid URI %q â€” expected vault://mount/path[#field]", ref)
+		return "", "", "", fmt.Errorf("vault: invalid URI %q — expected vault://mount/path[#field]", ref)
 	}
 	if path == "" {
-		return "", "", "", fmt.Errorf("vault: invalid URI %q â€” secret path is empty", ref)
+		return "", "", "", fmt.Errorf("vault: invalid URI %q — secret path is empty", ref)
 	}
 	return mount, path, field, nil
 }

@@ -32,7 +32,7 @@ func newBenchCtx(rawKey string) (*rctx.Context, *engine.ExecutionState) {
 	return ctx, s
 }
 
-// BenchmarkPhase_SHA256 â€” cost of hashing the raw key alone.
+// BenchmarkPhase_SHA256 — cost of hashing the raw key alone.
 func BenchmarkPhase_SHA256(b *testing.B) {
 	rawKey, _, err := apikey.Generate(1, "bench", nil)
 	if err != nil {
@@ -45,7 +45,7 @@ func BenchmarkPhase_SHA256(b *testing.B) {
 	}
 }
 
-// BenchmarkPhase_HexEncode â€” cost of hex-encoding the 32-byte SHA256 result alone.
+// BenchmarkPhase_HexEncode — cost of hex-encoding the 32-byte SHA256 result alone.
 func BenchmarkPhase_HexEncode(b *testing.B) {
 	rawKey, _, err := apikey.Generate(1, "bench", nil)
 	if err != nil {
@@ -59,7 +59,7 @@ func BenchmarkPhase_HexEncode(b *testing.B) {
 	}
 }
 
-// BenchmarkPhase_MapLookup â€” cost of the sync.Map lookup by hex hash alone.
+// BenchmarkPhase_MapLookup — cost of the sync.Map lookup by hex hash alone.
 func BenchmarkPhase_MapLookup(b *testing.B) {
 	rawKey := setupBenchKey(b)
 	sum := sha256.Sum256([]byte(rawKey))
@@ -71,7 +71,7 @@ func BenchmarkPhase_MapLookup(b *testing.B) {
 	}
 }
 
-// BenchmarkPhase_SHA256_And_HexEncode â€” combined cost (as it happens today).
+// BenchmarkPhase_SHA256_And_HexEncode — combined cost (as it happens today).
 func BenchmarkPhase_SHA256_And_HexEncode(b *testing.B) {
 	rawKey, _, err := apikey.Generate(1, "bench", nil)
 	if err != nil {
@@ -85,7 +85,7 @@ func BenchmarkPhase_SHA256_And_HexEncode(b *testing.B) {
 	}
 }
 
-// BenchmarkValidateAPIKey_Hit â€” full validate_api_key step, key exists and is valid.
+// BenchmarkValidateAPIKey_Hit — full validate_api_key step, key exists and is valid.
 func BenchmarkValidateAPIKey_Hit(b *testing.B) {
 	rawKey := setupBenchKey(b)
 	slots := APIKeyValidationSlots{SourceSlot: -1, ResultSlot: -1}
@@ -100,7 +100,7 @@ func BenchmarkValidateAPIKey_Hit(b *testing.B) {
 	}
 }
 
-// BenchmarkValidateAPIKey_Miss â€” full step, key not in index (worst-case hash path).
+// BenchmarkValidateAPIKey_Miss — full step, key not in index (worst-case hash path).
 func BenchmarkValidateAPIKey_Miss(b *testing.B) {
 	slots := APIKeyValidationSlots{SourceSlot: -1, ResultSlot: -1}
 	cfg := ParseAPIKeyValidationConfig(map[string]string{
@@ -117,7 +117,7 @@ func BenchmarkValidateAPIKey_Miss(b *testing.B) {
 	}
 }
 
-// BenchmarkPhase_CtxAndStateAlloc â€” cost of allocating Context + ExecutionState alone.
+// BenchmarkPhase_CtxAndStateAlloc — cost of allocating Context + ExecutionState alone.
 func BenchmarkPhase_CtxAndStateAlloc(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-API-Key", "rah_benchkey")
@@ -131,7 +131,7 @@ func BenchmarkPhase_CtxAndStateAlloc(b *testing.B) {
 	}
 }
 
-// BenchmarkPhase_LookupByHash â€” cost of LookupByHash alone (map load + value copy).
+// BenchmarkPhase_LookupByHash — cost of LookupByHash alone (map load + value copy).
 func BenchmarkPhase_LookupByHash(b *testing.B) {
 	rawKey := setupBenchKey(b)
 	sum := sha256.Sum256([]byte(rawKey))
@@ -143,7 +143,7 @@ func BenchmarkPhase_LookupByHash(b *testing.B) {
 	}
 }
 
-// BenchmarkHttpRequestSetup â€” cost of httptest.NewRequest alone, to isolate harness overhead.
+// BenchmarkHttpRequestSetup — cost of httptest.NewRequest alone, to isolate harness overhead.
 func BenchmarkHttpRequestSetup(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -153,7 +153,7 @@ func BenchmarkHttpRequestSetup(b *testing.B) {
 	}
 }
 
-// BenchmarkValidateAPIKey_HitReusedCtx â€” hit path with pre-built request to isolate validation cost.
+// BenchmarkValidateAPIKey_HitReusedCtx — hit path with pre-built request to isolate validation cost.
 func BenchmarkValidateAPIKey_HitReusedCtx(b *testing.B) {
 	rawKey := setupBenchKey(b)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -172,7 +172,7 @@ func BenchmarkValidateAPIKey_HitReusedCtx(b *testing.B) {
 	}
 }
 
-// BenchmarkValidateAPIKey_WithTenantCheck â€” hit path with AllowedTenants slice check.
+// BenchmarkValidateAPIKey_WithTenantCheck — hit path with AllowedTenants slice check.
 func BenchmarkValidateAPIKey_WithTenantCheck(b *testing.B) {
 	rawKey, rec, err := apikey.Generate(1, "bench-tenant", []uint16{1, 2, 3})
 	if err != nil {

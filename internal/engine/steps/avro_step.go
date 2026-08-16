@@ -245,7 +245,7 @@ func (cfg *XMLToAvroConfig) Action(ctx *rctx.Context, state *engine.ExecutionSta
 
 // AvroToProtoConfig holds the state for avro_to_proto instruction.
 // Multi-hop: Avro binary â†’ JSON â†’ Proto message using pivot buffer.
-// (Proto support in S8 â€” for now, this is a placeholder structure.)
+// (Proto support in S8 — for now, this is a placeholder structure.)
 type AvroToProtoConfig struct {
 	SrcSlot int               // source ByteSlot (Avro binary)
 	DstSlot int               // destination ByteSlot (Proto binary)
@@ -256,7 +256,7 @@ type AvroToProtoConfig struct {
 
 // ProtoToAvroConfig holds the state for proto_to_avro instruction.
 // Multi-hop: Proto message â†’ JSON â†’ Avro binary using pivot buffer.
-// (Proto support in S8 â€” for now, this is a placeholder structure.)
+// (Proto support in S8 — for now, this is a placeholder structure.)
 type ProtoToAvroConfig struct {
 	SrcSlot int               // source ByteSlot (Proto binary)
 	DstSlot int               // destination ByteSlot (Avro binary)

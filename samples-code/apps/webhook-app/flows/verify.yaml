@@ -1,0 +1,14 @@
+flow:
+  name: my-webhook-receiver-verify
+  app_name: my-webhook-receiver
+  steps:
+    - name: extract_signature
+      kind: extract_header
+      header_name: X-Webhook-Signature
+      target_slot: signature
+    - name: verify_hmac
+      kind: validate_hmac
+      payload_slot: request_body
+      signature_slot: signature
+      secret_slot: webhook_secret
+      algorithm: sha256

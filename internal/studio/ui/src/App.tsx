@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchSchema, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'migrations' | 'settings'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'app-releases' | 'app-explorer' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'datastores' | 'document-connectors' | 'storage-connectors' | 'messaging-publishers' | 'event-listeners' | 'migrations' | 'tests' | 'settings' | 'workflow-designer'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
 import FlowDesigner   from './components/FlowDesigner'
@@ -23,6 +23,7 @@ import UpstreamServicesScreen from './components/UpstreamServicesScreen'
 import CachePanel             from './components/CachePanel'
 import Concurrency            from './components/Concurrency'
 import Apps                  from './components/Apps'
+import AppReleases           from './components/AppReleases'
 import Egress                from './components/Egress'
 import Releases              from './components/Releases'
 import SchemaLibrary         from './components/SchemaLibrary'
@@ -34,8 +35,16 @@ import WSEndpoints           from './components/WSEndpoints'
 import WSUpstreams           from './components/WSUpstreams'
 import RedisSources          from './components/RedisSources'
 import NamedQueries          from './components/NamedQueries'
+import DataStores            from './components/DataStores'
+import DocumentConnectors    from './components/DocumentConnectors'
+import StorageConnectors     from './components/StorageConnectors'
+import MessagingPublishers   from './components/MessagingPublishers'
+import EventListeners        from './components/EventListeners'
 import Migrations            from './components/Migrations'
+import Tests                 from './components/Tests'
+import WorkflowDesigner      from './components/WorkflowDesigner'
 import GlobalAIAssistant     from './components/GlobalAIAssistant'
+import AppExplorer           from './components/AppExplorer'
 
 // ── Action name normalization (internal engine → display names) ──────
 
@@ -133,6 +142,8 @@ const NAV_ICONS: Record<string, string> = {
   'audit-log':        '📋',
   tenants:            '☰',
   apps:               '⬡',
+  'app-releases':     '🚀',
+  'app-explorer':     '📱',
   'rate-limits':      '⧖',
   tiers:              '≡',
   'upstream-services':'⇥',
@@ -146,7 +157,14 @@ const NAV_ICONS: Record<string, string> = {
   'ws-upstreams':     '🔗',
   'redis-sources':    '🔴',
   'named-queries':    '🗄',
+  datastores:         '🗄',
+  'document-connectors':  '🗃',
+  'storage-connectors':   '🗂',
+  'messaging-publishers': '📨',
+  'event-listeners':      '📡',
+  'workflow-designer':    '🔀',
   migrations:         '📜',
+  tests:              '🧪',
   settings:           '⚙',
 }
 
@@ -171,6 +189,8 @@ const NAV: NavItem[] = [
   { kind: 'section', label: 'SECURITY' },
   { kind: 'item',    id: 'tenants',            label: 'Tenants' },
   { kind: 'item',    id: 'apps',               label: 'Apps' },
+  { kind: 'item',    id: 'app-releases',       label: 'App Releases' },
+  { kind: 'item',    id: 'app-explorer',       label: 'Apps' },
   { kind: 'item',    id: 'rate-limits',         label: 'Rate Limits' },
   { kind: 'item',    id: 'rl-overrides',        label: 'RL Overrides' },
   { kind: 'item',    id: 'tiers',               label: 'Tiers' },
@@ -181,9 +201,17 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'cache',               label: 'Cache' },
   { kind: 'item',    id: 'concurrency',        label: 'Concurrency' },
   { kind: 'section', label: 'DATA SOURCES' },
+  { kind: 'item',    id: 'datastores',         label: 'Data Stores' },
   { kind: 'item',    id: 'redis-sources',      label: 'Redis Sources' },
   { kind: 'item',    id: 'named-queries',      label: 'Named Queries' },
+  { kind: 'item',    id: 'document-connectors',   label: 'Document Connectors' },
+  { kind: 'item',    id: 'storage-connectors',    label: 'Storage' },
+  { kind: 'item',    id: 'messaging-publishers',  label: 'Messaging Publishers' },
+  { kind: 'item',    id: 'event-listeners',       label: 'Event Listeners' },
+  { kind: 'item',    id: 'workflow-designer',      label: 'Workflow Designer' },
   { kind: 'item',    id: 'migrations',         label: 'Migrations' },
+  { kind: 'section', label: 'TESTING' },
+  { kind: 'item',    id: 'tests',              label: 'Tests' },
   { kind: 'section', label: 'ADMIN' },
   { kind: 'item',    id: 'tokens',             label: 'Tokens' },
   { kind: 'section', label: '' },
@@ -278,6 +306,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   // Active flow in Flow Designer
   const [flowName, setFlowName] = useState('')
   const [steps,    setSteps]    = useState<FlowStep[]>([])
+  const [flowConstants, setFlowConstants] = useState<Record<string, string>>({})
 
   // Navigation stack: each entry is the flow name we navigated FROM (breadcrumb trail)
   // e.g. ['root_flow', 'auth_flow'] means we drilled: root_flow → auth_flow → current
@@ -290,7 +319,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
     if (!flowName.trim() || steps.length === 0) return
     setSavedFlows(prev => {
       const idx = prev.findIndex(f => f.name === flowName)
-      const entry: SavedFlow = { name: flowName, steps: [...steps], groups, stepLabels }
+      const entry: SavedFlow = { name: flowName, steps: [...steps], groups, stepLabels, constants: flowConstants }
       if (idx >= 0) {
         const updated = [...prev]
         updated[idx] = entry
@@ -356,9 +385,11 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
       }
       setFlowName(name)
       setSteps(saved?.steps ?? [])
+      setFlowConstants(saved?.constants ?? {})
     } else {
       setFlowName('')
       setSteps([])
+      setFlowConstants({})
       setNavStack([])
     }
     setTab('flows')
@@ -371,9 +402,16 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
     const saved = savedFlows.find(f => f.name === target)
     setFlowName(target)
     setSteps(saved?.steps ?? [])
+    setFlowConstants(saved?.constants ?? {})
     setNavStack(prev => prev.slice(0, idx))
     setTab('flows')
   }
+
+  // Load flowConstants whenever flowName changes
+  useEffect(() => {
+    const saved = savedFlows.find(f => f.name === flowName)
+    setFlowConstants(saved?.constants ?? {})
+  }, [flowName, savedFlows])
 
   // APIs — each carries its own flow_name
   const [apis, setApis] = useState<ApiDef[]>([])
@@ -590,6 +628,8 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
             setSteps={setSteps}
             flowName={flowName}
             setFlowName={setFlowName}
+            flowConstants={flowConstants}
+            setFlowConstants={setFlowConstants}
             savedFlows={savedFlows}
             onSaveFlow={() => saveCurrentFlow([], {})}
             onNavigateToFlow={(name) => navigateToDesigner(name, true)}
@@ -729,6 +769,8 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'audit-log'          && <AuditLog />}
         {tab === 'tenants'           && <Tenants />}
         {tab === 'apps'              && <Apps />}
+        {tab === 'app-releases'      && <AppReleases />}
+        {tab === 'app-explorer'      && <AppExplorer />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
         {tab === 'rl-overrides'      && <TenantOverridesView />}
         {tab === 'tiers'             && <TenantTiersScreen />}
@@ -744,7 +786,14 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'ws-upstreams'      && <WSUpstreams />}
         {tab === 'redis-sources'     && <RedisSources />}
         {tab === 'named-queries'     && <NamedQueries />}
+        {tab === 'datastores'           && <DataStores />}
+        {tab === 'document-connectors'  && <DocumentConnectors />}
+        {tab === 'storage-connectors'   && <StorageConnectors />}
+        {tab === 'messaging-publishers' && <MessagingPublishers />}
+        {tab === 'event-listeners'      && <EventListeners />}
+        {tab === 'workflow-designer'    && <WorkflowDesigner />}
         {tab === 'migrations'        && <Migrations />}
+        {tab === 'tests'             && <Tests />}
         {tab === 'settings' && <Settings accent={accent} setAccent={setAccent} />}
       </main>
 

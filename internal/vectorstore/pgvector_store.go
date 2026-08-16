@@ -17,8 +17,8 @@ import (
 //   - Tables named after collections with columns: id, content, embedding (vector), and metadata fields
 //
 // Options:
-//   "auth_type"  â€” "bearer" (default) or "apikey" (Supabase anon key header)
-//   "apikey_header" â€” header name for apikey mode (default: "apikey")
+//   "auth_type"  — "bearer" (default) or "apikey" (Supabase anon key header)
+//   "apikey_header" — header name for apikey mode (default: "apikey")
 type pgVectorStore struct {
 	cfg    config.VectorStoreConfig
 	apiKey string

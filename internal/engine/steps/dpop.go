@@ -1,6 +1,6 @@
 ﻿package steps
 
-// DPoP (Demonstrating Proof of Possession) validation â€” RFC 9449.
+// DPoP (Demonstrating Proof of Possession) validation — RFC 9449.
 //
 // DPoP binds an access token to a specific client key pair so that stolen
 // bearer tokens cannot be replayed from another host. Each request carries:
@@ -16,7 +16,7 @@
 //   - htm = HTTP method of this request
 //   - htu = URI of this request (without fragment)
 //   - iat within max_age_seconds (default 60)
-//   - jti has not been seen before (replay prevention â€” datastore-backed)
+//   - jti has not been seen before (replay prevention — datastore-backed)
 //   - ath = base64url(SHA256(access_token)) if access token slot is provided
 //   - cnf.jkt in access token matches thumbprint of the proof JWK (if present)
 
@@ -123,20 +123,20 @@ func ParseDPoPConfig(input map[string]string) DPoPConfig {
 //
 // Step config keys:
 //
-//	dpop.header           â€” header name holding the proof JWT (default "DPoP")
-//	dpop.max_age_seconds  â€” max age of the iat claim (default 60)
-//	dpop.match_query      â€” include query string in htu check (default false)
-//	dpop.require_ath      â€” require ath claim (default false)
-//	dpop.check_cnf_jkt    â€” verify cnf.jkt against proof key thumbprint (default false)
-//	dpop.on_failure       â€” "stop" (default) or "continue"
-//	dpop.failure_status   â€” HTTP status on failure (default 401)
-//	dpop.failure_body     â€” body on failure (default "invalid dpop proof")
+//	dpop.header           — header name holding the proof JWT (default "DPoP")
+//	dpop.max_age_seconds  — max age of the iat claim (default 60)
+//	dpop.match_query      — include query string in htu check (default false)
+//	dpop.require_ath      — require ath claim (default false)
+//	dpop.check_cnf_jkt    — verify cnf.jkt against proof key thumbprint (default false)
+//	dpop.on_failure       — "stop" (default) or "continue"
+//	dpop.failure_status   — HTTP status on failure (default 401)
+//	dpop.failure_body     — body on failure (default "invalid dpop proof")
 //
 // Slot config keys:
 //
-//	dpop.access_token_var â€” slot holding the raw access token (for ath + cnf.jkt)
-//	dpop.result_var       â€” slot to write "true"/"false" in continue mode
-//	dpop.cnf_jkt_var      â€” slot to write the verified JWK thumbprint on success
+//	dpop.access_token_var — slot holding the raw access token (for ath + cnf.jkt)
+//	dpop.result_var       — slot to write "true"/"false" in continue mode
+//	dpop.cnf_jkt_var      — slot to write the verified JWK thumbprint on success
 func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore) engine.Instruction {
 	return engine.Instruction{
 		Name: "VALIDATE_DPOP",
@@ -236,7 +236,7 @@ func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore
 				return stopFail()
 			}
 
-			// jti replay check â€” write to store; if already present, it's a replay.
+			// jti replay check — write to store; if already present, it's a replay.
 			if store != nil {
 				tenant := datastore.Tenant(ctx.TenantKey)
 				jtiKey := "jti:" + claims.JTI
@@ -252,7 +252,7 @@ func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore
 			}
 			// If store is nil, skip replay check (no store configured).
 
-			// ath check â€” SHA256(access_token) must match.
+			// ath check — SHA256(access_token) must match.
 			if slots.AccessToken >= 0 && slots.AccessToken < len(ctx.ByteSlots) {
 				rawToken := string(ctx.ByteSlots[slots.AccessToken])
 				if rawToken != "" {
@@ -268,7 +268,7 @@ func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore
 				}
 			}
 
-			// cnf.jkt check â€” access token's cnf.jkt must match the proof key thumbprint.
+			// cnf.jkt check — access token's cnf.jkt must match the proof key thumbprint.
 			if cfg.CheckCNFJKT && slots.AccessToken >= 0 && slots.AccessToken < len(ctx.ByteSlots) {
 				rawToken := string(ctx.ByteSlots[slots.AccessToken])
 				if jkt, err := extractCNFJkt(rawToken); err == nil && jkt != "" {
@@ -279,7 +279,7 @@ func ValidateDPoP(slots DPoPSlots, cfg DPoPConfig, store datastore.KeyValueStore
 				}
 			}
 
-			// Success â€” write outputs.
+			// Success — write outputs.
 			if slots.Result >= 0 && slots.Result < len(ctx.ByteSlots) {
 				ctx.ByteSlots[slots.Result] = []byte("true")
 			}

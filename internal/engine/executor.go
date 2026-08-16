@@ -82,7 +82,7 @@ func Execute(ctx *rctx.Context, table []Instruction, startID int16) {
 		pc = current.Action(ctx, &state)
 
 		// Accumulate PC and timing into ctx (not state) so Execute can return
-		// void â€” avoids copying the ~1200-byte ExecutionState on every request.
+		// void — avoids copying the ~1200-byte ExecutionState on every request.
 		// AppendInstr handles both inline (first 64) and overflow chain cases.
 		if shouldMeasure {
 			ns := time.Since(started).Nanoseconds()

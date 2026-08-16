@@ -6,15 +6,55 @@ import (
 	"time"
 )
 
+// AppType identifies the intended runtime model of an app.
+type AppType string
+
+const (
+	AppTypeWeb          AppType = "web"
+	AppTypeAPIService   AppType = "api-service"
+	AppTypeEventProcess AppType = "event-processor"
+	AppTypeWebhook      AppType = "webhook"
+)
+
+// TenantMode identifies whether an app is tenant_aware or tenant_agnostic.
+type TenantMode string
+
+const (
+	TenantModeAware    TenantMode = "tenant_aware"
+	TenantModeAgnostic TenantMode = "tenant_agnostic"
+)
+
+// AppFlowBindings maps lifecycle flows to named flow definitions.
+type AppFlowBindings struct {
+	LoginFlow    string `json:"login_flow,omitempty"    yaml:"login_flow,omitempty"`
+	LogoutFlow   string `json:"logout_flow,omitempty"   yaml:"logout_flow,omitempty"`
+	CallbackFlow string `json:"callback_flow,omitempty" yaml:"callback_flow,omitempty"`
+	RefreshFlow  string `json:"refresh_flow,omitempty"  yaml:"refresh_flow,omitempty"`
+	ErrorFlow    string `json:"error_flow,omitempty"    yaml:"error_flow,omitempty"`
+}
+
+// AppEventBinding maps an event publisher+topic pair to a flow.
+type AppEventBinding struct {
+	Publisher string `json:"publisher" yaml:"publisher"`
+	Topic     string `json:"topic"     yaml:"topic"`
+	FlowName  string `json:"flow_name" yaml:"flow_name"`
+}
+
 // App is a stable consumer identity. Rate limiting is keyed by AppID so it
 // survives key rotation.
 type App struct {
-	AppID       uint32            `json:"app_id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	CreatedAt   int64             `json:"created_at"`
-	UpdatedAt   int64             `json:"updated_at"`
+	AppID          uint32            `json:"app_id"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	CreatedAt      int64             `json:"created_at"`
+	UpdatedAt      int64             `json:"updated_at"`
+	Type           AppType           `json:"type,omitempty"            yaml:"type,omitempty"`
+	TenantMode     TenantMode        `json:"tenant_mode,omitempty"     yaml:"tenant_mode,omitempty"`
+	FlowBindings   *AppFlowBindings  `json:"flow_bindings,omitempty"   yaml:"flow_bindings,omitempty"`
+	EventBindings  []AppEventBinding `json:"event_bindings,omitempty"  yaml:"event_bindings,omitempty"`
+	ReleaseChannel string            `json:"release_channel,omitempty" yaml:"release_channel,omitempty"`
+	Version        string            `json:"version,omitempty"         yaml:"version,omitempty"`
 }
 
 var (

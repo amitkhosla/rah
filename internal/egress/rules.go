@@ -155,7 +155,7 @@ func buildRuleSet(cfg *config.EgressConfig) (*RuleSet, error) {
 		return rs.Patterns[i].specificity > rs.Patterns[j].specificity
 	})
 	// Fix up patternIdx after sort so it reflects position in the final slice
-	// (used for cache invalidation â€” must be stable per entry, not per original index).
+	// (used for cache invalidation — must be stable per entry, not per original index).
 	for i := range rs.Patterns {
 		rs.Patterns[i].patternIdx = uint8(i)
 	}

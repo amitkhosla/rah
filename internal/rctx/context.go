@@ -94,7 +94,7 @@ type LogFieldEntry struct {
 // (64 bytes = exactly one cache line) with zero pointer indirection.
 // Reset is a single memclr: ctx.Timing = RequestTiming{}
 type RequestTiming struct {
-	StartNs         int64 // request start â€” set by FlowManager before Execute
+	StartNs         int64 // request start — set by FlowManager before Execute
 	FirstByteSentNs int64 // when first byte was written to client (TTFB)
 	LastByteSentNs  int64 // when last byte was written to client (transfer complete)
 	UpstreamTimeNs  int64 // total upstream latency (atomic-added per call)
@@ -151,7 +151,7 @@ type Context struct {
 	// concurrent calls). Enables each call to apply only its own mutations.
 	MutationFences [8]int8
 
-	// Access log extra fields â€” populated by log_field steps during flow execution.
+	// Access log extra fields — populated by log_field steps during flow execution.
 	// Read post-response to append named slot values to the access log.
 	ExtraLogFields [8]LogFieldEntry
 	ExtraLogCount  uint8
@@ -184,6 +184,10 @@ type Context struct {
 	// Human-readable, used in access logs. Complements CallerID (AppID).
 	CallerKey string
 
+	// AppName is the logical application name, set from the flow's app_name constant.
+	// Written to access logs for per-app observability filtering.
+	AppName string
+
 	// TestMode is true when this context is being executed by the test runner
 	// (POST /test/execute). Steps must NOT write to live cache/registry/datastore;
 	// writes are either suppressed or go to a test-namespaced key.
@@ -193,14 +197,14 @@ type Context struct {
 	// Set by the test runner before Execute() is called.
 	TestRunID string
 
-	// Routing identity â€” set by the engine at request time, zero cost
+	// Routing identity — set by the engine at request time, zero cost
 	// (plain struct field assignments).
 	APIRateLimitId      uint16 // rate limit config for this API (set by resolveSubPath)
 	EndpointRateLimitId uint16 // rate limit config for this endpoint; 0 = inherit API level
-	EndpointId          uint8  // which sub-route matched within this API (0â€“255)
+	EndpointId          uint8  // which sub-route matched within this API (0—255)
 	QuotaGroupID        uint8  // quota group (Phase 3)
 
-	// Obs holds all per-request timing counters embedded by value â€” zero indirection,
+	// Obs holds all per-request timing counters embedded by value — zero indirection,
 	// single cache line. Tel and Trace are nil-gated optional subsystems.
 	Timing RequestTiming
 	Obs    *observability.Telemetry
@@ -230,7 +234,7 @@ type Context struct {
 	// context to the pool when work is moved to a background goroutine.
 	detachedFromPool atomic.Bool
 
-	// â”€â”€ Arena allocator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Arena allocator â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// arenaUsed is the number of bytes consumed in arenaInline.
 	arenaUsed int32
 
@@ -248,7 +252,7 @@ type Context struct {
 
 	// Cancelled is set atomically to 1 when the client disconnects mid-flow.
 	// Steps check this at IO boundaries and return StopCancelled (-2).
-	// Use atomic.LoadInt32/StoreInt32 â€” never read directly.
+	// Use atomic.LoadInt32/StoreInt32 — never read directly.
 	Cancelled int32
 
 	// parallelForkActive is true during the parallel fan-out window.
@@ -289,9 +293,9 @@ type Context struct {
 	// Nil slice is safe; the gateway checks len before ranging.
 	AfterResponse []func()
 
-	// â”€â”€ Timeout / context.Context implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Timeout / context.Context implementation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// Grouped into one cache-line block to prevent false-sharing from
-	// sync.Once.mu. Only touched during upstream calls â€” never in the executor
+	// sync.Once.mu. Only touched during upstream calls — never in the executor
 	// hot path. Byte layout: 24+8+16+4+4+8+1 = 65 bytes (compiler pads to 72).
 	requestDeadline    time.Time     // 24 bytes: deadline set per upstream call
 	doneChan           chan struct{}  // 8 bytes: closed on cancel/timeout; nil = no timeout
@@ -301,7 +305,7 @@ type Context struct {
 	generation         atomic.Uint64 // 8 bytes: guards stale timer callbacks after pool reuse
 	hadUpstreamTimeout bool          // 1 byte: true if SetUpstreamTimeout called this req; gates Reset cleanup
 
-	// â”€â”€ Inline slot headers (no heap allocation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Inline slot headers (no heap allocation) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// ByteSlots / IntSlots / BoolSlots are slice headers that point into these
 	// arrays. No make() required; GC correctly scans the typed []byte elements.
 	// Declared last so they do not displace hot scalar fields from cache lines.
@@ -310,10 +314,10 @@ type Context struct {
 	boolSlotBase [BaseBoolSlots]bool
 
 	// arenaInline is the 1KB always-inline arena for slot data. Raw bytes only
-	// â€” no Go pointers â€” so GC never scans its contents. Declared last (large).
+	// — no Go pointers — so GC never scans its contents. Declared last (large).
 	arenaInline [ArenaInlineSize]byte
 
-	// â”€â”€ Op buffer â€” per-request storage operation queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Op buffer — per-request storage operation queue â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// opKeysBuf is a dedicated inline buffer for constructing op keys at runtime
 	// (prefix + extracted value). Kept separate from arenaInline so key construction
 	// does not compete with slot data. Reset by ResetOps().
@@ -331,7 +335,7 @@ type Context struct {
 }
 
 // flushResponseHeaders copies any headers set via SetResponseHeader to the
-// underlying http.ResponseWriter. Must be called before WriteHeader â€” after
+// underlying http.ResponseWriter. Must be called before WriteHeader — after
 // WriteHeader is called, header changes have no effect in net/http.
 func (ctx *Context) flushResponseHeaders() {
 	if ctx.ResHeaderCount == 0 {
@@ -396,7 +400,7 @@ func (ctx *Context) Finalize() {
 }
 
 // InitSlots wires the public ByteSlots / IntSlots / BoolSlots slice headers
-// to the inline base arrays. Called once from Pool.New â€” no heap allocation.
+// to the inline base arrays. Called once from Pool.New — no heap allocation.
 // arenaUsed=0 and arenaExt=nil are already the zero values.
 func (ctx *Context) InitSlots() {
 	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
@@ -406,7 +410,7 @@ func (ctx *Context) InitSlots() {
 	ctx.doneChan = make(chan struct{}) // pre-allocate for context.Context impl
 }
 
-// â”€â”€ context.Context implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ context.Context implementation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // Deadline implements context.Context.
 func (c *Context) Deadline() (time.Time, bool) {
@@ -416,7 +420,7 @@ func (c *Context) Deadline() (time.Time, bool) {
 	return c.requestDeadline, true
 }
 
-// Done implements context.Context. Returns nil when no timeout is active â€”
+// Done implements context.Context. Returns nil when no timeout is active —
 // net/http (and context.propagateCancel) treat nil as "never cancel", skipping
 // the watcher goroutine on every upstream call. doneChan is returned only when
 // a deadline is armed so the timer callback can abort the in-flight request.
@@ -534,7 +538,7 @@ func (ctx *Context) Alloc(n int) []byte {
 		return s
 	}
 
-	// Value > 4KB â€” heap fallback (very rare). Execution is never blocked.
+	// Value > 4KB — heap fallback (very rare). Execution is never blocked.
 	ctx.ArenaOverflowed = true
 	return make([]byte, n)
 }
@@ -586,13 +590,14 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.TenantID = 0
 	ctx.CallerID = 0
 	ctx.CallerKey = ""
+	ctx.AppName = ""
 	ctx.TestMode = false
 	ctx.TestRunID = ""
 	ctx.APIRateLimitId = 0
 	ctx.EndpointRateLimitId = 0
 	ctx.EndpointId = 0
 	ctx.QuotaGroupID = 0
-	ctx.Timing = RequestTiming{} // single memclr â€” all 8 timing fields zeroed at once
+	ctx.Timing = RequestTiming{} // single memclr — all 8 timing fields zeroed at once
 	ctx.Obs = nil
 	ctx.Trace = nil
 	ctx.WSSession = nil
@@ -605,7 +610,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.parallelForkActive = false
 	ctx.StagedRequestBody = nil
 	ctx.StagedContentType = nil
-	// MutationFences is [8]int8 â€” zeroed implicitly via the explicit zero below.
+	// MutationFences is [8]int8 — zeroed implicitly via the explicit zero below.
 	ctx.MutationFences = [8]int8{}
 	ctx.ErrorCode = 0
 	ctx.ErrorMsg = nil
@@ -615,12 +620,12 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.LLMCalls = nil
 	ctx.AfterResponse = ctx.AfterResponse[:0] // keep capacity, drop closures
 
-	// Reset timeout / context.Context state â€” only when a timeout was actually
+	// Reset timeout / context.Context state — only when a timeout was actually
 	// armed this request. Static and no-upstream flows skip this block entirely,
 	// saving 5 atomic ops (2 loads + Add + 2 stores) per request.
 	if ctx.hadUpstreamTimeout {
 		ctx.hadUpstreamTimeout = false
-		// Read cancelState/timedOut BEFORE zeroing â€” needed to decide if
+		// Read cancelState/timedOut BEFORE zeroing — needed to decide if
 		// doneChan was closed and must be replaced.
 		needNewChan := ctx.doneChan == nil ||
 			atomic.LoadInt32(&ctx.cancelState) != 0 ||
@@ -637,7 +642,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 		}
 	}
 
-	// Reset inline arena â€” one integer write, all slot data is implicitly gone.
+	// Reset inline arena — one integer write, all slot data is implicitly gone.
 	// arenaExt is already nil after ReleaseOverflow in ReturnContext.
 	ctx.arenaUsed = 0
 
@@ -667,7 +672,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.RemainingPath = nil
 	ctx.RawQuery = nil
 
-	// Nil inline slot bases â€” arena memory is already logically freed above.
+	// Nil inline slot bases — arena memory is already logically freed above.
 	for i := range ctx.byteSlotBase {
 		ctx.byteSlotBase[i] = nil
 	}
@@ -685,7 +690,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.scratchIdx = 0
 	ctx.ScratchBuffer = ctx.ScratchBuffer[:0]
 
-	// Reset op buffer â€” keep MaxOps and OnFlush (pool-level config).
+	// Reset op buffer — keep MaxOps and OnFlush (pool-level config).
 	ctx.opKeysUsed = 0
 	ctx.ResetOps()
 }

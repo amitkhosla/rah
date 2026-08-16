@@ -87,11 +87,11 @@ type StepConfig struct {
 	// (e.g. current_timestamp: "unix_s", "unix_ms", "unix_ns", "rfc3339").
 	Format string `json:"format,omitempty"`
 
-	// mTLS â€” opt-in client certificate for downstream HTTP and gRPC calls.
+	// mTLS — opt-in client certificate for downstream HTTP and gRPC calls.
 	// Both refs must be set together. Secret refs follow the same scheme as
 	// load_secret steps (e.g. "env://CLIENT_CERT_PEM", "file:///run/secrets/cert.pem").
 	// The PEM bytes are resolved at bake time and stored in the compiled instruction
-	// closure â€” zero per-request cost; zero behaviour change when fields are empty.
+	// closure — zero per-request cost; zero behaviour change when fields are empty.
 	TLSClientCertRef string `json:"tls_client_cert_ref,omitempty" yaml:"tls_client_cert_ref,omitempty"` // secret ref for PEM cert
 	TLSClientKeyRef  string `json:"tls_client_key_ref,omitempty"  yaml:"tls_client_key_ref,omitempty"`  // secret ref for PEM key
 
@@ -103,14 +103,14 @@ type StepConfig struct {
 	Params      []map[string]string `json:"params,omitempty"`      // For json_extract_emit / json_foreach_emit: list of ExtractOp descriptors
 	Destination string              `json:"destination,omitempty"` // For cache_get_batched: dest slot name
 
-	// Per-step observability hooks â€” applied after the step's own instruction(s).
+	// Per-step observability hooks — applied after the step's own instruction(s).
 	// LogAs, if non-empty, emits a log_field instruction that writes the step's
 	// output variable (As) into the request access log under this field name.
 	// TraceCapture, if true, emits a trace_capture instruction that copies the step's
 	// output variable into the instruction trace output so it appears in trace detail.
 	// TraceVars, if non-empty, emits a trace_capture instruction for each named variable
 	// (looked up in slotMap). Complements TraceCapture; duplicates are skipped.
-	// Validation rules â€” used by validate_route steps.
+	// Validation rules — used by validate_route steps.
 	Rules []RuleConfig `json:"rules,omitempty"`
 
 	LogAs        string   `json:"log_as,omitempty"`
@@ -120,17 +120,17 @@ type StepConfig struct {
 	// Error handling
 	// OnError controls what happens when this step signals failure (sets ctx.Failed + StopPlan).
 	// Values:
-	//   "" or "fail"     â€” default: stop execution (no wrapper emitted)
-	//   "continue"       â€” clear error and continue to next step
-	//   "jump:<flow>"    â€” jump to named flow's entry point on error
-	//   "status:<code>"  â€” set HTTP status <code> and stop cleanly (e.g. "status:503")
+	//   "" or "fail"     — default: stop execution (no wrapper emitted)
+	//   "continue"       — clear error and continue to next step
+	//   "jump:<flow>"    — jump to named flow's entry point on error
+	//   "status:<code>"  — set HTTP status <code> and stop cleanly (e.g. "status:503")
 	OnError string `json:"on_error,omitempty"`
 
 	// URLPolicy controls URL validation/correction before egress calls.
 	// Applied to both static and dynamic (url_var) upstream URLs.
-	//   ""              or "passthrough" â€” no check; let the transport fail (default)
-	//   "correct"                        â€” trim whitespace and normalise scheme; fail 502 if still invalid
-	//   "strict"                         â€” validate format without correction; fail 502 if invalid
+	//   ""              or "passthrough" — no check; let the transport fail (default)
+	//   "correct"                        — trim whitespace and normalise scheme; fail 502 if still invalid
+	//   "strict"                         — validate format without correction; fail 502 if invalid
 	URLPolicy string `json:"url_policy,omitempty"`
 
 	// Status is the HTTP response code for "return" and "fail" actions.
@@ -164,7 +164,7 @@ type StepConfig struct {
 	Vars       []string `yaml:"vars"        json:"vars,omitempty"`
 }
 
-// â”€â”€â”€ Rate Limit Warning Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Rate Limit Warning Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // RLWarnCode classifies a rate limit validation warning produced during bake.
 type RLWarnCode string
@@ -184,7 +184,7 @@ const (
 )
 
 // RateLimitWarning is a single advisory produced by the compiler validation pass.
-// Warnings are non-blocking â€” bake succeeds regardless. The sync response
+// Warnings are non-blocking — bake succeeds regardless. The sync response
 // includes all warnings so the Studio can surface them per-row in the API screen.
 type RateLimitWarning struct {
 	Code    RLWarnCode `json:"code"`
@@ -194,7 +194,7 @@ type RateLimitWarning struct {
 	Slot    string     `json:"slot,omitempty"` // relevant slot name for slot_unfilled
 }
 
-// â”€â”€â”€ Rate Limit Policy Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Rate Limit Policy Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // RateLimitEntryKind distinguishes how a rate limit entry's config is specified.
 type RateLimitEntryKind string
@@ -232,7 +232,7 @@ type APIRateLimitEntry struct {
 
 // UpstreamUrlConfig describes how the gateway resolves the upstream URL for a
 // route. It is set once at deploy time and injected into the flow's
-// "upstream_url" slot before execution â€” no flow step required.
+// "upstream_url" slot before execution — no flow step required.
 //
 //   source   meaning of value
 //   ------   ----------------
@@ -256,7 +256,7 @@ type EndpointConfig struct {
 	Constants     map[string]string  `json:"constants,omitempty"`       // pre-loaded named slots for this endpoint
 	UpstreamUrl   *UpstreamUrlConfig `json:"upstream_url,omitempty"`    // gateway-native upstream URL config
 
-	// V2 rate limit fields â€” multi-window, multi-dimension design.
+	// V2 rate limit fields — multi-window, multi-dimension design.
 	// These are additive; legacy RateLimitName/RateLimitMode fields remain for
 	// backwards compatibility until full migration (Session S17).
 	RLCountBy      string   `json:"rl_count_by,omitempty"`      // "tenant"|"ip"|"slot"|"static"|"composite"|"global"
@@ -296,11 +296,12 @@ type ApiConfig struct {
 }
 
 type FlowUpdate struct {
-	Name         string       `json:"name"                    yaml:"name"`
-	Type         string       `json:"type,omitempty"          yaml:"type,omitempty"`
-	Code         string       `json:"code,omitempty"          yaml:"code,omitempty"`
-	Instructions []StepConfig `json:"instructions"            yaml:"instructions"`
-	Action       string       `json:"action"                  yaml:"action"` // "upsert" or "delete"
+	Name         string            `json:"name"                    yaml:"name"`
+	Type         string            `json:"type,omitempty"          yaml:"type,omitempty"`
+	Code         string            `json:"code,omitempty"          yaml:"code,omitempty"`
+	Instructions []StepConfig      `json:"instructions"            yaml:"instructions"`
+	Constants    map[string]string `json:"constants,omitempty"     yaml:"constants,omitempty"`
+	Action       string            `json:"action"                  yaml:"action"` // "upsert" or "delete"
 }
 
 const (
@@ -327,7 +328,7 @@ type ApiUpdate struct {
 	UpstreamUrl     *UpstreamUrlConfig `json:"upstream_url,omitempty"`    // gateway-native upstream URL config
 	Action          string             `json:"action"`                    // "upsert" or "delete"
 
-	// V2 rate limit fields â€” additive alongside legacy fields.
+	// V2 rate limit fields — additive alongside legacy fields.
 	RLCountBy      string   `json:"rl_count_by,omitempty"`      // "tenant"|"ip"|"slot"|"static"|"composite"|"global"
 	RLSlot         string   `json:"rl_slot,omitempty"`          // slot name for count_by=slot
 	RLSlots        []string `json:"rl_slots,omitempty"`         // slot names for count_by=composite
@@ -350,7 +351,7 @@ type ApiUpdate struct {
 
 // TenantSyncDef declares a tenant to register at deploy time.
 // Properties maps prop-store name (e.g. "urls", "ids", "meta") to keyâ†’value pairs.
-// This keeps the schema open-ended â€” any prop-store the gateway supports can be populated.
+// This keeps the schema open-ended — any prop-store the gateway supports can be populated.
 type TenantSyncDef struct {
 	Aliases    []string                     `json:"aliases"`
 	Properties map[string]map[string]string `json:"properties,omitempty"` // store â†’ {key: value}
@@ -391,11 +392,11 @@ type UnifiedSyncRequest struct {
 	Flows    []FlowUpdate `json:"flows"`
 	Apis     []ApiUpdate  `json:"apis"`
 
-	// V2 rate limit resources â€” persisted and restored alongside flows/apis.
+	// V2 rate limit resources — persisted and restored alongside flows/apis.
 	RateLimitConfigsV2 []registrypkg.RateLimitConfigV2    `json:"rate_limit_configs_v2,omitempty"`
 	Tiers              []registrypkg.TierDef              `json:"tiers,omitempty"`
 	UpstreamServices   []registrypkg.UpstreamServiceDef   `json:"upstream_services,omitempty"`
-	// Tenants declared in this bundle â€” registered before flows/APIs at deploy time.
+	// Tenants declared in this bundle — registered before flows/APIs at deploy time.
 	Tenants []TenantSyncDef `json:"tenants,omitempty"`
 	// CacheSeeds pre-populates cache entries at deploy time.
 	CacheSeeds []CacheSeedDef `json:"cache_seeds,omitempty"`
@@ -407,6 +408,9 @@ type UnifiedSyncRequest struct {
 	MCPServers        []config.MCPServerConfig      `json:"mcp_servers,omitempty"`
 	VirtualMCPServers []mcpreg.VirtualMCPServerDef  `json:"virtual_mcp_servers,omitempty"`
 	APITools          []mcpreg.APIToolDef           `json:"api_tools,omitempty"`
+
+	// EventListeners to register on this gateway instance. Merged into cfgMgr on apply.
+	EventListeners []config.EventListenerConfig `json:"event_listeners,omitempty"`
 
 	// Scheduled jobs — persisted independently from flows/APIs.
 	Schedules []ScheduleConfig `json:"schedules,omitempty"`
@@ -425,11 +429,11 @@ type Step struct {
 	Parameters    map[string]string `json:"params"`  // Custom logic params
 }
 
-// â”€â”€â”€ Validation Rule Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Validation Rule Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // CondConfig describes one node in a validation condition tree (leaf or composite).
 type CondConfig struct {
-	Op       string      `json:"op,omitempty"`        // "and", "or", "direct" â€” omit for leaf nodes
+	Op       string      `json:"op,omitempty"`        // "and", "or", "direct" — omit for leaf nodes
 	Source   string      `json:"source,omitempty"`    // "req_body", "resp_body", "req_header", "resp_header", "slot"
 	Path     string      `json:"path,omitempty"`      // gjson path, header name, or slot index (as string)
 	Check    string      `json:"check,omitempty"`     // "exists", "missing", "eq", "neq", "lt", "gt", "regex", "in"

@@ -62,7 +62,7 @@ func (r *redisBackend) Get(tenantID uint16, key []byte) ([]byte, uint32, bool) {
 	}
 	expiry := binary.LittleEndian.Uint32(data[:4])
 	if expiry > 0 && expiry < uint32(time.Now().Unix()) {
-		// Expired â€” lazy delete.
+		// Expired — lazy delete.
 		r.client.Del(context.Background(), k)
 		return nil, 0, false
 	}
@@ -157,7 +157,7 @@ func (r *redisBackend) Sweep() int { return 0 }
 
 func (r *redisBackend) Close() error { return r.closeFn() }
 
-// â”€â”€ Redis client construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€ Redis client construction â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func newRedisClient(cfg config.StoreConfig) (goredis.Cmdable, func() error, error) {
 	topo := strings.ToLower(strings.TrimSpace(cfg.Connection.Topology))

@@ -315,7 +315,7 @@ func applyDest(ctx *rctx.Context, rule *CompiledRule, state *engine.ExecutionSta
 }
 
 // renderMsg builds the failure message from pre-split MsgParts into ctx.ScratchBuffer.
-// Reuses the scratch buffer â€” zero heap allocation in the common case.
+// Reuses the scratch buffer — zero heap allocation in the common case.
 func renderMsg(ctx *rctx.Context, rule *CompiledRule) []byte {
 	if len(rule.MsgParts) == 0 {
 		return nil

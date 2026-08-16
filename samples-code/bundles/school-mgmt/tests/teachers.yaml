@@ -1,0 +1,28 @@
+tests:
+  - name: "Scenario 1: Create a teacher returns 201 with teacher id"
+    flow_name: "school_teacher_create"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: POST
+      path: /school/teachers
+      headers:
+        X-API-Key: alpha-admin-sk-change-me
+      body: '{"name":"Dr. Smith","subject":"Math"}'
+    assertions:
+      - type: status
+        expected: 201
+
+  - name: "Scenario 2: List teachers returns 200 with teachers array"
+    flow_name: "school_teachers_list"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /school/teachers
+      headers:
+        X-API-Key: alpha-teacher-sk-change-me
+      body: ""
+    assertions:
+      - type: status
+        expected: 200

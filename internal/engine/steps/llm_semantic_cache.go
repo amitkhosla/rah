@@ -126,7 +126,7 @@ func SemanticCacheGet(cfg SemanticCacheGetConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.EmbedCfg.Provider, cfg.EmbedCfg.BaseURL, cfg.EmbedCfg.Model)
 	if endpoint == "" {
-		// Misconfiguration â€” return poisoned instruction that always treats as miss
+		// Misconfiguration — return poisoned instruction that always treats as miss
 		return engine.Instruction{
 			Name: "semantic_cache_get[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
@@ -330,7 +330,7 @@ func SemanticCachePut(cfg SemanticCachePutConfig) engine.Instruction {
 
 	endpoint := embedEndpoint(cfg.EmbedCfg.Provider, cfg.EmbedCfg.BaseURL, cfg.EmbedCfg.Model)
 	if endpoint == "" {
-		// Misconfiguration â€” return no-op instruction
+		// Misconfiguration — return no-op instruction
 		return engine.Instruction{
 			Name: "semantic_cache_put[bad_provider]",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {

@@ -17,7 +17,7 @@ import (
 //   - step.Input["name_slot"]  â†’ slot name whose value is the virtual MCP server name at runtime
 //   - step.Input["timeout_ms"] â†’ int milliseconds (default 30000)
 //
-// The instruction always returns StopPlan â€” it writes the full JSON-RPC response
+// The instruction always returns StopPlan — it writes the full JSON-RPC response
 // to the ResponseWriter and no further instructions should execute.
 func (c *Compiler) compileServeMCP(step StepConfig) error {
 	// Resolve body slot.
@@ -26,7 +26,7 @@ func (c *Compiler) compileServeMCP(step StepConfig) error {
 		return fmt.Errorf("serve_mcp: body slot: %w", err)
 	}
 
-	// Resolve virtual server name â€” either from a slot or a literal.
+	// Resolve virtual server name — either from a slot or a literal.
 	nameSlot := -1
 	nameLiteral := step.Input["name"]
 	if slotName := step.Input["name_slot"]; slotName != "" {

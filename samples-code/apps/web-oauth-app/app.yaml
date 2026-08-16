@@ -1,0 +1,11 @@
+# Web app with Google OAuth2 login/logout/callback flows
+app:
+  name: my-web-app
+  type: web
+  tenant_mode: tenant_aware
+  release_channel: production
+  flow_bindings:
+    login_flow: my-web-app-login
+    callback_flow: my-web-app-callback
+    logout_flow: my-web-app-logout
+    error_flow: my-web-app-error

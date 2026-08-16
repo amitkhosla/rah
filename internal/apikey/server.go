@@ -39,8 +39,11 @@ type updateKeyReq struct {
 
 // Server exposes Apps and API Keys over HTTP for management-plane operations.
 // Store is optional; nil = memory-only mode, no persistence.
+// ExtHandler, when non-nil, receives requests for /apps/{name}/... paths where
+// {name} is not a numeric app ID (e.g. /apps/myapp/releases, /apps/myapp/blueprint).
 type Server struct {
-	Store Store
+	Store      Store
+	ExtHandler http.HandlerFunc
 }
 
 // NewServer creates a Server backed by the optional Store.
@@ -82,6 +85,11 @@ func (s *Server) appsSub(w http.ResponseWriter, r *http.Request) {
 	seg := strings.SplitN(rest, "/", 2)
 	appID, ok := parseID(seg[0])
 	if !ok {
+		// Non-numeric name — delegate to extension handler (releases, blueprint, etc.)
+		if s.ExtHandler != nil {
+			s.ExtHandler(w, r)
+			return
+		}
 		http.Error(w, "invalid app ID", http.StatusBadRequest)
 		return
 	}

@@ -61,7 +61,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 	if len(secretsMgr) > 0 {
 		sm = secretsMgr[0]
 	}
-	// Bootstrap persisted AI config before wiring handlers â€” this merges
+	// Bootstrap persisted AI config before wiring handlers — this merges
 	// runtime-added models/servers on top of the file-based config.
 	if dsm != nil && dsm.IsConfigured(config.DomainAIConfig) {
 		if err := loadPersistedAIConfig(cfgMgr, dsm); err != nil {
@@ -88,7 +88,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
-	// Sub-path routes for individual LLM models â€” note trailing slash to match sub-paths.
+	// Sub-path routes for individual LLM models — note trailing slash to match sub-paths.
 	mux.HandleFunc("/ai/llm/models/", func(w http.ResponseWriter, r *http.Request) {
 		tail := strings.TrimPrefix(r.URL.Path, "/ai/llm/models/")
 		if tail == "" {
@@ -103,7 +103,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 			llmTestModelHandler(w, r, cfgMgr, alias, sm)
 
 		default:
-			// bare alias â€” only DELETE is supported.
+			// bare alias — only DELETE is supported.
 			if r.Method != http.MethodDelete {
 				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
@@ -112,7 +112,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
-	// Chat endpoint â€” full multi-turn conversation through any registered model alias.
+	// Chat endpoint — full multi-turn conversation through any registered model alias.
 	mux.HandleFunc("/ai/llm/chat", func(w http.ResponseWriter, r *http.Request) {
 		llmChatModelHandler(w, r, cfgMgr, sm)
 	})
@@ -156,7 +156,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 			mcpPingHandler(w, r, cfgMgr, alias)
 
 		default:
-			// bare alias â€” only DELETE is supported.
+			// bare alias — only DELETE is supported.
 			if r.Method != http.MethodDelete {
 				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
@@ -166,7 +166,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
-	// Studio UI route configs â€” GET returns the saved JSON array, PUT replaces it.
+	// Studio UI route configs — GET returns the saved JSON array, PUT replaces it.
 	// The payload is opaque to the gateway (arbitrary JSON) so no Go struct is needed.
 	mux.HandleFunc("/ai/routes", func(w http.ResponseWriter, r *http.Request) {
 		if dsm == nil || !dsm.IsConfigured(config.DomainAIConfig) {
@@ -216,7 +216,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}
 	})
 
-	// Spend caps / quota routes â€” GET returns all tenant quotas, POST upserts one,
+	// Spend caps / quota routes — GET returns all tenant quotas, POST upserts one,
 	// DELETE /ai/quotas/{tenantId} removes one.
 	const aiKeyQuotas = "quotas"
 	mux.HandleFunc("/ai/quotas", func(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +287,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 		}()
 	}
 
-	// API Tools (global catalog) â€” only wired when mcpReg is provided.
+	// API Tools (global catalog) — only wired when mcpReg is provided.
 	if mcpReg != nil {
 		mux.HandleFunc("/ai/tools/apis", func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
@@ -359,7 +359,7 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 	}
 }
 
-// â”€â”€â”€ LLM handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ LLM handlers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func llmListModelsHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *config.Manager) {
 	writeAIOK(w, cfgMgr.LLM().Models)
@@ -430,7 +430,7 @@ func llmDeleteModelHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *confi
 	writeAIOK(w, map[string]string{"alias": slug})
 }
 
-// â”€â”€â”€ MCP handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ MCP handlers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func mcpListServersHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *config.Manager) {
 	writeAIOK(w, cfgMgr.LLM().MCPServers)
@@ -603,7 +603,7 @@ func mcpPingHandler(w http.ResponseWriter, _ *http.Request, cfgMgr *config.Manag
 	})
 }
 
-// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // findMCPServer returns a pointer to the named server within a snapshot, or nil.
 func findMCPServer(cfgMgr *config.Manager, alias string) *config.MCPServerConfig {
@@ -616,7 +616,7 @@ func findMCPServer(cfgMgr *config.Manager, alias string) *config.MCPServerConfig
 	return nil
 }
 
-// â”€â”€â”€ Persistence helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ Persistence helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // persistAIModels writes the current model catalog to the DomainAIConfig store.
 // Errors are logged but do not affect the in-memory state.
@@ -651,7 +651,7 @@ func persistAIMCPServers(cfgMgr *config.Manager, dsm *DataStoreManager) {
 
 // loadPersistedAIConfig reads LLM models and MCP servers from the datastore
 // and merges them on top of the file-based catalog. File-based entries that
-// share the same slug/alias are not overwritten â€” runtime additions accumulate.
+// share the same slug/alias are not overwritten — runtime additions accumulate.
 func loadPersistedAIConfig(cfgMgr *config.Manager, dsm *DataStoreManager) error {
 	ctx := context.Background()
 
@@ -692,7 +692,7 @@ func LoadPersistedAIConfig(cfgMgr *config.Manager, dsm *DataStoreManager) error 
 	return loadPersistedAIConfig(cfgMgr, dsm)
 }
 
-// â”€â”€â”€ MCPReg handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ MCPReg handlers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func apiToolUpsertHandler(w http.ResponseWriter, r *http.Request, reg *mcpreg.Registry, rebake func(), dsm *DataStoreManager) {
 	var tool mcpreg.APIToolDef
@@ -766,7 +766,7 @@ func parseTenantIDQuery(r *http.Request) uint16 {
 	return uint16(v)
 }
 
-// â”€â”€â”€ MCPReg persistence helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â"€â"€â"€ MCPReg persistence helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // persistMCPTools writes the full mcpReg snapshot (API tools + virtual servers)
 // to the DomainMCPTools store. Errors are logged; they do not affect in-memory state.
@@ -790,7 +790,7 @@ func persistMCPTools(reg *mcpreg.Registry, dsm *DataStoreManager) {
 }
 
 // LoadFromDatastore populates reg from the DomainMCPTools store.
-// Errors are logged but do not cause a fatal â€” best-effort load at startup.
+// Errors are logged but do not cause a fatal — best-effort load at startup.
 func LoadFromDatastore(ctx context.Context, dsm *DataStoreManager, reg *mcpreg.Registry) error {
 	if dsm == nil || !dsm.IsConfigured(config.DomainMCPTools) {
 		return nil

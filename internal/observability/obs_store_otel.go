@@ -290,5 +290,10 @@ func (o *OTELObsStore) QueryPayloads(_ context.Context, _ uint64) ([]PayloadReco
 	return nil, nil
 }
 
+// GetDistinctApps returns an empty slice — reads are handled by the primary store.
+func (o *OTELObsStore) GetDistinctApps(_ context.Context, _ int64) ([]string, error) {
+	return []string{}, nil
+}
+
 // Close is a no-op — the OTEL SDK lifecycle is managed by main.go.
 func (o *OTELObsStore) Close() error { return nil }

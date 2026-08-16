@@ -1,0 +1,20 @@
+flows:
+  - name: school_students_list
+    action: upsert
+    code: |
+      return(200, '{"students":[{"id":"st1","name":"Alice Chen","grade":"10A","tenant":"alpha-school"},{"id":"st2","name":"Bob Kumar","grade":"10B","tenant":"alpha-school"}],"total":2}')
+
+  - name: school_student_get
+    action: upsert
+    code: |
+      return(200, '{"id":"st1","name":"Alice Chen","grade":"10A","email":"alice@school.com","tenant":"alpha-school"}')
+
+  - name: school_student_create
+    action: upsert
+    code: |
+      return(201, '{"id":"st3","name":"New Student","grade":"9A","status":"created","tenant":"alpha-school"}')
+
+  - name: school_student_update
+    action: upsert
+    code: |
+      return(200, '{"id":"st1","name":"Alice Chen","grade":"10A","status":"updated","tenant":"alpha-school"}')

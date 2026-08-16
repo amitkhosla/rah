@@ -38,6 +38,9 @@ func main() {
 	case "export":
 		exitCode := exportCmd(os.Args[2:])
 		os.Exit(exitCode)
+	case "test":
+		exitCode := testCmd(os.Args[2:])
+		os.Exit(exitCode)
 	case "-h", "--help", "help":
 		printUsage()
 		os.Exit(0)
@@ -57,6 +60,7 @@ Usage:
   rah-sync promote <release-id> --env <env> --studio <URL> [options]
   rah-sync diff <release-A> <release-B> --studio <URL>
   rah-sync export --release <id> --studio <URL> [options]
+  rah-sync test <dir> --studio <URL> [options]
 
 Subcommands:
   lint       Lint a bundle directory for configuration errors
@@ -64,6 +68,7 @@ Subcommands:
   promote    Deploy an existing release to an environment
   diff       Show differences between two releases
   export     Export a release as YAML or JSON
+  test       Run tests from a bundle's tests/ directory
 
 Common Options (all subcommands):
   --token <token>     Bearer token for authentication (or env RAH_SYNC_TOKEN)
@@ -101,6 +106,9 @@ Export Options:
   --format <format>   Output format: yaml or json (default: yaml)
   --out <path>        Output file path (optional, defaults to <id>.yaml or <id>.json)
 
+Test Options:
+  --studio <URL>      Studio server URL (required)
+
 Exit Codes:
   0  Success
   1  Errors found or operation failed
@@ -115,6 +123,7 @@ Examples:
   rah-sync diff release-123 release-456 --studio https://studio.example.com
   rah-sync export --release release-123 --studio https://studio.example.com --format yaml
   rah-sync export --release release-123 --studio https://studio.example.com --format json --out my-bundle.json
+  rah-sync test ./definitions --studio https://studio.example.com
 `)
 }
 
@@ -558,6 +567,75 @@ func exportCmd(args []string) int {
 	}
 
 	fmt.Printf("Exported release %s to %s\n", *releaseID, outFile)
+	return 0
+}
+
+// testCmd handles: test <dir> --studio URL [--token TOKEN]
+func testCmd(args []string) int {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.Usage = func() {}
+
+	studioURL := fs.String("studio", "", "Studio server URL (required)")
+	token := fs.String("token", "", "Bearer token (or env RAH_SYNC_TOKEN)")
+
+	fs.SetOutput(io.Discard)
+
+	err := fs.Parse(hoistFlags(args))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
+		return 1
+	}
+
+	// Get token from flag or environment
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("RAH_SYNC_TOKEN")
+	}
+
+	posArgs := fs.Args()
+	if len(posArgs) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: directory argument required\n")
+		fmt.Fprintf(os.Stderr, "Usage: rah-sync test <dir> --studio <URL> [options]\n")
+		return 1
+	}
+
+	if *studioURL == "" {
+		fmt.Fprintf(os.Stderr, "Error: --studio URL is required\n")
+		return 1
+	}
+
+	bundleDir := posArgs[0]
+
+	// Validate directory exists
+	info, err := os.Stat(bundleDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot access directory %q: %v\n", bundleDir, err)
+		return 1
+	}
+	if !info.IsDir() {
+		fmt.Fprintf(os.Stderr, "Error: %q is not a directory\n", bundleDir)
+		return 1
+	}
+
+	tests, err := sync.LoadTests(bundleDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading tests: %v\n", err)
+		return 1
+	}
+
+	if len(tests) == 0 {
+		fmt.Println("No tests found in tests/ directory.")
+		return 0
+	}
+
+	fmt.Printf("Running %d test(s) against %s...\n\n", len(tests), *studioURL)
+	results := sync.RunTests(*studioURL, authToken, tests)
+	passed, failed := sync.PrintTestResults(results)
+	fmt.Printf("\n%d passed, %d failed\n", passed, failed)
+
+	if failed > 0 {
+		return 1
+	}
 	return 0
 }
 

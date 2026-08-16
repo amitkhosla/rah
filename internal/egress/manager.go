@@ -51,14 +51,14 @@ func NewEgressManager() *EgressManager {
 //
 // Never returns nil.
 func (m *EgressManager) Resolve(serviceCode, host string) *EgressProfile {
-	rs := m.rules.Load() // immutable snapshot â€” never modified
+	rs := m.rules.Load() // immutable snapshot — never modified
 
-	// â”€â”€ Code resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Code resolution â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if serviceCode != "" {
 		cc := m.codeCache.Load()
 		if pid, found := cc.get(serviceCode); found {
 			if pid == pidNoMatch {
-				// Negative cache hit â€” skip to host resolution.
+				// Negative cache hit — skip to host resolution.
 				goto hostResolution
 			}
 			return &rs.Profiles[pid]
@@ -75,7 +75,7 @@ func (m *EgressManager) Resolve(serviceCode, host string) *EgressProfile {
 	}
 
 hostResolution:
-	// â”€â”€ Host / pattern resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// â"€â"€ Host / pattern resolution â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	if host != "" {
 		hc := m.hostCache.Load()
 		if pid, found := hc.get(host); found {
@@ -111,7 +111,7 @@ func (m *EgressManager) Update(cfg *config.EgressConfig) error {
 	// Swap rule set atomically.
 	m.rules.Store(newRS)
 
-	// Replace caches entirely â€” the whole rule set changed, so any cached
+	// Replace caches entirely — the whole rule set changed, so any cached
 	// pid values may map to stale profile IDs.
 	m.codeCache.Store(newEgressCache(64))
 	m.hostCache.Store(newEgressCache(256))

@@ -209,7 +209,7 @@ func EndsWithStep(src, result int, suffix []byte) engine.Instruction {
 }
 
 // ReplaceStep replaces all occurrences of old (baked) with new (baked) in ByteSlots[src].
-// Uses bytes.ReplaceAll â€” one allocation for the output; unavoidable when output size is unknown.
+// Uses bytes.ReplaceAll — one allocation for the output; unavoidable when output size is unknown.
 func ReplaceStep(src, result int, old, new []byte) engine.Instruction {
 	return engine.Instruction{
 		Name: "REPLACE",
@@ -275,7 +275,7 @@ func IndexOfStep(src, result int, needle []byte) engine.Instruction {
 }
 
 // JoinStep joins ByteSlots[src] (a JSON array of strings) with sep (baked) into ByteSlots[result].
-// Uses the same gjson packed-index trick â€” O(1) per element, arena allocation.
+// Uses the same gjson packed-index trick — O(1) per element, arena allocation.
 func JoinStep(src, result int, sep []byte) engine.Instruction {
 	return engine.Instruction{
 		Name: "JOIN",
@@ -285,13 +285,13 @@ func JoinStep(src, result int, sep []byte) engine.Instruction {
 				ctx.ByteSlots[result] = nil
 				return state.PC + 1
 			}
-			// Parse offsets â€” 8 bytes per element (start uint32, end uint32).
+			// Parse offsets — 8 bytes per element (start uint32, end uint32).
 			type span struct{ s, e uint32 }
 			var spans [64]span
 			n := 0
 			total := 0
 			// Quick scan: find quoted substrings in JSON array.
-			// We read byte-by-byte â€” no reflection, no GC pressure.
+			// We read byte-by-byte — no reflection, no GC pressure.
 			in := raw
 			i := 1 // skip '['
 			for i < len(in) && in[i] != ']' {

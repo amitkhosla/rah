@@ -289,7 +289,7 @@ func TestPoolCleanup(t *testing.T) {
 	slotMap := make(map[string]int)
 	prog, _ := avro.Compile(schema, slotMap)
 
-	// f="hello" â†’ varint 10 + 5 bytes
+	// f="hello" → varint 10 + 5 bytes
 	avroBin := []byte{10, 'h', 'e', 'l', 'l', 'o'}
 
 	instr, _ := NewAvroToJSONStep(0, 1, prog)

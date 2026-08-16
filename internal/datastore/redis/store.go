@@ -110,7 +110,7 @@ func (s *Store) Get(ctx context.Context, tenant, key string) ([]byte, bool, erro
 		return nil, false, err
 	}
 
-	// Fast path: dedup layer hit â€” no Redis round-trip needed.
+	// Fast path: dedup layer hit — no Redis round-trip needed.
 	if s.dedup != nil {
 		if val, ok := s.dedup.Get(k); ok {
 			return val, val != nil, nil

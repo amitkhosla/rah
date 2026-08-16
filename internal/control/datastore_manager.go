@@ -8,13 +8,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/amitkhosla/rah/internal/apikey"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/secrets"
-	"strconv"
-	"strings"
-	"sync"
+	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 const (
@@ -41,7 +47,7 @@ type DataStoreManager struct {
 }
 
 // NewDataStoreManager builds a DataStoreManager from the given config.
-// resolver is optional (pass nil to skip credential resolution â€” suitable for
+// resolver is optional (pass nil to skip credential resolution — suitable for
 // tests and deployments where credentials are already in the config as literals).
 func NewDataStoreManager(ctx context.Context, initial config.DataStoreConfig, resolver secrets.Resolver) (*DataStoreManager, error) {
 	if err := initial.Validate(); err != nil {
@@ -212,8 +218,8 @@ func buildEncryptingStore(ctx context.Context, inner datastore.KeyValueStore, en
 
 // resolveEncryptionKey resolves an encryption key reference to raw 32-byte key material.
 // Supported schemes:
-//   - hex:<64 hex chars> â€” inline key, no resolver needed (dev/test)
-//   - anything else      â€” delegated to the secrets resolver (env:, vault://, gsm://, etc.)
+//   - hex:<64 hex chars> — inline key, no resolver needed (dev/test)
+//   - anything else      — delegated to the secrets resolver (env:, vault://, gsm://, etc.)
 //
 // Returns an error if the resolved value is not exactly 32 bytes.
 func resolveEncryptionKey(ctx context.Context, keyRef string, resolver secrets.Resolver) ([]byte, error) {
@@ -246,12 +252,12 @@ func resolveEncryptionKey(ctx context.Context, keyRef string, resolver secrets.R
 // through the secrets manager. All other fields are unchanged.
 //
 // Resolution order (highest precedence first):
-//  1. UsernameRef / PasswordRef â€” explicit secret references (env:, enc:, vault:, etc.)
+//  1. UsernameRef / PasswordRef — explicit secret references (env:, enc:, vault:, etc.)
 //     Resolved value is written into Username / Password.
-//  2. Username / Password â€” may themselves be secret references (same scheme support)
+//  2. Username / Password — may themselves be secret references (same scheme support)
 //     or inline plaintext (no scheme prefix â†’ passed through unchanged).
 func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, resolver secrets.Resolver) (config.StoreConfig, error) {
-	// Resolve UsernameRef first â€” overrides Username if set.
+	// Resolve UsernameRef first — overrides Username if set.
 	if storeCfg.Connection.UsernameRef != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.UsernameRef)
 		if err != nil {
@@ -268,7 +274,7 @@ func resolveStoreCredentials(ctx context.Context, storeCfg config.StoreConfig, r
 		clear(val)
 	}
 
-	// Resolve PasswordRef first â€” overrides Password if set.
+	// Resolve PasswordRef first — overrides Password if set.
 	if storeCfg.Connection.PasswordRef != "" {
 		val, err := resolver.Resolve(ctx, storeCfg.Connection.PasswordRef)
 		if err != nil {
@@ -471,7 +477,7 @@ func (m *DataStoreManager) ReadUpstreamServicesSnapshot(ctx context.Context) (ma
 	return m.ReadGlobalDomainSnapshot(ctx, config.DomainUpstreamServices)
 }
 
-// â”€â”€â”€ RateLimitV2Datastore implementation (satisfies registry.RateLimitV2Datastore) â”€â”€
+// â"€â"€â"€ RateLimitV2Datastore implementation (satisfies registry.RateLimitV2Datastore) â"€â"€
 
 func (m *DataStoreManager) PutRateLimitConfigV2(ctx context.Context, name string, raw []byte) error {
 	if !m.IsConfigured(config.DomainRateLimitConfigsV2) {
@@ -551,6 +557,18 @@ func (m *DataStoreManager) resolveDomainStore(domain config.DataDomain) (datasto
 
 // DataStoreConfigHandler allows customer runtime updates when infra changes.
 func (m *DataStoreManager) DataStoreConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPatch {
+		m.dataStorePatchHandler(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		m.dataStoreDeleteHandler(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/test") {
+		m.dataStoreTestHandler(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "application/json")
@@ -584,7 +602,151 @@ func (m *DataStoreManager) DataStoreConfigHandler(w http.ResponseWriter, r *http
 	}
 }
 
-// â”€â”€â”€ apikey.Store implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+func (m *DataStoreManager) dataStorePatchHandler(w http.ResponseWriter, r *http.Request) {
+	var storeCfg config.StoreConfig
+	if err := json.NewDecoder(r.Body).Decode(&storeCfg); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if storeCfg.Name == "" {
+		http.Error(w, "name field required", http.StatusBadRequest)
+		return
+	}
+	supported := map[config.StoreKind]struct{}{
+		config.StoreDisk: {}, config.StoreRedis: {}, config.StoreMongoDB: {},
+		config.StoreDragonFly: {}, config.StorePostgreSQL: {}, config.StoreCassandra: {},
+	}
+	if _, ok := supported[storeCfg.Kind]; !ok {
+		http.Error(w, fmt.Sprintf("unsupported store kind: %s", storeCfg.Kind), http.StatusBadRequest)
+		return
+	}
+	snapshot := m.Snapshot()
+	snapshot.Stores[storeCfg.Name] = storeCfg
+	if err := m.Update(r.Context(), snapshot); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(storeCfg)
+}
+
+func (m *DataStoreManager) dataStoreDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	pathParts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
+	storeName := pathParts[len(pathParts)-1]
+	if storeName == "" || storeName == "datastores" {
+		http.Error(w, "store name required in path", http.StatusBadRequest)
+		return
+	}
+	snapshot := m.Snapshot()
+	var refs []string
+	for domain, name := range snapshot.Bindings {
+		if name == storeName {
+			refs = append(refs, string(domain))
+		}
+	}
+	if len(refs) > 0 {
+		http.Error(w, fmt.Sprintf("store %q referenced by bindings: %v", storeName, refs), http.StatusConflict)
+		return
+	}
+	delete(snapshot.Stores, storeName)
+	if err := m.Update(r.Context(), snapshot); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *DataStoreManager) dataStoreTestHandler(w http.ResponseWriter, r *http.Request) {
+	var storeCfg config.StoreConfig
+	if err := json.NewDecoder(r.Body).Decode(&storeCfg); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	latencyMs, err := m.testStoreConnection(r.Context(), storeCfg)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "latency_ms": latencyMs})
+}
+
+func (m *DataStoreManager) testStoreConnection(ctx context.Context, cfg config.StoreConfig) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	switch cfg.Kind {
+	case config.StoreRedis:
+		return m.testRedisConnection(ctx, cfg.Connection)
+	case config.StorePostgreSQL:
+		return m.testPostgresConnection(ctx, cfg.Connection)
+	case config.StoreDisk:
+		return m.testDiskConnection(ctx, cfg.Connection)
+	default:
+		return 0, fmt.Errorf("test not implemented for store kind %q", cfg.Kind)
+	}
+}
+
+func (m *DataStoreManager) testRedisConnection(ctx context.Context, conn config.StoreConnection) (int64, error) {
+	start := time.Now()
+	client := goredis.NewClient(&goredis.Options{Addr: conn.EffectiveAddress(), Password: conn.Password})
+	defer func() { _ = client.Close() }()
+	if err := client.Ping(ctx).Err(); err != nil {
+		return 0, fmt.Errorf("redis ping: %w", err)
+	}
+	return time.Since(start).Milliseconds(), nil
+}
+
+func buildStoreDSN(c config.StoreConnection) string {
+	if c.Address != "" {
+		return c.Address
+	}
+	if c.Host == "" {
+		return ""
+	}
+	if c.Port > 0 {
+		return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			c.Host, c.Port, c.Username, c.Password, c.Database)
+	}
+	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
+		c.Host, c.Username, c.Password, c.Database)
+}
+
+func (m *DataStoreManager) testPostgresConnection(ctx context.Context, conn config.StoreConnection) (int64, error) {
+	start := time.Now()
+	cfg, err := pgxpool.ParseConfig(buildStoreDSN(conn))
+	if err != nil {
+		return 0, fmt.Errorf("postgres config: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return 0, fmt.Errorf("postgres connect: %w", err)
+	}
+	defer pool.Close()
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT 1").Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres ping: %w", err)
+	}
+	return time.Since(start).Milliseconds(), nil
+}
+
+func (m *DataStoreManager) testDiskConnection(_ context.Context, conn config.StoreConnection) (int64, error) {
+	start := time.Now()
+	if conn.Path == "" {
+		return 0, fmt.Errorf("disk path required")
+	}
+	tmp := filepath.Join(conn.Path, fmt.Sprintf(".health-%d", time.Now().UnixNano()))
+	if err := os.WriteFile(tmp, []byte("ok"), 0644); err != nil {
+		return 0, fmt.Errorf("disk write: %w", err)
+	}
+	if _, err := os.ReadFile(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return 0, fmt.Errorf("disk read: %w", err)
+	}
+	_ = os.Remove(tmp)
+	return time.Since(start).Milliseconds(), nil
+}
+
+// â"€â"€â"€ apikey.Store implementation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 func (m *DataStoreManager) PutApp(ctx context.Context, appID uint32, raw []byte) error {
 	if !m.IsConfigured(config.DomainApps) {

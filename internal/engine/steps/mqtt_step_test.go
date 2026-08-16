@@ -341,8 +341,17 @@ func TestMQTTCallTimeout(t *testing.T) {
 
 	brokerURL, broker := setupTestBroker(t)
 	defer func() {
-		if err := broker.Close(); err != nil {
-			t.Logf("broker close: %v", err)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := broker.Close(); err != nil {
+				t.Logf("broker close: %v", err)
+			}
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Log("broker.Close timed out (known mochi-mqtt shutdown race)")
 		}
 	}()
 

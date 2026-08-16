@@ -166,7 +166,7 @@ func TestHTTPVectorStore_Upsert(t *testing.T) {
 			Metadata: map[string]any{"key": "val"},
 		},
 		{
-			// No ID â€” should be auto-generated
+			// No ID — should be auto-generated
 			Vector:  []float32{0.3, 0.4},
 			Content: "second item",
 		},

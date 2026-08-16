@@ -69,7 +69,7 @@ func SanitizePrompt(cfg SanitizePromptConfig) engine.Instruction {
 		{regexp.MustCompile(`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`), "phone"},
 	}
 
-	// Injection patterns â€” case-insensitive substring matching.
+	// Injection patterns — case-insensitive substring matching.
 	injectionPatterns := []string{
 		"ignore previous instructions",
 		"ignore all instructions",
@@ -152,7 +152,7 @@ func SanitizePrompt(cfg SanitizePromptConfig) engine.Instruction {
 								if cfg.FlagSlot >= 0 && cfg.FlagSlot < len(ctx.BoolSlots) {
 									ctx.BoolSlots[cfg.FlagSlot] = true
 								}
-								// continue â€” check remaining patterns
+								// continue — check remaining patterns
 							default: // "reject"
 								ctx.ResponseStatus = 400
 								ctx.Failed = true
@@ -300,7 +300,7 @@ func CompressPrompt(cfg CompressPromptConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			// 1. Check if already under limit â€” skip LLM call entirely.
+			// 1. Check if already under limit — skip LLM call entirely.
 			if estimateTokens(prompt) <= targetTokens {
 				return state.PC + 1
 			}
@@ -332,7 +332,7 @@ func CompressPrompt(cfg CompressPromptConfig) engine.Instruction {
 				return engine.StopPlan
 			}
 
-			// 5. HTTP call â€” single attempt, no retry for compression.
+			// 5. HTTP call — single attempt, no retry for compression.
 			client := getLLMClient(cfg.ModelConfig.BaseURL, timeoutMs)
 
 			reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)

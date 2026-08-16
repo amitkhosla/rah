@@ -1,6 +1,6 @@
 ﻿package steps
 
-// network.go â€” steps that extract network-level metadata from the request.
+// network.go — steps that extract network-level metadata from the request.
 
 import (
 	"net"
@@ -18,10 +18,10 @@ import (
 //   N  = Nth entry (0-based); if out of range, falls through to X-Real-IP / RemoteAddr
 //
 // Resolution order (first non-empty result wins):
-//  1. X-Forwarded-For header â€” entry selected by xffIndex.
+//  1. X-Forwarded-For header — entry selected by xffIndex.
 //     Trusted only when the gateway is behind a known reverse proxy.
-//  2. X-Real-IP header â€” set by nginx and similar proxies.
-//  3. RemoteAddr â€” the raw TCP peer address (always present; may be the proxy).
+//  2. X-Real-IP header — set by nginx and similar proxies.
+//  3. RemoteAddr — the raw TCP peer address (always present; may be the proxy).
 //
 // The stored value is an IP string with no port (e.g. "203.0.113.42").
 // If extraction fails for all three sources, the slot is left unchanged.

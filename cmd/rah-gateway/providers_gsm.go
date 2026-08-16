@@ -32,7 +32,7 @@ func init() {
 			if err != nil || p == nil {
 				// nil, nil â†’ not enabled; nil, err â†’ misconfiguration.
 				// In both cases return a nil interface (not a nil *gsm.Provider
-				// boxed in an interface â€” that would panic on method calls).
+				// boxed in an interface — that would panic on method calls).
 				return nil, err
 			}
 			return p, nil

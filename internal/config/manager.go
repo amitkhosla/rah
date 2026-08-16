@@ -177,6 +177,26 @@ func (m *Manager) DeleteMCPServer(alias string) bool {
 	return false
 }
 
+// UpsertEventListener adds or updates an EventListenerConfig matched by Name.
+func (m *Manager) UpsertEventListener(el EventListenerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, existing := range m.gateway.EventListeners {
+		if existing.Name == el.Name {
+			m.gateway.EventListeners[i] = el
+			return
+		}
+	}
+	m.gateway.EventListeners = append(m.gateway.EventListeners, el)
+}
+
+// SetEventListeners replaces the entire EventListeners slice atomically.
+func (m *Manager) SetEventListeners(listeners []EventListenerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.EventListeners = listeners
+}
+
 // Quotas returns the current quota configuration snapshot.
 func (m *Manager) Quotas() QuotasConfig {
 	m.mu.RLock()

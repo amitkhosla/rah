@@ -17,7 +17,7 @@ import (
 //   - input["collection"]         â†’ default collection name (fallback)
 //   - input["collection_slot"]    â†’ optional slot name holding the collection at runtime
 //   - input["top_k"]              â†’ max results to return (default 5)
-//   - input["min_score"]          â†’ minimum similarity score 0.0â€“1.0 (default 0)
+//   - input["min_score"]          â†’ minimum similarity score 0.0—1.0 (default 0)
 //   - input["count_slot"]         â†’ optional IntSlot index for result count output
 func (c *Compiler) compileVectorSearch(step StepConfig) error {
 	vectorSlot, err := c.getSlot(step.KeyIdentifier)

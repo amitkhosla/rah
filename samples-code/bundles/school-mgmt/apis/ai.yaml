@@ -1,0 +1,7 @@
+apis:
+  - name: school-ai-ask
+    path: /school/ai/ask
+    method: POST
+    flow_name: school_ai_ask
+    rate_limit_config: school-student-rl
+    action: upsert

@@ -4,13 +4,13 @@
 //
 // Any string credential field can contain one of these URI schemes:
 //
-//	env:VAR_NAME          â€” read from environment variable (also: $VAR, ${VAR})
-//	file:///path/to/file  â€” read file contents, whitespace trimmed
-//	enc:base64value       â€” AES-256-GCM encrypted value (requires EncryptedConfig.Key)
-//	gsm://project/secrets/name/versions/latest â€” Google Secret Manager
-//	vault://mount/path#field                   â€” HashiCorp Vault KV
-//	awssm://region/secret-name#field           â€” AWS Secrets Manager
-//	<anything else>       â€” returned as-is (literal plaintext, dev only)
+//	env:VAR_NAME          — read from environment variable (also: $VAR, ${VAR})
+//	file:///path/to/file  — read file contents, whitespace trimmed
+//	enc:base64value       — AES-256-GCM encrypted value (requires EncryptedConfig.Key)
+//	gsm://project/secrets/name/versions/latest — Google Secret Manager
+//	vault://mount/path#field                   — HashiCorp Vault KV
+//	awssm://region/secret-name#field           — AWS Secrets Manager
+//	<anything else>       — returned as-is (literal plaintext, dev only)
 //
 // # Adding a new provider
 //
@@ -55,7 +55,7 @@ type Resolver interface {
 	// Resolve returns the plaintext secret for a credential reference.
 	// Literal values (no recognised scheme prefix) are returned as-is.
 	// Results are served from the in-memory cache after the first fetch.
-	// The returned []byte is a fresh copy â€” the caller may zero it freely.
+	// The returned []byte is a fresh copy — the caller may zero it freely.
 	Resolve(ctx context.Context, ref string) ([]byte, error)
 }
 
@@ -74,19 +74,19 @@ type TTLProvider interface {
 // ctx is the gateway root context (passed to providers that need background
 // goroutines, e.g. token refresh).
 //
-// cfg is the full SecretsConfig â€” the factory reads only the section it owns.
+// cfg is the full SecretsConfig — the factory reads only the section it owns.
 //
 // bootstrap is the Manager itself, pre-loaded with env and file providers.
 // Use it to resolve env: / file:// refs for provider credentials (e.g. a
-// service-account key path). Never pass a cloud provider ref to bootstrap â€”
+// service-account key path). Never pass a cloud provider ref to bootstrap —
 // that would be circular.
 //
-// Return (nil, nil) when the provider is not enabled in cfg â€” the Manager
+// Return (nil, nil) when the provider is not enabled in cfg — the Manager
 // will skip registration silently. Return a non-nil error only for
 // mis-configuration that should abort startup.
 type ProviderFactory func(ctx context.Context, cfg config.SecretsConfig, bootstrap Resolver) (Provider, error)
 
-// global factory registry â€” populated by init() functions in provider sub-packages.
+// global factory registry — populated by init() functions in provider sub-packages.
 var (
 	globalFactories   = map[string]ProviderFactory{}
 	globalFactoriesMu sync.Mutex

@@ -12,10 +12,10 @@ import (
 // via the Atlas Data API REST endpoint.
 //
 // Required Options:
-//   "database"    â€” database name (default: "rah")
-//   "data_source" â€” Atlas cluster name (default: "Cluster0")
-//   "index"       â€” vector search index name (default: "vector_index")
-//   "path"        â€” embedding field path in documents (default: "embedding")
+//   "database"    — database name (default: "rah")
+//   "data_source" — Atlas cluster name (default: "Cluster0")
+//   "index"       — vector search index name (default: "vector_index")
+//   "path"        — embedding field path in documents (default: "embedding")
 //
 // Auth: api-key header.
 type mongoVectorStore struct {

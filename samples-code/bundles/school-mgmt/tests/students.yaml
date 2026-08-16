@@ -1,0 +1,28 @@
+tests:
+  - name: "Scenario 3: Create a student returns 201 with student id"
+    flow_name: "school_student_create"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: POST
+      path: /school/students
+      headers:
+        X-API-Key: alpha-admin-sk-change-me
+      body: '{"name":"Bob","grade":"6B"}'
+    assertions:
+      - type: status
+        expected: 201
+
+  - name: "Scenario 4: List students returns 200 with students array"
+    flow_name: "school_students_list"
+    mode: "published"
+    call_mode: "real"
+    input:
+      method: GET
+      path: /school/students
+      headers:
+        X-API-Key: alpha-admin-sk-change-me
+      body: ""
+    assertions:
+      - type: status
+        expected: 200

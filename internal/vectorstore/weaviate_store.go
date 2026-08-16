@@ -39,7 +39,7 @@ func (s *weaviateStore) Search(ctx context.Context, collection string, vector []
 		certaintyClause = fmt.Sprintf(", certainty: %g", minScore)
 	}
 
-	// GraphQL query â€” dynamically requests _additional { id certainty } and content
+	// GraphQL query — dynamically requests _additional { id certainty } and content
 	query := fmt.Sprintf(`{ Get { %s(nearVector: {vector: %s%s} limit: %d) { _additional { id certainty } content } } }`,
 		collection, vecStr, certaintyClause, topK)
 

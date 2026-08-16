@@ -14,12 +14,12 @@ import (
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ChatMessage struct {
-	Role    string `json:"role"`    // "user" or "assistant"
+	Role    string `json:"role"` // "user" or "assistant"
 	Content string `json:"content"`
 }
 
 type ChatAction struct {
-	Op          string `json:"op"`                    // upsert_flow, add_endpoint, upsert_api, publish, upsert_rate_limit, upsert_tenant
+	Op          string `json:"op"` // upsert_flow, add_endpoint, upsert_api, publish, upsert_rate_limit, upsert_tenant
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"` // plain-English explanation for the customer
 	DSL         string `json:"dsl,omitempty"`
@@ -61,7 +61,7 @@ type Plan struct {
 
 type ChatRequest struct {
 	Message        string        `json:"message"`
-	Model          string        `json:"model"`         // alias of a registered gateway LLM model
+	Model          string        `json:"model"` // alias of a registered gateway LLM model
 	IncludeAPIs    bool          `json:"include_apis"`
 	IncludeFlows   bool          `json:"include_flows"`
 	SessionHistory []ChatMessage `json:"session_history"`
@@ -89,7 +89,7 @@ type ChatDebugInfo struct {
 }
 
 type ChatResponse struct {
-	Phase            string         `json:"phase,omitempty"`             // "discovery" | "plan" | "execute" | ""
+	Phase            string         `json:"phase,omitempty"` // "discovery" | "plan" | "execute" | ""
 	ConfirmMessage   string         `json:"confirm_message"`
 	Plan             *Plan          `json:"plan,omitempty"`
 	Actions          []ChatAction   `json:"actions"`
@@ -112,12 +112,12 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 // Any op not in this set is silently dropped before the response reaches the client.
 // delete_* ops are intentionally excluded — deletion must be done via the Studio UI.
 var safeOps = map[string]bool{
-	"upsert_flow":      true,
-	"add_endpoint":     true,
-	"upsert_api":       true,
-	"publish":          true,
+	"upsert_flow":       true,
+	"add_endpoint":      true,
+	"upsert_api":        true,
+	"publish":           true,
 	"upsert_rate_limit": true,
-	"upsert_tenant":    true,
+	"upsert_tenant":     true,
 }
 
 // validateActions filters the LLM's action list to only safe, well-formed entries.
@@ -180,9 +180,9 @@ func sanitizeContext(s string) string {
 }
 
 const (
-	maxMessageLen  = 4000  // max bytes for a single user message
-	maxHistoryLen  = 2000  // max bytes per history entry
-	maxHistoryTurn = 8     // max history turns kept
+	maxMessageLen  = 4000 // max bytes for a single user message
+	maxHistoryLen  = 2000 // max bytes per history entry
+	maxHistoryTurn = 8    // max history turns kept
 )
 
 // ─── Handler 1: POST /api/ai/chat ────────────────────────────────────────────

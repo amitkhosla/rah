@@ -39,7 +39,7 @@ func (re *RegistryExecutor) Submit(batch rctx.Batch) {
 		// are alias-addressed; GetTenantRecord gives us the alias list.
 		rec := re.mgr.GetTenantRecord(op.TenantID)
 		if rec == nil || len(rec.Aliases) == 0 {
-			continue // tenant unknown â€” drop the op
+			continue // tenant unknown — drop the op
 		}
 		alias := rec.Aliases[0]
 		key := string(op.Key)

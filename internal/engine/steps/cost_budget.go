@@ -58,7 +58,7 @@ func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int, keySl
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			// Validate slot index
 			if costSlot < 0 || costSlot >= len(ctx.IntSlots) {
-				// Invalid slot, but don't fail the request â€” just continue
+				// Invalid slot, but don't fail the request — just continue
 				return s.PC + 1
 			}
 
@@ -88,7 +88,7 @@ func EnforceCostBudget(quotaManager *quota.CostQuotaManager, costSlot int, keySl
 			allowed, reason, _ := quotaManager.CanAfford(quotaKey, estimatedCost)
 
 			if !allowed {
-				// Budget exceeded â€” return 429 (Payment Required)
+				// Budget exceeded — return 429 (Payment Required)
 				ctx.ResponseStatus = 429
 				// Optionally store the reason in the context for logging
 				ctx.ErrorMsg = []byte(reason)
@@ -122,7 +122,7 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 		Action: func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
 			// Validate slot index
 			if cfg.CostSlot < 0 || cfg.CostSlot >= len(ctx.IntSlots) {
-				// Invalid slot, but don't fail â€” just skip recording
+				// Invalid slot, but don't fail — just skip recording
 				return s.PC + 1
 			}
 
@@ -153,7 +153,7 @@ func RecordCost(cfg RecordCostConfig) engine.Instruction {
 			if err != nil {
 				// Log error but don't fail the request (cost recording is best-effort)
 				ctx.ErrorMsg = []byte(err.Error())
-				// Continue anyway â€” don't stop the request
+				// Continue anyway — don't stop the request
 			}
 
 			// 2. Schedule cost event emission (deferred, after response sent)
@@ -289,7 +289,7 @@ func CalculateCost(cfg CalculateCostConfig) engine.Instruction {
 			// Look up pricing (cache-only, never blocks)
 			inputRate, outputRate, ok := cfg.PricingManager.GetPriceByModelID(modelID)
 			if !ok {
-				// Model not in catalog â€” zero-cost, don't fail the request
+				// Model not in catalog — zero-cost, don't fail the request
 				ctx.IntSlots[cfg.CostSlot] = 0
 				return s.PC + 1
 			}
