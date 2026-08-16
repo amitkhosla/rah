@@ -2625,7 +2625,7 @@ export default function FlowDesigner({
   // ── Delete impact panel ───────────────────────────────────────────
   function DeleteImpactPanel({ flowName, impact, onConfirm, onCancel, onOpenFlow, onNavigateToApis }: {
     flowName: string
-    impact?: { flows: string[]; apis: string[] }
+    impact?: FlowImpact
     onConfirm: () => void
     onCancel: () => void
     onOpenFlow?: (name: string) => void
@@ -2633,7 +2633,8 @@ export default function FlowDesigner({
   }) {
     const callerFlows = impact?.flows ?? []
     const callerApis  = impact?.apis  ?? []
-    const hasImpact   = callerFlows.length + callerApis.length > 0
+    const callerApps  = impact?.apps ?? []
+    const hasImpact   = callerFlows.length + callerApis.length + callerApps.length > 0
     return (
       <div
         style={{
@@ -2672,6 +2673,19 @@ export default function FlowDesigner({
               >
                 ⬡ {a} ↗
               </button>
+            ))}
+          </div>
+        )}
+        {callerApps.length > 0 && (
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Used by apps</div>
+            {callerApps.map(a => (
+              <div
+                key={`${a.app_name}-${a.version}`}
+                style={{ fontSize: 11, color: '#f59e0b', padding: '1px 0' }}
+              >
+                ⚡ {a.app_name} v{a.version} ({a.channel})
+              </div>
             ))}
           </div>
         )}
@@ -2797,6 +2811,15 @@ export default function FlowDesigner({
                               return (
                                 <div style={{ marginTop: 3, fontSize: 10, color: '#34d399', fontFamily: 'monospace' }}>
                                   → {outputs.slice(0, 3).join(', ')}{outputs.length > 3 ? ` +${outputs.length - 3} more` : ''}
+                                </div>
+                              )
+                            })()}
+                            {(() => {
+                              const apps = impactMap?.get(sf.name)?.apps
+                              if (!apps || apps.length === 0) return null
+                              return (
+                                <div style={{ marginTop: 3, fontSize: 10, color: '#f59e0b', fontFamily: 'monospace' }}>
+                                  ⚡ {apps.map(a => `${a.app_name} v${a.version}`).join(', ')}
                                 </div>
                               )
                             })()}

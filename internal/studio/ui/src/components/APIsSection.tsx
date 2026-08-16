@@ -11,6 +11,7 @@ interface Props {
   onLoadFlow: (name: string, steps: FlowStep[]) => void
   onNavigateToDesigner: (flowName?: string) => void
   onNavigateToDeploy: () => void
+  impactMap?: Map<string, import('../types').FlowImpact>
 }
 
 // ── Zone system ──────────────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ function deriveApiInterface(steps: FlowStep[]): { inputs: InputBinding[]; output
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoadFlow, onNavigateToDesigner, onNavigateToDeploy }: Props) {
+export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoadFlow, onNavigateToDesigner, onNavigateToDeploy, impactMap }: Props) {
   // Selection state
   const [selectedApiId,      setSelectedApiId]      = useState<string | null>(null)
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null)
@@ -934,6 +935,25 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
                     <div style={{ fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {api.name}
                     </div>
+                    {(() => {
+                      // Collect all flow names used by this API
+                      const flowNames = new Set<string>()
+                      if (api.defaultFlow) flowNames.add(api.defaultFlow)
+                      for (const ep of api.endpoints) if (ep.flowName) flowNames.add(ep.flowName)
+                      // Find apps that own any of these flows
+                      const apps = new Set<string>()
+                      for (const fn of flowNames) {
+                        for (const a of impactMap?.get(fn)?.apps ?? []) {
+                          apps.add(`${a.app_name} v${a.version}`)
+                        }
+                      }
+                      if (apps.size === 0) return null
+                      return (
+                        <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          ⚡ {Array.from(apps).join(', ')}
+                        </div>
+                      )
+                    })()}
                   </div>
                   {/* Toolify button */}
                   <button

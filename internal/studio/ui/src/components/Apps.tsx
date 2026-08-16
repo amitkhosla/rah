@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   listApps, createApp, updateApp, deleteApp,
   listKeys, generateKey, updateKey, revokeKey, rotateKey,
-  generateAppBlueprint, type AppBlueprintRequest, type AppBlueprintResponse,
+  generateAppBlueprint, listAppUsages, type AppBlueprintRequest, type AppBlueprintResponse,
 } from '../api'
 import type { App, APIKeyView, APIKeyCreateResponse } from '../types'
 
@@ -652,8 +652,22 @@ export default function Apps() {
 
   const loadApps = useCallback(() => {
     setLoading(true); setErr('')
-    listApps()
-      .then(r => setApps(r ?? []))
+    Promise.all([listApps(), listAppUsages().catch(() => ({ flow_usages: {} }))])
+      .then(([registered, usages]) => {
+        const all = [...(registered ?? [])]
+        const registeredNames = new Set(all.map(a => a.name))
+        // Discover apps deployed via rah-sync from release data in app-usages
+        const syncedNames = new Set<string>()
+        for (const entries of Object.values(usages.flow_usages ?? {})) {
+          for (const e of entries) if (e.app_name) syncedNames.add(e.app_name)
+        }
+        for (const name of syncedNames) {
+          if (!registeredNames.has(name)) {
+            all.push({ app_id: 0, name, description: 'Deployed via rah-sync', labels: { source: 'sync' }, created_at: 0, updated_at: 0 })
+          }
+        }
+        setApps(all)
+      })
       .catch(e => setErr(String(e)))
       .finally(() => setLoading(false))
   }, [])
@@ -703,8 +717,13 @@ export default function Apps() {
                   borderLeft: isSelected ? '3px solid var(--accent)' : '3px solid transparent',
                 }}
               >
-                <div style={{ fontWeight: 600, marginBottom: 2 }}>{app.name}</div>
-                <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>ID: {app.app_id}</div>
+                <div style={{ fontWeight: 600, marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {app.name}
+                  {app.labels?.source === 'sync' && (
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: 'rgba(87,181,255,0.15)', color: 'var(--accent)', letterSpacing: '0.04em' }}>SYNCED</span>
+                  )}
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{app.app_id ? `ID: ${app.app_id}` : 'via rah-sync'}</div>
               </div>
             )
           })}

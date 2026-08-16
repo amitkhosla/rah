@@ -1222,6 +1222,14 @@ export async function rollbackAppRelease(appName: string, version: string, chann
   return request('/api/apps/' + appName + '/releases/' + version + '/rollback', { method: 'POST', body: JSON.stringify({ channel }), headers: { 'content-type': 'application/json' } })
 }
 
+// ── App Usages (flows/APIs belonging to deployed apps) ────────────────────
+
+export interface AppUsageEntry { app_name: string; version: string; channel: string }
+export interface AppUsages { flow_usages: Record<string, AppUsageEntry[]> }
+export function listAppUsages(): Promise<AppUsages> {
+  return request<AppUsages>('/api/app-usages')
+}
+
 // ── Named Queries ──────────────────────────────────────────────────────────────
 
 export interface NamedQueryDef {
