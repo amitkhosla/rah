@@ -66,6 +66,10 @@ type ServerConfig struct {
 
 	// SCIM configures SCIM 2.0 provisioning from an enterprise IDP.
 	SCIM *SCIMConfig `json:"scim,omitempty" yaml:"scim,omitempty"`
+
+	// AssetsDir is the directory for storing app static asset files.
+	// Empty = asset store disabled.
+	AssetsDir string `json:"assets_dir,omitempty" yaml:"assets_dir,omitempty"`
 }
 
 type DeployRequest struct {
@@ -310,6 +314,7 @@ type Server struct {
 
 	baselineStore FlowBaselineStore
 	versionStore  VersionHistoryStore
+	assetsStore   AssetStore
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -402,6 +407,14 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		srv.obsHandler = observability.NewObsHandler(srv.obsWriter, tel)
 	}
 
+	if cfg.AssetsDir != "" {
+		as, err := NewLocalAssetStore(cfg.AssetsDir)
+		if err != nil {
+			return nil, fmt.Errorf("asset store: %w", err)
+		}
+		srv.assetsStore = as
+	}
+
 	return srv, nil
 }
 
@@ -477,6 +490,8 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/egress/", func(w http.ResponseWriter, r *http.Request) {
 		s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 	})
+	apiMux.HandleFunc("/api/app-assets/", s.assetsManageHandler)
+	apiMux.HandleFunc("/api/gateway-invoke", s.gatewayInvokeHandler)
 
 	// Observability routes: serve from own store if configured, else proxy to gateway.
 	// Note: APIDetailHandler and TenantDetailHandler strip the /observability/ prefix;
@@ -525,7 +540,13 @@ func (s *Server) Handler() http.Handler {
 	outerMux.HandleFunc("/api/studio/users/hash", studioUsersHashHandler) // always public (bootstrap helper)
 	// OIDC endpoints are public (browser redirects, no session yet during login flow).
 	outerMux.HandleFunc("/api/oidc/", s.oidcDispatch)
+	// gateway-invoke is registered directly on outerMux (before the /api/ catch-all) to avoid
+	// Go 1.22+ nested-mux routing issues — exact patterns take priority over subtree patterns.
+	outerMux.HandleFunc("/api/gateway-invoke", s.gatewayInvokeHandler)
 	outerMux.Handle("/api/", s.studioAuthMiddleware(apiMux))
+	// App uploaded files served publicly under /app-files/ — avoids conflicting
+	// with /assets/ which serves the embedded React SPA JS/CSS bundles.
+	outerMux.HandleFunc("/app-files/", s.serveAssetHandler)
 	outerMux.HandleFunc("/mcp", s.MCPHandler)
 	// SCIM endpoints use their own bearer token middleware (not Studio sessions).
 	scimMux := http.NewServeMux()
@@ -2020,6 +2041,182 @@ func (s *Server) grpcDescriptorsMgmtProxy(w http.ResponseWriter, r *http.Request
 // Used as fallback when no direct obs store is configured.
 func (s *Server) obsGatewayProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// assetsManageHandler handles upload/list/delete for app static assets.
+// Route: /api/app-assets/{appname}[/{filename}]
+// GET    /api/app-assets/{appname}              → list
+// POST   /api/app-assets/{appname}              → upload (multipart, field "file")
+// DELETE /api/app-assets/{appname}/{filename}   → delete
+func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
+	if s.assetsStore == nil {
+		http.Error(w, "asset store not configured (start studio with --assets-dir)", http.StatusServiceUnavailable)
+		return
+	}
+	// parse /api/app-assets/{appname}[/{filename}]
+	rest := strings.TrimPrefix(r.URL.Path, "/api/app-assets/")
+	parts := strings.SplitN(rest, "/", 2)
+	appName := parts[0]
+	filename := ""
+	if len(parts) == 2 {
+		filename = parts[1]
+	}
+	if appName == "" {
+		http.Error(w, "app name required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	switch r.Method {
+	case http.MethodGet:
+		assets, err := s.assetsStore.List(ctx, appName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Annotate with serve URL.
+		for i := range assets {
+			assets[i].URL = "/app-files/" + appName + "/" + assets[i].Filename
+		}
+		if assets == nil {
+			assets = []AssetMeta{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(assets)
+
+	case http.MethodPost:
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, "parse multipart: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		f, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "file field required", http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		ct := header.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		if err := s.assetsStore.Upload(ctx, appName, header.Filename, f, ct, header.Size); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(AssetMeta{
+			Filename:    header.Filename,
+			ContentType: ct,
+			Size:        header.Size,
+			URL:         "/app-files/" + appName + "/" + header.Filename,
+		})
+
+	case http.MethodDelete:
+		if filename == "" {
+			http.Error(w, "filename required for delete", http.StatusBadRequest)
+			return
+		}
+		if err := s.assetsStore.Delete(ctx, appName, filename); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// serveAssetHandler serves uploaded asset files publicly.
+// Route: /app-files/{appname}/{filename}
+func (s *Server) serveAssetHandler(w http.ResponseWriter, r *http.Request) {
+	if s.assetsStore == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// parse /app-files/{appname}/{filename}
+	rest := strings.TrimPrefix(r.URL.Path, "/app-files/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	appName, filename := parts[0], parts[1]
+	rc, meta, err := s.assetsStore.Download(r.Context(), appName, filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", meta.ContentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
+// gatewayInvokeHandler proxies a test API call from the Studio UI to an arbitrary URL.
+// The browser cannot call the gateway directly due to CORS; this handler runs server-side.
+// Request body: {"method":"POST","url":"http://localhost:8080/path","headers":{"k":"v"},"body":"..."}
+// Response: {"status":200,"body":"...","content_type":"application/json"}
+func (s *Server) gatewayInvokeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Method  string            `json:"method"`
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+	method := req.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	var bodyReader io.Reader
+	if req.Body != "" {
+		bodyReader = strings.NewReader(req.Body)
+	}
+	outReq, err := http.NewRequestWithContext(r.Context(), method, req.URL, bodyReader)
+	if err != nil {
+		http.Error(w, "failed to build request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	for k, v := range req.Headers {
+		outReq.Header.Set(k, v)
+	}
+	if outReq.Header.Get("Content-Type") == "" && req.Body != "" {
+		outReq.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.httpClient.Do(outReq)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":       resp.StatusCode,
+		"body":         string(respBody),
+		"content_type": resp.Header.Get("Content-Type"),
+	})
 }
 
 // proxyPassThrough forwards the request as-is (any method, with body and query) to the

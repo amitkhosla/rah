@@ -269,6 +269,27 @@ const VISUAL_GROUPS: VisualGroup[] = [
     ],
   },
   {
+    label: 'MATH & TIME',
+    icon: '🔢',
+    recipes: [
+      { title: 'Add',               wraps: 'add',               description: 'Add two integer slots (a + b → result)' },
+      { title: 'Subtract',          wraps: 'sub',               description: 'Subtract two integer slots (a − b → result)' },
+      { title: 'Multiply',          wraps: 'mul',               description: 'Multiply two integer slots (a × b → result)' },
+      { title: 'Divide',            wraps: 'div',               description: 'Integer divide two slots (a ÷ b → result); stops flow on divide-by-zero' },
+      { title: 'Modulo',            wraps: 'mod',               description: 'Remainder of a ÷ b → result. Use with current_timestamp to compute ms remaining in the current rate-limit window.' },
+      { title: 'Current Timestamp', wraps: 'current_timestamp', description: 'Write the current time into a slot. Formats: unix_ms (default), unix_s, unix_ns, rfc3339.' },
+    ],
+  },
+  {
+    label: 'RESILIENCE',
+    icon: '🛡️',
+    recipes: [
+      { title: 'Delay',         wraps: 'delay',         description: 'Pause the flow for N milliseconds. Use a static ms value or reference an integer slot for dynamic durations (e.g. time remaining in a rate-limit window). Cancels immediately on client disconnect.' },
+      { title: 'Spike Arrest',  wraps: 'spike_arrest',  description: 'Smooth outbound call rate — allow at most one request per interval_ms per key. Returns 429 when the interval has not elapsed. Use before calls to rate-limited external APIs.' },
+      { title: 'Circuit Breaker', wraps: 'circuit_breaker', description: 'Open the circuit after N consecutive failures; reject requests until the upstream recovers. Pair with record_circuit_outcome to track success/failure.' },
+    ],
+  },
+  {
     label: 'OBSERVABILITY',
     icon: '📊',
     recipes: [
@@ -585,6 +606,8 @@ export default function FlowDesigner({
     'bind_correlation_id':'🔖','bind_client_ip':'🌐',
     'db_query':'🗂️','db_query_one':'🗂️','db_exec':'🗂️',
     'send_email':'📧','ws_broadcast_channel':'⚡','ws_push_session':'⚡','ws_upstream_connect':'⚡','ws_upstream_disconnect':'⚡',
+    'add':'➕','sub':'➖','mul':'✖️','div':'➗','mod':'➗','current_timestamp':'🕐',
+    'delay':'⏸️','spike_arrest':'🛡️','circuit_breaker':'🛡️',
   }
   function sicon(a: string) { return SICONS[a] ?? '•' }
 

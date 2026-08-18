@@ -285,6 +285,7 @@ export default function App() {
 // AppContent holds all the app state and renders the full Studio UI.
 function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => void }) {
   const [tab, setTab] = useState<TabId>('dashboard')
+  const [appNavTarget, setAppNavTarget] = useState<string | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [flowMapView, setFlowMapView] = useState<'tree' | 'graph'>('tree')
 
@@ -846,9 +847,9 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'observability'      && <Observability />}
         {tab === 'audit-log'          && <AuditLog />}
         {tab === 'tenants'           && <Tenants />}
-        {tab === 'apps'              && <Apps flowNames={savedFlows.map(f => f.name)} savedFlows={savedFlows} blocks={blocks} onSaveFlow={saveFlowFromApp} />}
+        {tab === 'apps'              && <Apps flowNames={savedFlows.map(f => f.name)} savedFlows={savedFlows} blocks={blocks} onSaveFlow={saveFlowFromApp} initialAppName={appNavTarget} onAppNavConsumed={() => setAppNavTarget(null)} onNavigateToFlow={(name) => navigateToDesigner(name, false)} />}
         {tab === 'app-releases'      && <AppReleases />}
-        {tab === 'app-explorer'      && <AppExplorer />}
+        {tab === 'app-explorer'      && <AppExplorer onNavigate={(id, appName) => { setTab(id as TabId); if (appName) setAppNavTarget(appName) }} />}
         {tab === 'rate-limits'       && <RateLimitConfigsScreen />}
         {tab === 'rl-overrides'      && <TenantOverridesView />}
         {tab === 'tiers'             && <TenantTiersScreen />}

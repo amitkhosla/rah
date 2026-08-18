@@ -2551,6 +2551,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.DivStep(slotA, slotB, result))
 
+	case "mod":
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ModStep(slotA, slotB, result))
+
 	case "set_response_header":
 		var src int
 		if _, known := c.slotMap[step.Source]; !known {
@@ -3028,6 +3043,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		flowID := uint32(len(c.GlobalTable))
 		intervalNs := int64(intervalMs) * int64(time.Millisecond)
 		c.GlobalTable = append(c.GlobalTable, engine.SpikeArrestStep(c.fm.SpikeArrestStore, flowID, intervalNs, keySlot))
+
+	case "delay":
+		// Static duration from input["ms"]; dynamic duration from Source slot (IntSlot).
+		// At least one must be set. Dynamic slot value overrides static at runtime.
+		staticMs := int64(parseIntInput(step.Input, "ms", 0))
+		msSlot := -1
+		if step.Source != "" {
+			if sl, slErr := c.getSlotReadOnly(step.Source); slErr == nil {
+				msSlot = sl
+			}
+		}
+		if staticMs <= 0 && msSlot < 0 {
+			return fmt.Errorf("delay: set ms (static duration) or source (IntSlot name) — at least one required")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.DelayStep(staticMs, msSlot))
 
 	case "circuit_breaker":
 		failureThresh := int64(parseIntInput(step.Input, "failure_threshold", 5))

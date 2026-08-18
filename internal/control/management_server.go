@@ -1026,6 +1026,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				Path:              a.Path,
 				Method:            a.Method,
 				FlowName:          a.FlowName,
+				AppName:           a.AppName,
 				RateLimitName:     a.RateLimitName,
 				EndpointConfigs:   a.EndpointConfigs,
 				Async:             a.Async,

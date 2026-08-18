@@ -138,6 +138,21 @@ func MulStep(slotA, slotB, result int) engine.Instruction {
 	}
 }
 
+// ModStep stores IntSlots[slotA] % IntSlots[slotB] into IntSlots[result].
+// Division by zero stops the plan.
+func ModStep(slotA, slotB, result int) engine.Instruction {
+	return engine.Instruction{
+		Name: "MOD",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			if ctx.IntSlots[slotB] == 0 {
+				return engine.StopPlan
+			}
+			ctx.IntSlots[result] = ctx.IntSlots[slotA] % ctx.IntSlots[slotB]
+			return state.PC + 1
+		},
+	}
+}
+
 // DivStep stores IntSlots[slotA] / IntSlots[slotB] into IntSlots[result].
 // Division by zero stops the plan.
 func DivStep(slotA, slotB, result int) engine.Instruction {

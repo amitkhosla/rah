@@ -192,6 +192,7 @@ export interface ApiDef {
   id: string              // uuid (client-generated)
   name: string            // display name, e.g. "Users API"
   basePath: string        // primary basepath, e.g. "/api/v1/users"  (must start with /)
+  appName?: string        // app this API belongs to
   aliasPaths?: string[]   // additional basepaths → same ApiID in gateway router
   defaultFlow: string     // flow inherited by all endpoints that don't override
   endpoints: EndpointDef[]
@@ -649,9 +650,10 @@ export interface GatewayFlow {
 export interface GatewayApi {
   name: string
   path: string
-  method: string
+  method?: string
   flow_name: string
-  action: string
+  app_name?: string
+  action?: string
 }
 
 export interface GatewayState {
@@ -701,13 +703,33 @@ export interface TemplatePatternStep extends FlowStep {
 
 // ─── Apps & API Key Management ────────────────────────────────────────────────
 
+export interface AppFlowBindings {
+  login_flow?: string
+  logout_flow?: string
+  callback_flow?: string
+  refresh_flow?: string
+  error_flow?: string
+}
+
+export interface AppEventBinding {
+  publisher: string
+  topic: string
+  flow_name: string
+}
+
 export interface App {
-  app_id: number;
-  name: string;
-  description: string;
-  labels?: Record<string, string>;
-  created_at: number;
-  updated_at: number;
+  app_id: number
+  name: string
+  description: string
+  labels?: Record<string, string>
+  created_at: number
+  updated_at: number
+  type?: 'web' | 'api-service' | 'event-processor' | 'webhook'
+  tenant_mode?: 'tenant_aware' | 'tenant_agnostic'
+  flow_bindings?: AppFlowBindings
+  event_bindings?: AppEventBinding[]
+  release_channel?: string
+  version?: string
 }
 
 export interface APIKeyView {

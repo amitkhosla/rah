@@ -1,5 +1,6 @@
 apis:
   - name: school-ai-ask
+    app_name: school-mgmt
     path: /school/ai/ask
     method: POST
     flow_name: school_ai_ask

@@ -215,7 +215,7 @@ export default function Gateway({ onLoadFlow, onLoadApi, onNavigateToTab }: Gate
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center' }}>
-                      <MethodBadge method={a.method} />
+                      <MethodBadge method={a.method ?? ''} />
                       <strong>{a.name}</strong>
                     </div>
                     <div className="sub" style={{ marginTop: 4 }}>{a.path}</div>
