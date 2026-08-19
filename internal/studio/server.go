@@ -2094,7 +2094,7 @@ func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "file field required", http.StatusBadRequest)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		ct := header.Header.Get("Content-Type")
 		if ct == "" {
 			ct = "application/octet-stream"
@@ -2151,7 +2151,7 @@ func (s *Server) serveAssetHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))
 	w.Header().Set("Cache-Control", "public, max-age=3600")
@@ -2208,7 +2208,7 @@ func (s *Server) gatewayInvokeHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

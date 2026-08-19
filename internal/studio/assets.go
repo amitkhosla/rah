@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io"
 	"mime"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -53,7 +51,7 @@ func (s *LocalAssetStore) Upload(ctx context.Context, appName, filename string, 
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 	_, err = io.Copy(dst, r)
 	return err
 }
@@ -111,12 +109,3 @@ func (s *LocalAssetStore) Delete(ctx context.Context, appName, filename string) 
 	return err
 }
 
-// detectContentType sniffs the content type from the first 512 bytes.
-func detectContentType(filename string, data []byte) string {
-	ct := mime.TypeByExtension(filepath.Ext(filename))
-	if ct != "" {
-		return ct
-	}
-	ct = http.DetectContentType(data)
-	return strings.Split(ct, ";")[0]
-}
