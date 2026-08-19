@@ -284,9 +284,10 @@ const VISUAL_GROUPS: VisualGroup[] = [
     label: 'RESILIENCE',
     icon: '🛡️',
     recipes: [
-      { title: 'Delay',         wraps: 'delay',         description: 'Pause the flow for N milliseconds. Use a static ms value or reference an integer slot for dynamic durations (e.g. time remaining in a rate-limit window). Cancels immediately on client disconnect.' },
-      { title: 'Spike Arrest',  wraps: 'spike_arrest',  description: 'Smooth outbound call rate — allow at most one request per interval_ms per key. Returns 429 when the interval has not elapsed. Use before calls to rate-limited external APIs.' },
-      { title: 'Circuit Breaker', wraps: 'circuit_breaker', description: 'Open the circuit after N consecutive failures; reject requests until the upstream recovers. Pair with record_circuit_outcome to track success/failure.' },
+      { title: 'Delay',              wraps: 'delay',              description: 'Pause the flow for N milliseconds. Use a static ms value or reference an integer slot for dynamic durations (e.g. time remaining in a rate-limit window). Cancels immediately on client disconnect.' },
+      { title: 'Egress Rate Limit', wraps: 'egress_rate_limit',  description: 'Gate outbound calls to a named resource (API, DB, LLM) to a shared budget across all parallel flows. on_exceeded: wait (block until window resets — all waiters share one timer), fail (return error), or fallback (jump to another flow). Works per-second, per-minute, or per-hour.' },
+      { title: 'Spike Arrest',      wraps: 'spike_arrest',       description: 'Smooth outbound call rate — allow at most one request per interval_ms per key. Returns 429 when the interval has not elapsed. Use before calls to rate-limited external APIs.' },
+      { title: 'Circuit Breaker',   wraps: 'circuit_breaker',    description: 'Open the circuit after N consecutive failures; reject requests until the upstream recovers. Pair with record_circuit_outcome to track success/failure.' },
     ],
   },
   {
@@ -607,7 +608,7 @@ export default function FlowDesigner({
     'db_query':'🗂️','db_query_one':'🗂️','db_exec':'🗂️',
     'send_email':'📧','ws_broadcast_channel':'⚡','ws_push_session':'⚡','ws_upstream_connect':'⚡','ws_upstream_disconnect':'⚡',
     'add':'➕','sub':'➖','mul':'✖️','div':'➗','mod':'➗','current_timestamp':'🕐',
-    'delay':'⏸️','spike_arrest':'🛡️','circuit_breaker':'🛡️',
+    'delay':'⏸️','egress_rate_limit':'🚦','spike_arrest':'🛡️','circuit_breaker':'🛡️',
   }
   function sicon(a: string) { return SICONS[a] ?? '•' }
 
