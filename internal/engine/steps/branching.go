@@ -67,6 +67,29 @@ func BindHeader(key string, slot int) engine.Instruction {
 	}
 }
 
+// BindHeaderDynamic reads the header name from nameSlot at runtime (the value
+// stored there becomes the lookup key). Use when the header name is not known
+// at compile time — e.g. DSL: h = header(header1).
+func BindHeaderDynamic(nameSlot, valueSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "BIND_HEADER_DYN",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			name := ctx.ByteSlots[nameSlot]
+			if len(name) == 0 {
+				ctx.ByteSlots[valueSlot] = nil
+				return state.PC + 1
+			}
+			val := ctx.Request.Header.Get(unsafe.String(unsafe.SliceData(name), len(name)))
+			if len(val) > 0 {
+				ctx.ByteSlots[valueSlot] = unsafe.Slice(unsafe.StringData(val), len(val))
+			} else {
+				ctx.ByteSlots[valueSlot] = nil
+			}
+			return state.PC + 1
+		},
+	}
+}
+
 func BindQuery(key string, slot int) engine.Instruction {
 	keyBytes := []byte(key) // captured once at instruction creation, not per-request
 	return engine.Instruction{
@@ -121,6 +144,30 @@ func BindJSON(srcSlot int, jsonPath string, destSlot int) engine.Instruction {
 				}
 			}
 			ctx.ByteSlots[destSlot] = nil
+			return state.PC + 1
+		},
+	}
+}
+
+// BindQueryDynamic reads the query param name from nameSlot at runtime.
+// Use when the param name is not known at compile time — e.g. DSL: v = query(param_name_var).
+func BindQueryDynamic(nameSlot, valueSlot int) engine.Instruction {
+	return engine.Instruction{
+		Name: "BIND_QUERY_DYN",
+		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
+			name := ctx.ByteSlots[nameSlot]
+			if len(name) == 0 {
+				ctx.ByteSlots[valueSlot] = nil
+				return state.PC + 1
+			}
+			// scanQuery returns a sub-slice of ctx.RawQuery which is stable
+			// for the request lifetime — alias directly, no copy needed.
+			val := scanQuery(ctx.RawQuery, name)
+			if len(val) > 0 {
+				ctx.ByteSlots[valueSlot] = val
+			} else {
+				ctx.ByteSlots[valueSlot] = nil
+			}
 			return state.PC + 1
 		},
 	}

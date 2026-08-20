@@ -1,26 +1,348 @@
 # RAH — Reconfigurable API & AI Handler
 
-**A high-performance API execution platform for Go.**
+**One binary. Every role your architecture needs.**
 
-Write flows in YAML. RAH compiles them to zero-allocation bytecode and executes at
-sub-5µs gateway overhead. API proxying, JWT auth, LLM orchestration, gRPC transcoding,
-multi-tenant rate limiting, RAG pipelines, and AI agent workflows are all first-class
-instructions in one compiled execution plan. Deploy one binary. No plugins. No Lua
-scripts. No sidecars.
+RAH is a high-performance execution engine that adapts to the role you need it to play.
+Write flows in YAML — RAH compiles them to zero-allocation bytecode and executes at
+sub-5µs overhead. No plugins. No Lua scripts. No sidecars.
+
+---
+
+## Pick Your Role
+
+RAH is not a fixed-purpose tool. The same binary, same DSL, and same deployment model
+serve every one of these roles — often simultaneously.
+
+### AI / Agentic Gateway
+Route and orchestrate across LLM providers. Enforce cost budgets, rate limits, and
+prompt injection safety. Run multi-step agent flows with tool use, MCP integration,
+semantic caching, and RAG — all as compiled instructions with nanosecond-precision
+observability.
+
+```yaml
+- action: enforce_cost_budget          # block if tenant quota exceeded
+- action: sanitize_prompt              # strip injection patterns
+- action: route_llm                    # pick model by token count + tenant tier
+- action: semantic_cache_get           # skip LLM if similar prompt cached
+- action: llm_call
+    model: primary-claude
+    fallback_chain: [claude-haiku, my-gpt4o]
+- action: calculate_cost
+- action: record_cost
+- action: semantic_cache_put
+```
+
+### API Gateway
+Proxy, auth, rate-limit, and transform upstream APIs in one compiled flow — no plugin
+chain, no middleware ordering confusion.
+
+```yaml
+- action: validate_token               # JWT / DPoP / introspection
+- action: rate_limit_v2               # multi-window, per-tenant
+- action: registry_lookup             # resolve tenant → upstream URL
+- action: http_call                   # call upstream with mTLS, retry, circuit breaker
+- action: json_to_xml                 # format conversion — zero alloc
+- action: set_response_body
+```
+
+### App Host
+Deploy REST APIs, BFFs, OAuth2 web apps, webhook receivers, and event processors
+directly from YAML bundles. No server framework. No Dockerfile. No Kubernetes.
+
+```yaml
+# app.yaml
+name: school-mgmt
+type: api-service
+```
+
+```bash
+rah-sync publish ./school-mgmt --studio http://localhost:8092 --tag v1.0.0
+# live in < 1 second. atomic hot-reload. no restarts.
+```
+
+### BFF (Backend for Frontend)
+Aggregate multiple upstream services, shape the response per client, and enforce
+per-tenant auth and rate limits — all in one flow, one deployment.
+
+```yaml
+- action: http_call
+    url: "https://users.internal/api/users/{user_id}"
+    as: profile
+- action: http_call
+    url: "https://settings.internal/api/{user_id}/settings"
+    as: settings
+- action: render_template
+    template: '{"id":"{user_id}","name":"{profile.name}","theme":"{settings.theme}"}'
+```
+
+### Event Processor
+Consume from Kafka, RabbitMQ, SQS, Redis Streams, or Google Pub/Sub. Transform,
+persist, emit downstream events — RAH manages consumer groups, retries, and
+dead-letter routing.
+
+```yaml
+name: order-processor
+type: event-processor
+# flows/handler.yaml runs for every inbound message
+```
 
 ---
 
 ## Why RAH
 
-API gateways route requests. RAH executes them.
+Traditional stacks separate concerns across many layers: an API gateway for routing, a
+server framework for business logic, an auth library for tokens, a message broker for
+async work, a cron runner for scheduled jobs. Each layer has its own config, deployment,
+and failure mode. When you need auth + rate limiting + LLM routing + database calls +
+format conversion in a single request path, you end up with a plugin chain that nobody
+can reason about.
 
-Traditional gateways are configuration files with limited logic. When you need auth +
-rate limiting + LLM routing + response transformation + cost tracking in a single
-request path, you end up with a chain of plugins, sidecars, and custom middleware that
-nobody can reason about. RAH replaces that stack with a single compiled flow — a
-sequence of typed instructions that run in a tight loop with per-instruction timing,
-zero allocations on the hot path, and an atomic state swap that makes new flows live
-without restarts or in-flight disruption.
+RAH replaces that stack with a **single compiled execution plan**. Every capability —
+auth, rate limiting, database, LLM, messaging, caching — is a typed instruction in the
+same flat loop. One binary. One config file. One deploy step. The role (gateway, app
+host, BFF, agent, event processor) is defined by which instructions you use, not by
+which product you deploy.
+
+| | RAH | API Gateway + Microservices | Low-Code Platform |
+|--|-----|---|---|
+| Latency overhead | < 5 µs | 0.5–5 ms (plugin chain) | 50–500 ms (interpreted) |
+| Allocations on hot path | Zero | Plugin-dependent | Runtime GC |
+| Expressibility | Full (240+ instructions) | Config only | Medium |
+| Roles | All of the above | One per product | App only |
+| Deploy | `rah-sync publish` | CI pipeline per service | UI drag-and-drop |
+| Single binary | Yes | No | No |
+
+---
+
+## Quick Start
+
+### Zero dependencies (disk store)
+
+```bash
+git clone https://github.com/amitkhosla/rah
+cd rah
+go mod download
+make run-local
+# Gateway:    http://localhost:8080
+# Management: http://localhost:8081
+```
+
+### Full stack (Redis + PostgreSQL)
+
+```bash
+make docker-up
+```
+
+### With Studio (visual flow editor + release management)
+
+```bash
+make docker-up-studio
+# Studio: http://localhost:8092
+```
+
+### Minimal config (`gateway.yaml`)
+
+```yaml
+datastore:
+  stores:
+    local:
+      kind: disk
+      connection:
+        path: ./data
+  bindings:
+    api_definitions: local
+    flows: local
+    tenant_data: local
+    cache: local
+
+llm:
+  models:
+    - alias: my-llm
+      provider: anthropic
+      model_id: claude-haiku-4-5-20251001
+      api_key_ref: env:ANTHROPIC_API_KEY
+```
+
+---
+
+## App Hosting
+
+RAH treats every deployed bundle as an **app** — a named collection of APIs and flows
+with a type that determines lifecycle, routing, and scaffolding.
+
+### App types
+
+| Type | Description |
+|------|-------------|
+| `api-service` | Stateless REST API backed by upstreams or databases |
+| `web` | OAuth2-protected web app with login/callback/logout flows |
+| `webhook` | Inbound webhook receiver with signature verification |
+| `event-processor` | Async consumer of messaging topics (Kafka, SQS, etc.) |
+
+### Defining an app
+
+```yaml
+# app.yaml
+name: school-mgmt
+type: api-service
+tenant_mode: tenant_aware
+```
+
+Flows live alongside the app definition in a `flows/` directory. Deploy with:
+
+```bash
+rah-sync publish ./school-mgmt --studio http://localhost:8092 --tag v1.0.0
+rah-sync promote <release-id> --env prod
+```
+
+Releases are versioned and diffable:
+
+```bash
+rah-sync diff release-42 release-43
+```
+
+### Blueprint scaffolding
+
+Studio generates starter flows for any app type via `POST /apps/{name}/blueprint`.
+A `web` app scaffolds login, callback, and logout flows. A `webhook` app scaffolds
+signature verification and processing flows. Start from a working template, not a
+blank file.
+
+### Atomic hot reload
+
+New flows are compiled and applied via an atomic state swap. In-flight requests
+complete on the old plan; all new requests immediately see the new one — no restarts,
+no dropped connections.
+
+---
+
+## Document Connectors
+
+Connect flows directly to document and relational databases — separate from RAH's
+internal stores.
+
+| Connector | Kind |
+|-----------|------|
+| MongoDB | `mongodb` |
+| PostgreSQL | `postgresql` |
+| MySQL | `mysql` |
+| gRPC document service | `grpc` |
+
+```yaml
+document_connectors:
+  - name: orders_db
+    kind: mongodb
+    uri_ref: env:MONGODB_URI
+    database: orders
+    max_pool_size: 20
+```
+
+**Flow steps:** `doc_find`, `doc_find_one`, `doc_insert`, `doc_update`, `doc_delete`,
+`doc_count`, `doc_aggregate` — with tenant isolation and parameterized query safety
+built in.
+
+---
+
+## Messaging Connectors
+
+Publish to and consume from message brokers without any broker-specific client code.
+
+| Broker | Kind |
+|--------|------|
+| Apache Kafka | `kafka` |
+| Google Pub/Sub | `pubsub` |
+| RabbitMQ / AMQP | `rabbitmq` |
+| Amazon SQS | `sqs` |
+| Redis Streams | `redis_streams` |
+
+### Publishing
+
+```yaml
+messaging_publishers:
+  - name: order-events
+    kind: kafka
+    brokers: ["kafka.internal:9092"]
+    topic: orders
+    auth_ref: env:KAFKA_SASL_PASSWORD
+```
+
+```yaml
+- action: msg_publish
+  publisher: order-events
+  slot: event_payload
+```
+
+### Consuming
+
+Define a consumer app (`type: event-processor`) and bind it to a topic. RAH manages
+consumer group membership, offset commits, dead-letter routing, and retry logic.
+
+```yaml
+# app.yaml
+name: order-processor
+type: event-processor
+
+# flows/handler.yaml
+name: handler
+instructions:
+  - action: bind_body
+    path: order_id
+    as: oid
+  - action: db_exec
+    key: orders_db
+    value: "UPDATE orders SET status='processed' WHERE id = $1"
+    vars: ["{oid}"]
+  - action: return
+    status: 200
+```
+
+---
+
+## Customer Data Sources
+
+Connect flows to your own Postgres and Redis instances with tenant isolation built in.
+
+### Postgres
+
+```yaml
+data_sources:
+  - name: orders_db
+    driver: postgres
+    dsn_ref: env:ORDERS_DATABASE_URL
+    max_connections: 20
+    tenant_isolation: schema   # "schema" | "rls" | "" (none)
+```
+
+| Step | Description |
+|------|-------------|
+| `db_query` | SELECT — returns JSON array |
+| `db_query_one` | SELECT one row — 404 if empty |
+| `db_exec` | INSERT / UPDATE / DELETE / DDL |
+
+**Named queries with automatic batching** — concurrent requests within a configurable
+window (default 500µs) collapse into a single `WHERE id = ANY($1)` query:
+
+```yaml
+queries:
+  get_orders_by_ids:
+    sql: "SELECT id, amount FROM orders WHERE id = ANY($1::bigint[])"
+    batch_by: "$1"
+    batch_window: 500us
+    batch_max: 100
+```
+
+### Redis
+
+```yaml
+redis_sources:
+  - name: sessions
+    addr: "redis.example.com:6379"
+    password_ref: env:REDIS_PASSWORD
+    tenant_prefix: alias
+```
+
+45+ operations: strings, hashes, lists, sets, sorted sets, distributed locks, pub/sub —
+all automatically namespaced per tenant.
 
 ---
 
@@ -28,21 +350,23 @@ without restarts or in-flight disruption.
 
 | Domain | What RAH Does |
 |--------|--------------|
-| **API Execution** | Compile YAML flows to zero-allocation instruction plans; sub-5µs gateway overhead |
-| **LLM Orchestration** | Route, call, classify, embed, cache, and cost-control across Anthropic, OpenAI, Google, Bedrock |
+| **App Hosting** | Deploy REST APIs, BFFs, auth flows, webhooks, event processors from YAML |
+| **API Execution** | Compile flows to zero-allocation instruction plans; sub-5µs gateway overhead |
+| **Document DBs** | Connect to MongoDB, PostgreSQL, MySQL, gRPC document services |
+| **Messaging** | Publish/consume Kafka, Pub/Sub, RabbitMQ, SQS, Redis Streams |
+| **LLM Orchestration** | Route, call, classify, embed, cache, and cost-control across all major providers |
 | **Protocol Translation** | HTTP ↔ gRPC ↔ GraphQL ↔ SOAP ↔ MQTT ↔ MCP in a single flow |
 | **Format Conversion** | JSON ↔ XML ↔ Avro ↔ Protobuf — compiled programs, zero runtime allocation |
-| **Multi-Tenant** | Lock-free tenant registry, per-tenant rate limits, cost quotas, credentials, and observability |
+| **Multi-Tenant** | Lock-free tenant registry, per-tenant rate limits, cost quotas, credentials |
 | **Security & Auth** | JWT/JWKS, DPoP (RFC 9449), token introspection, API keys with rotation |
-| **Rate Limiting** | Multi-window (per-sec, per-min, per-hour, per-day), token bucket, per-tenant scale |
-| **Caching** | Zero-GC slab cache (L1) + Redis/PostgreSQL/disk (L2), semantic cache via vector embeddings |
-| **Vector & RAG** | Upsert, search, and semantic cache across Qdrant, Chroma, Weaviate, Redis, PgVector |
-| **Secrets** | Google Secret Manager, AWS Secrets Manager, HashiCorp Vault, AES-256-GCM at-rest |
-| **Observability** | Per-instruction timing, traces, access logs, metrics — Prometheus / OTEL export |
-| **Scheduled Flows** | Cron-triggered flows via hashed timing wheel; distributed claiming across instances |
-| **WebSocket** | Manage client sessions and upstream WS pools; push to session or broadcast to channel |
-| **Customer Data** | Connect flows to customer-owned Postgres (schema/RLS isolation) and Redis (tenant namespacing) |
-| **MCP** | Serve and call Model Context Protocol servers from flows; expose RAH APIs as MCP tools |
+| **Rate Limiting** | Multi-window, token bucket, spike arrest, circuit breaker, per-tenant scale |
+| **Caching** | Zero-GC slab (L1) + Redis/PostgreSQL (L2), semantic cache via vector embeddings |
+| **Vector & RAG** | Upsert, search, semantic cache — Qdrant, Chroma, Weaviate, Redis, PgVector |
+| **Secrets** | Google Secret Manager, AWS Secrets Manager, HashiCorp Vault, AES-256-GCM |
+| **Observability** | Per-instruction timing, traces, access logs, metrics — Prometheus / OTEL |
+| **Scheduled Flows** | Cron via hashed timing wheel; distributed claiming across instances |
+| **WebSocket** | Manage client sessions and upstream WS pools; push or broadcast |
+| **MCP** | Serve and call Model Context Protocol servers; expose RAH APIs as MCP tools |
 
 ---
 
@@ -98,6 +422,18 @@ there is no distinction between "built-in" and "plugin" behaviour.
 | `soap_call` | SOAP 1.1 / 1.2 with envelope wrapping and fault extraction |
 | `mqtt_publish` | Publish to MQTT broker (QoS 0/1) |
 | `mqtt_call` | Request-reply over MQTT with timeout |
+
+### Database & Messaging
+| Instruction | Purpose |
+|-------------|---------|
+| `db_query` | SQL SELECT on customer Postgres; returns JSON array |
+| `db_query_one` | SQL SELECT one row; 404 if empty |
+| `db_exec` | SQL INSERT / UPDATE / DELETE / DDL |
+| `doc_find` | MongoDB / document connector query; returns JSON array |
+| `doc_find_one` | Document connector single-document lookup |
+| `doc_insert` / `doc_update` / `doc_delete` | Document write operations |
+| `doc_aggregate` | Aggregation pipeline (MongoDB) |
+| `msg_publish` | Publish to Kafka, Pub/Sub, RabbitMQ, SQS, or Redis Streams |
 
 ### LLM & AI
 | Instruction | Purpose |
@@ -176,10 +512,15 @@ there is no distinction between "built-in" and "plugin" behaviour.
 | `url_encode` / `url_decode` | RFC 3986 percent-encoding |
 | `json_set` / `json_extract_emit` | gjson-path JSON field manipulation |
 
-### String & Arithmetic
+### String, Arithmetic & Flow
 `concat`, `substring`, `trim`, `to_upper`, `to_lower`, `replace`, `split`, `contains`,
 `starts_with`, `ends_with`, `index_of`, `byte_length`, `to_int`, `add`, `sub`, `mul`,
-`div`, `current_timestamp` (unix_s / unix_ms / rfc3339)
+`div`, `sleep`, `current_timestamp` (unix_s / unix_ms / rfc3339)
+
+### Control Flow
+`if`, `switch`, `foreach`, `while`, `parallel`, `return`, `fail`, `early_return`,
+`capture_error`, `call` (fragment call/return with link stack), `execute_plan`
+(run LLM-generated instruction sequence)
 
 ### Registry (Tenant Metadata)
 | Instruction | Purpose |
@@ -203,17 +544,6 @@ there is no distinction between "built-in" and "plugin" behaviour.
 | `flow_log` | Structured flow log (debug/info/warn/error) |
 | `trace_capture` | Attach request data to sampled trace |
 | `send_sse_event` | Server-sent event to streaming client |
-
-### Control Flow
-`if`, `switch`, `foreach`, `while`, `parallel`, `return`, `fail`, `early_return`,
-`capture_error`, `call` (fragment call/return with link stack), `execute_plan`
-(run LLM-generated instruction sequence)
-
-### Secrets & Credentials
-| Instruction | Purpose |
-|-------------|---------|
-| `load_secret` | Resolve credential reference into ByteSlot |
-| `load_credential` | Resolve named credential with per-tenant override |
 
 ---
 
@@ -263,20 +593,14 @@ flows:
 **Cost control** — enforce per-tenant spending windows:
 
 ```yaml
-- action: enforce_cost_budget   # blocks if tenant quota exceeded
+- action: enforce_cost_budget
 - action: llm_call
     model: my-llm
 - action: calculate_cost
-- action: record_cost           # deducts from rolling window
+- action: record_cost
 ```
 
-Pricing is sourced from explicit config → per-model config → LiteLLM community catalog
-(auto-refreshed hourly) → hardcoded defaults. A daily learning job tracks estimated vs.
-actual token counts and adjusts future estimates automatically.
-
-**Resilient routing & automatic fallback** — configure an ordered fallback chain per
-model; the gateway promotes to the next provider automatically on 429 rate limits,
-provider errors, or timeouts:
+**Resilient routing** — automatic fallback chain on 429s or provider errors:
 
 ```yaml
 llm:
@@ -286,44 +610,9 @@ llm:
       model_id: claude-opus-4-5
       api_key_ref: env:ANTHROPIC_API_KEY
       fallback_chain:
-        - model: claude-haiku         # promoted to on 429 or any failure
-        - model: my-gpt4o             # cross-provider final fallback
+        - model: claude-haiku
+        - model: my-gpt4o
 ```
-
-`circuit_breaker` bypasses a degraded model for a configurable recovery window;
-`check_upstream_rate_limit` honours provider `Retry-After` headers automatically.
-No code changes required — routing adjusts at runtime based on live provider health.
-
-**Intelligent model selection** — `route_llm` evaluates each request at runtime against
-your rules (token count, tenant tier, cost budget, content classification) and selects
-the best registered model. Define the selection logic once in YAML; every flow that uses
-`route_llm` benefits automatically without explicit branching per flow.
-
----
-
-## Protocol & Format Translation
-
-RAH handles the full protocol matrix in a single flow — no separate sidecar or adapter
-service required.
-
-**Protocols:**
-
-| Inbound | Outbound |
-|---------|---------|
-| HTTP/1.1, HTTP/2, h2c | HTTP/1.1, HTTP/2, h2c |
-| REST (any method) | gRPC (JSON ↔ Protobuf via descriptor registry) |
-| SSE (streaming) | SOAP 1.1 / 1.2 |
-| MCP (JSON-RPC 2.0) | MQTT publish / request-reply |
-| GraphQL | GraphQL |
-
-**Formats:** JSON ↔ XML ↔ Avro ↔ Protobuf. All conversions use compiled programs
-(baked at deploy time) with zero runtime allocation. A pivot buffer pool allows
-multi-hop chains (e.g., XML → JSON → Avro) in a single request path.
-
-**gRPC:** Upload a `FileDescriptorSet` once; RAH transcodes JSON bodies to protobuf
-messages, invokes the method, and transcodes the response back — no `.proto` files or
-codegen needed at runtime. Dynamic message reflection, connection pooling with
-keepalive, and mTLS are all supported.
 
 ---
 
@@ -331,26 +620,14 @@ keepalive, and mTLS are all supported.
 
 Tenancy is the primary axis of the entire data model, not an afterthought.
 
-- **Alias resolution** — resolve tenant from header, query param, path segment, or JWT
-  claim in ~40–70 ns via lock-free open-addressing hash table
-- **Property matrix** — per-tenant service URLs, identifiers, and metadata accessed in
-  ~2–5 ns via flat `[TenantID × KeyID]` array lookup
-- **Per-tenant rate limits** — scale by percentage or set absolute overrides per
-  rate-limit config
-- **Per-tenant cost quotas** — daily, monthly, and flexible rolling windows (1h, 7d,
-  30d, any duration)
-- **Per-tenant credentials** — override global secrets at the tenant level via
-  `CredentialRegistry`
-- **Per-tenant observability** — per-tenant trace sample rate overrides and log level
-  controls
-- **Per-tenant API keys** — keys scoped to tenant and scope list; key rotation preserves
-  `AppID` so rate limits survive rotation
-- **Test isolation** — tenant ID range `0xF000–0xFFFF` reserved for ephemeral test
-  tenants; never persisted
-
-The tenant registry is an immutable snapshot published via `atomic.Pointer`. All
-hot-path reads are lock-free. Management-plane writes are serialised under a single
-mutex and publish a new snapshot atomically.
+- **Alias resolution** — resolve tenant from header, query param, path segment, or JWT claim in ~40–70 ns via lock-free open-addressing hash table
+- **Property matrix** — per-tenant service URLs, identifiers, and metadata accessed in ~2–5 ns via flat `[TenantID × KeyID]` array lookup
+- **Per-tenant rate limits** — scale by percentage or set absolute overrides
+- **Per-tenant cost quotas** — daily, monthly, and flexible rolling windows (1h, 7d, 30d)
+- **Per-tenant credentials** — override global secrets at the tenant level
+- **Per-tenant observability** — per-tenant trace sample rate and log level controls
+- **Per-tenant API keys** — scoped to tenant and scope list; rotation preserves `AppID` so rate limits survive key rotation
+- **Test isolation** — tenant ID range `0xF000–0xFFFF` reserved for ephemeral test tenants; never persisted
 
 ---
 
@@ -364,36 +641,24 @@ mutex and publish a new snapshot atomically.
 
 ### DPoP (RFC 9449)
 - Embedded JWK parsing (RSA / EC / EdDSA)
-- `htm` (HTTP method) + `htu` (URI) binding
-- Access token hash (`ath`) verification
-- `cnf.jkt` confirmation key matching
-- JTI replay check via datastore
+- `htm` + `htu` binding, `ath` verification, JTI replay check
 
 ### Token Introspection (RFC 7662)
 - Configurable introspection endpoint with result caching
 
 ### API Keys
 - Format: `rah_<base64url(32 random bytes)>` (~47 chars)
-- SHA-256 hash stored; raw key shown once on creation, never again
+- SHA-256 hash stored; raw key shown once, never again
 - Scope-based authorization, per-tenant restriction, expiry support
-- Key rotation preserves `AppID`; rate limit continuity guaranteed
-
-### OWASP & Bot Detection
-- User-Agent pattern matching (built-in bot list + custom patterns)
-- IP CIDR restriction and country-level geo-blocking (MaxMind GeoLite2)
-- OWASP request validation patterns
 
 ---
 
 ## Rate Limiting
 
-RAH's V2 rate limiting engine supports any combination of windows, enforcement modes,
-and counting dimensions.
-
 ```yaml
 rate_limit_configs_v2:
   - name: ai-tier-limits
-    enforcement: approximate       # or "strict" (requires Redis)
+    enforcement: approximate
     windows:
       - period: 1s
         limit: 10
@@ -402,530 +667,115 @@ rate_limit_configs_v2:
         limit: 200
       - period: 1h
         limit: 5000
-    count_by: tenant               # ip | key | tenant | global
-    divide_by_nodes: true          # auto-scale limit by instance count
+    count_by: tenant
+    divide_by_nodes: true
     exceeded_status: 429
-    exceeded_body: '{"error":"rate limit exceeded"}'
-    emit_headers: true             # X-RateLimit-Limit / Remaining / Reset
+    emit_headers: true
 ```
 
-**Additional controls:**
-- **Spike arrest** — smoothed limiting (at most one request per interval per key)
-- **Circuit breaker** — three-state (closed → open → half-open) with configurable
-  failure threshold, success threshold, open duration, and fallback flow
-- **Per-tenant scale** — multiply or divide any tenant's effective limit without
-  creating a separate config
-- **Token bucket** — configurable refill rate and burst capacity as alternative to
-  fixed windows
+Additional controls: **spike arrest**, **circuit breaker** (three-state), **per-tenant scale**, **token bucket**.
 
 ---
 
 ## Caching
 
 **L1 — Zero-GC slab cache** built into the gateway process:
-- Fixed memory budget (configurable `mem_budget_mb`), per-tenant quota
-- Circular-buffer regions per `(sizeClass, TTLTier)` pair — oldest entry evicted on
-  overflow, no GC pressure
-- Two index lanes: tiny (keys ≤ 6 bytes) and hash (larger keys) with Swiss-style H2
-  filter for fast miss detection
-- Coarse clock for TTL checks (~1 ns, no syscall)
+- Fixed memory budget, per-tenant quota
+- Circular-buffer regions per `(sizeClass, TTLTier)` — no GC pressure
+- Swiss-style H2 filter for fast miss detection
 
-**L2 — Persistent backend** (optional):
-- Redis / Dragonfly (pipelined batch writes)
-- Disk (local development)
+**L2 — Persistent backend** (optional): Redis / Dragonfly, disk
 
-**Semantic cache** — store and retrieve LLM responses by embedding similarity rather
-than exact key match. Embed the incoming prompt, search the vector store, return cached
-response if similarity exceeds threshold. Skips the LLM call entirely on cache hit.
-
-**Cross-instance invalidation** — cache write events published to Redis Pub/Sub;
-peer instances update their L1 cache via subscriber goroutines.
-
----
-
-## Secrets Management
-
-RAH resolves credentials at runtime from any of the following sources via a uniform
-reference string:
-
-| Scheme | Example |
-|--------|---------|
-| `env:` | `env:ANTHROPIC_API_KEY` |
-| `file://` | `file:///run/secrets/db_password` |
-| `enc:` | `enc:k1:base64ciphertext` (AES-256-GCM, at-rest) |
-| `gsm://` | `gsm://projects/my-project/secrets/api-key/versions/latest` |
-| `vault://` | `vault://secret/data/myapp#api_key` |
-| `awssm://` | `awssm://us-east-1/my-secret#field` |
-
-**Features:**
-- Singleflight coalescing — concurrent requests for the same ref make one provider call
-- In-memory cache with 30-minute TTL; secure zeroing (`clear()`) on eviction
-- Background rotation goroutine evicts expired entries every 5 minutes
-- Short-lived token support — OAuth2 / Google ID tokens refresh before expiry
-- `CredentialRegistry` — map logical names to secret refs with per-tenant overrides
-- AES-256-GCM at-rest encryption via `enc:` scheme; key derived via Argon2id from
-  passphrase + salt
+**Semantic cache** — store and retrieve LLM responses by embedding similarity. Skips
+the LLM call entirely on cache hit.
 
 ---
 
 ## Observability
 
-**Per-request:**
-- Instruction-level timing (nanosecond precision, PC-indexed, unlimited depth)
-- Upstream call breakdown: DNS + connect + TLS + TTFB + body transfer
-- Sampled traces with configurable rate; `Authorization` and `X-API-Key` headers
-  are never captured
-- Access log (signed NDJSON) with configurable extra slot fields and retention
+**Per-request:** instruction-level nanosecond timing, upstream call breakdown (DNS +
+connect + TLS + TTFB + body), sampled traces, access log.
 
-**Aggregated:**
-- Per-API request counts, latency percentiles, bytes
-- Per-tenant error distribution
-- Cache hit rate and latency per instruction
-- Custom metrics with dimensions (`emit_event`)
+**Aggregated:** per-API latency percentiles, per-tenant error distribution, cache hit
+rates, custom metrics with dimensions.
 
-**Export:**
-- Prometheus scrape endpoint
-- OpenTelemetry (OTLP/gRPC) traces and metrics
-- Webhook push for request summaries
-
-**Event pipeline — 18 event kinds** (prompt in/out, LLM request/response, tool calls,
-cost records, cache hits/misses, access log, audit log, upstream log, flow log, etc.)
-routed to configurable sinks:
-
-| Sink | Notes |
-|------|-------|
-| HTTP | Batched NDJSON POST |
-| Redis Stream | `XADD` with configurable max-length |
-| File | Buffered append, 256 KB flush |
-| Stdout | Development default |
+**Export:** Prometheus scrape endpoint, OpenTelemetry (OTLP/gRPC) traces and metrics,
+webhook push.
 
 **Observability API** (management port `:8081`):
 - `GET /observability/metrics`
 - `GET /observability/access-log?api=&tenant=&status=&from=&limit=`
 - `GET /observability/traces?api=&tenant_id=&min_ms=&from=&limit=`
-- `GET /observability/apis/{name}` — per-API traces + access logs
-
----
-
-## Adaptive Concurrency
-
-An AIMD (Additive Increase / Multiplicative Decrease) controller continuously adjusts
-the in-flight request limit based on observed p99 latency.
-
-```yaml
-concurrency:
-  enabled: true
-  target_overhead_ms: 50      # p99 target
-  initial_limit: 2000
-  min_limit: 500
-  max_limit: 8000
-  add_step: 50                # increase when healthy
-  cut_factor: 0.85            # cut on distress
-  tick_sec: 2
-```
-
-All parameters are patchable at runtime via `PATCH /admin/concurrency` without restart.
-The limiter is a lock-free CAS semaphore (~10–20 ns per acquire/release).
 
 ---
 
 ## Scheduled Flows (Cron)
 
-Flows can be triggered on a cron schedule without an inbound HTTP request. The
-scheduler uses a hashed timing wheel (3600 slots, 1-second resolution) and supports
-distributed multi-instance deployments — only one instance claims and executes each
-scheduled event.
-
 ```yaml
 schedules:
   - name: daily-report
-    cron: "0 6 * * *"        # standard 5-field cron; 6-field with seconds also supported
+    cron: "0 6 * * *"
     flow: generate_report
     tenant_alias: acme
     timeout_sec: 120
     on_failure:
       retry_count: 3
-      retry_interval_sec: 30
       dead_letter_flow: handle_report_failure
     max_concurrent: 1
 ```
 
-Schedules can also be created at runtime by tenants via the management API
-(`runtime_only: true`). Persistence backends: in-memory or Redis.
+Hashed timing wheel (3600 slots, 1-second resolution). Distributed claiming — only one
+instance executes each event in a multi-gateway deployment.
 
 ---
 
 ## WebSocket
 
-RAH manages WebSocket connections to browser clients and to upstream services in a
-single layer — no separate broker required.
-
-**Client sessions** — incoming WebSocket connections are tracked per session. Flows can
-push messages to individual sessions or broadcast to all subscribers of a channel:
+**Client sessions** — push to individual sessions or broadcast to channels:
 
 ```yaml
 - action: ws_broadcast_channel
   channel: alerts
   slot: message_slot
-
-- action: ws_push_session
-  session_id: session_id_slot
-  slot: message_slot
 ```
 
-**Upstream pools** — RAH maintains persistent outbound WebSocket connections to
-upstream services with auto-reconnect and configurable ping intervals:
+**Upstream pools** — persistent outbound connections with auto-reconnect and TTL:
 
 ```yaml
 - action: ws_upstream_connect
   name: data-feed
   url: wss://feeds.example.com/stream
-  ttl_sec: 300         # idle TTL; connection closed and removed after expiry
-
-- action: ws_upstream_disconnect
-  name: data-feed
+  ttl_sec: 300
 ```
-
-Static upstream connections (always-on) are defined in gateway config; dynamic
-connections are opened on-demand per flow execution and reused within their TTL window.
 
 ---
 
 ## Model Context Protocol (MCP)
 
-RAH both **consumes** and **serves** MCP.
+**As a client** — call tools on any MCP server from a flow.
 
-**As a client** — call tools on any registered MCP server from a flow:
-```yaml
-- action: mcp_list_tools
-    server: my-mcp-server
-    mode: brief
-- action: call_mcp_tool
-    server: my-mcp-server
-    tool: search_documents
-    params: query_slot
-```
-
-**As a server** — expose RAH API endpoints as MCP tools. External LLM clients (Claude,
-custom agents) discover and call your APIs via standard MCP JSON-RPC 2.0. Studio also
-exposes 17 management tools over MCP.
-
-Transports: HTTP, SSE, stdio.
-
----
-
-## Data Stores
-
-RAH binds logical data domains to named store instances. Each domain can point to a
-different store — hot ephemeral data on Redis, audit records on PostgreSQL, API
-definitions on disk.
-
-### Supported Backends
-
-| Backend | Kind | Use Case |
-|---------|------|----------|
-| Disk | `disk` | Development, single-node, zero dependencies |
-| Redis / Dragonfly | `redis` / `dragonfly` | Distributed cache, rate limit counters, pub/sub, TTL |
-| PostgreSQL | `postgresql` | Audit log, access log, observability, management-plane data |
-
-Redis and Dragonfly share the same adapter (Dragonfly is wire-compatible with Redis).
-
-**Smart coalescing** — both backends batch datastore operations to reduce round-trips
-under load:
-- **Redis / Dragonfly** — concurrent cache writes are pipelined; multiple operations in
-  the same request window are sent as a single batch
-- **PostgreSQL** — a batching wrapper coalesces concurrent reads and writes into
-  `MultiGet` / `MultiPut` queries with a read-your-writes guarantee; high-concurrency
-  observability workloads generate far fewer database round-trips than request volume
-  would suggest
-
-### Domain Bindings
-
-Required domains (must be configured at startup):
-
-| Domain | Purpose |
-|--------|---------|
-| `api_definitions` | Compiled API route definitions |
-| `flows` | Compiled flow instruction plans |
-| `tenant_data` | Tenant registry (aliases, URLs, rate limits) |
-| `cache` | Response cache L2 backend |
-
-Optional domains (skip gracefully if unbound):
-
-`api_keys`, `apps`, `rate_limit`, `rl_configs_v2`, `tiers`, `credentials`,
-`async_jobs`, `instances`, `obs_access_log`, `obs_traces`, `dpop_jti`,
-`introspection_cache`, `releases`, `deploy_history`, and more.
-
-### At-Rest Encryption
-
-Any domain can be wrapped with transparent AES-256-GCM encryption. Per-tenant key
-derivation (HKDF-SHA256) is supported. Key rotation is handled via versioned keys —
-old and new keys are trusted simultaneously during rotation.
-
-### Tenant-First Key Model
-
-All keys are scoped by tenant:
-```
-tenant:{tenant_name}:{domain}:{key}
-```
-Control-plane data (API definitions, flows) lives under `__global__`.
-
----
-
-## Customer Data Sources
-
-RAH can connect flows directly to customer-owned Postgres and Redis instances. These
-are **separate** from RAH's internal datastore domains — they are your databases, with
-your schemas and your tables. RAH handles connection pooling, tenant isolation, and
-parameterized query safety.
-
-### Postgres data sources
-
-```yaml
-data_sources:
-  - name: orders_db
-    driver: postgres
-    dsn_ref: env:ORDERS_DATABASE_URL   # or a literal DSN
-    max_connections: 20
-    query_timeout_sec: 30
-    tenant_isolation: schema           # "schema" | "rls" | "" (none)
-    tenant_key: id                     # "id" | "alias"
-    shared_schemas: [public, shared]   # schemas visible to all tenants (schema mode)
-    rls_variable: app.current_tenant   # session variable name (rls mode)
-```
-
-**Tenant isolation modes:**
-- `schema` — sets `search_path = tenant_<id>, public` per connection; each tenant sees only its own schema
-- `rls` — sets `SET LOCAL <rls_variable> = '<tenant>'`; your Postgres RLS policies enforce row-level filtering
-- *(empty)* — no automatic isolation; manage it yourself in SQL
-
-**Flow steps:**
-
-| Step | Description |
-|------|-------------|
-| `db_query` | Execute a SQL SELECT; returns a JSON array |
-| `db_query_one` | SELECT expecting one row; returns a JSON object (404 if empty) |
-| `db_exec` | Execute INSERT / UPDATE / DELETE / DDL; returns affected row count |
-
-```yaml
-- action: db_query
-  key: orders_db          # data source name
-  value: "SELECT id, amount FROM orders WHERE customer_id = $1"
-  vars: ["{customer_id}"]
-  as: orders
-
-- action: db_exec
-  key: orders_db
-  value: "INSERT INTO events (type, payload) VALUES ($1, $2)"
-  vars: ["{event_type}", "{event_body}"]
-```
-
-DDL statements (`CREATE TABLE`, `ALTER TABLE`, etc.) are also accepted via `db_exec` —
-there is no statement restriction. This lets flows provision schemas or run migrations
-as part of a deployment flow.
-
-**Named queries with automatic batching:**
-
-```yaml
-# Define at sync time
-queries:
-  get_orders_by_ids:
-    sql: "SELECT id, customer_id, amount FROM orders WHERE id = ANY($1::bigint[])"
-    batch_by: "$1"
-    batch_window: 500us   # collect requests for up to 500 µs
-    batch_max: 100        # max keys per batch
-
-# Reference in a flow
-- action: db_query
-  key: orders_db
-  value: "query:get_orders_by_ids"
-  vars: ["{order_id}"]
-  as: order
-```
-
-Concurrent flow executions requesting different keys within the batch window are
-collapsed into a single `WHERE id = ANY($1)` query. A singleflight group additionally
-deduplicates identical concurrent keys.
-
-### Redis data sources
-
-```yaml
-redis_sources:
-  - name: sessions
-    addr: "redis.example.com:6379"   # single node; use "addrs" for cluster
-    password: env:REDIS_PASSWORD
-    db: 0
-    tls: true
-    tenant_prefix: alias             # "id" | "alias" | "none"
-    key_sep: ":"
-```
-
-All key operations are automatically namespaced per tenant (`{tenant_alias}:{key}`).
-The reserved prefix `_rah:` is blocked and cannot be used by flows.
-
-**Available operations:** `redis_get`, `redis_put`, `redis_mget`, `redis_mput`,
-`redis_del`, `redis_exists`, `redis_incr`, `redis_decr`, `redis_expire`, `redis_ttl`,
-`redis_persist`, `redis_publish`, `redis_lock`, `redis_unlock` — plus sorted sets
-(`redis_zadd`, `redis_zrange`, `redis_zrangebyscore`, `redis_zrank`, `redis_zscore`,
-`redis_zrem`, `redis_zpopmin`, `redis_zpopmax`), hashes (`redis_hset`, `redis_hmset`,
-`redis_hget`, `redis_hgetall`, `redis_hdel`, `redis_hincrby`), and lists
-(`redis_lpush`, `redis_rpush`, `redis_lpop`, `redis_rpop`, `redis_lrange`, `redis_llen`),
-and sets (`redis_sadd`, `redis_srem`, `redis_sismember`, `redis_smembers`, `redis_scard`).
-
----
-
-## Vector Store Backends
-
-Used by `vector_search`, `vector_upsert`, `semantic_cache_get`, and
-`semantic_cache_put` instructions.
-
-| Backend | Kind |
-|---------|------|
-| Qdrant | `qdrant` |
-| Chroma | `chroma` |
-| Weaviate | `weaviate` |
-| Redis Stack | `redis` |
-| PgVector (via PostgREST) | `pgvector` |
-| Generic HTTP | `http` |
+**As a server** — expose RAH APIs as MCP tools. Studio exposes 17 management tools
+over MCP. Transports: HTTP, SSE, stdio.
 
 ---
 
 ## The Three Binaries
 
 ### `rah-gateway`
-The execution runtime. Data plane on `:8080`, management plane on `:8081`.
-
-```
--port    8080    Data plane port
--mport   8081    Management plane port
--config  path    Path to gateway YAML / JSON config
--health         Health-check mode (probe /health, exit 0/1)
-```
+Execution runtime. Data plane `:8080`, management plane `:8081`.
 
 ### `rah-studio`
-Web UI for flow authoring, release management, observability dashboards, and
-AI-assisted configuration.
-
-```
--port                  8092    Studio UI port
--gateway-management-url       http://127.0.0.1:8081
--store-kind            memory  Release store: memory | file
--obs-store-type               memory | postgres | redis
--auth-enabled                 Require login
-```
+Web UI for flow authoring, app management, release pipelines, and observability.
 
 ### `rah-sync`
 CI/CD CLI for bundle management.
 
 ```bash
-rah-sync lint   <dir>                          # validate flows and APIs
-rah-sync publish <dir> --studio <url> --tag v1 # upload release
-rah-sync promote <release-id> --env prod       # deploy to environment
-rah-sync diff   <release-a> <release-b>        # compare releases
+rah-sync lint    <dir>
+rah-sync publish <dir> --studio <url> --tag v1
+rah-sync promote <release-id> --env prod
+rah-sync diff    <release-a> <release-b>
 ```
-
-Lint runs five tiers of validation: structural → schema → reference integrity →
-semantic → advanced. All findings include file path and line number.
-
----
-
-## Quick Start
-
-### Zero dependencies (disk store)
-
-```bash
-git clone https://github.com/amitkhosla/rah
-cd rah
-go mod download
-
-make run-local
-# Gateway:    http://localhost:8080
-# Management: http://localhost:8081
-```
-
-### Full stack (Redis + PostgreSQL via Docker)
-
-```bash
-make docker-up
-# Starts Redis, PostgreSQL, and rah-gateway
-```
-
-### With Studio
-
-```bash
-make docker-up-studio
-# Adds rah-studio at http://localhost:8092
-```
-
-### Minimal configuration (`gateway.yaml`)
-
-```yaml
-datastore:
-  stores:
-    local:
-      kind: disk
-      connection:
-        path: ./data
-  bindings:
-    api_definitions: local
-    flows: local
-    tenant_data: local
-    cache: local
-
-llm:
-  models:
-    - alias: my-llm
-      provider: anthropic
-      model_id: claude-haiku-4-5-20251001
-      api_key_ref: env:ANTHROPIC_API_KEY
-```
-
-### Deploy a flow
-
-```bash
-# Define your API and flow in a bundle directory, then:
-rah-sync lint    ./my-bundle
-rah-sync publish ./my-bundle --studio http://localhost:8092
-```
-
-Or POST directly to the management plane:
-
-```bash
-curl -X POST http://localhost:8081/sync \
-  -H 'Content-Type: application/json' \
-  -d @bundle.json
-```
-
----
-
-## Configuration Reference
-
-The gateway config is a single YAML (or JSON) file. Environment variables are expanded
-automatically. Key top-level sections:
-
-| Section | Purpose |
-|---------|---------|
-| `layout` | Slot sizes, max APIs, default rate limits |
-| `datastore` | RAH internal store backends and domain bindings |
-| `data_sources` | Customer-owned Postgres connections (with tenant isolation) |
-| `redis_sources` | Customer-owned Redis connections (with tenant key namespacing) |
-| `secrets` | Credential provider config |
-| `cache` | L1 slab cache sizing and L2 backend |
-| `llm` | Model catalog and MCP server registrations |
-| `pricing` | Per-model cost overrides |
-| `quotas` | Per-tenant cost quota definitions |
-| `observability` | Traces, access log, metrics, export sinks |
-| `concurrency` | AIMD controller parameters |
-| `scheduler` | Cron schedule definitions and store backend |
-| `websocket` | Static upstream WS connections and session config |
-| `egress` | Outbound call profiles (TLS, timeouts, connection pool) |
-| `ingest` | Event pipeline sources, kinds, and sinks |
-| `mqtt` | MQTT broker connections |
-| `grpc` | gRPC message size limits and keepalive |
-| `tls` | HTTPS listener (cert/key paths) |
-| `admin` | Management plane auth (Basic Auth, roles) |
-| `vector_stores` | Vector database backends |
-| `instance` | Config poll interval, heartbeat |
 
 ---
 
@@ -936,22 +786,14 @@ All numbers are gateway overhead only, excluding upstream latency.
 | Metric | Value |
 |--------|-------|
 | Request processing overhead | < 5 µs |
-| Tenant alias lookup | ~40–70 ns (lock-free hash table) |
-| Tenant property read | ~2–5 ns (flat matrix) |
-| Router lookup | ~10–20 ns (radix tree, zero alloc) |
-| Rate limit check (local) | ~20–50 ns (CAS epoch counter) |
+| Tenant alias lookup | ~40–70 ns |
+| Tenant property read | ~2–5 ns |
+| Router lookup | ~10–20 ns |
+| Rate limit check (local) | ~20–50 ns |
 | Cache L1 hit | ~100–300 ns |
 | Arena allocation (inline) | ~5 ns |
 | Context pool acquire | ~10–15 ns |
-| Concurrency gate | ~10–20 ns (CAS semaphore) |
-
-**Architecture choices that make these numbers possible:**
-- All hot-path reads via `atomic.Pointer` snapshots — no mutex on request path
-- Per-request arena: 1 KB inline, 4 KB pool-borrowed ext block, heap only on overflow
-- Instruction table compiled at deploy time — zero parsing at request time
-- Flat typed slot arrays (`ByteSlots [32]`, `IntSlots [16]`) — cache-line resident
-- Two-generation rolling latency ring for AIMD — atomic adds only on hot path
-- Lock-free MPMC ring (Vyukov algorithm) for event pipeline and logging
+| Concurrency gate | ~10–20 ns |
 
 ---
 
@@ -960,11 +802,10 @@ All numbers are gateway overhead only, excluding upstream latency.
 ```bash
 make build          # gateway + studio + sync for current platform
 make build-all      # cross-compile linux/darwin/windows × amd64/arm64
-make test           # unit tests
-make test-race      # race detector (180s timeout)
-make bench          # in-process Go benchmarks
-make lint           # golangci-lint
-make helm-install-local  # deploy to local Kubernetes
+make test
+make test-race
+make bench
+make lint
 ```
 
 ---

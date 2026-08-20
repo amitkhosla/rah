@@ -1379,6 +1379,20 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindHeader(headerKey, destSlot))
 
+	case "bind_header_dyn":
+		// Dynamic header binding: header name is read from a runtime slot.
+		// key_identifier: slot holding the header name at runtime
+		// as:             slot to write the header value into
+		nameSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return fmt.Errorf("bind_header_dyn: name slot: %w", err)
+		}
+		valueSlot, err2 := c.getSlot(step.As)
+		if err2 != nil {
+			return fmt.Errorf("bind_header_dyn: value slot: %w", err2)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindHeaderDynamic(nameSlot, valueSlot))
+
 	case "bind_query_param":
 		// Explicit query-param binding.
 		// key / key_identifier: query param name, e.g. "session_id"
@@ -1392,6 +1406,20 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("bind_query_param: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.BindQuery(qKey, destSlot))
+
+	case "bind_query_dyn":
+		// Dynamic query-param binding: param name is read from a runtime slot.
+		// key_identifier: slot holding the param name at runtime
+		// as:             slot to write the param value into
+		nameSlot, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return fmt.Errorf("bind_query_dyn: name slot: %w", err)
+		}
+		valueSlot, err2 := c.getSlot(step.As)
+		if err2 != nil {
+			return fmt.Errorf("bind_query_dyn: value slot: %w", err2)
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.BindQueryDynamic(nameSlot, valueSlot))
 
 	case "bind_path":
 		// Explicit path-param binding by positional index.

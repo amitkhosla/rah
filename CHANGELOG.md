@@ -4,6 +4,54 @@ All notable changes to RAH are documented here.
 
 ---
 
+## [v0.3.0] — 2026-08-20
+
+### Added
+
+**App Hosting**
+- RAH now hosts apps — deploy REST APIs, BFFs, OAuth2 web apps, webhook receivers, and
+  event processors from YAML bundles. Each app has a typed lifecycle (`api-service`,
+  `web`, `webhook`, `event-processor`) that determines routing, scaffolding, and
+  connection management.
+- Blueprint scaffolding: `POST /apps/{name}/blueprint` generates starter flows for any
+  app type (login/callback/logout for web, signature verification for webhook, etc.).
+- App release management: versioned releases with `rah-sync publish`, `rah-sync promote`,
+  and `rah-sync diff`. Atomic hot-reload — no restarts, no dropped connections.
+
+**Document Connectors**
+- Connect flows to MongoDB, PostgreSQL, MySQL, or a gRPC document service via
+  `document_connectors` config.
+- Flow steps: `doc_find`, `doc_find_one`, `doc_insert`, `doc_update`, `doc_delete`,
+  `doc_count`, `doc_aggregate`.
+- Tenant isolation and parameterized query safety built in. Connection pooling managed
+  by RAH.
+
+**Messaging Connectors**
+- Publish to and consume from Kafka, Google Pub/Sub, RabbitMQ, Amazon SQS, and
+  Redis Streams via `messaging_publishers` and `messaging_consumers` config.
+- `msg_publish` instruction: send a message to any registered publisher.
+- Consumer apps (`type: event-processor`) bind to topics; RAH handles consumer group
+  membership, offset commits, dead-letter routing, and retry logic.
+
+**Studio & UI**
+- Workflow Designer: visual flow authoring with a canvas-based editor.
+- WebSocket endpoint and upstream management panels.
+- App hosting management: register, release, and promote apps from the Studio UI.
+- Improved release management UI with deployment history and diff viewer.
+
+**DSL**
+- `sleep` instruction: pause flow execution for a configurable duration.
+- Inline arithmetic: `+`, `-`, `*`, `/` operators can now be used directly in
+  expressions in addition to the named `add` / `sub` / `mul` / `div` instructions.
+
+### Changed
+
+- README repositioned around app hosting and low-code use cases; gateway depth moved
+  to dedicated sections.
+- Studio UI improvements throughout: better layout, cleaner navigation.
+
+---
+
 ## [v0.2.0] — 2026-08-09
 
 ### Added
