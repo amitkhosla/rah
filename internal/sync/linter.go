@@ -1965,7 +1965,7 @@ func lintStepRequiredFields(
 	flowType := flow.Type
 	if flowType != "" && flowType != control.FlowTypeAny {
 		incompatibleWS := []string{"set_response_status", "set_response_header", "bind_body"}
-		incompatibleScheduled := []string{"ws_send", "ws_close", "ws_subscribe", "ws_unsubscribe", "bind_body", "bind_header"}
+		incompatibleScheduled := []string{"ws_send", "ws_close", "ws_subscribe", "ws_unsubscribe", "bind_body", "bind_header", "bind_header_dyn"}
 		isIncompatibleWS := false
 		isIncompatibleScheduled := false
 		for _, action := range incompatibleWS {

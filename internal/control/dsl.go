@@ -432,9 +432,17 @@ func dslSrcStep(fn, rawArgs, slot string) *StepConfig {
 	a := dslUnquote(rawArgs)
 	switch fn {
 	case "header":
-		return &StepConfig{Action: "bind_header", Key: a, As: slot}
+		// Quoted arg → static header name baked at compile time.
+		// Unquoted arg → variable whose runtime value is the header name.
+		if dslIsQuoted(rawArgs) {
+			return &StepConfig{Action: "bind_header", Key: a, As: slot}
+		}
+		return &StepConfig{Action: "bind_header_dyn", KeyIdentifier: a, As: slot}
 	case "query":
-		return &StepConfig{Action: "bind_query_param", Key: a, As: slot}
+		if dslIsQuoted(rawArgs) {
+			return &StepConfig{Action: "bind_query_param", Key: a, As: slot}
+		}
+		return &StepConfig{Action: "bind_query_dyn", KeyIdentifier: a, As: slot}
 	case "body":
 		return &StepConfig{Action: "bind_body", Key: a, As: slot}
 	case "path":
