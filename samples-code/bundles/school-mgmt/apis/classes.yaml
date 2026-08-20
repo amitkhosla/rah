@@ -1,5 +1,6 @@
 apis:
   - name: school-classes-list
+    app_name: school-mgmt
     path: /school/classes
     method: GET
     flow_name: school_classes_list
@@ -7,6 +8,7 @@ apis:
     action: upsert
 
   - name: school-classes-get
+    app_name: school-mgmt
     path: /school/classes/{id}
     method: GET
     flow_name: school_class_get
@@ -14,6 +16,7 @@ apis:
     action: upsert
 
   - name: school-classes-create
+    app_name: school-mgmt
     path: /school/classes
     method: POST
     flow_name: school_class_create

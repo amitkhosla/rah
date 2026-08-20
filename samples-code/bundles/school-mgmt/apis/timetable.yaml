@@ -1,5 +1,6 @@
 apis:
   - name: school-timetable-get
+    app_name: school-mgmt
     path: /school/timetable
     method: GET
     flow_name: school_timetable_get
@@ -7,6 +8,7 @@ apis:
     action: upsert
 
   - name: school-timetable-set
+    app_name: school-mgmt
     path: /school/timetable
     method: POST
     flow_name: school_timetable_set

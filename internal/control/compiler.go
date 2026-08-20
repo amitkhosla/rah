@@ -2551,6 +2551,21 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.DivStep(slotA, slotB, result))
 
+	case "mod":
+		slotA, err := c.getSlot(step.KeyIdentifier)
+		if err != nil {
+			return err
+		}
+		slotB, err := c.getSlot(step.Source)
+		if err != nil {
+			return err
+		}
+		result, err := c.getSlot(step.As)
+		if err != nil {
+			return err
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.ModStep(slotA, slotB, result))
+
 	case "set_response_header":
 		var src int
 		if _, known := c.slotMap[step.Source]; !known {
@@ -3028,6 +3043,61 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		flowID := uint32(len(c.GlobalTable))
 		intervalNs := int64(intervalMs) * int64(time.Millisecond)
 		c.GlobalTable = append(c.GlobalTable, engine.SpikeArrestStep(c.fm.SpikeArrestStore, flowID, intervalNs, keySlot))
+
+	case "delay":
+		// Static duration from input["ms"]; dynamic duration from Source slot (IntSlot).
+		// At least one must be set. Dynamic slot value overrides static at runtime.
+		staticMs := int64(parseIntInput(step.Input, "ms", 0))
+		msSlot := -1
+		if step.Source != "" {
+			if sl, slErr := c.getSlotReadOnly(step.Source); slErr == nil {
+				msSlot = sl
+			}
+		}
+		if staticMs <= 0 && msSlot < 0 {
+			return fmt.Errorf("delay: set ms (static duration) or source (IntSlot name) — at least one required")
+		}
+		c.GlobalTable = append(c.GlobalTable, steps.DelayStep(staticMs, msSlot))
+
+	case "egress_rate_limit":
+		// key_identifier = resource name (required, stable across all flows using this resource)
+		resource := step.KeyIdentifier
+		if resource == "" {
+			return fmt.Errorf("egress_rate_limit: key_identifier (resource name) is required")
+		}
+		limit := int64(parseIntInput(step.Input, "limit", 100))
+		// window: "1s" | "1m" | "1h" — defaults to "1m"
+		windowNs := egressParseWindow(step.Input["window"])
+		// on_exceeded: "wait" | "fail" | "fallback" — defaults to "fail"
+		behavior := engine.EgressBehaviorFail
+		maxWaitNs := windowNs * 2 // default max wait = 2 windows
+		fallbackPC := int16(-1)
+		failStatus := parseIntInput(step.Input, "status", 429)
+		switch step.Input["on_exceeded"] {
+		case "wait":
+			behavior = engine.EgressBehaviorWait
+			if v := parseIntInput(step.Input, "max_wait_ms", 0); v > 0 {
+				maxWaitNs = int64(v) * int64(time.Millisecond)
+			}
+		case "fallback":
+			behavior = engine.EgressBehaviorFallback
+			if ffName, ok := step.Input["fallback_flow"]; ok && ffName != "" {
+				if ffPC, found := c.FragmentMap[ffName]; found {
+					fallbackPC = ffPC
+				} else {
+					return fmt.Errorf("egress_rate_limit: fallback_flow %q not found in compiled fragments", ffName)
+				}
+			}
+		}
+		egressStore := c.fm.EgressLimiterStore
+		if step.Input["backend"] == "redis" && c.fm.RemoteRL != nil {
+			c.fm.EgressLimiterStoreRedis.WireRemoteRL(c.fm.RemoteRL)
+			egressStore = c.fm.EgressLimiterStoreRedis
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.EgressRateLimitStep(
+			egressStore, resource, limit, windowNs, maxWaitNs,
+			behavior, fallbackPC, failStatus,
+		))
 
 	case "circuit_breaker":
 		failureThresh := int64(parseIntInput(step.Input, "failure_threshold", 5))
@@ -6440,6 +6510,32 @@ func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
 	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
+}
+
+// egressParseWindow parses an egress window duration string into nanoseconds.
+// Format: <N><unit> where unit is s (seconds), m (minutes), h (hours), d (days).
+// Examples: "30s", "5m", "2h", "1d", "90m". Defaults to 60s on empty or bad input.
+func egressParseWindow(s string) int64 {
+	if len(s) < 2 {
+		return int64(time.Minute)
+	}
+	unit := s[len(s)-1]
+	n, err := strconv.ParseInt(s[:len(s)-1], 10, 64)
+	if err != nil || n <= 0 {
+		return int64(time.Minute)
+	}
+	switch unit {
+	case 's':
+		return n * int64(time.Second)
+	case 'm':
+		return n * int64(time.Minute)
+	case 'h':
+		return n * int64(time.Hour)
+	case 'd':
+		return n * 24 * int64(time.Hour)
+	default:
+		return int64(time.Minute)
+	}
 }
 
 // parseIntInput returns the integer value for key in input, or def if absent or unparseable.

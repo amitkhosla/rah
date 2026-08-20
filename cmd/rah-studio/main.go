@@ -32,9 +32,10 @@ func main() {
 	obsStoreType := flag.String("obs-store-type", os.Getenv("RAH_OBS_STORE_TYPE"), "Observability store: memory|postgres|redis (empty = proxy to gateway)")
 	obsStoreDSN := flag.String("obs-store-dsn", os.Getenv("RAH_OBS_STORE_DSN"), "Observability store DSN (postgres full DSN or redis host:port)")
 	authEnabled := flag.Bool("auth-enabled", os.Getenv("RAH_STUDIO_AUTH_ENABLED") == "true", "Require login; credentials validated against management API")
+	assetsDir := flag.String("assets-dir", os.Getenv("RAH_ASSETS_DIR"), "Directory for storing app static asset files (empty = disabled)")
 	flag.Parse()
 
-	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath, ObsStoreType: *obsStoreType, ObsStoreDSN: *obsStoreDSN, AuthEnabled: *authEnabled}
+	cfg := studio.ServerConfig{StoreKind: *storeKind, StorePath: *storePath, ObsStoreType: *obsStoreType, ObsStoreDSN: *obsStoreDSN, AuthEnabled: *authEnabled, AssetsDir: *assetsDir}
 	if *targetsFile != "" {
 		bytes, err := os.ReadFile(*targetsFile)
 		if err != nil {

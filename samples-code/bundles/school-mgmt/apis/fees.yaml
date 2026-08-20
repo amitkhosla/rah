@@ -1,5 +1,6 @@
 apis:
   - name: school-fees-list
+    app_name: school-mgmt
     path: /school/fees
     method: GET
     flow_name: school_fees_list
@@ -7,6 +8,7 @@ apis:
     action: upsert
 
   - name: school-fees-record
+    app_name: school-mgmt
     path: /school/fees
     method: POST
     flow_name: school_fee_record
@@ -14,6 +16,7 @@ apis:
     action: upsert
 
   - name: school-fees-outstanding
+    app_name: school-mgmt
     path: /school/fees/outstanding
     method: GET
     flow_name: school_fees_outstanding

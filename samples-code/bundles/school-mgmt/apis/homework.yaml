@@ -1,5 +1,6 @@
 apis:
   - name: school-homework-list
+    app_name: school-mgmt
     path: /school/homework
     method: GET
     flow_name: school_homework_list
@@ -7,6 +8,7 @@ apis:
     action: upsert
 
   - name: school-homework-assign
+    app_name: school-mgmt
     path: /school/homework
     method: POST
     flow_name: school_homework_assign
@@ -14,6 +16,7 @@ apis:
     action: upsert
 
   - name: school-homework-submit
+    app_name: school-mgmt
     path: /school/homework/{id}/submit
     method: POST
     flow_name: school_homework_submit

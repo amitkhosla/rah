@@ -153,6 +153,13 @@ type FlowManager struct {
 	// CircuitBreakerArena holds all named circuit breaker states (max 256).
 	// Slots are allocated at bake time; state is updated atomically at request time.
 	CircuitBreakerArena *CircuitBreakerArena
+	// EgressLimiterStore holds per-resource outbound rate limit counters and
+	// shared broadcast channels for all egress_rate_limit steps.
+	EgressLimiterStore *EgressLimiterStore
+	// EgressLimiterStoreRedis is the Redis-backed variant of EgressLimiterStore.
+	// Used when an egress_rate_limit step sets backend: "redis".
+	// Nil until first use; remoteRL is wired by the compiler when RemoteRL is set.
+	EgressLimiterStoreRedis *EgressLimiterStore
 	// InstrRing is the lock-free slab ring for per-instruction timing aggregation.
 	// Nil when the feature is disabled. Set from main.go before serving traffic.
 	InstrRing *observability.InstrSlabRing
@@ -176,6 +183,8 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		APIKeyResolver:      NewAPIKeyResolver(),
 		SpikeArrestStore:    NewSpikeArrestStore(),
 		CircuitBreakerArena: NewCircuitBreakerArena(),
+		EgressLimiterStore:      NewEgressLimiterStore(),
+		EgressLimiterStoreRedis: NewEgressLimiterStore(),
 	}
 	gatewaylog.Default.Info("startup", gatewaylog.F("fingerprint", fm.TxIDGen.Fingerprint()))
 

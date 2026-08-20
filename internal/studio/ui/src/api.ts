@@ -28,6 +28,8 @@ import type {
   VirtualMCPServer,
   RateLimitWarning,
   App,
+  AppFlowBindings,
+  AppEventBinding,
   APIKeyView,
   APIKeyCreateResponse,
   EgressProfileConfig,
@@ -48,7 +50,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => `HTTP ${res.status}`)
     throw new Error(text || `HTTP ${res.status}`)
   }
-  return res.json() as Promise<T>
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as unknown as T
+  }
+  const text = await res.text()
+  if (!text) return undefined as unknown as T
+  return JSON.parse(text) as T
 }
 
 export function fetchSchema(): Promise<SchemaResponse> {
@@ -352,6 +359,7 @@ export interface SyncPayload {
     name: string
     path: string
     flow_name: string
+    app_name?: string
     action: 'upsert' | 'delete'
     rate_limit?: string
     alias_paths?: string[]
@@ -410,6 +418,7 @@ export interface GatewaySnapshot {
     rl_dyn_source?: string
     rl_dyn_key?: string
     upstream_svc?: string
+    app_name?: string
     endpoint_configs?: Array<{
       path: string
       method?: string
@@ -711,7 +720,7 @@ export function listApps(): Promise<App[]> {
   return request<{ items: App[]; count: number }>('/api/apps').then(r => r.items ?? [])
 }
 
-export function createApp(body: { name: string; description: string; labels?: Record<string, string> }): Promise<App> {
+export function createApp(body: { name: string; description: string; labels?: Record<string, string>; type?: string; tenant_mode?: string; flow_bindings?: AppFlowBindings; event_bindings?: AppEventBinding[] }): Promise<App> {
   return request<App>('/api/apps', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -719,7 +728,7 @@ export function createApp(body: { name: string; description: string; labels?: Re
   })
 }
 
-export function updateApp(id: number, body: Partial<{ name: string; description: string; labels?: Record<string, string> }>): Promise<App> {
+export function updateApp(id: number, body: Partial<{ name: string; description: string; labels?: Record<string, string>; type: string; tenant_mode: string; flow_bindings: AppFlowBindings | null; event_bindings: AppEventBinding[] }>): Promise<App> {
   return request<App>(`/api/apps/${id}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -1180,14 +1189,26 @@ export interface AppDef {
   flows: string[]
 }
 
-export function listAppFlows(): Promise<{ apps: AppDef[] }> {
-  return request<{ items: any[]; count: number }>('/api/apps')
-    .then(res => ({
-      apps: (res.items ?? []).map(item => ({
-        name: item.name || item.Name || '',
-        flows: [] // flows array will be empty as the /api/apps endpoint doesn't include flow data
-      }))
-    }))
+export async function listAppFlows(): Promise<{ apps: AppDef[] }> {
+  const [appsRes, snapshot] = await Promise.all([
+    request<{ items: any[]; count: number }>('/api/apps'),
+    fetchGatewaySnapshot().catch(() => ({ flows: [], apis: [] } as GatewaySnapshot))
+  ])
+
+  const flowsByApp = new Map<string, Set<string>>()
+  for (const api of snapshot.apis ?? []) {
+    if (api.app_name && api.flow_name) {
+      if (!flowsByApp.has(api.app_name)) flowsByApp.set(api.app_name, new Set())
+      flowsByApp.get(api.app_name)!.add(api.flow_name)
+    }
+  }
+
+  return {
+    apps: (appsRes.items ?? []).map(item => {
+      const name = item.name || item.Name || ''
+      return { name, flows: Array.from(flowsByApp.get(name) ?? []) }
+    })
+  }
 }
 
 export function listObservabilityApps(): Promise<{ apps: string[] }> {
@@ -1448,4 +1469,37 @@ export async function runTestSuite(id: string): Promise<SuiteRunResult> {
 
 export async function deleteTestSuite(id: string): Promise<void> {
   await request(`/api/test/suites/${id}`, { method: 'DELETE' })
+}
+
+// ── App Static Assets ────────────────────────────────────────────────────────
+
+export interface AssetMeta {
+  filename: string
+  content_type: string
+  size: number
+  updated_at: string
+  url?: string
+}
+
+export function listAssets(appName: string): Promise<AssetMeta[]> {
+  return request<AssetMeta[]>(`/api/app-assets/${encodeURIComponent(appName)}`)
+}
+
+export async function uploadAsset(appName: string, file: File): Promise<AssetMeta> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`/api/app-assets/${encodeURIComponent(appName)}`, {
+    method: 'POST',
+    body: form,
+    credentials: 'include',
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throw new Error(t || `upload failed ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function deleteAsset(appName: string, filename: string): Promise<void> {
+  await request(`/api/app-assets/${encodeURIComponent(appName)}/${encodeURIComponent(filename)}`, { method: 'DELETE' })
 }
