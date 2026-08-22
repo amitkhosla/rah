@@ -3,27 +3,52 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
+	"time"
 
 	gcs "cloud.google.com/go/storage"
 	"google.golang.org/api/option"
 )
 
+// Ensure gcsProvider implements presigner at compile time.
+var _ presigner = (*gcsProvider)(nil)
+
 type gcsProvider struct {
-	client *gcs.Client
-	bucket string
+	client      *gcs.Client
+	bucket      string
+	clientEmail string // cached from credential JSON at init for presigning
+	privateKey  []byte // cached from credential JSON at init for presigning
 }
 
 func newGCSProvider(cfg StorageProviderConfig) (*gcsProvider, error) {
 	bucket := resolveRef(cfg.BucketRef)
 
+	p := &gcsProvider{bucket: bucket}
+
 	opts := []option.ClientOption{}
 	if cfg.CredentialRef != "" {
-		// CredentialRef resolves to a file path (e.g. env:GOOGLE_CREDS_FILE → /path/to/key.json)
 		credFile := resolveRef(cfg.CredentialRef)
 		if credFile != "" {
 			opts = append(opts, option.WithCredentialsFile(credFile)) //nolint:staticcheck
+
+			// Parse credentials once at init so Presign never does per-call disk I/O.
+			data, err := os.ReadFile(credFile)
+			if err != nil {
+				return nil, fmt.Errorf("storage %q: read gcs credentials: %w", cfg.Name, err)
+			}
+			var creds struct {
+				ClientEmail string `json:"client_email"`
+				PrivateKey  string `json:"private_key"`
+			}
+			if err := json.Unmarshal(data, &creds); err != nil {
+				return nil, fmt.Errorf("storage %q: parse gcs credentials: %w", cfg.Name, err)
+			}
+			p.clientEmail = creds.ClientEmail
+			p.privateKey = []byte(creds.PrivateKey)
 		}
 	}
 
@@ -31,8 +56,8 @@ func newGCSProvider(cfg StorageProviderConfig) (*gcsProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage %q: gcs client: %w", cfg.Name, err)
 	}
-
-	return &gcsProvider{client: client, bucket: bucket}, nil
+	p.client = client
+	return p, nil
 }
 
 func (p *gcsProvider) Get(ctx context.Context, key string) ([]byte, error) {
@@ -68,4 +93,22 @@ func (p *gcsProvider) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("gcs delete %q: %w", key, err)
 	}
 	return nil
+}
+
+func (p *gcsProvider) Presign(_ context.Context, key, method string, expirySeconds int) (string, error) {
+	if p.clientEmail == "" || len(p.privateKey) == 0 {
+		return "", fmt.Errorf("gcs presign: credential_ref with service account JSON required for signed URLs")
+	}
+	opts := &gcs.SignedURLOptions{
+		GoogleAccessID: p.clientEmail,
+		PrivateKey:     p.privateKey,
+		Method:         strings.ToUpper(method),
+		Expires:        time.Now().Add(time.Duration(expirySeconds) * time.Second),
+		Scheme:         gcs.SigningSchemeV4,
+	}
+	url, err := p.client.Bucket(p.bucket).SignedURL(key, opts)
+	if err != nil {
+		return "", fmt.Errorf("gcs presign %q: %w", key, err)
+	}
+	return url, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/connectors/sftp"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/engine/steps"
@@ -81,7 +82,8 @@ type ManagementServer struct {
 
 	WorkflowHandler *WorkflowHandler // optional; nil if workflows domain not configured
 
-	StorageMgr *storage.StorageManager
+	StorageMgr       *storage.StorageManager
+	SFTPConnectorMgr *sftp.SFTPConnectorManager
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -478,7 +480,11 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 						newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(a.UpstreamUrl, slotIdx, s.RegMgr)
 					}
 				}
-				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+				rootMethod := a.Method
+				if rootMethod == "" {
+					rootMethod = "ANY"
+				}
+				s.Compiler.BakeSubRouter(def, "/", rootMethod, instructions, true, apiRLId, 0, asyncMode)
 			} else {
 				for ecIdx, ec := range a.EndpointConfigs {
 					// Resolve and register multi-entry RL policies at endpoint level.
@@ -905,7 +911,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 						log.Printf("[Management] Warning: cannot allocate upstream_url slot for API %s: %v", a.Name, serr)
 					}
 				}
-				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+				rootMethod2 := a.Method
+				if rootMethod2 == "" {
+					rootMethod2 = "ANY"
+				}
+				s.Compiler.BakeSubRouter(def, "/", rootMethod2, instructions, true, apiRLId, 0, asyncMode)
 				bakeEndpointSchema(def)
 				if s.InstrSchemaHook != nil {
 					ep := &def.Endpoints[len(def.Endpoints)-1]
@@ -2001,6 +2011,29 @@ func (s *ManagementServer) StorageConnectorsHandler(w http.ResponseWriter, r *ht
 		out = []item{}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+}
+
+// SFTPConnectorsHandler serves GET /sftp-connectors.
+func (s *ManagementServer) SFTPConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type entry struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var result []entry
+	if s.SFTPConnectorMgr != nil {
+		for _, name := range s.SFTPConnectorMgr.Names() {
+			result = append(result, entry{Name: name, Type: "sftp"})
+		}
+	}
+	if result == nil {
+		result = []entry{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": result})
 }
 
 // MessagingPublishersHandler serves GET /messaging-publishers.

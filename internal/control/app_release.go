@@ -10,12 +10,13 @@ import (
 	"github.com/amitkhosla/rah/internal/config"
 )
 
-// AppRelease version-snapshots the flows belonging to an app.
+// AppRelease version-snapshots the APIs and flows belonging to an app.
 type AppRelease struct {
 	AppName   string    `json:"app_name"`
 	Version   string    `json:"version"`    // semver string e.g. "1.0.0"
 	Channel   string    `json:"channel"`    // "staging" | "production"
-	FlowNames []string  `json:"flow_names"` // names of flows in this release
+	APINames  []string  `json:"api_names"`  // names of gateway APIs included in this release
+	FlowNames []string  `json:"flow_names"` // names of flows included in this release
 	Notes     string    `json:"notes,omitempty"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`

@@ -1,0 +1,6 @@
+app:
+  name: product-faq
+  type: api-service
+  tenant_mode: tenant_aware
+  release_channel: production
+  action: upsert

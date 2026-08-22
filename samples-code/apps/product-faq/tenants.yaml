@@ -1,0 +1,5 @@
+tenants:
+  - aliases: [acme-corp, acme]
+    action: upsert
+  - aliases: [globex-inc, globex]
+    action: upsert

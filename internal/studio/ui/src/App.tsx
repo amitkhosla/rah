@@ -3,7 +3,7 @@ import { fetchSchema, listAppUsages, syncFlows } from './api'
 import { normalizeCases } from './utils/dsl'
 import type { ApiDef, EndpointDef, ConnStatus, FlowImpact, FlowStep, GatewayFlow, PaletteBlock, SavedFlow, StepGroup } from './types'
 import type { AppUsageEntry } from './api'
-export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'app-releases' | 'app-explorer' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'datastores' | 'document-connectors' | 'storage-connectors' | 'messaging-publishers' | 'event-listeners' | 'migrations' | 'tests' | 'settings' | 'workflow-designer'
+export type TabId = 'dashboard' | 'flows' | 'apis' | 'flowmap' | 'ai' | 'deploy' | 'releases' | 'gateway' | 'observability' | 'audit-log' | 'tenants' | 'apps' | 'app-releases' | 'app-explorer' | 'rate-limits' | 'rl-overrides' | 'tiers' | 'upstream-services' | 'egress' | 'schemas' | 'grpc' | 'cache' | 'concurrency' | 'tokens' | 'schedules' | 'ws-endpoints' | 'ws-upstreams' | 'redis-sources' | 'named-queries' | 'datastores' | 'document-connectors' | 'storage-connectors' | 'sftp-connectors' | 'messaging-publishers' | 'event-listeners' | 'migrations' | 'tests' | 'settings' | 'workflow-designer'
 import Login          from './components/Login'
 import ChangePassword from './components/ChangePassword'
 import FlowDesigner   from './components/FlowDesigner'
@@ -39,6 +39,7 @@ import NamedQueries          from './components/NamedQueries'
 import DataStores            from './components/DataStores'
 import DocumentConnectors    from './components/DocumentConnectors'
 import StorageConnectors     from './components/StorageConnectors'
+import SFTPConnectors        from './components/SFTPConnectors'
 import MessagingPublishers   from './components/MessagingPublishers'
 import EventListeners        from './components/EventListeners'
 import Migrations            from './components/Migrations'
@@ -161,6 +162,7 @@ const NAV_ICONS: Record<string, string> = {
   datastores:         '🗄',
   'document-connectors':  '🗃',
   'storage-connectors':   '🗂',
+  'sftp-connectors':      '📂',
   'messaging-publishers': '📨',
   'event-listeners':      '📡',
   'workflow-designer':    '🔀',
@@ -207,6 +209,7 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'named-queries',      label: 'Named Queries' },
   { kind: 'item',    id: 'document-connectors',   label: 'Document Connectors' },
   { kind: 'item',    id: 'storage-connectors',    label: 'Storage' },
+  { kind: 'item',    id: 'sftp-connectors',       label: 'SFTP Connectors' },
   { kind: 'item',    id: 'messaging-publishers',  label: 'Messaging Publishers' },
   { kind: 'item',    id: 'event-listeners',       label: 'Event Listeners' },
   { kind: 'item',    id: 'workflow-designer',      label: 'Workflow Designer' },
@@ -516,7 +519,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
   }
   const GATEWAY_TABS = new Set<TabId>(['dashboard','flows','apis','flowmap','ai','deploy','releases','gateway','observability','audit-log','rate-limits','rl-overrides','tiers','upstream-services','egress','schemas','grpc','cache','concurrency','tenants','tokens','settings','tests'])
   const APP_TABS     = new Set<TabId>(['apps','app-releases','app-explorer'])
-  const WORKFLOW_TABS = new Set<TabId>(['schedules','ws-endpoints','ws-upstreams','event-listeners','messaging-publishers','document-connectors','storage-connectors','datastores','redis-sources','named-queries','workflow-designer','migrations'])
+  const WORKFLOW_TABS = new Set<TabId>(['schedules','ws-endpoints','ws-upstreams','event-listeners','messaging-publishers','document-connectors','storage-connectors','sftp-connectors','datastores','redis-sources','named-queries','workflow-designer','migrations'])
   const activeSection = APP_TABS.has(tab) ? 'app' : WORKFLOW_TABS.has(tab) ? 'workflow' : 'gateway'
 
   return (
@@ -868,6 +871,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         {tab === 'datastores'           && <DataStores />}
         {tab === 'document-connectors'  && <DocumentConnectors />}
         {tab === 'storage-connectors'   && <StorageConnectors />}
+        {tab === 'sftp-connectors'      && <SFTPConnectors />}
         {tab === 'messaging-publishers' && <MessagingPublishers />}
         {tab === 'event-listeners'      && <EventListeners />}
         {tab === 'workflow-designer'    && <WorkflowDesigner />}

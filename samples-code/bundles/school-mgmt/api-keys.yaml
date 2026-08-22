@@ -1,21 +1,18 @@
 api_keys:
   - alias: alpha-admin-key
     app: school-mgmt
-    key_ref: alpha-admin-sk-change-me
+    key_ref: rah_alpha_school_admin_demo
     allowed_tenants: [alpha-school]
     action: upsert
+
   - alias: alpha-teacher-key
     app: school-mgmt
-    key_ref: alpha-teacher-sk-change-me
+    key_ref: rah_alpha_school_teacher_demo
     allowed_tenants: [alpha-school]
     action: upsert
-  - alias: alpha-student-key
-    app: school-mgmt
-    key_ref: alpha-student-sk-change-me
-    allowed_tenants: [alpha-school]
-    action: upsert
+
   - alias: beta-admin-key
     app: school-mgmt
-    key_ref: beta-admin-sk-change-me
+    key_ref: rah_beta_academy_admin_demo
     allowed_tenants: [beta-academy]
     action: upsert

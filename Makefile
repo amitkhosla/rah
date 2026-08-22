@@ -63,7 +63,7 @@ run-local: build-gateway
 ## studio-run: studio pointing at the local management port
 .PHONY: studio-run
 studio-run: build-studio
-	$(BINARY_STUDIO) -port 8092 -gateway-management-url http://localhost:8081
+	$(BINARY_STUDIO) -port 8092 -gateway-management-url http://localhost:8081 -assets-dir ./rah-assets
 
 ## dev: build + run gateway with Redis + Postgres (set POSTGRES_PASSWORD first)
 .PHONY: dev

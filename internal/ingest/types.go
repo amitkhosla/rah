@@ -65,6 +65,9 @@ const (
 	// KindMetric carries a pre-aggregated metric window snapshot.
 	// Payload = JSON-encoded MetricSnapshot. Emitted by the metrics flush goroutine.
 	KindMetric EventKind = "metric"
+
+	// KindCircuitEvent is emitted when a named circuit changes state (tripped, probing, recovered).
+	KindCircuitEvent EventKind = "circuit_event"
 )
 
 // inlinePayloadMax is the threshold below which payload bytes are stored

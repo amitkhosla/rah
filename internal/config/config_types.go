@@ -75,6 +75,14 @@ type ModelCapabilities struct {
 	SupportedToolFormats  []string `json:"supported_tool_formats,omitempty"   yaml:"supported_tool_formats,omitempty"`
 }
 
+// LLMCostLimitWindow defines a per-model USD spending quota for a fixed time window.
+// When accumulated spend exceeds LimitUSD within the window, the model's named circuit
+// ("llm:<alias>") is automatically tripped for the remainder of the window.
+type LLMCostLimitWindow struct {
+	Window   string  `json:"window"    yaml:"window"`    // "second"|"minute"|"hour"|"day"
+	LimitUSD float64 `json:"limit_usd" yaml:"limit_usd"` // max USD spend per window
+}
+
 // LLMModelConfig describes one model in the catalog.
 // Alias is the stable identifier used in flow step.Input["model"] and fallback_chain.
 // ModelID is the actual model identifier sent to the provider API (e.g. "gpt-4o-2024-08-06").
@@ -129,6 +137,10 @@ type LLMModelConfig struct {
 	// Up to 4 windows are supported; window values: "second", "minute", "hour", "day".
 	// Example: [{window: "minute", limit: 60}, {window: "day", limit: 1000}]
 	RateLimits []LLMRateLimitWindow `json:"rate_limits,omitempty" yaml:"rate_limits,omitempty"`
+	// CostLimits configures per-model USD spending quotas. When any window's accumulated
+	// spend exceeds its LimitUSD, the model's circuit ("llm:<alias>") is tripped.
+	// Requires CostPerInputToken / CostPerOutputToken to be set on the model.
+	CostLimits []LLMCostLimitWindow `json:"cost_limits,omitempty" yaml:"cost_limits,omitempty"`
 	// APIVersion selects the Google Generative Language API version for Gemini models.
 	// "v1beta" — (default) required for system_instruction, tools, and thinking support.
 	// "v1"     — stable production API; lacks system_instruction and function calling.
@@ -559,6 +571,18 @@ type SchedulerConfig struct {
 	LeaderTTLSec   int    `json:"leader_ttl_sec,omitempty"   yaml:"leader_ttl_sec,omitempty"`
 }
 
+// SFTPConnectorConfig configures a named SFTP connector.
+type SFTPConnectorConfig struct {
+	Name          string `json:"name"                      yaml:"name"`
+	Host          string `json:"host"                      yaml:"host"`
+	Port          int    `json:"port,omitempty"            yaml:"port,omitempty"`             // default 22
+	Username      string `json:"username"                  yaml:"username"`
+	PasswordRef   string `json:"password_ref,omitempty"    yaml:"password_ref,omitempty"`    // resolves via SecretLoader
+	PrivateKeyRef string `json:"private_key_ref,omitempty" yaml:"private_key_ref,omitempty"` // resolves via SecretLoader
+	KnownHostsRef string `json:"known_hosts_ref,omitempty" yaml:"known_hosts_ref,omitempty"` // resolves via SecretLoader
+	TimeoutMs     int    `json:"timeout_ms,omitempty"      yaml:"timeout_ms,omitempty"`       // connection timeout ms
+}
+
 // DocumentConnectorConfig configures a named document storage connector.
 type DocumentConnectorConfig struct {
 	Name          string `yaml:"name"           json:"name"`
@@ -651,6 +675,7 @@ type GatewayConfig struct {
 	DocumentConnectors  []DocumentConnectorConfig           `json:"document_connectors,omitempty"   yaml:"document_connectors,omitempty"`
 	MessagingPublishers []PublisherConfig                   `json:"messaging_publishers,omitempty"  yaml:"messaging_publishers,omitempty"`
 	EventListeners      []EventListenerConfig               `json:"event_listeners,omitempty"       yaml:"event_listeners,omitempty"`
+	SFTPConnectors      []SFTPConnectorConfig               `json:"sftp_connectors,omitempty"       yaml:"sftp_connectors,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

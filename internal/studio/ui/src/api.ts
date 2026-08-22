@@ -358,6 +358,7 @@ export interface SyncPayload {
   apis: Array<{
     name: string
     path: string
+    method?: string
     flow_name: string
     app_name?: string
     action: 'upsert' | 'delete'
@@ -1157,6 +1158,17 @@ export function listStorageConnectors(): Promise<{ connectors: StorageConnectorD
   return request<{ connectors: StorageConnectorDef[] }>('/api/storage-connectors')
 }
 
+// ── SFTP Connectors ─────────────────────────────────────────────────────────────
+
+export interface SFTPConnectorDef {
+  name: string
+  type: string
+}
+
+export function listSFTPConnectors(): Promise<{ connectors: SFTPConnectorDef[] }> {
+  return request<{ connectors: SFTPConnectorDef[] }>('/api/sftp-connectors')
+}
+
 // ── Messaging Publishers ───────────────────────────────────────────────────────
 
 export interface MessagingPublisherDef {
@@ -1221,6 +1233,7 @@ export interface AppRelease {
   app_name: string
   version: string
   channel: string
+  api_names?: string[]
   flow_names: string[]
   notes?: string
   active: boolean
@@ -1346,6 +1359,37 @@ export async function listFlowNames(): Promise<string[]> {
     }
   }
   return names.sort()
+}
+
+// ── Studio Configuration ──────────────────────────────────────────────────
+
+export async function fetchStudioConfig(): Promise<{ direct_sync_enabled: boolean }> {
+  return request<{ direct_sync_enabled: boolean }>('/api/studio/config')
+}
+
+// ── App Draft Management ──────────────────────────────────────────────────
+
+export interface AppDraft {
+  app_name: string
+  updated_at?: string
+  apis: Array<Record<string, unknown>>
+  flows: Array<Record<string, unknown>>
+}
+
+export async function getAppDraft(appName: string): Promise<AppDraft> {
+  return request<AppDraft>('/api/apps/' + appName + '/draft')
+}
+
+export async function putAppDraft(appName: string, payload: SyncPayload): Promise<{ merged: boolean }> {
+  return request<{ merged: boolean }>('/api/apps/' + appName + '/draft', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+export async function deleteFromAppDraft(appName: string, apiName: string): Promise<void> {
+  await request<void>('/api/apps/' + appName + '/draft/apis/' + apiName, { method: 'DELETE' })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

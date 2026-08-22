@@ -11,6 +11,7 @@ import (
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/connectors/document"
 	"github.com/amitkhosla/rah/internal/connectors/messaging"
+	"github.com/amitkhosla/rah/internal/connectors/sftp"
 	"github.com/amitkhosla/rah/internal/control"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/datastore"
@@ -807,6 +808,20 @@ func main() {
 		}
 	}
 
+	// Initialize SFTP connector manager.
+	var sftpMgr *sftp.SFTPConnectorManager
+	if len(cfgMgr.Gateway().SFTPConnectors) > 0 {
+		var err error
+		sftpMgr, err = sftp.New(gatewayCtx, cfgMgr.Gateway().SFTPConnectors, secretsMgr)
+		if err != nil {
+			log.Fatalf("[sftp] init failed: %v", err)
+		}
+		if err := sftpMgr.Start(gatewayCtx); err != nil {
+			log.Fatalf("[sftp] start failed: %v", err)
+		}
+		defer func() { _ = sftpMgr.Stop() }()
+	}
+
 	// Scheduler
 	var sched *scheduler.Scheduler
 	schedCfg := cfgMgr.Gateway().Scheduler
@@ -886,6 +901,7 @@ func main() {
 	compiler.RedisSourcePool = redisSrcPool
 	compiler.EmailMgr = emailMgr
 	compiler.StorageMgr = storageMgr
+	compiler.SFTPConnectorMgr = sftpMgr
 	compiler.DocumentConnectorMgr = docConnMgr
 	compiler.MessagingPublisherMgr = msgPubMgr
 
@@ -1716,6 +1732,11 @@ func main() {
 		ms.StorageMgr = storageMgr
 	}
 
+	// Wire SFTP connector manager for GET /sftp-connectors
+	if sftpMgr != nil {
+		ms.SFTPConnectorMgr = sftpMgr
+	}
+
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
 	// successfully. Without this, bootstrap sees an empty LLM catalog and fails
@@ -1854,6 +1875,7 @@ func main() {
 	mux.HandleFunc("/migrations", ms.MigrationsHandler)
 	mux.HandleFunc("/document-connectors", ms.DocumentConnectorsHandler)
 	mux.HandleFunc("/storage-connectors", ms.StorageConnectorsHandler)
+	mux.HandleFunc("/sftp-connectors", ms.SFTPConnectorsHandler)
 	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersHandler)
 	mux.HandleFunc("/event-listeners", ms.EventListenersHandler)
 	ts.RegisterHandlers(mux)

@@ -82,6 +82,7 @@ Publish Options:
   --studio <URL>      Studio server URL (required)
   --tag <tag>         Release tag (optional, e.g. v1.2.3)
   --auto-deploy <env> Automatically deploy to environment after publish (optional)
+  --draft             Create release as draft (not auto-deployed, status=draft)
   --git-commit <sha>  Git commit SHA (optional)
   --git-branch <name> Git branch name (optional)
   --include <spec>    Include filter: type:name (repeatable, comma-separated, optional)
@@ -290,7 +291,7 @@ func lintWithStudio(bundleDir string, studioURL string, token string) ([]sync.Li
 	return respData.Issues, nil
 }
 
-// publishCmd handles: publish <dir> --studio URL [--tag TAG] [--auto-deploy ENV] [--git-commit SHA] [--git-branch BRANCH] [--include SPEC] [--exclude SPEC] [--token TOKEN]
+// publishCmd handles: publish <dir> --studio URL [--tag TAG] [--auto-deploy ENV] [--draft] [--git-commit SHA] [--git-branch BRANCH] [--include SPEC] [--exclude SPEC] [--token TOKEN]
 func publishCmd(args []string) int {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	fs.Usage = func() {}
@@ -298,6 +299,7 @@ func publishCmd(args []string) int {
 	studioURL := fs.String("studio", "", "Studio server URL (required)")
 	tag := fs.String("tag", "", "Release tag (optional)")
 	autoDeploy := fs.String("auto-deploy", "", "Auto-deploy to environment (optional)")
+	draft := fs.Bool("draft", false, "Create release as draft (not auto-deployed, status=draft)")
 	gitCommit := fs.String("git-commit", "", "Git commit SHA (optional)")
 	gitBranch := fs.String("git-branch", "", "Git branch name (optional)")
 	outputFormat := fs.String("output", "text", "Output format: text or json")
@@ -368,13 +370,21 @@ func publishCmd(args []string) int {
 		return 1
 	}
 
-	releaseID, err := publishBundle(*studioURL, loadResult.Bundle, *tag, *gitCommit, *gitBranch, authToken, *include, *exclude)
+	releaseID, err := publishBundle(*studioURL, loadResult.Bundle, *tag, *gitCommit, *gitBranch, authToken, *include, *exclude, *draft)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error publishing bundle: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("Published release: %s\n", releaseID)
+
+	// If --draft is set, print warning and skip auto-deploy
+	if *draft {
+		if *autoDeploy != "" {
+			fmt.Printf("warning: --draft overrides --auto-deploy; release created as draft, not deployed\n")
+		}
+		return 0
+	}
 
 	// If --auto-deploy is set, immediately promote to that environment
 	if *autoDeploy != "" {
@@ -640,7 +650,7 @@ func testCmd(args []string) int {
 }
 
 // publishBundle POSTs the bundle to studio and returns the release ID
-func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBranch, token, include, exclude string) (string, error) {
+func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBranch, token, include, exclude string, draft bool) (string, error) {
 	bundleJSON, err := json.Marshal(bundle)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal bundle: %w", err)
@@ -648,8 +658,11 @@ func publishBundle(studioURL string, bundle interface{}, tag, gitCommit, gitBran
 
 	endpoint := studioURL + "/api/releases"
 
-	// Add query parameters for include/exclude filters
+	// Add query parameters for include/exclude/draft filters
 	queryParams := []string{}
+	if draft {
+		queryParams = append(queryParams, "status=draft")
+	}
 	if include != "" {
 		// Parse comma-separated include values
 		for _, inc := range strings.Split(include, ",") {

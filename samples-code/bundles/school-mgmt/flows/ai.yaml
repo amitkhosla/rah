@@ -5,5 +5,5 @@ flows:
       question = body("question")
       subject = body("subject")
       context_prompt = "You are an AI tutor for school students. Answer questions clearly and educationally. Keep answers concise (2-3 sentences)."
-      answer = llm(question, model: "school-llm", system: context_prompt, max_tokens: 300)
+      answer = llm(question, model: "my-llm", system: context_prompt, max_tokens: 300)
       return(200, answer)

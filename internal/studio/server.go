@@ -70,6 +70,16 @@ type ServerConfig struct {
 	// AssetsDir is the directory for storing app static asset files.
 	// Empty = asset store disabled.
 	AssetsDir string `json:"assets_dir,omitempty" yaml:"assets_dir,omitempty"`
+
+	// DirectSyncEnabled controls whether /api/sync proxies directly to the gateway.
+	// nil or true = direct sync (default behaviour). false = save to draft instead.
+	DirectSyncEnabled *bool `yaml:"direct_sync_enabled,omitempty" json:"direct_sync_enabled,omitempty"`
+}
+
+// IsDirectSyncEnabled reports whether direct sync to the gateway is enabled.
+// The default (nil) is true, preserving existing behaviour.
+func (cfg ServerConfig) IsDirectSyncEnabled() bool {
+	return cfg.DirectSyncEnabled == nil || *cfg.DirectSyncEnabled
 }
 
 type DeployRequest struct {
@@ -315,6 +325,7 @@ type Server struct {
 	baselineStore FlowBaselineStore
 	versionStore  VersionHistoryStore
 	assetsStore   AssetStore
+	draftStore    DraftStore
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -357,6 +368,7 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		auditStore:        newAuditStore(cfg.StoreKind, cfg.StorePath),
 		baselineStore:     newMemFlowBaselineStore(),
 		versionStore:      newMemVersionHistoryStore(),
+		draftStore:        NewDraftStore(cfg.StoreKind, cfg.StorePath),
 	}
 
 	// Token store is always initialised so machine tokens work even without login auth.
@@ -425,6 +437,7 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/auth/change-password", s.changePasswordHandler)
 	apiMux.HandleFunc("/api/studio/users", s.studioUsersHandler)
 	apiMux.HandleFunc("/api/studio/users/", s.studioUserDeleteHandler)
+	apiMux.HandleFunc("/api/studio/config", s.studioConfigHandler)
 	apiMux.HandleFunc("/api/schema", s.schemaHandler)
 	apiMux.HandleFunc("/api/suggestions", s.suggestionsHandler)
 	apiMux.HandleFunc("/api/targets", s.targetsHandler)
@@ -462,8 +475,8 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
-	apiMux.HandleFunc("/api/apps", s.appsMgmtProxy)
-	apiMux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	apiMux.HandleFunc("/api/apps", s.appsHandler)
+	apiMux.HandleFunc("/api/apps/", s.appsHandler)
 	apiMux.HandleFunc("/api/config/datastores", s.datastoreConfigProxy)
 	apiMux.HandleFunc("/api/config/datastores/", s.datastoreConfigProxy)
 	apiMux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
@@ -1693,6 +1706,10 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.config.IsDirectSyncEnabled() {
+		s.saveSyncToDraft(w, r)
+		return
+	}
 	actor := "system"
 	if sess, ok := sessionFromContext(r.Context()); ok {
 		actor = sess.Username
@@ -1789,6 +1806,61 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(lastStatus)
 	_, _ = w.Write(lastBody)
+}
+
+// saveSyncToDraft intercepts a POST /api/sync request when direct sync is disabled.
+// It groups APIs by app_name and merges them into the draft store, then returns a
+// synthetic success response without touching the gateway.
+func (s *Server) saveSyncToDraft(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var payload struct {
+		APIs  []json.RawMessage `json:"apis"`
+		Flows []json.RawMessage `json:"flows"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Group APIs by app_name.
+	appAPIs := make(map[string][]json.RawMessage)
+	for _, rawAPI := range payload.APIs {
+		var meta struct {
+			AppName string `json:"app_name"`
+		}
+		if err := json.Unmarshal(rawAPI, &meta); err != nil || meta.AppName == "" {
+			continue
+		}
+		appAPIs[meta.AppName] = append(appAPIs[meta.AppName], rawAPI)
+	}
+
+	// Marshal all flows once.
+	flowsJSON, _ := json.Marshal(payload.Flows)
+
+	// Save each app’s APIs (and all flows) to that app’s draft.
+	ctx := r.Context()
+	for appName, apis := range appAPIs {
+		apisJSON, _ := json.Marshal(apis)
+		existing, _, _ := s.draftStore.GetDraft(ctx, appName)
+		mergedAPIs, _ := mergeDraftPayload(existing.APIs, apisJSON)
+		mergedFlows, _ := mergeDraftPayload(existing.Flows, flowsJSON)
+		_ = s.draftStore.PutDraft(ctx, AppDraft{
+			AppName:   appName,
+			UpdatedAt: time.Now(),
+			APIs:      mergedAPIs,
+			Flows:     mergedFlows,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"sync_uuid": "", "applied": true, "router_changed": false,
+	})
 }
 
 // tenantsMgmtProxy forwards /api/tenants[/...] â†’ /tenants[/...] on the management server.
@@ -2021,6 +2093,136 @@ func (s *Server) aiMgmtProxy(w http.ResponseWriter, r *http.Request) {
 // appsMgmtProxy forwards /api/apps[/...] â†’ /apps[/...] on the management server.
 func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// appsHandler dispatches /api/apps and /api/apps/ requests. Draft sub-paths are
+// handled locally; everything else is forwarded to the gateway management API.
+func (s *Server) appsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// Match /api/apps/{name}/draft  (GET or POST)
+	if parts := matchPath(path, "/api/apps/", "/draft"); parts != nil {
+		appName := parts[0]
+		switch r.Method {
+		case http.MethodGet:
+			s.getDraftHandler(w, r, appName)
+		case http.MethodPost:
+			s.putDraftHandler(w, r, appName)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	// Match /api/apps/{name}/draft/apis/{apiName}  (DELETE)
+	if parts := matchPath(path, "/api/apps/", "/draft/apis/"); parts != nil && len(parts) >= 2 && r.Method == http.MethodDelete {
+		s.deleteFromDraftHandler(w, r, parts[0], parts[1])
+		return
+	}
+	// Everything else: proxy to gateway management
+	s.appsMgmtProxy(w, r)
+}
+
+// matchPath checks if path is of the form prefix + segment + suffix (optionally more).
+// Returns the captured segments: [segment_before_suffix, text_after_suffix (if any)].
+// Example: matchPath("/api/apps/myapp/draft", "/api/apps/", "/draft") -> ["myapp"]
+func matchPath(path, prefix, suffix string) []string {
+	if !strings.HasPrefix(path, prefix) {
+		return nil
+	}
+	rest := path[len(prefix):]
+	idx := strings.Index(rest, suffix)
+	if idx < 0 {
+		return nil
+	}
+	segment := rest[:idx]
+	if segment == "" {
+		return nil
+	}
+	after := rest[idx+len(suffix):]
+	parts := []string{segment}
+	if after != "" {
+		parts = append(parts, after)
+	}
+	return parts
+}
+
+func (s *Server) getDraftHandler(w http.ResponseWriter, r *http.Request, appName string) {
+	draft, ok, err := s.draftStore.GetDraft(r.Context(), appName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		draft = AppDraft{
+			AppName: appName,
+			APIs:    json.RawMessage("[]"),
+			Flows:   json.RawMessage("[]"),
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(draft)
+}
+
+func (s *Server) putDraftHandler(w http.ResponseWriter, r *http.Request, appName string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		APIs  json.RawMessage `json:"apis"`
+		Flows json.RawMessage `json:"flows"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	existing, _, _ := s.draftStore.GetDraft(r.Context(), appName)
+
+	mergedAPIs, err := mergeDraftPayload(existing.APIs, payload.APIs)
+	if err != nil {
+		http.Error(w, "merge apis: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	mergedFlows, err := mergeDraftPayload(existing.Flows, payload.Flows)
+	if err != nil {
+		http.Error(w, "merge flows: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	draft := AppDraft{
+		AppName:   appName,
+		UpdatedAt: time.Now(),
+		APIs:      mergedAPIs,
+		Flows:     mergedFlows,
+	}
+	if err := s.draftStore.PutDraft(r.Context(), draft); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"merged": true})
+}
+
+func (s *Server) deleteFromDraftHandler(w http.ResponseWriter, r *http.Request, appName, apiName string) {
+	if err := s.draftStore.DeleteAPIfromDraft(r.Context(), appName, apiName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// studioConfigHandler handles GET /api/studio/config and returns studio-level settings.
+func (s *Server) studioConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"direct_sync_enabled": s.config.IsDirectSyncEnabled(),
+	})
 }
 
 func (s *Server) datastoreConfigProxy(w http.ResponseWriter, r *http.Request) {
@@ -2610,6 +2812,9 @@ func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
 		SourcePath:  meta.SourcePath,
 		Author:      meta.Author,
 		LintSummary: ls,
+	}
+	if r.URL.Query().Get("status") == "draft" {
+		rec.Status = "draft"
 	}
 	if err := s.store.Put(r.Context(), rec); err != nil {
 		http.Error(w, "failed to store release", http.StatusInternalServerError)

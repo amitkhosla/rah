@@ -1,0 +1,12 @@
+api_keys:
+  - alias: acme-faq-key
+    app: product-faq
+    key_ref: rah_acme_corp_faq_demo
+    allowed_tenants: [acme-corp]
+    action: upsert
+
+  - alias: globex-faq-key
+    app: product-faq
+    key_ref: rah_globex_inc_faq_demo
+    allowed_tenants: [globex-inc]
+    action: upsert

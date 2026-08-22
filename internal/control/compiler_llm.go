@@ -195,7 +195,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			if err != nil {
 				return fmt.Errorf("llm_call: fallback_chain %q: %w", alias, err)
 			}
-			fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+			fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey, CircuitName: "llm:" + mc.Alias})
 		}
 	}
 
@@ -220,7 +220,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		if err != nil {
 			return fmt.Errorf("llm_call: fallback_model %q: %w", singleFallback, err)
 		}
-		fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+		fallbackChain = append(fallbackChain, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey, CircuitName: "llm:" + mc.Alias})
 	}
 
 	llmCfg.FallbackChain = fallbackChain
@@ -254,7 +254,7 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 				if fbKeyErr != nil {
 					return fmt.Errorf("llm_call: fallback_by_model[%q][%q]: %w", modelAlias, fbAlias, fbKeyErr)
 				}
-				entries = append(entries, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey})
+				entries = append(entries, steps.FallbackEntry{ModelConfig: mc, APIKey: fbKey, CircuitName: "llm:" + mc.Alias})
 			}
 			fbm[modelAlias] = entries
 		}
@@ -403,6 +403,13 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		llmCfg.StreamToClient = true
 	}
 
+	// Wire CostLimiter, CircuitName, CircuitEventPipeline into llmCfg
+	llmCfg.CostLimiter = engine.GetModelCostLimiter(modelSlug)
+	if llmCfg.CostLimiter != nil {
+		llmCfg.CircuitName = "llm:" + modelSlug
+		llmCfg.CircuitEventPipeline = c.IngestPipeline
+	}
+
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
 
 	// Register per-model upstream rate limits at bake time for all catalog models.
@@ -415,6 +422,25 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 			}
 			engine.RegisterUpstreamLimit(m.Alias, windows)
 		}
+	}
+
+	// Register per-model cost limiters and pre-create named circuits.
+	for i := range c.LLMCfg.Models {
+		m := &c.LLMCfg.Models[i]
+		if len(m.CostLimits) > 0 {
+			windows := make([]*engine.UpstreamCostWindow, 0, len(m.CostLimits))
+			for _, cl := range m.CostLimits {
+				w := engine.UpstreamCostWindowFromWindow(cl.Window, cl.LimitUSD)
+				if w != nil {
+					windows = append(windows, w)
+				}
+			}
+			if len(windows) > 0 {
+				engine.RegisterModelCostLimit(m.Alias, windows)
+			}
+		}
+		// Pre-create circuit so IsNamedCircuitOpen is a hot Load-only path after startup.
+		engine.GetOrCreateNamedCircuit("llm:"+m.Alias, 5, 2, 60_000)
 	}
 
 	return nil

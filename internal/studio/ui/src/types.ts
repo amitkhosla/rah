@@ -654,6 +654,7 @@ export interface GatewayApi {
   flow_name: string
   app_name?: string
   action?: string
+  endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string }>
 }
 
 export interface GatewayState {

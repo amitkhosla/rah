@@ -17,6 +17,7 @@ import (
 
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/engine"
+	"github.com/amitkhosla/rah/internal/ingest"
 	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
@@ -78,6 +79,18 @@ type LLMCallConfig struct {
 	// Set to -1 (default) to use PromptSlot.
 	MessagesSlot int
 
+	// CostLimiter tracks per-model accumulated USD spend. nil = no cost quota enforced.
+	CostLimiter *engine.UpstreamCostLimiter
+
+	// CircuitName is the named circuit to check before each attempt and auto-trip
+	// when CostLimiter reports a limit exceeded. Empty = disabled.
+	// Conventionally "llm:<alias>" when set by the compiler.
+	CircuitName string
+
+	// CircuitEventPipeline receives KindCircuitEvent ingest events on state change.
+	// nil = circuit still trips, events are just not emitted.
+	CircuitEventPipeline *ingest.Pipeline
+
 	// â"€â"€ Tool / thinking slots (runtime, read from ctx.ByteSlots) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 	// All slot fields default to -1 (disabled). Callers (compiler) must set them
 	// explicitly; zero would silently conflict with a real slot.
@@ -129,12 +142,19 @@ type LLMCallConfig struct {
 	// instead of buffered. The result slot is NOT populated in streaming mode.
 	// Must be false when ToolsSlot >= 0 (tool calling requires the full response buffered).
 	StreamToClient bool
+
+	// StaticSystem is a bake-time static system prompt. Used when SystemSlot == -1 or
+	// when the slot is empty at runtime. SystemSlot takes precedence when non-empty.
+	StaticSystem string
 }
 
 // FallbackEntry holds one step in the fallback chain, resolved at bake time.
 type FallbackEntry struct {
 	ModelConfig config.LLMModelConfig
 	APIKey      string
+	// CircuitName is the named circuit for this fallback model, pre-computed at
+	// bake time as "llm:<alias>" to avoid runtime string allocation on the hot path.
+	CircuitName string
 }
 
 // llmCallParams holds the runtime-resolved call parameters (adapter, endpoint, auth).
@@ -403,10 +423,12 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				}
 			}
 
-			// 2. Read system prompt
-			var systemContent string
+			// 2. Read system prompt (slot takes precedence over static bake-time value).
+			systemContent := cfg.StaticSystem
 			if cfg.SystemSlot >= 0 && cfg.SystemSlot < len(ctx.ByteSlots) {
-				systemContent = string(ctx.ByteSlots[cfg.SystemSlot])
+				if s := string(ctx.ByteSlots[cfg.SystemSlot]); s != "" {
+					systemContent = s
+				}
 			}
 
 			// 3. Build canonical request
@@ -524,6 +546,10 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 				state.AddTraceAttr("rate_limited", activeCfg.Alias)
 				state.AddTraceAttr("rate_limit_detail", detail) // e.g. "minute:60/60"
 				lastStatus = 429
+			} else if cfg.CircuitName != "" && engine.IsNamedCircuitOpen(cfg.CircuitName) {
+				// 6b. Primary model circuit is open — skip to fallback chain.
+				state.AddTraceAttr("circuit_open", cfg.CircuitName)
+				lastStatus = 503
 			} else {
 				_ = detail // allowed path — no detail needed
 
@@ -720,6 +746,16 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					if cfg.CacheCreationSlot >= 0 && cfg.CacheCreationSlot < len(ctx.IntSlots) {
 						ctx.IntSlots[cfg.CacheCreationSlot] = int64(llmResp.CacheCreationTokens)
 					}
+
+				// 9b. Record cost to limiter and trip circuit if limit exceeded.
+				if cfg.CostLimiter != nil {
+					cost := float64(llmResp.InputTokens)/1e6*activeCfg.CostPerInputToken +
+					        float64(llmResp.OutputTokens)/1e6*activeCfg.CostPerOutputToken
+					if cost > 0 && cfg.CostLimiter.Record(cost) && cfg.CircuitName != "" {
+						engine.TripNamedCircuit(cfg.CircuitName, 0)
+						emitCircuitTripEvent(ctx, cfg.CircuitName, cfg.CircuitEventPipeline)
+					}
+				}
 					// 10. Write stop reason to ByteSlot (used by format_response).
 					if cfg.StopReasonSlot >= 0 && cfg.StopReasonSlot < len(ctx.ByteSlots) {
 						sr := ctx.Alloc(len(llmResp.StopReason))
@@ -840,6 +876,18 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 					ToolChoice: req.ToolChoice,
 					Thinking:   req.Thinking,
 				}
+
+			// fbCircuitName is pre-baked at compile time to avoid runtime allocation.
+			fbCircuitName := fb.CircuitName
+
+			// Skip fallback if its circuit is open.
+			if fbCircuitName != "" && engine.IsNamedCircuitOpen(fbCircuitName) {
+				continue
+			}
+			// Skip fallback if it's rate-limited (proactive check).
+			if !engine.CheckUpstreamLimit(fb.ModelConfig.Alias) {
+				continue
+			}
 
 				// Skip if prompt exceeds this fallback model's context limit.
 				if fb.ModelConfig.Capabilities.MaxContextTokens > 0 {
@@ -966,6 +1014,18 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							copy(slot, b.Text)
 							ctx.ByteSlots[cfg.ThinkingOutSlot] = slot
 							break // only first thinking block
+						}
+					}
+				}
+
+				// Record fallback cost against the fallback model's own cost limiter.
+				if fb.ModelConfig.CostPerInputToken > 0 || fb.ModelConfig.CostPerOutputToken > 0 {
+					fbCost := float64(fbLlmResp.InputTokens)/1e6*fb.ModelConfig.CostPerInputToken +
+						float64(fbLlmResp.OutputTokens)/1e6*fb.ModelConfig.CostPerOutputToken
+					if fbCostLimiter := engine.GetModelCostLimiter(fb.ModelConfig.Alias); fbCostLimiter != nil && fbCost > 0 {
+						if fbCostLimiter.Record(fbCost) && fbCircuitName != "" {
+							engine.TripNamedCircuit(fbCircuitName, 0)
+							emitCircuitTripEvent(ctx, fbCircuitName, cfg.CircuitEventPipeline)
 						}
 					}
 				}
@@ -1097,4 +1157,20 @@ func streamLLMToClient(ctx *rctx.Context, body io.ReadCloser, provider string) (
 	}
 
 	return totalIn, totalOut, scanner.Err()
+}
+
+// emitCircuitTripEvent enqueues a KindCircuitEvent into the ingest pipeline via an
+// AfterResponse hook so the event emission is off the critical request path.
+func emitCircuitTripEvent(ctx *rctx.Context, circuitName string, pipeline *ingest.Pipeline) {
+	if pipeline == nil {
+		return
+	}
+	// Capture values by copy for the closure — no pointer to loop variables.
+	name := circuitName
+	ctx.AfterResponse = append(ctx.AfterResponse, func() {
+		pipeline.Emit(ingest.Event{
+			Kind: ingest.KindCircuitEvent,
+			Model: name,
+		})
+	})
 }
