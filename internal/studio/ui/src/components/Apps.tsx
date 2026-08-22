@@ -586,6 +586,10 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
   const [linkErr, setLinkErr]       = useState('')
   const [saving, setSaving]         = useState(false)
   const [saveErr, setSaveErr]       = useState('')
+  const [removing, setRemoving]     = useState<string | null>(null)
+  const [removeErr, setRemoveErr]   = useState('')
+  const [gatewayApis, setGatewayApis] = useState<GatewayApi[]>([])
+  const [linkFilter, setLinkFilter] = useState('')
 
   // inline test state per API
   const [testStates, setTestStates] = useState<Record<string, { body: string; running: boolean; result: { status: number; body: string } | null; err: string; expanded: boolean }>>({})
@@ -628,8 +632,11 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
   const load = useCallback(() => {
     setLoading(true); setErr('')
     if (!directSyncEnabled) {
-      getAppDraft(appName)
-        .then(draft => setApis((draft.apis ?? []) as unknown as GatewayApi[]))
+      Promise.all([getAppDraft(appName), fetchGatewaySnapshot()])
+        .then(([draft, snap]) => {
+          setApis((draft.apis ?? []) as unknown as GatewayApi[])
+          setGatewayApis(snap.apis as GatewayApi[])
+        })
         .catch(e => setErr(String(e)))
         .finally(() => setLoading(false))
       return
@@ -639,6 +646,7 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
         const all = snap.apis ?? []
         setAllApis(all as GatewayApi[])
         setApis((all as GatewayApi[]).filter(a => a.app_name === appName))
+        setGatewayApis(all as GatewayApi[])
       })
       .catch(e => setErr(String(e)))
       .finally(() => setLoading(false))
@@ -650,6 +658,58 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
     setNewName(''); setNewPath(''); setNewMethod('GET'); setNewFlow('')
     setEndpoints([])
     setSaveErr(''); setShowForm(false)
+  }
+
+  // Unlink: remove from this app (clears app_name) but keep the API alive on the gateway.
+  // In draft mode this removes it from the draft entirely.
+  async function unlinkApi(api: GatewayApi) {
+    setRemoving(api.name); setRemoveErr('')
+    try {
+      if (!directSyncEnabled) {
+        await deleteFromAppDraft(appName, api.name)
+      } else {
+        await syncFlows({
+          sync_uuid: crypto.randomUUID(),
+          flows: [],
+          apis: [{
+            name:      api.name,
+            path:      api.path,
+            method:    api.method,
+            flow_name: api.flow_name,
+            source:    api.source,
+            action:    'upsert',
+            ...(api.endpoint_configs ? { endpoint_configs: api.endpoint_configs } : {}),
+            // app_name intentionally omitted → clears the association on the gateway
+          }],
+        })
+      }
+      load()
+    } catch (e) { setRemoveErr(String(e)) }
+    finally { setRemoving(null) }
+  }
+
+  // Hard delete: permanently removes the API from the gateway.
+  // Only offered for APIs with source === 'app' (created from within this app).
+  async function hardDeleteApi(api: GatewayApi) {
+    if (!window.confirm(`Permanently delete "${api.name}" from the gateway?\n\nThis API was created from this app. This cannot be undone.`)) return
+    setRemoving(api.name); setRemoveErr('')
+    try {
+      await syncFlows({
+        sync_uuid: crypto.randomUUID(),
+        flows: [],
+        apis: [{ name: api.name, path: api.path, method: api.method, flow_name: api.flow_name, app_name: appName, action: 'delete' }],
+      })
+      load()
+    } catch (e) { setRemoveErr(String(e)) }
+    finally { setRemoving(null) }
+  }
+
+  function getApiStatus(api: GatewayApi): 'new' | 'modified' | 'deployed' {
+    if (directSyncEnabled) return 'deployed'
+    const gw = gatewayApis.find(a => a.name === api.name)
+    if (!gw) return 'new'
+    if (gw.path !== api.path || gw.flow_name !== api.flow_name || gw.method !== api.method) return 'modified'
+    return 'deployed'
   }
 
   // "Link existing" — take a gateway API that has no app_name and assign it here
@@ -707,6 +767,7 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
         method:    newMethod,
         flow_name: newFlow.trim(),
         app_name:  appName,
+        source:    'app',
         action:    'upsert' as const,
         ...(endpointConfigs ? { endpoint_configs: endpointConfigs } : {}),
       }],
@@ -750,8 +811,20 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
               All gateway APIs are already linked to apps.
             </div>
           ) : (
+            <>
+            <input
+              className="input"
+              style={{ width: '100%', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }}
+              placeholder="Filter by name, path or method…"
+              value={linkFilter}
+              onChange={e => setLinkFilter(e.target.value)}
+              autoFocus
+            />
             <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4 }}>
-              {unlinkedApis.map(api => (
+              {unlinkedApis.filter(a => {
+                const q = linkFilter.toLowerCase()
+                return !q || a.name.toLowerCase().includes(q) || a.path.toLowerCase().includes(q) || (a.method ?? '').toLowerCase().includes(q)
+              }).map(api => (
                 <div key={api.name} style={{
                   display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
                   borderBottom: '1px solid var(--border)', fontSize: 12,
@@ -773,10 +846,11 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                 </div>
               ))}
             </div>
+            </>
           )}
           {linkErr && <div style={{ fontSize: 11, color: '#f44336', marginTop: 6 }}>{linkErr}</div>}
           <div style={{ marginTop: 8 }}>
-            <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowLink(false); setLinkErr('') }}>Cancel</button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowLink(false); setLinkErr(''); setLinkFilter('') }}>Cancel</button>
           </div>
         </div>
       )}
@@ -934,6 +1008,20 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                   {!directSyncEnabled && (
                     <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: '#f97316', borderRadius: 3, padding: '1px 5px' }}>DRAFT</span>
                   )}
+                  {(() => {
+                    const status = getApiStatus(api)
+                    const cfg: Record<string, { bg: string; label: string }> = {
+                      new:      { bg: '#3b82f6', label: 'NEW' },
+                      modified: { bg: '#f59e0b', label: 'MODIFIED' },
+                      deployed: { bg: '#22c55e', label: 'DEPLOYED' },
+                    }
+                    const s = cfg[status]
+                    return (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: s.bg, borderRadius: 3, padding: '1px 5px' }}>
+                        {s.label}
+                      </span>
+                    )
+                  })()}
                   <span style={{ fontFamily: 'monospace', fontSize: 12, flex: 1, color: 'var(--text)' }}>{api.path}</span>
                   <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{api.flow_name}</span>
                   <span
@@ -955,6 +1043,13 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                     style={{ fontSize: 10, padding: '2px 6px', color: 'var(--text-muted)' }}
                     onClick={() => updateTestState(api.name, { expanded: !st.expanded })}
                   >{st.expanded ? '▲' : '▼'}</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 10, padding: '2px 6px', color: 'var(--text-muted)' }}
+                    title={directSyncEnabled ? 'Remove from this app (API stays on gateway)' : 'Remove from draft'}
+                    onClick={() => unlinkApi(api)}
+                    disabled={removing === api.name}
+                  >{removing === api.name ? '…' : '×'}</button>
                 </div>
 
                 {/* Expandable: body input + response */}
@@ -988,6 +1083,19 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                         }}>{st.result.body}</pre>
                       </div>
                     )}
+                    {api.source === 'app' && directSyncEnabled && (
+                      <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                        <button
+                          className="btn"
+                          style={{ fontSize: 10, color: '#f87171', borderColor: '#f8717155' }}
+                          onClick={() => hardDeleteApi(api)}
+                          disabled={removing === api.name}
+                        >Delete from gateway</button>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 8 }}>
+                          This API was created from this app. Deletion is permanent.
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -995,6 +1103,7 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
           })}
         </div>
       )}
+      {removeErr && <div style={{ fontSize: 11, color: '#f44336', marginTop: 6 }}>{removeErr}</div>}
     </div>
   )
 }
