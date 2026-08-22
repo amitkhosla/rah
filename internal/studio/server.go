@@ -2113,7 +2113,7 @@ func (s *Server) appsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Match /api/apps/{name}/draft/apis/{apiName}  (DELETE)
-	if parts := matchPath(path, "/api/apps/", "/draft/apis/"); parts != nil && len(parts) >= 2 && r.Method == http.MethodDelete {
+	if parts := matchPath(path, "/api/apps/", "/draft/apis/"); len(parts) >= 2 && r.Method == http.MethodDelete {
 		s.deleteFromDraftHandler(w, r, parts[0], parts[1])
 		return
 	}

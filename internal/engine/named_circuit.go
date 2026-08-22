@@ -17,7 +17,7 @@ type NamedCircuit struct {
 	successCount atomic.Int64 // consecutive successes (HalfOpen state)
 	lastTripNs   atomic.Int64 // UnixNano when circuit last opened
 	openDurationNs atomic.Int64 // how long to stay Open before probing (can be updated)
-	_pad         [32]byte     // pad struct to 64 bytes to avoid false sharing
+	_ [32]byte // pad struct to 64 bytes to avoid false sharing
 
 	// Immutable after creation.
 	name             string

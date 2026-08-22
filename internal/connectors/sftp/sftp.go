@@ -175,7 +175,7 @@ func (p *sftpProvider) Get(ctx context.Context, path string) ([]byte, error) {
 		return nil, p.markConnError(err)
 	}
 	content, readErr := io.ReadAll(file)
-	file.Close()
+	_ = file.Close()
 	p.mu.RUnlock()
 
 	if readErr != nil {
@@ -205,7 +205,9 @@ func (p *sftpProvider) Put(ctx context.Context, path string, content []byte) err
 		return p.markConnError(err)
 	}
 	_, writeErr := file.Write(content)
-	file.Close()
+	if closeErr := file.Close(); closeErr != nil && writeErr == nil {
+		writeErr = closeErr
+	}
 	p.mu.RUnlock()
 
 	if writeErr != nil {
