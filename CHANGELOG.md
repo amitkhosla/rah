@@ -33,11 +33,45 @@ All notable changes to RAH are documented here.
 - Consumer apps (`type: event-processor`) bind to topics; RAH handles consumer group
   membership, offset commits, dead-letter routing, and retry logic.
 
+**SFTP Connector**
+- New `sftp_connectors` config: connect flows to SFTP servers for file read, write,
+  list, delete, and stat operations.
+- Per-tenant credential isolation; connection pooling handled by RAH.
+- Studio UI panel for managing SFTP connectors without config file edits.
+
+**Circuit Breaker (Named Circuits)**
+- Named circuit abstraction in the execution engine: define circuit policies once,
+  reference them from any flow step.
+- Configurable failure threshold, half-open probe interval, and timeout.
+- Prevents cascading failures to degraded upstreams without restarting the gateway.
+
+**Object Storage Backends**
+- New storage backends: Amazon S3 and local filesystem, joining the existing GCS backend.
+- Unified `StorageManager` selects and switches backends by name at runtime.
+- Studio can now serve app static assets from S3, GCS, or local disk — configured per
+  app via `assets_store` in the Studio config.
+
+**Live Connector Management**
+- Connectors (document, messaging, SFTP, storage) can now be added, updated, and
+  removed at runtime without a gateway restart.
+- Studio persists connector state and rebuilds the active connector pool on change.
+
+**Upstream Cost Tracking**
+- New sliding-window upstream cost tracker for LLM calls — tracks token spend and
+  request rate over configurable windows.
+- Foundation for per-tenant LLM budget enforcement at the execution layer.
+
 **Studio & UI**
 - Workflow Designer: visual flow authoring with a canvas-based editor.
 - WebSocket endpoint and upstream management panels.
 - App hosting management: register, release, and promote apps from the Studio UI.
+- Live API testing: send requests to any deployed app API directly from the Studio,
+  with inline response display — no curl or Postman needed.
+- Draft management: stage app changes as drafts before publishing to the gateway.
+- Connector panels: manage Document, Storage, SFTP, Messaging, and Event Listener
+  connectors from unified Studio UI sections.
 - Improved release management UI with deployment history and diff viewer.
+- Restructured navigation: Gateway, Apps, Connectors, and Workflow as top-level sections.
 
 **DSL**
 - `sleep` instruction: pause flow execution for a configurable duration.
@@ -46,9 +80,10 @@ All notable changes to RAH are documented here.
 
 ### Changed
 
-- README repositioned around app hosting and low-code use cases; gateway depth moved
-  to dedicated sections.
-- Studio UI improvements throughout: better layout, cleaner navigation.
+- README repositioned to multi-role framing: AI/Agentic gateway, API gateway, app host,
+  BFF, and event processor — all from one binary.
+- Studio UI restructured into four navigation sections for cleaner separation of concerns.
+- GoReleaser config updated to allow artifact replacement on retag.
 
 ---
 

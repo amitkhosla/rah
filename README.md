@@ -298,6 +298,41 @@ instructions:
 
 ---
 
+## SFTP Connector
+
+Transfer files to and from SFTP servers directly from flows — no client code, no shell
+commands.
+
+```yaml
+sftp_connectors:
+  - name: reports-sftp
+    host: sftp.example.com
+    port: 22
+    username: deployer
+    private_key_ref: env:SFTP_PRIVATE_KEY
+    max_connections: 5
+```
+
+**Flow steps:** `sftp_get`, `sftp_put`, `sftp_list`, `sftp_delete` — with per-tenant
+credential isolation and connection pooling managed by RAH.
+
+---
+
+## Object Storage
+
+Serve and manage app static assets from any object storage backend.
+
+| Backend | Provider |
+|---------|----------|
+| Amazon S3 | `s3` |
+| Google Cloud Storage | `gcs` |
+| Local filesystem | `local` |
+
+Configure per-app in Studio or via `assets_store` in the Studio config. Switch backends
+without changing app code.
+
+---
+
 ## Customer Data Sources
 
 Connect flows to your own Postgres and Redis instances with tenant isolation built in.
@@ -354,6 +389,8 @@ all automatically namespaced per tenant.
 | **API Execution** | Compile flows to zero-allocation instruction plans; sub-5µs gateway overhead |
 | **Document DBs** | Connect to MongoDB, PostgreSQL, MySQL, gRPC document services |
 | **Messaging** | Publish/consume Kafka, Pub/Sub, RabbitMQ, SQS, Redis Streams |
+| **SFTP** | Read, write, list, delete files on SFTP servers from flow steps |
+| **Object Storage** | Serve app assets from S3, GCS, or local filesystem — switchable per app |
 | **LLM Orchestration** | Route, call, classify, embed, cache, and cost-control across all major providers |
 | **Protocol Translation** | HTTP ↔ gRPC ↔ GraphQL ↔ SOAP ↔ MQTT ↔ MCP in a single flow |
 | **Format Conversion** | JSON ↔ XML ↔ Avro ↔ Protobuf — compiled programs, zero runtime allocation |
@@ -434,6 +471,10 @@ there is no distinction between "built-in" and "plugin" behaviour.
 | `doc_insert` / `doc_update` / `doc_delete` | Document write operations |
 | `doc_aggregate` | Aggregation pipeline (MongoDB) |
 | `msg_publish` | Publish to Kafka, Pub/Sub, RabbitMQ, SQS, or Redis Streams |
+| `sftp_get` | Download a file from an SFTP server into a slot |
+| `sftp_put` | Upload slot contents to an SFTP server |
+| `sftp_list` | List files in a remote SFTP directory |
+| `sftp_delete` | Delete a file on an SFTP server |
 
 ### LLM & AI
 | Instruction | Purpose |
@@ -765,7 +806,9 @@ over MCP. Transports: HTTP, SSE, stdio.
 Execution runtime. Data plane `:8080`, management plane `:8081`.
 
 ### `rah-studio`
-Web UI for flow authoring, app management, release pipelines, and observability.
+Web UI for flow authoring, app management, release pipelines, connector configuration,
+and observability. Includes live API testing — send requests to any deployed app API
+directly from the Studio with inline response display.
 
 ### `rah-sync`
 CI/CD CLI for bundle management.
