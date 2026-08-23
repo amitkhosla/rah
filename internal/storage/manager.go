@@ -60,6 +60,20 @@ func (m *StorageManager) Delete(ctx context.Context, providerName, key string) e
 	return p.Delete(ctx, key)
 }
 
+// List returns objects whose keys start with prefix from the named provider.
+// Returns an error if the provider does not exist or does not support listing.
+func (m *StorageManager) List(ctx context.Context, providerName, prefix string) ([]ListItem, error) {
+	p, ok := m.providers[providerName]
+	if !ok {
+		return nil, fmt.Errorf("storage provider %q not found", providerName)
+	}
+	l, ok := p.(lister)
+	if !ok {
+		return nil, fmt.Errorf("storage provider %q does not support listing", providerName)
+	}
+	return l.List(ctx, prefix)
+}
+
 // Presign generates a time-limited signed URL for the named provider.
 // Returns an error if the provider does not exist or does not support presigning.
 func (m *StorageManager) Presign(ctx context.Context, providerName, key, method string, expirySeconds int) (string, error) {

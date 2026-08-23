@@ -110,7 +110,7 @@ func (c *Compiler) compileDocumentStep(step StepConfig, actionType string) error
 
 // compileDocGetImpl compiles a "doc_get" step.
 // Retrieves a single document by ID or filter.
-func (c *Compiler) compileDocGetImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName, collection string, destSlot int) error {
+func (c *Compiler) compileDocGetImpl(step StepConfig, mgr *LiveDocConnMgr, providerName, collection string, destSlot int) error {
 	// Resolve optional slots
 	staticID := step.Path
 	idSlot := -1
@@ -134,7 +134,7 @@ func (c *Compiler) compileDocGetImpl(step StepConfig, mgr *document.DocumentConn
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_get",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_get] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -189,7 +189,7 @@ func (c *Compiler) compileDocGetImpl(step StepConfig, mgr *document.DocumentConn
 
 // compileDocPutImpl compiles a "doc_put" step.
 // Inserts or replaces a document.
-func (c *Compiler) compileDocPutImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName, collection string, destSlot int) error {
+func (c *Compiler) compileDocPutImpl(step StepConfig, mgr *LiveDocConnMgr, providerName, collection string, destSlot int) error {
 	// Resolve optional slots
 	staticID := step.Path
 	idSlot := -1
@@ -219,7 +219,7 @@ func (c *Compiler) compileDocPutImpl(step StepConfig, mgr *document.DocumentConn
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_put",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_put] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -269,7 +269,7 @@ func (c *Compiler) compileDocPutImpl(step StepConfig, mgr *document.DocumentConn
 
 // compileDocDeleteImpl compiles a "doc_delete" step.
 // Deletes documents matching a filter.
-func (c *Compiler) compileDocDeleteImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName, collection string, destSlot int) error {
+func (c *Compiler) compileDocDeleteImpl(step StepConfig, mgr *LiveDocConnMgr, providerName, collection string, destSlot int) error {
 	// Resolve filter slot (required for delete)
 	filterSlot := -1
 	if step.Source != "" {
@@ -283,7 +283,7 @@ func (c *Compiler) compileDocDeleteImpl(step StepConfig, mgr *document.DocumentC
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_delete",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_delete] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -325,7 +325,7 @@ func (c *Compiler) compileDocDeleteImpl(step StepConfig, mgr *document.DocumentC
 
 // compileDocQueryImpl compiles a "doc_query" step.
 // Queries documents with filtering, projection, sorting, limit, and skip.
-func (c *Compiler) compileDocQueryImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName, collection string, destSlot int) error {
+func (c *Compiler) compileDocQueryImpl(step StepConfig, mgr *LiveDocConnMgr, providerName, collection string, destSlot int) error {
 	// Resolve optional slots
 	filterSlot := -1
 	if step.Input["filter_var"] != "" {
@@ -376,7 +376,7 @@ func (c *Compiler) compileDocQueryImpl(step StepConfig, mgr *document.DocumentCo
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_query",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_query] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -434,7 +434,7 @@ func (c *Compiler) compileDocQueryImpl(step StepConfig, mgr *document.DocumentCo
 
 // compileDocCountImpl compiles a "doc_count" step.
 // Counts documents matching a query.
-func (c *Compiler) compileDocCountImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName, collection string, destSlot int) error {
+func (c *Compiler) compileDocCountImpl(step StepConfig, mgr *LiveDocConnMgr, providerName, collection string, destSlot int) error {
 	// Resolve optional slots (same as doc_query)
 	filterSlot := -1
 	if step.Input["filter_var"] != "" {
@@ -484,7 +484,7 @@ func (c *Compiler) compileDocCountImpl(step StepConfig, mgr *document.DocumentCo
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_count",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_count] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
@@ -544,7 +544,7 @@ func (c *Compiler) compileDocCountImpl(step StepConfig, mgr *document.DocumentCo
 
 // compileDocExecuteImpl compiles a "doc_execute" step.
 // Executes a raw database command (admin-only).
-func (c *Compiler) compileDocExecuteImpl(step StepConfig, mgr *document.DocumentConnectorManager, providerName string, destSlot int) error {
+func (c *Compiler) compileDocExecuteImpl(step StepConfig, mgr *LiveDocConnMgr, providerName string, destSlot int) error {
 	// Log a warning about raw command passthrough
 	log.Printf("[doc_execute] WARNING: flow uses raw command passthrough on connector %q — admin-only", providerName)
 
@@ -561,7 +561,7 @@ func (c *Compiler) compileDocExecuteImpl(step StepConfig, mgr *document.Document
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "doc_execute",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if mgr == nil {
+			if mgr == nil || mgr.Load() == nil {
 				log.Printf("[doc_execute] DocumentConnectorMgr is nil — no document connectors configured")
 				ctx.ResponseStatus = 500
 				ctx.Failed = true

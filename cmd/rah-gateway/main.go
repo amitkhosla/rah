@@ -729,10 +729,9 @@ func main() {
 	}
 
 	// Initialize document connector manager.
-	var docConnMgr *document.DocumentConnectorManager
+	liveDocConnMgr := &control.LiveDocConnMgr{}
 	if len(cfgMgr.Gateway().DocumentConnectors) > 0 {
-		var docErr error
-		docConnMgr, docErr = document.New(gatewayCtx, cfgMgr.Gateway().DocumentConnectors, secretsMgr)
+		docConnMgr, docErr := document.New(gatewayCtx, cfgMgr.Gateway().DocumentConnectors, secretsMgr)
 		if docErr != nil {
 			gatewaylog.Default.Error("[DocumentConnector] init failed", gatewaylog.F("error", docErr.Error()))
 			os.Exit(1)
@@ -742,14 +741,14 @@ func main() {
 			os.Exit(1)
 		}
 		defer func() { _ = docConnMgr.Stop() }()
+		liveDocConnMgr.Store(docConnMgr)
 		log.Printf("[document] manager initialized with %d connector(s)", len(cfgMgr.Gateway().DocumentConnectors))
 	}
 
 	// Initialize messaging publisher manager.
-	var msgPubMgr *messaging.MessagePublisherManager
+	liveMsgPubMgr := &control.LiveMessagingMgr{}
 	if len(cfgMgr.Gateway().MessagingPublishers) > 0 {
-		var msgErr error
-		msgPubMgr, msgErr = messaging.New(gatewayCtx, cfgMgr.Gateway().MessagingPublishers, secretsMgr)
+		msgPubMgr, msgErr := messaging.New(gatewayCtx, cfgMgr.Gateway().MessagingPublishers, secretsMgr)
 		if msgErr != nil {
 			gatewaylog.Default.Error("[MessagePublisher] init failed", gatewaylog.F("error", msgErr.Error()))
 			os.Exit(1)
@@ -759,6 +758,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer func() { _ = msgPubMgr.Stop() }()
+		liveMsgPubMgr.Store(msgPubMgr)
 		log.Printf("[messaging] manager initialized with %d publisher(s)", len(cfgMgr.Gateway().MessagingPublishers))
 	}
 
@@ -798,21 +798,20 @@ func main() {
 	}
 
 	// Initialize storage providers.
-	var storageMgr *storage.StorageManager
+	liveStorageMgr := &control.LiveStorageMgr{}
 	if len(cfgMgr.Gateway().StorageProviders) > 0 {
-		var storageErr error
-		storageMgr, storageErr = storage.New(cfgMgr.Gateway().StorageProviders)
+		storageMgr, storageErr := storage.New(cfgMgr.Gateway().StorageProviders)
 		if storageErr != nil {
 			gatewaylog.Default.Error("[Storage] init failed", gatewaylog.F("error", storageErr.Error()))
 			os.Exit(1)
 		}
+		liveStorageMgr.Store(storageMgr)
 	}
 
 	// Initialize SFTP connector manager.
-	var sftpMgr *sftp.SFTPConnectorManager
+	liveSFTPMgr := &control.LiveSFTPConnMgr{}
 	if len(cfgMgr.Gateway().SFTPConnectors) > 0 {
-		var err error
-		sftpMgr, err = sftp.New(gatewayCtx, cfgMgr.Gateway().SFTPConnectors, secretsMgr)
+		sftpMgr, err := sftp.New(gatewayCtx, cfgMgr.Gateway().SFTPConnectors, secretsMgr)
 		if err != nil {
 			log.Fatalf("[sftp] init failed: %v", err)
 		}
@@ -820,6 +819,7 @@ func main() {
 			log.Fatalf("[sftp] start failed: %v", err)
 		}
 		defer func() { _ = sftpMgr.Stop() }()
+		liveSFTPMgr.Store(sftpMgr)
 	}
 
 	// Scheduler
@@ -900,10 +900,10 @@ func main() {
 	compiler.DataSourcePool = dsPool
 	compiler.RedisSourcePool = redisSrcPool
 	compiler.EmailMgr = emailMgr
-	compiler.StorageMgr = storageMgr
-	compiler.SFTPConnectorMgr = sftpMgr
-	compiler.DocumentConnectorMgr = docConnMgr
-	compiler.MessagingPublisherMgr = msgPubMgr
+	compiler.StorageMgr = liveStorageMgr.Load()
+	compiler.SFTPConnectorMgr = liveSFTPMgr
+	compiler.DocumentConnectorMgr = liveDocConnMgr
+	compiler.MessagingPublisherMgr = liveMsgPubMgr
 
 	// Pricing manager Ã¢â‚¬â€ bootstraps from hardcoded defaults, then merges config overrides.
 	// Enables calculate_cost steps in flows. Runs a background hourly TTL refresh.
@@ -1728,14 +1728,18 @@ func main() {
 	}
 
 	// Wire storage manager for GET /storage-connectors
-	if storageMgr != nil {
-		ms.StorageMgr = storageMgr
-	}
+	ms.StorageMgr = liveStorageMgr
 
 	// Wire SFTP connector manager for GET /sftp-connectors
-	if sftpMgr != nil {
-		ms.SFTPConnectorMgr = sftpMgr
-	}
+	ms.SFTPConnectorMgr = liveSFTPMgr
+
+	// Wire document and messaging live holders for CRUD handlers
+	ms.DocConnMgr = liveDocConnMgr
+	ms.MessagingMgr = liveMsgPubMgr
+
+	// Wire connector stores for live CRUD (memory-only, seeded from initial config).
+	ms.SecretsResolver = secretsMgr
+	ms.InitConnectorStores(gatewayCtx, cfgMgr.Gateway())
 
 	// Load persisted LLM models (and MCP servers) into cfgMgr BEFORE bootstrap
 	// so that flows referencing UI-registered models (e.g. classify_llm) compile
@@ -1873,10 +1877,15 @@ func main() {
 	mux.HandleFunc("/named-queries/", ms.NamedQueryDeleteHandler)
 	mux.HandleFunc("/redis-sources", ms.RedisSourcesHandler)
 	mux.HandleFunc("/migrations", ms.MigrationsHandler)
-	mux.HandleFunc("/document-connectors", ms.DocumentConnectorsHandler)
+	mux.HandleFunc("/document-connectors", ms.DocumentConnectorsCRUDHandler)
+	mux.HandleFunc("/document-connectors/", ms.DocumentConnectorsCRUDHandler)
 	mux.HandleFunc("/storage-connectors", ms.StorageConnectorsHandler)
-	mux.HandleFunc("/sftp-connectors", ms.SFTPConnectorsHandler)
-	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersHandler)
+	mux.HandleFunc("/storage-providers", ms.GWStorageProvidersCRUDHandler)
+	mux.HandleFunc("/storage-providers/", ms.GWStorageProvidersCRUDHandler)
+	mux.HandleFunc("/sftp-connectors", ms.SFTPConnectorsCRUDHandler)
+	mux.HandleFunc("/sftp-connectors/", ms.SFTPConnectorsCRUDHandler)
+	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersCRUDHandler)
+	mux.HandleFunc("/messaging-publishers/", ms.MessagingPublishersCRUDHandler)
 	mux.HandleFunc("/event-listeners", ms.EventListenersHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)

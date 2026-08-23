@@ -1,13 +1,17 @@
 package studio
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/amitkhosla/rah/internal/storage"
 )
 
 // AssetMeta describes a stored asset file.
@@ -107,5 +111,83 @@ func (s *LocalAssetStore) Delete(ctx context.Context, appName, filename string) 
 		return nil
 	}
 	return err
+}
+
+// ── StorageManagerAssetStore ──────────────────────────────────────────────────
+// Backs the AssetStore with any StorageManager provider (S3, GCS, local, etc.).
+// Keys are stored as: {prefix}/{appName}/{filename}  (prefix may be empty).
+
+type StorageManagerAssetStore struct {
+	mgr      *storage.StorageManager
+	provider string // named provider in the StorageManager
+	prefix   string // optional key prefix, e.g. "assets"
+}
+
+func NewStorageManagerAssetStore(mgr *storage.StorageManager, provider, prefix string) *StorageManagerAssetStore {
+	return &StorageManagerAssetStore{mgr: mgr, provider: provider, prefix: strings.TrimRight(prefix, "/")}
+}
+
+func (s *StorageManagerAssetStore) key(appName, filename string) string {
+	appName = filepath.Base(appName)   // path traversal guard
+	filename = filepath.Base(filename) // path traversal guard
+	if s.prefix != "" {
+		return s.prefix + "/" + appName + "/" + filename
+	}
+	return appName + "/" + filename
+}
+
+func (s *StorageManagerAssetStore) appPrefix(appName string) string {
+	appName = filepath.Base(appName)
+	if s.prefix != "" {
+		return s.prefix + "/" + appName + "/"
+	}
+	return appName + "/"
+}
+
+func (s *StorageManagerAssetStore) Upload(ctx context.Context, appName, filename string, r io.Reader, contentType string, _ int64) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("read upload: %w", err)
+	}
+	return s.mgr.Put(ctx, s.provider, s.key(appName, filename), data, contentType)
+}
+
+func (s *StorageManagerAssetStore) Download(ctx context.Context, appName, filename string) (io.ReadCloser, AssetMeta, error) {
+	data, err := s.mgr.Get(ctx, s.provider, s.key(appName, filename))
+	if err != nil {
+		return nil, AssetMeta{}, err
+	}
+	ct := mime.TypeByExtension(filepath.Ext(filename))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	meta := AssetMeta{Filename: filename, ContentType: ct, Size: int64(len(data)), UpdatedAt: time.Now()}
+	return io.NopCloser(bytes.NewReader(data)), meta, nil
+}
+
+func (s *StorageManagerAssetStore) List(ctx context.Context, appName string) ([]AssetMeta, error) {
+	items, err := s.mgr.List(ctx, s.provider, s.appPrefix(appName))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AssetMeta, 0, len(items))
+	for _, item := range items {
+		// Key is "{prefix}/{appName}/{filename}" — extract just the filename.
+		filename := item.Key[strings.LastIndex(item.Key, "/")+1:]
+		if filename == "" {
+			continue
+		}
+		out = append(out, AssetMeta{
+			Filename:    filename,
+			ContentType: item.ContentType,
+			Size:        item.Size,
+			UpdatedAt:   item.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *StorageManagerAssetStore) Delete(ctx context.Context, appName, filename string) error {
+	return s.mgr.Delete(ctx, s.provider, s.key(appName, filename))
 }
 

@@ -6,8 +6,10 @@ import {
   fetchGatewaySnapshot, syncFlows, deploy,
   fetchStudioConfig, getAppDraft, putAppDraft, deleteFromAppDraft,
   listAssets, uploadAsset, deleteAsset,
+  listAssetConnectors, getAppAssetStoreConfig, putAppAssetStoreConfig,
+  listStorageProviders, addStorageProvider, updateStorageProvider, deleteStorageProvider,
   type AppRelease, type AppBlueprintRequest, type AppBlueprintResponse, type FlowBlueprint, type AssetMeta,
-  type AppDraft,
+  type AppDraft, type AppAssetStoreConfig, type StorageProviderConfig,
 } from '../api'
 import type { App, APIKeyView, APIKeyCreateResponse, PaletteBlock, SavedFlow, FlowStep, GatewayApi } from '../types'
 import FlowDesigner from './FlowDesigner'
@@ -2292,16 +2294,204 @@ function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = []
   )
 }
 
+// ── Storage providers manager ─────────────────────────────────────────────────
+
+const PROVIDER_TYPES = ['s3', 'gcs', 'local'] as const
+type ProviderType = typeof PROVIDER_TYPES[number]
+
+const EMPTY_CFG: StorageProviderConfig = { name: '', type: 's3' }
+
+function StorageProvidersPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [providers, setProviders]   = useState<StorageProviderConfig[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
+  const [editing, setEditing]       = useState<StorageProviderConfig | null>(null)
+  const [isNew, setIsNew]           = useState(false)
+  const [saving, setSaving]         = useState(false)
+  const [deleting, setDeleting]     = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    listStorageProviders()
+      .then(r => setProviders(r.providers ?? []))
+      .catch(e => setErr(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  function startAdd() {
+    setEditing({ ...EMPTY_CFG })
+    setIsNew(true)
+    setErr('')
+  }
+
+  function startEdit(p: StorageProviderConfig) {
+    setEditing({ ...p })
+    setIsNew(false)
+    setErr('')
+  }
+
+  async function save() {
+    if (!editing) return
+    setSaving(true); setErr('')
+    try {
+      if (isNew) {
+        await addStorageProvider(editing)
+      } else {
+        await updateStorageProvider(editing.name, editing)
+      }
+      setEditing(null)
+      load()
+      onChanged()
+    } catch (ex) { setErr(String(ex)) }
+    finally { setSaving(false) }
+  }
+
+  async function remove(name: string) {
+    if (!window.confirm(`Delete connector "${name}"? This cannot be undone.`)) return
+    setDeleting(name)
+    try {
+      await deleteStorageProvider(name)
+      load()
+      onChanged()
+    } catch (ex) { setErr(String(ex)) }
+    finally { setDeleting(null) }
+  }
+
+  function setField(k: keyof StorageProviderConfig, v: string) {
+    setEditing(prev => prev ? { ...prev, [k]: v } : prev)
+  }
+
+  const typeFields: Record<ProviderType, Array<{ key: keyof StorageProviderConfig; label: string; placeholder?: string }>> = {
+    s3: [
+      { key: 'bucket_ref', label: 'Bucket', placeholder: 'my-bucket or env:BUCKET_NAME' },
+      { key: 'region', label: 'Region', placeholder: 'us-east-1' },
+      { key: 'endpoint_url', label: 'Endpoint URL (optional)', placeholder: 'https://s3.example.com' },
+      { key: 'access_key_ref', label: 'Access Key', placeholder: 'AKID… or env:AWS_ACCESS_KEY_ID' },
+      { key: 'secret_key_ref', label: 'Secret Key', placeholder: 'env:AWS_SECRET_ACCESS_KEY' },
+    ],
+    gcs: [
+      { key: 'bucket_ref', label: 'Bucket', placeholder: 'my-bucket or env:BUCKET_NAME' },
+      { key: 'project_id', label: 'Project ID' },
+      { key: 'credential_ref', label: 'Credential', placeholder: 'env:GOOGLE_APPLICATION_CREDENTIALS' },
+    ],
+    local: [
+      { key: 'root_dir', label: 'Root Directory', placeholder: './rah-assets' },
+    ],
+  }
+
+  return (
+    <div style={{ background: 'var(--sidebar-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>Manage Storage Connectors</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={startAdd}>+ Add Connector</button>
+          <button className="btn" style={{ fontSize: 11 }} onClick={onClose}>Close</button>
+        </div>
+      </div>
+      {err && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 8 }}>{err}</div>}
+
+      {/* Provider list */}
+      {loading ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>
+      ) : providers.length === 0 && !editing ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No connectors yet. Click "+ Add Connector" to create one.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: editing ? 12 : 0 }}>
+          {providers.map(p => (
+            <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px' }}>
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>{p.type}</span>
+                {p.bucket_ref && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>bucket: {p.bucket_ref}</span>}
+                {p.root_dir && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>{p.root_dir}</span>}
+              </div>
+              <button className="btn" style={{ fontSize: 11 }} onClick={() => startEdit(p)}>Edit</button>
+              <button className="btn" style={{ fontSize: 11, color: '#f44336' }}
+                onClick={() => remove(p.name)} disabled={deleting === p.name}>
+                {deleting === p.name ? '…' : 'Delete'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Edit / Add form */}
+      {editing && (
+        <div style={{ background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginTop: 8 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 10 }}>{isNew ? 'New Connector' : `Edit: ${editing.name}`}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Name</div>
+              <input className="input" style={{ width: '100%', fontSize: 12 }}
+                placeholder="e.g. my-s3"
+                value={editing.name}
+                disabled={!isNew}
+                onChange={e => setField('name', e.target.value)} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Type</div>
+              <select className="input" style={{ width: '100%', fontSize: 12 }}
+                value={editing.type}
+                onChange={e => setEditing(prev => prev ? { name: prev.name, type: e.target.value } : prev)}>
+                {PROVIDER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+            {(typeFields[editing.type as ProviderType] ?? []).map(f => (
+              <div key={String(f.key)}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>{f.label}</div>
+                <input className="input" style={{ width: '100%', fontSize: 12 }}
+                  type="text"
+                  placeholder={f.placeholder}
+                  value={(editing[f.key] as string) ?? ''}
+                  onChange={e => setField(f.key, e.target.value)} />
+              </div>
+            ))}
+          </div>
+          {err && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{err}</div>}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => { setEditing(null); setErr('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Static assets section ────────────────────────────────────────────────────
 
 function AssetsSection({ appName }: { appName: string }) {
-  const [assets, setAssets]     = useState<AssetMeta[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [err, setErr]           = useState('')
-  const [uploading, setUploading] = useState(false)
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const [assets, setAssets]         = useState<AssetMeta[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
+  const [uploading, setUploading]   = useState(false)
+  const [deleting, setDeleting]     = useState<string | null>(null)
   const [unavailable, setUnavailable] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // connector config
+  const [connectors, setConnectors]     = useState<string[]>([])
+  const [storeCfg, setStoreCfg]         = useState<AppAssetStoreConfig>({ connector: '' })
+  const [editCfg, setEditCfg]           = useState<AppAssetStoreConfig>({ connector: '' })
+  const [showCfg, setShowCfg]           = useState(false)
+  const [savingCfg, setSavingCfg]       = useState(false)
+  const [cfgErr, setCfgErr]             = useState('')
+  const [showManage, setShowManage]     = useState(false)
+
+  const refreshConnectors = useCallback(() => {
+    listAssetConnectors().then(r => setConnectors(r.connectors ?? [])).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshConnectors()
+    getAppAssetStoreConfig(appName).then(c => { setStoreCfg(c); setEditCfg(c) }).catch(() => {})
+  }, [appName, refreshConnectors])
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -2321,10 +2511,8 @@ function AssetsSection({ appName }: { appName: string }) {
     const file = e.target.files?.[0]
     if (!file) return
     setUploading(true); setErr('')
-    try {
-      await uploadAsset(appName, file)
-      load()
-    } catch (ex) { setErr(String(ex)) }
+    try { await uploadAsset(appName, file); load() }
+    catch (ex) { setErr(String(ex)) }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
@@ -2335,13 +2523,80 @@ function AssetsSection({ appName }: { appName: string }) {
     finally { setDeleting(null) }
   }
 
-  if (unavailable) {
+  async function saveConnectorCfg() {
+    setSavingCfg(true); setCfgErr('')
+    try {
+      await putAppAssetStoreConfig(appName, editCfg)
+      setStoreCfg(editCfg)
+      setShowCfg(false)
+      load()
+    } catch (ex) { setCfgErr(String(ex)) }
+    finally { setSavingCfg(false) }
+  }
+
+  const connectorLabel = storeCfg.connector
+    ? storeCfg.connector + (storeCfg.prefix ? ` (${storeCfg.prefix})` : '')
+    : 'default (disk)'
+
+  const configPanel = showCfg && (
+    <div style={{ background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Storage Connector</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Connector</div>
+          <select className="input" style={{ width: '100%', fontSize: 12 }}
+            value={editCfg.connector}
+            onChange={e => setEditCfg(c => ({ ...c, connector: e.target.value }))}>
+            <option value="">— studio default (disk) —</option>
+            {connectors.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          {connectors.length === 0 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+              No connectors yet.{' '}
+              <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setShowManage(true)}>Add one</span>
+            </div>
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Key prefix <span style={{ fontWeight: 400 }}>(optional)</span></div>
+          <input className="input" style={{ width: '100%', fontSize: 12 }}
+            placeholder="e.g. assets"
+            value={editCfg.prefix ?? ''}
+            onChange={e => setEditCfg(c => ({ ...c, prefix: e.target.value }))} />
+        </div>
+      </div>
+      {cfgErr && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{cfgErr}</div>}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={saveConnectorCfg} disabled={savingCfg}>
+          {savingCfg ? 'Saving…' : 'Save'}
+        </button>
+        <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowCfg(false); setEditCfg(storeCfg); setCfgErr('') }}>Cancel</button>
+        <button className="btn" style={{ fontSize: 11, marginLeft: 'auto' }} onClick={() => setShowManage(v => !v)}>
+          {showManage ? 'Hide' : 'Manage Connectors'}
+        </button>
+      </div>
+    </div>
+  )
+
+  if (unavailable && !showCfg) {
     return (
       <div>
-        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13, marginBottom: 8 }}>Static Assets</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
-          Asset storage not configured. Start Studio with <code>--assets-dir ./rah-assets</code> to enable file hosting.
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowManage(v => !v)}>
+              {showManage ? 'Hide Connectors' : 'Manage Connectors'}
+            </button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowCfg(true)}>Configure Storage</button>
+          </div>
         </div>
+        {showManage && <StorageProvidersPanel onClose={() => setShowManage(false)} onChanged={refreshConnectors} />}
+        {configPanel}
+        {!showCfg && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
+            Asset storage not configured. Click "Configure Storage" to pick a connector, or start Studio with <code>--assets-dir ./rah-assets</code>.
+          </div>
+        )}
       </div>
     )
   }
@@ -2349,7 +2604,13 @@ function AssetsSection({ appName }: { appName: string }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+          <span
+            style={{ fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer', borderBottom: '1px dashed var(--border)' }}
+            onClick={() => { setShowCfg(v => !v); setEditCfg(storeCfg) }}
+          >{connectorLabel}</span>
+        </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {uploading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Uploading…</span>}
           <button className="btn" style={{ fontSize: 11 }} onClick={() => fileRef.current?.click()} disabled={uploading}>
@@ -2358,6 +2619,8 @@ function AssetsSection({ appName }: { appName: string }) {
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleUpload} />
         </div>
       </div>
+      {configPanel}
+      {showManage && <StorageProvidersPanel onClose={() => setShowManage(false)} onChanged={refreshConnectors} />}
       {err && <div style={{ fontSize: 12, color: '#f87171', marginBottom: 8 }}>{err}</div>}
       {loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>}
       {!loading && assets.length === 0 && (

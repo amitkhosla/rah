@@ -11,9 +11,6 @@ import (
 	"sync"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/config"
-	"github.com/amitkhosla/rah/internal/connectors/document"
-	"github.com/amitkhosla/rah/internal/connectors/messaging"
-	"github.com/amitkhosla/rah/internal/connectors/sftp"
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/egress"
@@ -181,9 +178,9 @@ type Compiler struct {
 	EmailMgr       *emailprovider.EmailManager         // optional; enables send_email steps
 	StorageMgr     *storage.StorageManager             // optional; enables storage_get/storage_put/storage_delete steps
 	RedisSourcePool      *redissource.RedisSourcePool             // optional; enables redis_* steps
-	DocumentConnectorMgr *document.DocumentConnectorManager       // optional; enables doc_get/doc_put/doc_delete/doc_query/doc_count/doc_execute steps
-	MessagingPublisherMgr *messaging.MessagePublisherManager      // optional; enables message_publish steps
-	SFTPConnectorMgr *sftp.SFTPConnectorManager                  // optional; enables sftp_* steps
+	DocumentConnectorMgr  *LiveDocConnMgr  // optional; enables doc_get/doc_put/doc_delete/doc_query/doc_count/doc_execute steps
+	MessagingPublisherMgr *LiveMessagingMgr // optional; enables message_publish steps
+	SFTPConnectorMgr      *LiveSFTPConnMgr  // optional; enables sftp_* steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	FlowLibrary  map[string][]StepConfig

@@ -171,29 +171,22 @@ const NAV_ICONS: Record<string, string> = {
   settings:           '⚙',
 }
 
-const NAV: NavItem[] = [
-  { kind: 'item',    id: 'dashboard', label: 'Dashboard' },
+const NAV_GATEWAY: NavItem[] = [
+  { kind: 'item',    id: 'dashboard',      label: 'Dashboard' },
   { kind: 'section', label: 'FLOWS' },
-  { kind: 'item',    id: 'flows',     label: 'Designer' },
-  { kind: 'item',    id: 'apis',      label: 'APIs' },
-  { kind: 'item',    id: 'flowmap',   label: 'Flow Map' },
+  { kind: 'item',    id: 'flows',          label: 'Designer' },
+  { kind: 'item',    id: 'apis',           label: 'APIs' },
+  { kind: 'item',    id: 'flowmap',        label: 'Flow Map' },
   { kind: 'section', label: 'AI' },
-  { kind: 'item',    id: 'ai',        label: 'Models / MCP' },
+  { kind: 'item',    id: 'ai',             label: 'Models / MCP' },
   { kind: 'section', label: 'GATEWAY' },
-  { kind: 'item',    id: 'deploy',        label: 'Deploy' },
-  { kind: 'item',    id: 'releases',      label: 'Releases' },
-  { kind: 'item',    id: 'gateway',       label: 'Live' },
-  { kind: 'item',    id: 'observability', label: 'Observability' },
-  { kind: 'item',    id: 'audit-log',     label: 'Audit Log' },
-  { kind: 'section', label: 'OPERATIONS' },
-  { kind: 'item',    id: 'schedules',     label: 'Schedules' },
-  { kind: 'item',    id: 'ws-endpoints',  label: 'WS Endpoints' },
-  { kind: 'item',    id: 'ws-upstreams',  label: 'WS Upstreams' },
+  { kind: 'item',    id: 'deploy',         label: 'Deploy' },
+  { kind: 'item',    id: 'releases',       label: 'Releases' },
+  { kind: 'item',    id: 'gateway',        label: 'Live' },
+  { kind: 'item',    id: 'observability',  label: 'Observability' },
+  { kind: 'item',    id: 'audit-log',      label: 'Audit Log' },
   { kind: 'section', label: 'SECURITY' },
   { kind: 'item',    id: 'tenants',            label: 'Tenants' },
-  { kind: 'item',    id: 'apps',               label: 'Apps' },
-  { kind: 'item',    id: 'app-releases',       label: 'App Releases' },
-  { kind: 'item',    id: 'app-explorer',       label: 'Apps' },
   { kind: 'item',    id: 'rate-limits',         label: 'Rate Limits' },
   { kind: 'item',    id: 'rl-overrides',        label: 'RL Overrides' },
   { kind: 'item',    id: 'tiers',               label: 'Tiers' },
@@ -202,24 +195,45 @@ const NAV: NavItem[] = [
   { kind: 'item',    id: 'schemas',             label: 'Schemas' },
   { kind: 'item',    id: 'grpc',                label: 'gRPC' },
   { kind: 'item',    id: 'cache',               label: 'Cache' },
-  { kind: 'item',    id: 'concurrency',        label: 'Concurrency' },
-  { kind: 'section', label: 'DATA SOURCES' },
-  { kind: 'item',    id: 'datastores',         label: 'Data Stores' },
-  { kind: 'item',    id: 'redis-sources',      label: 'Redis Sources' },
-  { kind: 'item',    id: 'named-queries',      label: 'Named Queries' },
-  { kind: 'item',    id: 'document-connectors',   label: 'Document Connectors' },
-  { kind: 'item',    id: 'storage-connectors',    label: 'Storage' },
-  { kind: 'item',    id: 'sftp-connectors',       label: 'SFTP Connectors' },
-  { kind: 'item',    id: 'messaging-publishers',  label: 'Messaging Publishers' },
-  { kind: 'item',    id: 'event-listeners',       label: 'Event Listeners' },
-  { kind: 'item',    id: 'workflow-designer',      label: 'Workflow Designer' },
-  { kind: 'item',    id: 'migrations',         label: 'Migrations' },
+  { kind: 'item',    id: 'concurrency',         label: 'Concurrency' },
   { kind: 'section', label: 'TESTING' },
-  { kind: 'item',    id: 'tests',              label: 'Tests' },
+  { kind: 'item',    id: 'tests',               label: 'Tests' },
   { kind: 'section', label: 'ADMIN' },
-  { kind: 'item',    id: 'tokens',             label: 'Tokens' },
+  { kind: 'item',    id: 'tokens',              label: 'Tokens' },
   { kind: 'section', label: '' },
-  { kind: 'item',    id: 'settings',  label: 'Settings' },
+  { kind: 'item',    id: 'settings',            label: 'Settings' },
+]
+
+const NAV_APP: NavItem[] = [
+  { kind: 'item',    id: 'apps',         label: 'Apps' },
+  { kind: 'item',    id: 'app-releases', label: 'App Releases' },
+  { kind: 'item',    id: 'app-explorer', label: 'App Explorer' },
+]
+
+const NAV_CONNECTORS: NavItem[] = [
+  { kind: 'section', label: 'SQL' },
+  { kind: 'item',    id: 'datastores',           label: 'SQL Data Sources' },
+  { kind: 'item',    id: 'named-queries',        label: 'Named Queries' },
+  { kind: 'section', label: 'DOCUMENT / NOSQL' },
+  { kind: 'item',    id: 'document-connectors',  label: 'Document Connectors' },
+  { kind: 'section', label: 'KEY-VALUE' },
+  { kind: 'item',    id: 'redis-sources',        label: 'Redis' },
+  { kind: 'section', label: 'STORAGE' },
+  { kind: 'item',    id: 'storage-connectors',   label: 'Object Storage' },
+  { kind: 'item',    id: 'sftp-connectors',      label: 'SFTP' },
+  { kind: 'section', label: 'MESSAGING' },
+  { kind: 'item',    id: 'messaging-publishers', label: 'Publishers' },
+  { kind: 'item',    id: 'event-listeners',      label: 'Event Listeners' },
+]
+
+const NAV_WORKFLOW: NavItem[] = [
+  { kind: 'item',    id: 'workflow-designer', label: 'Workflow Designer' },
+  { kind: 'section', label: 'OPERATIONS' },
+  { kind: 'item',    id: 'schedules',     label: 'Schedules' },
+  { kind: 'item',    id: 'ws-endpoints',  label: 'WS Endpoints' },
+  { kind: 'item',    id: 'ws-upstreams',  label: 'WS Upstreams' },
+  { kind: 'section', label: '' },
+  { kind: 'item',    id: 'migrations',    label: 'Migrations' },
 ]
 
 // AuthUser holds the current session user. authEnabled=false means Studio runs without auth.
@@ -513,14 +527,16 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
 
   // Which top-level section is the current tab under?
   const SECTION_TABS: Record<string, TabId> = {
-    gateway: 'flows',
-    app:      'apps',
-    workflow: 'workflow-designer',
+    gateway:    'flows',
+    app:        'apps',
+    connectors: 'document-connectors',
+    workflow:   'workflow-designer',
   }
-  const GATEWAY_TABS = new Set<TabId>(['dashboard','flows','apis','flowmap','ai','deploy','releases','gateway','observability','audit-log','rate-limits','rl-overrides','tiers','upstream-services','egress','schemas','grpc','cache','concurrency','tenants','tokens','settings','tests'])
-  const APP_TABS     = new Set<TabId>(['apps','app-releases','app-explorer'])
-  const WORKFLOW_TABS = new Set<TabId>(['schedules','ws-endpoints','ws-upstreams','event-listeners','messaging-publishers','document-connectors','storage-connectors','sftp-connectors','datastores','redis-sources','named-queries','workflow-designer','migrations'])
-  const activeSection = APP_TABS.has(tab) ? 'app' : WORKFLOW_TABS.has(tab) ? 'workflow' : 'gateway'
+  const GATEWAY_TABS    = new Set<TabId>(['dashboard','flows','apis','flowmap','ai','deploy','releases','gateway','observability','audit-log','rate-limits','rl-overrides','tiers','upstream-services','egress','schemas','grpc','cache','concurrency','tenants','tokens','settings','tests'])
+  const APP_TABS        = new Set<TabId>(['apps','app-releases','app-explorer'])
+  const CONNECTOR_TABS  = new Set<TabId>(['document-connectors','storage-connectors','sftp-connectors','messaging-publishers','event-listeners','datastores','redis-sources','named-queries'])
+  const WORKFLOW_TABS   = new Set<TabId>(['schedules','ws-endpoints','ws-upstreams','workflow-designer','migrations'])
+  const activeSection = APP_TABS.has(tab) ? 'app' : CONNECTOR_TABS.has(tab) ? 'connectors' : WORKFLOW_TABS.has(tab) ? 'workflow' : 'gateway'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -533,8 +549,8 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         background: 'var(--panel)',
       }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginRight: 8, letterSpacing: '0.06em' }}>RAH</span>
-        {(['gateway', 'app', 'workflow'] as const).map(section => {
-          const labels: Record<string, string> = { gateway: 'AI / Agentic Gateway', app: 'App Platform', workflow: 'Workflow Engine' }
+        {(['gateway', 'app', 'connectors', 'workflow'] as const).map(section => {
+          const labels: Record<string, string> = { gateway: 'AI / Agentic Gateway', app: 'App Platform', connectors: 'Connectors', workflow: 'Workflow Engine' }
           const isActive = activeSection === section
           return (
             <button
@@ -565,7 +581,7 @@ function AppContent({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =
         }
 
         <nav style={{ flex: 1, overflowY: 'auto' }}>
-          {NAV.map((item, i) => {
+          {(activeSection === 'app' ? NAV_APP : activeSection === 'connectors' ? NAV_CONNECTORS : activeSection === 'workflow' ? NAV_WORKFLOW : NAV_GATEWAY).map((item, i) => {
             if (item.kind === 'section') {
               if (sidebarCollapsed) return null
               return (

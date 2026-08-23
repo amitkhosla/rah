@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,6 +117,39 @@ func (p *s3Provider) Presign(ctx context.Context, key, method string, expirySeco
 	default:
 		return "", fmt.Errorf("s3 presign: unsupported method %q", method)
 	}
+}
+
+// List returns all objects whose keys start with prefix.
+// ContentType is inferred from the key extension (S3 ListObjectsV2 does not return it).
+func (p *s3Provider) List(ctx context.Context, prefix string) ([]ListItem, error) {
+	var items []ListItem
+	paginator := s3.NewListObjectsV2Paginator(p.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(p.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list %q: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			ct := mime.TypeByExtension(filepath.Ext(key))
+			if ct == "" {
+				ct = "application/octet-stream"
+			}
+			var updatedAt time.Time
+			if obj.LastModified != nil {
+				updatedAt = *obj.LastModified
+			}
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+			items = append(items, ListItem{Key: key, Size: size, ContentType: ct, UpdatedAt: updatedAt})
+		}
+	}
+	return items, nil
 }
 
 func resolveRef(ref string) string {

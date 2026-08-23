@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	gcs "cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
@@ -93,6 +95,27 @@ func (p *gcsProvider) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("gcs delete %q: %w", key, err)
 	}
 	return nil
+}
+
+// List returns all objects whose keys start with prefix.
+func (p *gcsProvider) List(ctx context.Context, prefix string) ([]ListItem, error) {
+	it := p.client.Bucket(p.bucket).Objects(ctx, &gcs.Query{Prefix: prefix})
+	var items []ListItem
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gcs list %q: %w", prefix, err)
+		}
+		ct := attrs.ContentType
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		items = append(items, ListItem{Key: attrs.Name, Size: attrs.Size, ContentType: ct, UpdatedAt: attrs.Updated})
+	}
+	return items, nil
 }
 
 func (p *gcsProvider) Presign(_ context.Context, key, method string, expirySeconds int) (string, error) {

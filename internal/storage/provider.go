@@ -1,6 +1,9 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // storageProvider is the internal interface all backend implementations satisfy.
 type storageProvider interface {
@@ -13,4 +16,17 @@ type storageProvider interface {
 // Type-assert a storageProvider to presigner before calling Presign.
 type presigner interface {
 	Presign(ctx context.Context, key, method string, expirySeconds int) (string, error)
+}
+
+// lister is implemented by providers that support listing objects by key prefix.
+type lister interface {
+	List(ctx context.Context, prefix string) ([]ListItem, error)
+}
+
+// ListItem describes one object returned by a List call.
+type ListItem struct {
+	Key         string
+	Size        int64
+	ContentType string
+	UpdatedAt   time.Time
 }
