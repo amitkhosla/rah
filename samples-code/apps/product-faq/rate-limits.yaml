@@ -1,0 +1,11 @@
+rate_limit_configs_v2:
+  - name: faq-rl
+    enforcement: approximate
+    windows:
+      - period: 1m
+        limit: 5
+    count_by: tenant
+    exceeded_status: 429
+    exceeded_body: '{"error":"rate limit exceeded","message":"Max 5 requests per minute per company"}'
+    emit_headers: true
+    action: upsert

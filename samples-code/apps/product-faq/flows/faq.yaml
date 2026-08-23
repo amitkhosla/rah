@@ -1,0 +1,14 @@
+flows:
+  - name: faq_answer
+    action: upsert
+    code: |
+      question = body("question")
+      answer = llm(question, model: "my-llm",
+                   system: "You are a concise product expert. Answer in 2 sentences max.",
+                   max_tokens: 150)
+      return(200, answer)
+
+  - name: faq_health
+    action: upsert
+    code: |
+      return(200, '{"status":"ok","app":"product-faq"}')

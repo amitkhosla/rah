@@ -358,8 +358,10 @@ export interface SyncPayload {
   apis: Array<{
     name: string
     path: string
+    method?: string
     flow_name: string
     app_name?: string
+    source?: string
     action: 'upsert' | 'delete'
     rate_limit?: string
     alias_paths?: string[]
@@ -405,6 +407,7 @@ export interface GatewaySnapshot {
     path: string
     method?: string
     flow_name: string
+    source?: string
     rate_limit?: string
     alias_paths?: string[]
     rl_count_by?: string
@@ -1112,10 +1115,32 @@ export function listRedisSources(): Promise<{ sources: string[] }> {
 export interface DocumentConnectorDef {
   name: string
   kind: string
+  uri?: string
+  database?: string
+  credential_ref?: string
+  pool_size?: number
+  tls_enabled?: boolean
+  timeout_ms?: number
+  grpc_endpoint?: string
 }
 
 export function listDocumentConnectors(): Promise<{ connectors: DocumentConnectorDef[] }> {
   return request<{ connectors: DocumentConnectorDef[] }>('/api/document-connectors')
+}
+
+export async function addDocumentConnector(cfg: DocumentConnectorDef): Promise<void> {
+  const r = await fetch('/api/document-connectors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function updateDocumentConnector(name: string, cfg: DocumentConnectorDef): Promise<void> {
+  const r = await fetch(`/api/document-connectors/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function deleteDocumentConnector(name: string): Promise<void> {
+  const r = await fetch(`/api/document-connectors/${name}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
 }
 
 // ── Data Stores ────────────────────────────────────────────────────────────
@@ -1157,15 +1182,93 @@ export function listStorageConnectors(): Promise<{ connectors: StorageConnectorD
   return request<{ connectors: StorageConnectorDef[] }>('/api/storage-connectors')
 }
 
+// ── Gateway Storage Providers (storage_get / storage_put flow steps) ─────────
+
+export function listGWStorageProviders(): Promise<{ providers: StorageProviderConfig[] }> {
+  return request<{ providers: StorageProviderConfig[] }>('/api/gateway/storage-providers')
+}
+
+export async function addGWStorageProvider(cfg: StorageProviderConfig): Promise<void> {
+  const r = await fetch('/api/gateway/storage-providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function updateGWStorageProvider(name: string, cfg: StorageProviderConfig): Promise<void> {
+  const r = await fetch(`/api/gateway/storage-providers/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function deleteGWStorageProvider(name: string): Promise<void> {
+  const r = await fetch(`/api/gateway/storage-providers/${name}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+// ── SFTP Connectors ─────────────────────────────────────────────────────────────
+
+export interface SFTPConnectorDef {
+  name: string
+  host: string
+  port?: number
+  username: string
+  password_ref?: string
+  private_key_ref?: string
+  known_hosts_ref?: string
+  timeout_ms?: number
+}
+
+export function listSFTPConnectors(): Promise<{ connectors: SFTPConnectorDef[] }> {
+  return request<{ connectors: SFTPConnectorDef[] }>('/api/sftp-connectors')
+}
+
+export async function addSFTPConnector(cfg: SFTPConnectorDef): Promise<void> {
+  const r = await fetch('/api/sftp-connectors', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function updateSFTPConnector(name: string, cfg: SFTPConnectorDef): Promise<void> {
+  const r = await fetch(`/api/sftp-connectors/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function deleteSFTPConnector(name: string): Promise<void> {
+  const r = await fetch(`/api/sftp-connectors/${name}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+}
+
 // ── Messaging Publishers ───────────────────────────────────────────────────────
 
 export interface MessagingPublisherDef {
   name: string
   kind: string
+  brokers?: string[]
+  project_id?: string
+  uri?: string
+  exchange?: string
+  region?: string
+  redis_addr?: string
+  redis_db?: number
+  credential_ref?: string
+  tls_enabled?: boolean
+  timeout_ms?: number
 }
 
 export function listMessagingPublishers(): Promise<{ publishers: MessagingPublisherDef[] }> {
   return request<{ publishers: MessagingPublisherDef[] }>('/api/messaging-publishers')
+}
+
+export async function addMessagingPublisher(cfg: MessagingPublisherDef): Promise<void> {
+  const r = await fetch('/api/messaging-publishers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function updateMessagingPublisher(name: string, cfg: MessagingPublisherDef): Promise<void> {
+  const r = await fetch(`/api/messaging-publishers/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function deleteMessagingPublisher(name: string): Promise<void> {
+  const r = await fetch(`/api/messaging-publishers/${name}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
 }
 
 // ── Event Listeners ────────────────────────────────────────────────────────────
@@ -1176,6 +1279,8 @@ export interface EventListenerDef {
   topic: string
   flow_name: string
   workers: number
+  group_id?: string
+  payload_var?: string
 }
 
 export function listEventListeners(): Promise<{ listeners: EventListenerDef[] }> {
@@ -1221,6 +1326,7 @@ export interface AppRelease {
   app_name: string
   version: string
   channel: string
+  api_names?: string[]
   flow_names: string[]
   notes?: string
   active: boolean
@@ -1348,6 +1454,37 @@ export async function listFlowNames(): Promise<string[]> {
   return names.sort()
 }
 
+// ── Studio Configuration ──────────────────────────────────────────────────
+
+export async function fetchStudioConfig(): Promise<{ direct_sync_enabled: boolean }> {
+  return request<{ direct_sync_enabled: boolean }>('/api/studio/config')
+}
+
+// ── App Draft Management ──────────────────────────────────────────────────
+
+export interface AppDraft {
+  app_name: string
+  updated_at?: string
+  apis: Array<Record<string, unknown>>
+  flows: Array<Record<string, unknown>>
+}
+
+export async function getAppDraft(appName: string): Promise<AppDraft> {
+  return request<AppDraft>('/api/apps/' + appName + '/draft')
+}
+
+export async function putAppDraft(appName: string, payload: SyncPayload): Promise<{ merged: boolean }> {
+  return request<{ merged: boolean }>('/api/apps/' + appName + '/draft', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+export async function deleteFromAppDraft(appName: string, apiName: string): Promise<void> {
+  await request<void>('/api/apps/' + appName + '/draft/apis/' + apiName, { method: 'DELETE' })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 export interface TestInput {
@@ -1469,6 +1606,70 @@ export async function runTestSuite(id: string): Promise<SuiteRunResult> {
 
 export async function deleteTestSuite(id: string): Promise<void> {
   await request(`/api/test/suites/${id}`, { method: 'DELETE' })
+}
+
+// ── Asset connector config ────────────────────────────────────────────────────
+
+export interface AppAssetStoreConfig {
+  connector: string  // name of a StorageManager provider; empty = use studio default
+  prefix?: string
+}
+
+export function listAssetConnectors(): Promise<{ connectors: string[] }> {
+  return request<{ connectors: string[] }>('/api/studio/asset-connectors')
+}
+
+export function getAppAssetStoreConfig(appName: string): Promise<AppAssetStoreConfig> {
+  return request<AppAssetStoreConfig>(`/api/apps/${encodeURIComponent(appName)}/asset-store-config`)
+}
+
+export async function putAppAssetStoreConfig(appName: string, cfg: AppAssetStoreConfig): Promise<void> {
+  await request(`/api/apps/${encodeURIComponent(appName)}/asset-store-config`, {
+    method: 'PUT',
+    body: JSON.stringify(cfg),
+  })
+}
+
+// ── Studio Storage Providers (dynamic connector management) ──────────────────
+
+export interface StorageProviderConfig {
+  name: string
+  type: string   // "s3" | "gcs" | "local"
+  // S3 / S3-compatible
+  bucket_ref?: string
+  region?: string
+  access_key_ref?: string
+  secret_key_ref?: string
+  endpoint_url?: string
+  // GCS
+  project_id?: string
+  credential_ref?: string  // env:VAR pointing to JSON key file path
+  // Local
+  root_dir?: string
+}
+
+export function listStorageProviders(): Promise<{ providers: StorageProviderConfig[] }> {
+  return request<{ providers: StorageProviderConfig[] }>('/api/studio/storage-providers')
+}
+
+export async function addStorageProvider(cfg: StorageProviderConfig): Promise<StorageProviderConfig> {
+  return request<StorageProviderConfig>('/api/studio/storage-providers', {
+    method: 'POST',
+    body: JSON.stringify(cfg),
+  })
+}
+
+export async function updateStorageProvider(name: string, cfg: StorageProviderConfig): Promise<void> {
+  await request(`/api/studio/storage-providers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(cfg),
+  })
+}
+
+export async function deleteStorageProvider(name: string): Promise<void> {
+  await request(`/api/studio/storage-providers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
 }
 
 // ── App Static Assets ────────────────────────────────────────────────────────

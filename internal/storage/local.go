@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type localProvider struct {
@@ -72,4 +74,38 @@ func (p *localProvider) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("local delete %q: %w", key, err)
 	}
 	return nil
+}
+
+// List returns all objects whose keys start with prefix (using forward slashes).
+func (p *localProvider) List(ctx context.Context, prefix string) ([]ListItem, error) {
+	searchDir := filepath.Join(p.rootDir, filepath.FromSlash(prefix))
+	var items []ListItem
+	err := filepath.WalkDir(searchDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(p.rootDir, path)
+		key := filepath.ToSlash(rel)
+		ct := mime.TypeByExtension(filepath.Ext(path))
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		items = append(items, ListItem{Key: key, Size: info.Size(), ContentType: ct, UpdatedAt: info.ModTime()})
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("local list %q: %w", prefix, err)
+	}
+	_ = time.Now() // keep time import used
+	return items, nil
 }

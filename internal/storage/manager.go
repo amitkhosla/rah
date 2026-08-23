@@ -60,6 +60,47 @@ func (m *StorageManager) Delete(ctx context.Context, providerName, key string) e
 	return p.Delete(ctx, key)
 }
 
+// List returns objects whose keys start with prefix from the named provider.
+// Returns an error if the provider does not exist or does not support listing.
+func (m *StorageManager) List(ctx context.Context, providerName, prefix string) ([]ListItem, error) {
+	p, ok := m.providers[providerName]
+	if !ok {
+		return nil, fmt.Errorf("storage provider %q not found", providerName)
+	}
+	l, ok := p.(lister)
+	if !ok {
+		return nil, fmt.Errorf("storage provider %q does not support listing", providerName)
+	}
+	return l.List(ctx, prefix)
+}
+
+// Presign generates a time-limited signed URL for the named provider.
+// Returns an error if the provider does not exist or does not support presigning.
+func (m *StorageManager) Presign(ctx context.Context, providerName, key, method string, expirySeconds int) (string, error) {
+	p, ok := m.providers[providerName]
+	if !ok {
+		return "", fmt.Errorf("storage provider %q not found", providerName)
+	}
+	ps, ok := p.(presigner)
+	if !ok {
+		return "", fmt.Errorf("storage provider %q does not support presigning", providerName)
+	}
+	return ps.Presign(ctx, key, method, expirySeconds)
+}
+
+// ValidatePresign checks at bake time that the named provider exists and supports presigning.
+// Call this during flow compilation so misconfiguration is caught at deploy, not at request time.
+func (m *StorageManager) ValidatePresign(providerName string) error {
+	p, ok := m.providers[providerName]
+	if !ok {
+		return fmt.Errorf("storage provider %q not found", providerName)
+	}
+	if _, ok := p.(presigner); !ok {
+		return fmt.Errorf("storage provider %q does not support presigning (only s3 and gcs are supported)", providerName)
+	}
+	return nil
+}
+
 // Names returns a sorted slice of all provider names.
 // Returns an empty slice (not nil) when providers is empty.
 func (m *StorageManager) Names() []string {

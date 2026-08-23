@@ -24,12 +24,28 @@ import (
 
 	"github.com/amitkhosla/rah/internal/control"
 	"github.com/amitkhosla/rah/internal/observability"
+	"github.com/amitkhosla/rah/internal/storage"
 	rahsync "github.com/amitkhosla/rah/internal/sync"
 	"gopkg.in/yaml.v3"
 )
 
 //go:embed ui/dist
 var uiFS embed.FS
+
+// storageProviderConfig mirrors storage.StorageProviderConfig for YAML/JSON decoding in ServerConfig.
+type storageProviderConfig = storage.StorageProviderConfig
+
+// assetStoreConfig selects which storage provider (and optional key prefix) backs the asset store.
+type assetStoreConfig struct {
+	Provider string `json:"provider" yaml:"provider"` // must match a name in StorageProviders
+	Prefix   string `json:"prefix,omitempty" yaml:"prefix,omitempty"` // key prefix, e.g. "assets"
+}
+
+// appAssetCfg is the per-app connector selection stored at runtime.
+type appAssetCfg struct {
+	Connector string `json:"connector"` // name of a StorageManager provider
+	Prefix    string `json:"prefix,omitempty"`
+}
 
 type ServerConfig struct {
 	Targets      []Target `json:"targets"`
@@ -67,9 +83,28 @@ type ServerConfig struct {
 	// SCIM configures SCIM 2.0 provisioning from an enterprise IDP.
 	SCIM *SCIMConfig `json:"scim,omitempty" yaml:"scim,omitempty"`
 
-	// AssetsDir is the directory for storing app static asset files.
-	// Empty = asset store disabled.
+	// AssetsDir is the directory for storing app static asset files (legacy, local disk only).
+	// Use AssetsStore + StorageProviders for S3, GCS, or other backends.
+	// Empty = asset store disabled (unless AssetsStore is set).
 	AssetsDir string `json:"assets_dir,omitempty" yaml:"assets_dir,omitempty"`
+
+	// StorageProviders defines named object-storage backends available to the studio.
+	// Each entry is passed to storage.New() and can be referenced by name in AssetsStore.
+	StorageProviders []storageProviderConfig `json:"storage_providers,omitempty" yaml:"storage_providers,omitempty"`
+
+	// AssetsStore configures which storage provider (and optional key prefix) to use
+	// for app static assets. Takes precedence over AssetsDir when set.
+	AssetsStore *assetStoreConfig `json:"assets_store,omitempty" yaml:"assets_store,omitempty"`
+
+	// DirectSyncEnabled controls whether /api/sync proxies directly to the gateway.
+	// nil or true = direct sync (default behaviour). false = save to draft instead.
+	DirectSyncEnabled *bool `yaml:"direct_sync_enabled,omitempty" json:"direct_sync_enabled,omitempty"`
+}
+
+// IsDirectSyncEnabled reports whether direct sync to the gateway is enabled.
+// The default (nil) is true, preserving existing behaviour.
+func (cfg ServerConfig) IsDirectSyncEnabled() bool {
+	return cfg.DirectSyncEnabled == nil || *cfg.DirectSyncEnabled
 }
 
 type DeployRequest struct {
@@ -314,7 +349,14 @@ type Server struct {
 
 	baselineStore FlowBaselineStore
 	versionStore  VersionHistoryStore
-	assetsStore   AssetStore
+	assetsStore   AssetStore            // global fallback (from --assets-dir or static config)
+	storageMgrMu  sync.RWMutex
+	storageMgr    *storage.StorageManager // rebuilt on connector add/update/delete
+	connStore     *connectorStore
+
+	appAssetCfgsMu sync.RWMutex
+	appAssetCfgs   map[string]appAssetCfg // appName → per-app connector selection
+	draftStore    DraftStore
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -357,6 +399,7 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		auditStore:        newAuditStore(cfg.StoreKind, cfg.StorePath),
 		baselineStore:     newMemFlowBaselineStore(),
 		versionStore:      newMemVersionHistoryStore(),
+		draftStore:        NewDraftStore(cfg.StoreKind, cfg.StorePath),
 	}
 
 	// Token store is always initialised so machine tokens work even without login auth.
@@ -407,7 +450,34 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		srv.obsHandler = observability.NewObsHandler(srv.obsWriter, tel)
 	}
 
-	if cfg.AssetsDir != "" {
+	srv.appAssetCfgs = make(map[string]appAssetCfg)
+
+	// Connector store — persists to <store-path>/connectors.json when a file store is configured.
+	connFilePath := ""
+	if cfg.StorePath != "" {
+		connFilePath = cfg.StorePath + "/connectors.json"
+	}
+	cs, err := newConnectorStore(cfg.StorageProviders, connFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("connector store: %w", err)
+	}
+	srv.connStore = cs
+
+	// Build initial StorageManager from all known connectors.
+	if err := srv.rebuildStorageMgr(); err != nil {
+		return nil, fmt.Errorf("storage manager: %w", err)
+	}
+
+	switch {
+	case cfg.AssetsStore != nil:
+		if cfg.AssetsStore.Provider == "" {
+			return nil, fmt.Errorf("assets_store.provider must not be empty")
+		}
+		if srv.storageMgr == nil {
+			return nil, fmt.Errorf("assets_store requires at least one entry in storage_providers")
+		}
+		srv.assetsStore = NewStorageManagerAssetStore(srv.storageMgr, cfg.AssetsStore.Provider, cfg.AssetsStore.Prefix)
+	case cfg.AssetsDir != "":
 		as, err := NewLocalAssetStore(cfg.AssetsDir)
 		if err != nil {
 			return nil, fmt.Errorf("asset store: %w", err)
@@ -425,6 +495,7 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/auth/change-password", s.changePasswordHandler)
 	apiMux.HandleFunc("/api/studio/users", s.studioUsersHandler)
 	apiMux.HandleFunc("/api/studio/users/", s.studioUserDeleteHandler)
+	apiMux.HandleFunc("/api/studio/config", s.studioConfigHandler)
 	apiMux.HandleFunc("/api/schema", s.schemaHandler)
 	apiMux.HandleFunc("/api/suggestions", s.suggestionsHandler)
 	apiMux.HandleFunc("/api/targets", s.targetsHandler)
@@ -462,16 +533,22 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/ai/", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/ai", s.aiMgmtProxy)
 	apiMux.HandleFunc("/api/cache/", s.cacheMgmtProxy)
-	apiMux.HandleFunc("/api/apps", s.appsMgmtProxy)
-	apiMux.HandleFunc("/api/apps/", s.appsMgmtProxy)
+	apiMux.HandleFunc("/api/apps", s.appsHandler)
+	apiMux.HandleFunc("/api/apps/", s.appsHandler)
 	apiMux.HandleFunc("/api/config/datastores", s.datastoreConfigProxy)
 	apiMux.HandleFunc("/api/config/datastores/", s.datastoreConfigProxy)
 	apiMux.HandleFunc("/api/grpc/descriptors", s.grpcDescriptorsMgmtProxy)
 	apiMux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
 	apiMux.HandleFunc("/api/document-connectors", s.documentConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/document-connectors/", s.documentConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/storage-connectors", s.storageConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/storage-connectors/", s.storageConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/sftp-connectors", s.sftpConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/sftp-connectors/", s.sftpConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/messaging-publishers", s.messagingPublishersMgmtProxy)
+	apiMux.HandleFunc("/api/messaging-publishers/", s.messagingPublishersMgmtProxy)
 	apiMux.HandleFunc("/api/event-listeners", s.eventListenersMgmtProxy)
+	apiMux.HandleFunc("/api/event-listeners/", s.eventListenersMgmtProxy)
 	apiMux.HandleFunc("/api/app-usages", s.appUsagesHandler)
 	apiMux.HandleFunc("/api/test/", s.testProxy)
 	apiMux.HandleFunc("/api/test/execute", s.testProxy)
@@ -491,6 +568,11 @@ func (s *Server) Handler() http.Handler {
 		s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 	})
 	apiMux.HandleFunc("/api/app-assets/", s.assetsManageHandler)
+	apiMux.HandleFunc("/api/studio/asset-connectors", s.assetConnectorsHandler)
+	apiMux.HandleFunc("/api/studio/storage-providers", s.storageProvidersHandler)
+	apiMux.HandleFunc("/api/studio/storage-providers/", s.storageProvidersHandler)
+	apiMux.HandleFunc("/api/gateway/storage-providers", s.gwStorageProvidersMgmtProxy)
+	apiMux.HandleFunc("/api/gateway/storage-providers/", s.gwStorageProvidersMgmtProxy)
 	apiMux.HandleFunc("/api/gateway-invoke", s.gatewayInvokeHandler)
 
 	// Observability routes: serve from own store if configured, else proxy to gateway.
@@ -1693,6 +1775,10 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.config.IsDirectSyncEnabled() {
+		s.saveSyncToDraft(w, r)
+		return
+	}
 	actor := "system"
 	if sess, ok := sessionFromContext(r.Context()); ok {
 		actor = sess.Username
@@ -1791,6 +1877,61 @@ func (s *Server) proxyToSandbox(w http.ResponseWriter, r *http.Request, targets 
 	_, _ = w.Write(lastBody)
 }
 
+// saveSyncToDraft intercepts a POST /api/sync request when direct sync is disabled.
+// It groups APIs by app_name and merges them into the draft store, then returns a
+// synthetic success response without touching the gateway.
+func (s *Server) saveSyncToDraft(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var payload struct {
+		APIs  []json.RawMessage `json:"apis"`
+		Flows []json.RawMessage `json:"flows"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Group APIs by app_name.
+	appAPIs := make(map[string][]json.RawMessage)
+	for _, rawAPI := range payload.APIs {
+		var meta struct {
+			AppName string `json:"app_name"`
+		}
+		if err := json.Unmarshal(rawAPI, &meta); err != nil || meta.AppName == "" {
+			continue
+		}
+		appAPIs[meta.AppName] = append(appAPIs[meta.AppName], rawAPI)
+	}
+
+	// Marshal all flows once.
+	flowsJSON, _ := json.Marshal(payload.Flows)
+
+	// Save each app’s APIs (and all flows) to that app’s draft.
+	ctx := r.Context()
+	for appName, apis := range appAPIs {
+		apisJSON, _ := json.Marshal(apis)
+		existing, _, _ := s.draftStore.GetDraft(ctx, appName)
+		mergedAPIs, _ := mergeDraftPayload(existing.APIs, apisJSON)
+		mergedFlows, _ := mergeDraftPayload(existing.Flows, flowsJSON)
+		_ = s.draftStore.PutDraft(ctx, AppDraft{
+			AppName:   appName,
+			UpdatedAt: time.Now(),
+			APIs:      mergedAPIs,
+			Flows:     mergedFlows,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"sync_uuid": "", "applied": true, "router_changed": false,
+	})
+}
+
 // tenantsMgmtProxy forwards /api/tenants[/...] â†’ /tenants[/...] on the management server.
 func (s *Server) tenantsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	targetPath := strings.TrimPrefix(r.URL.Path, "/api")
@@ -1826,24 +1967,34 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
-// documentConnectorsMgmtProxy forwards /api/document-connectors → /document-connectors on the management server.
+// documentConnectorsMgmtProxy forwards /api/document-connectors[/name] → /document-connectors[/name].
 func (s *Server) documentConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, "/document-connectors")
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
-// storageConnectorsMgmtProxy forwards /api/storage-connectors → /storage-connectors on the management server.
+// storageConnectorsMgmtProxy forwards /api/storage-connectors → /storage-connectors.
 func (s *Server) storageConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, "/storage-connectors")
 }
 
-// messagingPublishersMgmtProxy forwards /api/messaging-publishers → /messaging-publishers on the management server.
-func (s *Server) messagingPublishersMgmtProxy(w http.ResponseWriter, r *http.Request) {
-	s.proxyPassThrough(w, r, "/messaging-publishers")
+// sftpConnectorsMgmtProxy forwards /api/sftp-connectors[/name] → /sftp-connectors[/name].
+func (s *Server) sftpConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
-// eventListenersMgmtProxy forwards /api/event-listeners → /event-listeners on the management server.
+// messagingPublishersMgmtProxy forwards /api/messaging-publishers[/name] → /messaging-publishers[/name].
+func (s *Server) messagingPublishersMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
+// eventListenersMgmtProxy forwards /api/event-listeners → /event-listeners.
 func (s *Server) eventListenersMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, "/event-listeners")
+}
+
+// gwStorageProvidersMgmtProxy forwards /api/gateway/storage-providers[/name] → /storage-providers[/name].
+func (s *Server) gwStorageProvidersMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api/gateway"))
 }
 
 // appUsagesHandler computes which flows are owned by active app releases.
@@ -2023,6 +2174,141 @@ func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
+// appsHandler dispatches /api/apps and /api/apps/ requests. Draft sub-paths are
+// handled locally; everything else is forwarded to the gateway management API.
+func (s *Server) appsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// Match /api/apps/{name}/asset-store-config  (GET or PUT)
+	if parts := matchPath(path, "/api/apps/", "/asset-store-config"); parts != nil {
+		s.appAssetStoreConfigHandler(w, r)
+		return
+	}
+	// Match /api/apps/{name}/draft  (GET or POST)
+	if parts := matchPath(path, "/api/apps/", "/draft"); parts != nil {
+		appName := parts[0]
+		switch r.Method {
+		case http.MethodGet:
+			s.getDraftHandler(w, r, appName)
+		case http.MethodPost:
+			s.putDraftHandler(w, r, appName)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	// Match /api/apps/{name}/draft/apis/{apiName}  (DELETE)
+	if parts := matchPath(path, "/api/apps/", "/draft/apis/"); len(parts) >= 2 && r.Method == http.MethodDelete {
+		s.deleteFromDraftHandler(w, r, parts[0], parts[1])
+		return
+	}
+	// Everything else: proxy to gateway management
+	s.appsMgmtProxy(w, r)
+}
+
+// matchPath checks if path is of the form prefix + segment + suffix (optionally more).
+// Returns the captured segments: [segment_before_suffix, text_after_suffix (if any)].
+// Example: matchPath("/api/apps/myapp/draft", "/api/apps/", "/draft") -> ["myapp"]
+func matchPath(path, prefix, suffix string) []string {
+	if !strings.HasPrefix(path, prefix) {
+		return nil
+	}
+	rest := path[len(prefix):]
+	idx := strings.Index(rest, suffix)
+	if idx < 0 {
+		return nil
+	}
+	segment := rest[:idx]
+	if segment == "" {
+		return nil
+	}
+	after := rest[idx+len(suffix):]
+	parts := []string{segment}
+	if after != "" {
+		parts = append(parts, after)
+	}
+	return parts
+}
+
+func (s *Server) getDraftHandler(w http.ResponseWriter, r *http.Request, appName string) {
+	draft, ok, err := s.draftStore.GetDraft(r.Context(), appName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		draft = AppDraft{
+			AppName: appName,
+			APIs:    json.RawMessage("[]"),
+			Flows:   json.RawMessage("[]"),
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(draft)
+}
+
+func (s *Server) putDraftHandler(w http.ResponseWriter, r *http.Request, appName string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		APIs  json.RawMessage `json:"apis"`
+		Flows json.RawMessage `json:"flows"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	existing, _, _ := s.draftStore.GetDraft(r.Context(), appName)
+
+	mergedAPIs, err := mergeDraftPayload(existing.APIs, payload.APIs)
+	if err != nil {
+		http.Error(w, "merge apis: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	mergedFlows, err := mergeDraftPayload(existing.Flows, payload.Flows)
+	if err != nil {
+		http.Error(w, "merge flows: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	draft := AppDraft{
+		AppName:   appName,
+		UpdatedAt: time.Now(),
+		APIs:      mergedAPIs,
+		Flows:     mergedFlows,
+	}
+	if err := s.draftStore.PutDraft(r.Context(), draft); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"merged": true})
+}
+
+func (s *Server) deleteFromDraftHandler(w http.ResponseWriter, r *http.Request, appName, apiName string) {
+	if err := s.draftStore.DeleteAPIfromDraft(r.Context(), appName, apiName); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// studioConfigHandler handles GET /api/studio/config and returns studio-level settings.
+func (s *Server) studioConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"direct_sync_enabled": s.config.IsDirectSyncEnabled(),
+	})
+}
+
 func (s *Server) datastoreConfigProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
@@ -2043,16 +2329,204 @@ func (s *Server) obsGatewayProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
+// assetStoreFor returns the AssetStore to use for a given app.
+// Per-app connector selection wins; falls back to the global assetsStore.
+func (s *Server) assetStoreFor(appName string) AssetStore {
+	s.appAssetCfgsMu.RLock()
+	cfg, ok := s.appAssetCfgs[appName]
+	s.appAssetCfgsMu.RUnlock()
+	if ok && cfg.Connector != "" {
+		s.storageMgrMu.RLock()
+		mgr := s.storageMgr
+		s.storageMgrMu.RUnlock()
+		if mgr != nil {
+			return NewStorageManagerAssetStore(mgr, cfg.Connector, cfg.Prefix)
+		}
+	}
+	return s.assetsStore
+}
+
+// rebuildStorageMgr recreates storageMgr from the connectorStore.
+// Connectors that fail to initialise are skipped with a warning rather than
+// causing the whole server to fail. Call while NOT holding storageMgrMu.
+func (s *Server) rebuildStorageMgr() error {
+	all := s.connStore.List()
+	good := make([]storage.StorageProviderConfig, 0, len(all))
+	for _, cfg := range all {
+		if _, err := storage.New([]storage.StorageProviderConfig{cfg}); err != nil {
+			log.Printf("warning: skipping storage connector %q: %v", cfg.Name, err)
+		} else {
+			good = append(good, cfg)
+		}
+	}
+	if len(good) == 0 {
+		s.storageMgrMu.Lock()
+		s.storageMgr = nil
+		s.storageMgrMu.Unlock()
+		return nil
+	}
+	mgr, err := storage.New(good)
+	if err != nil {
+		return err
+	}
+	s.storageMgrMu.Lock()
+	s.storageMgr = mgr
+	s.storageMgrMu.Unlock()
+	return nil
+}
+
+// storageProvidersHandler handles CRUD for studio-managed storage connectors.
+// GET    /api/studio/storage-providers          → list all connectors
+// POST   /api/studio/storage-providers          → add a new connector
+// PUT    /api/studio/storage-providers/{name}   → update an existing connector
+// DELETE /api/studio/storage-providers/{name}   → remove a connector
+func (s *Server) storageProvidersHandler(w http.ResponseWriter, r *http.Request) {
+	// Determine whether there is a {name} segment.
+	rest := strings.TrimPrefix(r.URL.Path, "/api/studio/storage-providers")
+	rest = strings.TrimPrefix(rest, "/")
+	name := rest // "" when operating on the collection
+
+	switch r.Method {
+	case http.MethodGet:
+		cfgs := s.connStore.List()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"providers": cfgs})
+
+	case http.MethodPost:
+		var cfg storageProviderConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.connStore.Set(cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.rebuildStorageMgr(); err != nil {
+			http.Error(w, "connector saved but storage init failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(cfg)
+
+	case http.MethodPut:
+		if name == "" {
+			http.Error(w, "connector name required in path", http.StatusBadRequest)
+			return
+		}
+		var cfg storageProviderConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name // path wins over body
+		if err := s.connStore.Set(cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.rebuildStorageMgr(); err != nil {
+			http.Error(w, "connector saved but storage init failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	case http.MethodDelete:
+		if name == "" {
+			http.Error(w, "connector name required in path", http.StatusBadRequest)
+			return
+		}
+		if err := s.connStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err := s.rebuildStorageMgr(); err != nil {
+			log.Printf("warning: connector deleted but storage rebuild failed: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// assetConnectorsHandler lists the storage provider names available in the StorageManager.
+// GET /api/studio/asset-connectors
+func (s *Server) assetConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.storageMgrMu.RLock()
+	mgr := s.storageMgr
+	s.storageMgrMu.RUnlock()
+	names := []string{}
+	if mgr != nil {
+		names = mgr.Names()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": names})
+}
+
+// appAssetStoreConfigHandler handles GET/PUT for per-app connector selection.
+// GET /api/apps/{name}/asset-store-config
+// PUT /api/apps/{name}/asset-store-config  body: {"connector":"<name>","prefix":"<opt>"}
+func (s *Server) appAssetStoreConfigHandler(w http.ResponseWriter, r *http.Request) {
+	appName := strings.TrimPrefix(r.URL.Path, "/api/apps/")
+	appName = strings.TrimSuffix(appName, "/asset-store-config")
+	if appName == "" {
+		http.Error(w, "app name required", http.StatusBadRequest)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.appAssetCfgsMu.RLock()
+		cfg := s.appAssetCfgs[appName]
+		s.appAssetCfgsMu.RUnlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var cfg appAssetCfg
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Validate connector exists if non-empty
+		s.storageMgrMu.RLock()
+		mgr := s.storageMgr
+		s.storageMgrMu.RUnlock()
+		if cfg.Connector != "" && mgr != nil {
+			found := false
+			for _, n := range mgr.Names() {
+				if n == cfg.Connector {
+					found = true
+					break
+				}
+			}
+			if !found {
+				http.Error(w, "unknown connector: "+cfg.Connector, http.StatusBadRequest)
+				return
+			}
+		}
+		s.appAssetCfgsMu.Lock()
+		if cfg.Connector == "" {
+			delete(s.appAssetCfgs, appName) // clearing → fall back to global default
+		} else {
+			s.appAssetCfgs[appName] = cfg
+		}
+		s.appAssetCfgsMu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // assetsManageHandler handles upload/list/delete for app static assets.
 // Route: /api/app-assets/{appname}[/{filename}]
 // GET    /api/app-assets/{appname}              → list
 // POST   /api/app-assets/{appname}              → upload (multipart, field "file")
 // DELETE /api/app-assets/{appname}/{filename}   → delete
 func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
-	if s.assetsStore == nil {
-		http.Error(w, "asset store not configured (start studio with --assets-dir)", http.StatusServiceUnavailable)
-		return
-	}
 	// parse /api/app-assets/{appname}[/{filename}]
 	rest := strings.TrimPrefix(r.URL.Path, "/api/app-assets/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -2066,10 +2540,16 @@ func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store := s.assetStoreFor(appName)
+	if store == nil {
+		http.Error(w, "asset store not configured — add storage_providers to studio config or start with --assets-dir", http.StatusServiceUnavailable)
+		return
+	}
+
 	ctx := r.Context()
 	switch r.Method {
 	case http.MethodGet:
-		assets, err := s.assetsStore.List(ctx, appName)
+		assets, err := store.List(ctx, appName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -2099,7 +2579,7 @@ func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
-		if err := s.assetsStore.Upload(ctx, appName, header.Filename, f, ct, header.Size); err != nil {
+		if err := store.Upload(ctx, appName, header.Filename, f, ct, header.Size); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -2116,7 +2596,7 @@ func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "filename required for delete", http.StatusBadRequest)
 			return
 		}
-		if err := s.assetsStore.Delete(ctx, appName, filename); err != nil {
+		if err := store.Delete(ctx, appName, filename); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -2130,10 +2610,6 @@ func (s *Server) assetsManageHandler(w http.ResponseWriter, r *http.Request) {
 // serveAssetHandler serves uploaded asset files publicly.
 // Route: /app-files/{appname}/{filename}
 func (s *Server) serveAssetHandler(w http.ResponseWriter, r *http.Request) {
-	if s.assetsStore == nil {
-		http.NotFound(w, r)
-		return
-	}
 	// parse /app-files/{appname}/{filename}
 	rest := strings.TrimPrefix(r.URL.Path, "/app-files/")
 	parts := strings.SplitN(rest, "/", 2)
@@ -2142,7 +2618,12 @@ func (s *Server) serveAssetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName, filename := parts[0], parts[1]
-	rc, meta, err := s.assetsStore.Download(r.Context(), appName, filename)
+	store := s.assetStoreFor(appName)
+	if store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	rc, meta, err := store.Download(r.Context(), appName, filename)
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.NotFound(w, r)
@@ -2610,6 +3091,9 @@ func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
 		SourcePath:  meta.SourcePath,
 		Author:      meta.Author,
 		LintSummary: ls,
+	}
+	if r.URL.Query().Get("status") == "draft" {
+		rec.Status = "draft"
 	}
 	if err := s.store.Put(r.Context(), rec); err != nil {
 		http.Error(w, "failed to store release", http.StatusInternalServerError)

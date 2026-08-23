@@ -284,6 +284,7 @@ type ApiConfig struct {
 	Method          string           `json:"method,omitempty"`      // HTTP method; empty = all methods
 	FlowName        string           `json:"flow_name"`             // The entry fragment
 	AppName         string           `json:"app_name,omitempty"`    // App this API belongs to
+	Source          string           `json:"source,omitempty"`      // "app" if created from an app in studio; "" if linked externally
 	RateLimitName   string           `json:"rate_limit,omitempty"`  // API-level rate limit config name
 	QuotaGroup      string           `json:"quota_group,omitempty"` // Quota group name (e.g. "premium", "global")
 	Async           string           `json:"async,omitempty"`       // "" | "allowed" | "forced"
@@ -320,6 +321,7 @@ type ApiUpdate struct {
 	Method          string             `json:"method,omitempty"`          // HTTP method; empty = all methods
 	FlowName        string             `json:"flow_name"`                 // Reference to a Flow name
 	AppName         string             `json:"app_name,omitempty"`        // App this API belongs to
+	Source          string             `json:"source,omitempty"`          // "app" if created from an app in studio; "" if linked externally
 	RateLimitName   string             `json:"rate_limit,omitempty"`      // API-level rate limit config name
 	RateLimitMode   string             `json:"rate_limit_mode,omitempty"` // "global" | "tenant" | "ip" | "slot" | "" (inherit/default)
 	QuotaGroup      string             `json:"quota_group,omitempty"`     // Quota group name

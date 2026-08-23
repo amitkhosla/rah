@@ -2,10 +2,14 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   listApps, createApp, updateApp, deleteApp,
   listKeys, generateKey, updateKey, revokeKey, rotateKey,
-  listAppUsages, listAppReleases, createAppRelease, generateAppBlueprint,
-  fetchGatewaySnapshot, syncFlows,
+  listAppUsages, listAppReleases, createAppRelease, promoteAppRelease, rollbackAppRelease, generateAppBlueprint,
+  fetchGatewaySnapshot, syncFlows, deploy,
+  fetchStudioConfig, getAppDraft, putAppDraft, deleteFromAppDraft,
   listAssets, uploadAsset, deleteAsset,
+  listAssetConnectors, getAppAssetStoreConfig, putAppAssetStoreConfig,
+  listStorageProviders, addStorageProvider, updateStorageProvider, deleteStorageProvider,
   type AppRelease, type AppBlueprintRequest, type AppBlueprintResponse, type FlowBlueprint, type AssetMeta,
+  type AppDraft, type AppAssetStoreConfig, type StorageProviderConfig,
 } from '../api'
 import type { App, APIKeyView, APIKeyCreateResponse, PaletteBlock, SavedFlow, FlowStep, GatewayApi } from '../types'
 import FlowDesigner from './FlowDesigner'
@@ -567,58 +571,215 @@ const METHOD_COLORS: Record<string, string> = {
 }
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
-function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNames = [], onDesignNew }: {
+function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNames = [], onDesignNew, directSyncEnabled = true }: {
   appName: string
   gatewayBase?: string
   flowNames?: string[]
   onDesignNew?: (suggestedName: string) => void
+  directSyncEnabled?: boolean
 }) {
-  const [apis, setApis]         = useState<GatewayApi[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [err, setErr]           = useState('')
-  const [showForm, setShowForm] = useState(false)
-  const [saving, setSaving]     = useState(false)
-  const [saveErr, setSaveErr]   = useState('')
+  const [apis, setApis]             = useState<GatewayApi[]>([])
+  const [allApis, setAllApis]       = useState<GatewayApi[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
+  const [showForm, setShowForm]     = useState(false)
+  const [showLink, setShowLink]     = useState(false)
+  const [linking, setLinking]       = useState(false)
+  const [linkErr, setLinkErr]       = useState('')
+  const [saving, setSaving]         = useState(false)
+  const [saveErr, setSaveErr]       = useState('')
+  const [removing, setRemoving]     = useState<string | null>(null)
+  const [removeErr, setRemoveErr]   = useState('')
+  const [gatewayApis, setGatewayApis] = useState<GatewayApi[]>([])
+  const [linkFilter, setLinkFilter] = useState('')
+
+  // inline test state per API
+  const [testStates, setTestStates] = useState<Record<string, { body: string; running: boolean; result: { status: number; body: string } | null; err: string; expanded: boolean }>>({})
+
+  function updateTestState(name: string, patch: Partial<{ body: string; running: boolean; result: { status: number; body: string } | null; err: string; expanded: boolean }>) {
+    setTestStates(prev => {
+      const cur = prev[name] ?? { body: '', running: false, result: null, err: '', expanded: false }
+      return { ...prev, [name]: { ...cur, ...patch } }
+    })
+  }
+
+  async function runTest(api: GatewayApi) {
+    const method = (api.method ?? 'GET').toUpperCase()
+    const needsBody = ['POST', 'PUT', 'PATCH'].includes(method)
+    const st = testStates[api.name]
+    updateTestState(api.name, { running: true, result: null, err: '', expanded: true })
+    try {
+      const r = await invokeApi(method, `${gatewayBase}${api.path}`, { 'content-type': 'application/json' }, needsBody && st?.body?.trim() ? st.body.trim() : undefined)
+      updateTestState(api.name, { result: r, running: false })
+    } catch (e) { updateTestState(api.name, { err: String(e), running: false }) }
+  }
 
   // new-api form state
   const [newName, setNewName]   = useState('')
   const [newPath, setNewPath]   = useState('')
   const [newMethod, setNewMethod] = useState('GET')
   const [newFlow, setNewFlow]   = useState('')
+  const [endpoints, setEndpoints] = useState<Array<{path: string; method: string; flow: string}>>([])
+
+  function addEndpoint() {
+    setEndpoints(prev => [...prev, { path: '/', method: 'GET', flow: '' }])
+  }
+  function removeEndpoint(i: number) {
+    setEndpoints(prev => prev.filter((_, idx) => idx !== i))
+  }
+  function updateEndpoint(i: number, field: 'path' | 'method' | 'flow', value: string) {
+    setEndpoints(prev => prev.map((ep, idx) => idx === i ? { ...ep, [field]: value } : ep))
+  }
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
+    if (!directSyncEnabled) {
+      Promise.all([getAppDraft(appName), fetchGatewaySnapshot()])
+        .then(([draft, snap]) => {
+          setApis((draft.apis ?? []) as unknown as GatewayApi[])
+          setGatewayApis(snap.apis as GatewayApi[])
+        })
+        .catch(e => setErr(String(e)))
+        .finally(() => setLoading(false))
+      return
+    }
     fetchGatewaySnapshot()
-      .then(snap => setApis((snap.apis ?? []).filter(a => a.app_name === appName)))
+      .then(snap => {
+        const all = snap.apis ?? []
+        setAllApis(all as GatewayApi[])
+        setApis((all as GatewayApi[]).filter(a => a.app_name === appName))
+        setGatewayApis(all as GatewayApi[])
+      })
       .catch(e => setErr(String(e)))
       .finally(() => setLoading(false))
-  }, [appName])
+  }, [appName, directSyncEnabled])
 
   useEffect(() => { load() }, [load])
 
   function resetForm() {
     setNewName(''); setNewPath(''); setNewMethod('GET'); setNewFlow('')
+    setEndpoints([])
     setSaveErr(''); setShowForm(false)
   }
+
+  // Unlink: remove from this app (clears app_name) but keep the API alive on the gateway.
+  // In draft mode this removes it from the draft entirely.
+  async function unlinkApi(api: GatewayApi) {
+    setRemoving(api.name); setRemoveErr('')
+    try {
+      if (!directSyncEnabled) {
+        await deleteFromAppDraft(appName, api.name)
+      } else {
+        await syncFlows({
+          sync_uuid: crypto.randomUUID(),
+          flows: [],
+          apis: [{
+            name:      api.name,
+            path:      api.path,
+            method:    api.method,
+            flow_name: api.flow_name,
+            source:    api.source,
+            action:    'upsert',
+            ...(api.endpoint_configs ? { endpoint_configs: api.endpoint_configs } : {}),
+            // app_name intentionally omitted → clears the association on the gateway
+          }],
+        })
+      }
+      load()
+    } catch (e) { setRemoveErr(String(e)) }
+    finally { setRemoving(null) }
+  }
+
+  // Hard delete: permanently removes the API from the gateway.
+  // Only offered for APIs with source === 'app' (created from within this app).
+  async function hardDeleteApi(api: GatewayApi) {
+    if (!window.confirm(`Permanently delete "${api.name}" from the gateway?\n\nThis API was created from this app. This cannot be undone.`)) return
+    setRemoving(api.name); setRemoveErr('')
+    try {
+      await syncFlows({
+        sync_uuid: crypto.randomUUID(),
+        flows: [],
+        apis: [{ name: api.name, path: api.path, method: api.method, flow_name: api.flow_name, app_name: appName, action: 'delete' }],
+      })
+      load()
+    } catch (e) { setRemoveErr(String(e)) }
+    finally { setRemoving(null) }
+  }
+
+  function getApiStatus(api: GatewayApi): 'new' | 'modified' | 'deployed' {
+    if (directSyncEnabled) return 'deployed'
+    const gw = gatewayApis.find(a => a.name === api.name)
+    if (!gw) return 'new'
+    if (gw.path !== api.path || gw.flow_name !== api.flow_name || gw.method !== api.method) return 'modified'
+    return 'deployed'
+  }
+
+  // "Link existing" — take a gateway API that has no app_name and assign it here
+  async function linkExisting(api: GatewayApi) {
+    setLinking(true); setLinkErr('')
+    try {
+      await syncFlows({
+        sync_uuid: crypto.randomUUID(),
+        flows: [],
+        apis: [{
+          name:      api.name,
+          path:      api.path,
+          method:    api.method,
+          flow_name: api.flow_name,
+          app_name:  appName,
+          action:    'upsert',
+          ...(api.endpoint_configs ? { endpoint_configs: api.endpoint_configs } : {}),
+        }],
+      })
+      setShowLink(false)
+      load()
+    } catch (e) { setLinkErr(String(e)) }
+    finally { setLinking(false) }
+  }
+
+  // APIs that exist in the gateway but belong to a different app (or none)
+  const unlinkedApis = allApis.filter(a => !a.app_name || a.app_name !== appName)
 
   async function handleAddApi() {
     if (!newName.trim()) { setSaveErr('Name is required'); return }
     if (!newPath.trim() || !newPath.startsWith('/')) { setSaveErr('Path must start with /'); return }
     if (!newFlow.trim()) { setSaveErr('Flow name is required'); return }
     setSaving(true); setSaveErr('')
+
+    // Auto-prefix path with app name
+    const relativePath = newPath.trim()
+    const prefix = `/${appName}`
+    const fullPath = relativePath.startsWith(prefix) ? relativePath : `${prefix}${relativePath}`
+
+    // Build endpoint_configs only when user has explicitly added them
+    const endpointConfigs = endpoints.length > 0
+      ? endpoints.map(ep => ({
+          path: ep.path || '/',
+          method: ep.method,
+          ...(ep.flow.trim() ? { flow_name: ep.flow.trim() } : {}),
+        }))
+      : undefined
+
+    const apiPayload = {
+      sync_uuid: crypto.randomUUID(),
+      flows: [],
+      apis: [{
+        name:      newName.trim(),
+        path:      fullPath,
+        method:    newMethod,
+        flow_name: newFlow.trim(),
+        app_name:  appName,
+        source:    'app',
+        action:    'upsert' as const,
+        ...(endpointConfigs ? { endpoint_configs: endpointConfigs } : {}),
+      }],
+    }
     try {
-      await syncFlows({
-        sync_uuid: crypto.randomUUID(),
-        flows: [],
-        apis: [{
-          name:     newName.trim(),
-          path:     newPath.trim(),
-          flow_name: newFlow.trim(),
-          app_name: appName,
-          action:   'upsert',
-          endpoint_configs: [{ path: '/', method: newMethod }],
-        }],
-      })
+      if (!directSyncEnabled) {
+        await putAppDraft(appName, apiPayload)
+      } else {
+        await syncFlows(apiPayload)
+      }
       resetForm()
       load()
     } catch (e) { setSaveErr(String(e)) }
@@ -629,10 +790,72 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>APIs</div>
-        {!showForm && (
-          <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowForm(true)}>+ Add API</button>
+        {!showForm && !showLink && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowLink(true)}>Link Existing</button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowForm(true)}>+ Add API</button>
+          </div>
         )}
       </div>
+
+      {/* Link Existing API panel */}
+      {showLink && (
+        <div style={{
+          background: 'var(--block-bg)', border: '1px solid var(--border)',
+          borderRadius: 6, padding: 14, marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Link Existing API to {appName}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Select a gateway API to assign to this app. Its <code>app_name</code> will be updated.
+          </div>
+          {unlinkedApis.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+              All gateway APIs are already linked to apps.
+            </div>
+          ) : (
+            <>
+            <input
+              className="input"
+              style={{ width: '100%', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }}
+              placeholder="Filter by name, path or method…"
+              value={linkFilter}
+              onChange={e => setLinkFilter(e.target.value)}
+              autoFocus
+            />
+            <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4 }}>
+              {unlinkedApis.filter(a => {
+                const q = linkFilter.toLowerCase()
+                return !q || a.name.toLowerCase().includes(q) || a.path.toLowerCase().includes(q) || (a.method ?? '').toLowerCase().includes(q)
+              }).map(api => (
+                <div key={api.name} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+                  borderBottom: '1px solid var(--border)', fontSize: 12,
+                }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, color: '#fff', minWidth: 40, textAlign: 'center',
+                    background: METHOD_COLORS[(api.method ?? '').toUpperCase()] ?? '#607d8b',
+                    borderRadius: 3, padding: '1px 5px',
+                  }}>{api.method || 'ANY'}</span>
+                  <span style={{ fontFamily: 'monospace', flex: 1, fontSize: 11 }}>{api.path}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{api.name}</span>
+                  {api.app_name && (
+                    <span style={{ fontSize: 10, color: '#f59e0b' }}>({api.app_name})</span>
+                  )}
+                  <button className="btn btn-primary" style={{ fontSize: 10, padding: '2px 8px' }}
+                    onClick={() => linkExisting(api)} disabled={linking}>
+                    {linking ? '…' : 'Link'}
+                  </button>
+                </div>
+              ))}
+            </div>
+            </>
+          )}
+          {linkErr && <div style={{ fontSize: 11, color: '#f44336', marginTop: 6 }}>{linkErr}</div>}
+          <div style={{ marginTop: 8 }}>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowLink(false); setLinkErr(''); setLinkFilter('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div style={{
@@ -648,10 +871,17 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                 value={newName} onChange={e => setNewName(e.target.value)} />
             </div>
             <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Path</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+                Path <span style={{ fontWeight: 400 }}>(relative to app — prefixed with /{appName})</span>
+              </div>
               <input className="input" style={{ width: '100%', fontSize: 12 }}
-                placeholder="e.g. /school/students"
+                placeholder="e.g. /students"
                 value={newPath} onChange={e => setNewPath(e.target.value)} />
+              {newPath && newPath.startsWith('/') && (
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, fontFamily: 'monospace' }}>
+                  → /{appName}{newPath}
+                </div>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Method</div>
@@ -670,6 +900,60 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
                 onDesignNew={onDesignNew}
               />
             </div>
+          </div>
+
+          {/* Endpoint Configs */}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>Endpoint Configs</div>
+              <button className="btn" style={{ fontSize: 10, padding: '1px 7px' }} onClick={addEndpoint}>+ Add</button>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                Optional — define sub-paths/methods with per-endpoint flows
+              </span>
+            </div>
+            {endpoints.length > 0 && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1.5fr 90px 1fr auto',
+                  gap: 0, background: 'var(--block-bg)',
+                  borderBottom: '1px solid var(--border)',
+                  fontSize: 10, color: 'var(--text-muted)', fontWeight: 600,
+                }}>
+                  <div style={{ padding: '3px 8px' }}>Sub-path</div>
+                  <div style={{ padding: '3px 8px' }}>Method</div>
+                  <div style={{ padding: '3px 8px' }}>Flow override</div>
+                  <div style={{ padding: '3px 8px' }}></div>
+                </div>
+                {endpoints.map((ep, i) => (
+                  <div key={i} style={{
+                    display: 'grid', gridTemplateColumns: '1.5fr 90px 1fr auto',
+                    gap: 0, borderBottom: i < endpoints.length - 1 ? '1px solid var(--border)' : undefined,
+                    alignItems: 'center',
+                  }}>
+                    <div style={{ padding: '3px 6px' }}>
+                      <input className="input" style={{ width: '100%', fontSize: 11 }}
+                        placeholder="/" value={ep.path}
+                        onChange={e => updateEndpoint(i, 'path', e.target.value)} />
+                    </div>
+                    <div style={{ padding: '3px 6px' }}>
+                      <select className="input" style={{ width: '100%', fontSize: 11 }}
+                        value={ep.method} onChange={e => updateEndpoint(i, 'method', e.target.value)}>
+                        {HTTP_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ padding: '3px 6px' }}>
+                      <input className="input" style={{ width: '100%', fontSize: 11 }}
+                        placeholder="(uses default flow)"
+                        value={ep.flow} onChange={e => updateEndpoint(i, 'flow', e.target.value)} />
+                    </div>
+                    <div style={{ padding: '3px 6px' }}>
+                      <button className="btn" style={{ fontSize: 10, color: '#f87171' }}
+                        onClick={() => removeEndpoint(i)}>×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           {saveErr && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{saveErr}</div>}
           <div style={{ display: 'flex', gap: 6 }}>
@@ -690,40 +974,138 @@ function AppAPIsSection({ appName, gatewayBase = 'http://localhost:8081', flowNa
         </div>
       )}
       {!loading && apis.length > 0 && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
-              <th style={{ padding: '4px 8px', fontWeight: 500 }}>Method</th>
-              <th style={{ padding: '4px 8px', fontWeight: 500 }}>Path</th>
-              <th style={{ padding: '4px 8px', fontWeight: 500 }}>Name</th>
-              <th style={{ padding: '4px 8px', fontWeight: 500 }}>Flow</th>
-              <th style={{ padding: '4px 8px', fontWeight: 500 }}>URL</th>
-            </tr>
-          </thead>
-          <tbody>
-            {apis.map(api => (
-              <tr key={api.name} style={{ borderTop: '1px solid var(--border)' }}>
-                <td style={{ padding: '5px 8px' }}>
-                  <span style={{
-                    background: METHOD_COLORS[(api.method ?? '').toUpperCase()] ?? '#607d8b',
-                    color: '#fff', borderRadius: 3, padding: '1px 6px', fontSize: 11, fontWeight: 600,
-                  }}>{api.method || 'ANY'}</span>
-                </td>
-                <td style={{ padding: '5px 8px', fontFamily: 'monospace' }}>{api.path}</td>
-                <td style={{ padding: '5px 8px', color: 'var(--text-muted)' }}>{api.name}</td>
-                <td style={{ padding: '5px 8px', color: 'var(--text-muted)' }}>{api.flow_name}</td>
-                <td style={{ padding: '5px 8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {apis.map(api => {
+            const epMethods = api.endpoint_configs?.map(ec => ec.method?.toUpperCase() ?? 'ANY')
+            const effectiveMethod = api.method?.toUpperCase()
+              || (epMethods && epMethods.length === 1 ? epMethods[0] : undefined)
+              || (epMethods && epMethods.length > 1 ? 'MULTI' : 'ANY')
+            const needsBody = ['POST', 'PUT', 'PATCH'].includes(effectiveMethod ?? '')
+            const st = testStates[api.name] ?? { body: '', running: false, result: null, err: '', expanded: false }
+            const statusColor = st.result ? (st.result.status < 400 ? '#4caf50' : '#f44336') : 'var(--text-muted)'
+
+            return (
+              <div key={api.name} style={{
+                border: '1px solid var(--border)', borderRadius: 6,
+                background: 'var(--block-bg)', overflow: 'hidden',
+              }}>
+                {/* Header row */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px' }}>
+                  {/* Method badge(s) */}
+                  {effectiveMethod === 'MULTI' ? (
+                    <div style={{ display: 'flex', gap: 2 }}>
+                      {epMethods!.map((m, i) => (
+                        <span key={i} style={{
+                          background: METHOD_COLORS[m] ?? '#607d8b', color: '#fff',
+                          borderRadius: 3, padding: '1px 4px', fontSize: 9, fontWeight: 600,
+                        }}>{m}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{
+                      background: METHOD_COLORS[effectiveMethod ?? 'ANY'] ?? '#607d8b',
+                      color: '#fff', borderRadius: 3, padding: '2px 6px', fontSize: 10, fontWeight: 600, minWidth: 40, textAlign: 'center',
+                    }}>{effectiveMethod}</span>
+                  )}
+                  {!directSyncEnabled && (
+                    <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: '#f97316', borderRadius: 3, padding: '1px 5px' }}>DRAFT</span>
+                  )}
+                  {(() => {
+                    const status = getApiStatus(api)
+                    const cfg: Record<string, { bg: string; label: string }> = {
+                      new:      { bg: '#3b82f6', label: 'NEW' },
+                      modified: { bg: '#f59e0b', label: 'MODIFIED' },
+                      deployed: { bg: '#22c55e', label: 'DEPLOYED' },
+                    }
+                    const s = cfg[status]
+                    return (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: s.bg, borderRadius: 3, padding: '1px 5px' }}>
+                        {s.label}
+                      </span>
+                    )
+                  })()}
+                  <span style={{ fontFamily: 'monospace', fontSize: 12, flex: 1, color: 'var(--text)' }}>{api.path}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{api.flow_name}</span>
                   <span
                     style={{ fontFamily: 'monospace', fontSize: 10, color: '#89b4fa', cursor: 'pointer' }}
-                    title="Click to copy"
+                    title="Copy URL"
                     onClick={() => navigator.clipboard.writeText(`${gatewayBase}${api.path}`)}
-                  >{gatewayBase}{api.path} 📋</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  >📋</span>
+                  {st.result && (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: statusColor }}>{st.result.status}</span>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: 10, padding: '2px 8px' }}
+                    onClick={() => runTest(api)}
+                    disabled={st.running}
+                  >{st.running ? '…' : '▶ Test'}</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 10, padding: '2px 6px', color: 'var(--text-muted)' }}
+                    onClick={() => updateTestState(api.name, { expanded: !st.expanded })}
+                  >{st.expanded ? '▲' : '▼'}</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 10, padding: '2px 6px', color: 'var(--text-muted)' }}
+                    title={directSyncEnabled ? 'Remove from this app (API stays on gateway)' : 'Remove from draft'}
+                    onClick={() => unlinkApi(api)}
+                    disabled={removing === api.name}
+                  >{removing === api.name ? '…' : '×'}</button>
+                </div>
+
+                {/* Expandable: body input + response */}
+                {st.expanded && (
+                  <div style={{ borderTop: '1px solid var(--border)', padding: '8px 10px', background: 'var(--bg)' }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace', marginBottom: 8 }}>
+                      {effectiveMethod} {gatewayBase}{api.path}
+                      {api.name !== api.path && <span style={{ color: 'var(--text-muted)', marginLeft: 10 }}>{api.name}</span>}
+                    </div>
+                    {needsBody && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Request body (JSON)</div>
+                        <textarea className="input"
+                          style={{ width: '100%', height: 72, resize: 'vertical', fontSize: 11, fontFamily: 'monospace', boxSizing: 'border-box' }}
+                          placeholder={'{\n  "key": "value"\n}'}
+                          value={st.body}
+                          onChange={e => updateTestState(api.name, { body: e.target.value })}
+                        />
+                      </div>
+                    )}
+                    {st.err && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{st.err}</div>}
+                    {st.result && (
+                      <div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          Response — <span style={{ color: statusColor, fontWeight: 700 }}>{st.result.status}</span>
+                        </div>
+                        <pre style={{
+                          background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 4,
+                          padding: 8, fontSize: 10, fontFamily: 'monospace',
+                          maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0,
+                        }}>{st.result.body}</pre>
+                      </div>
+                    )}
+                    {api.source === 'app' && directSyncEnabled && (
+                      <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                        <button
+                          className="btn"
+                          style={{ fontSize: 10, color: '#f87171', borderColor: '#f8717155' }}
+                          onClick={() => hardDeleteApi(api)}
+                          disabled={removing === api.name}
+                        >Delete from gateway</button>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 8 }}>
+                          This API was created from this app. Deletion is permanent.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       )}
+      {removeErr && <div style={{ fontSize: 11, color: '#f44336', marginTop: 6 }}>{removeErr}</div>}
     </div>
   )
 }
@@ -1062,6 +1444,13 @@ function TryAPIsSection({ appName, gatewayBase = 'http://localhost:8081' }: { ap
 
 // ── Test flows panel ──────────────────────────────────────────────────────────
 
+interface TestEndpointState {
+  body: string
+  running: boolean
+  result: { status: number; body: string } | null
+  err: string
+}
+
 function TestFlowsSection({ app, gatewayBase = 'http://localhost:8081' }: { app: App; gatewayBase?: string }) {
   const [testApis, setTestApis]     = useState<GatewayApi[]>([])
   const [loading, setLoading]       = useState(true)
@@ -1069,6 +1458,25 @@ function TestFlowsSection({ app, gatewayBase = 'http://localhost:8081' }: { app:
   const [publishing, setPublishing] = useState<string | null>(null)
   const [removing, setRemoving]     = useState<string | null>(null)
   const [err, setErr]               = useState('')
+  const [testStates, setTestStates] = useState<Record<string, TestEndpointState>>({})
+
+  function updateTestState(name: string, patch: Partial<TestEndpointState>) {
+    setTestStates(prev => {
+      const cur = prev[name] ?? { body: '', running: false, result: null, err: '' }
+      return { ...prev, [name]: { ...cur, ...patch } }
+    })
+  }
+
+  async function runTest(api: GatewayApi) {
+    updateTestState(api.name, { running: true, result: null, err: '' })
+    const st = testStates[api.name]
+    try {
+      const r = await invokeApi('POST', `${gatewayBase}${api.path}`, { 'content-type': 'application/json' }, st?.body?.trim() || undefined)
+      updateTestState(api.name, { result: r, running: false })
+    } catch (e) {
+      updateTestState(api.name, { err: String(e), running: false })
+    }
+  }
 
   const testPrefix = `/test/${app.name}/`
 
@@ -1226,6 +1634,41 @@ function TestFlowsSection({ app, gatewayBase = 'http://localhost:8081' }: { app:
                     onClick={() => navigator.clipboard.writeText(`${gatewayBase}${api.path}`)}
                     title="Copy URL">📋</button>
                 </div>
+                {/* Inline test invocation */}
+                {(() => {
+                  const ts = testStates[api.name] ?? { body: '', running: false, result: null, err: '' }
+                  const statusColor = ts.result ? (ts.result.status < 400 ? '#4caf50' : '#f44336') : 'var(--text-muted)'
+                  return (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+                        Request body (JSON)
+                      </div>
+                      <textarea className="input"
+                        style={{ width: '100%', height: 64, resize: 'vertical', fontSize: 11, fontFamily: 'monospace', boxSizing: 'border-box', marginBottom: 6 }}
+                        placeholder={'{\n  "key": "value"\n}'}
+                        value={ts.body}
+                        onChange={e => updateTestState(api.name, { body: e.target.value })}
+                      />
+                      <button className="btn btn-primary" style={{ fontSize: 11 }}
+                        onClick={() => runTest(api)} disabled={ts.running}>
+                        {ts.running ? 'Sending…' : 'Send POST'}
+                      </button>
+                      {ts.err && <div style={{ marginTop: 6, fontSize: 11, color: '#f44336' }}>{ts.err}</div>}
+                      {ts.result && (
+                        <div style={{ marginTop: 6 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>
+                            Response — <span style={{ color: statusColor, fontWeight: 700 }}>{ts.result.status}</span>
+                          </div>
+                          <pre style={{
+                            background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4,
+                            padding: 6, fontSize: 10, fontFamily: 'monospace',
+                            maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0,
+                          }}>{ts.result.body}</pre>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                   curl -X POST {gatewayBase}{api.path} \<br/>
                   &nbsp;&nbsp;-H "Content-Type: application/json" \<br/>
@@ -1243,51 +1686,129 @@ function TestFlowsSection({ app, gatewayBase = 'http://localhost:8081' }: { app:
 
 // ── App detail panel ──────────────────────────────────────────────────────────
 
-function ReleasesSection({ appName, flowNames = [] }: { appName: string; flowNames?: string[] }) {
-  const [releases, setReleases]           = useState<AppRelease[]>([])
-  const [loading, setLoading]             = useState(true)
-  const [err, setErr]                     = useState('')
-  const [showNewForm, setShowNewForm]     = useState(false)
-  const [newVersion, setNewVersion]       = useState('')
-  const [newChannel, setNewChannel]       = useState('stable')
-  const [selectedFlows, setSelectedFlows] = useState<string[]>([])
-  const [extraFlows, setExtraFlows]       = useState('')  // comma-sep for flows not in studio
-  const [newNotes, setNewNotes]           = useState('')
-  const [creating, setCreating]           = useState(false)
-  const [createErr, setCreateErr]         = useState('')
+function ReleasesSection({ appName }: { appName: string }) {
+  const [releases, setReleases]         = useState<AppRelease[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [err, setErr]                   = useState('')
+  const [showNewForm, setShowNewForm]   = useState(false)
+  const [newVersion, setNewVersion]     = useState('')
+  const [newChannel, setNewChannel]     = useState('production')
+  const [newNotes, setNewNotes]         = useState('')
+  const [creating, setCreating]         = useState(false)
+  const [createErr, setCreateErr]       = useState('')
+  const [promoting, setPromoting]       = useState<string | null>(null)
+  const [promoteErr, setPromoteErr]     = useState('')
+  // available APIs for this app (from gateway snapshot)
+  const [appApis, setAppApis]           = useState<Array<{ name: string; path: string; method?: string; flow_name: string; endpoint_configs?: Array<{ flow_name?: string }> }>>([])
+  // user-selected APIs for the draft release (all selected by default)
+  const [selectedApis, setSelectedApis] = useState<string[]>([])
 
-  function toggleFlow(name: string) {
-    setSelectedFlows(prev => prev.includes(name) ? prev.filter(f => f !== name) : [...prev, name])
-  }
+  useEffect(() => {
+    fetchGatewaySnapshot().then(snap => {
+      const apis = (snap.apis ?? []).filter(a => a.app_name === appName)
+      setAppApis(apis)
+      setSelectedApis(apis.map(a => a.name))
+    }).catch(() => {})
+  }, [appName])
+
+  // Flows derived from the currently selected APIs
+  const derivedFlows = Array.from(new Set(
+    appApis
+      .filter(a => selectedApis.includes(a.name))
+      .flatMap(a => [
+        a.flow_name,
+        ...(a.endpoint_configs ?? []).map(ec => ec.flow_name).filter(Boolean) as string[],
+      ])
+      .filter(Boolean)
+  )).sort()
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
     listAppReleases(appName)
-      .then(r => setReleases(r.releases ?? []))
+      .then(r => setReleases((r.releases ?? []).sort((a, b) => b.created_at.localeCompare(a.created_at))))
       .catch(e => setErr(String(e)))
       .finally(() => setLoading(false))
   }, [appName])
 
   useEffect(() => { load() }, [load])
 
+  function toggleApi(name: string) {
+    setSelectedApis(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name])
+  }
+
   async function handleCreate() {
     if (!newVersion.trim()) { setCreateErr('Version is required'); return }
-    const extra = extraFlows.split(',').map(f => f.trim()).filter(Boolean)
-    const allFlows = [...selectedFlows, ...extra.filter(f => !selectedFlows.includes(f))]
-    if (allFlows.length === 0) { setCreateErr('Select or enter at least one flow'); return }
+    if (selectedApis.length === 0) { setCreateErr('Select at least one API for this release'); return }
     setCreating(true); setCreateErr('')
     try {
       await createAppRelease(appName, {
         version: newVersion.trim(),
-        channel: newChannel.trim() || 'stable',
-        flow_names: allFlows,
+        channel: newChannel.trim() || 'production',
+        api_names: selectedApis,
+        flow_names: derivedFlows,
         notes: newNotes.trim() || undefined,
       })
       setShowNewForm(false)
-      setNewVersion(''); setSelectedFlows([]); setExtraFlows(''); setNewNotes('')
+      setNewVersion(''); setNewNotes('')
       load()
     } catch (e) { setCreateErr(String(e)) }
     finally { setCreating(false) }
+  }
+
+  // Publish: deploy the release bundle to gateway, then mark as active
+  async function handlePublish(rel: AppRelease) {
+    setPromoting(rel.version); setPromoteErr('')
+    try {
+      const snap = await fetchGatewaySnapshot()
+      const relApiNames = new Set(rel.api_names ?? [])
+      const relFlowNames = new Set(rel.flow_names ?? [])
+      const apis = snap.apis.filter(a => relApiNames.has(a.name))
+      const flows = snap.flows.filter(f => relFlowNames.has(f.name))
+      if (apis.length === 0 && flows.length === 0) {
+        setPromoteErr('No APIs or flows found in this release — ensure they are still on the gateway')
+        return
+      }
+
+      // All flow_names declared in the release must exist on the gateway
+      const foundFlowNames = new Set(flows.map(f => f.name))
+      const missingOnGateway = (rel.flow_names ?? []).filter(fn => !foundFlowNames.has(fn))
+      if (missingOnGateway.length > 0) {
+        setPromoteErr(`Cannot publish: flow(s) not found on gateway: ${missingOnGateway.join(', ')}. Sync the flows first.`)
+        return
+      }
+
+      // Every API endpoint must reference only flows included in this release
+      const missingFromRelease: string[] = []
+      for (const api of apis) {
+        for (const ep of (api as any).endpoint_configs ?? []) {
+          if (ep.flow_name && !relFlowNames.has(ep.flow_name)) {
+            missingFromRelease.push(`${api.name} → ${ep.flow_name}`)
+          }
+        }
+      }
+      if (missingFromRelease.length > 0) {
+        setPromoteErr(`Cannot publish: API endpoint(s) reference flow(s) not in this release — add the missing flows or deselect the API:\n${missingFromRelease.join(', ')}`)
+        return
+      }
+
+      await deploy({
+        payload: { sync_uuid: crypto.randomUUID(), flows: flows as any, apis: apis.map(a => ({ ...a, action: 'upsert' })) as any },
+        levels: [],
+        target_names: [],
+      })
+      await promoteAppRelease(appName, rel.version, rel.channel)
+      load()
+    } catch (e) { setPromoteErr(String(e)) }
+    finally { setPromoting(null) }
+  }
+
+  async function handleRollback(rel: AppRelease) {
+    setPromoting(rel.version); setPromoteErr('')
+    try {
+      await rollbackAppRelease(appName, rel.version, rel.channel)
+      load()
+    } catch (e) { setPromoteErr(String(e)) }
+    finally { setPromoting(null) }
   }
 
   const active = releases.find(r => r.active)
@@ -1295,7 +1816,16 @@ function ReleasesSection({ appName, flowNames = [] }: { appName: string; flowNam
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Deploy & Releases</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Publish & Releases</div>
+          {active && (
+            <span style={{
+              fontSize: 10, padding: '2px 8px', borderRadius: 10,
+              background: '#4ade8022', border: '1px solid #4ade80',
+              color: '#4ade80', fontWeight: 700,
+            }}>● LIVE v{active.version}</span>
+          )}
+        </div>
         <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowNewForm(v => !v); setCreateErr('') }}>
           {showNewForm ? 'Cancel' : '+ New Release'}
         </button>
@@ -1303,49 +1833,148 @@ function ReleasesSection({ appName, flowNames = [] }: { appName: string; flowNam
 
       {loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>}
       {err && <div style={{ fontSize: 12, color: '#f87171' }}>{err}</div>}
+      {promoteErr && <div style={{ fontSize: 12, color: '#f87171', marginBottom: 6 }}>{promoteErr}</div>}
 
       {!loading && !err && releases.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-          No releases yet. Create one to associate flows with this app.
+          No releases yet. Draft a release by selecting APIs, then publish to deploy.
         </div>
       )}
 
+      {/* Release cards */}
       {releases.map(rel => (
         <div key={rel.version} style={{
-          background: 'var(--block-bg)', border: `1px solid ${rel.active ? 'var(--accent)' : 'var(--border)'}`,
+          background: 'var(--block-bg)', border: `1px solid ${rel.active ? '#4ade8066' : 'var(--border)'}`,
           borderRadius: 6, padding: '8px 12px', marginBottom: 6,
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>v{rel.version}</span>
               <span style={{
                 fontSize: 10, padding: '1px 6px', borderRadius: 3,
-                background: rel.active ? 'var(--accent)' : 'var(--border)',
-                color: rel.active ? '#fff' : 'var(--text-muted)',
+                background: rel.active ? '#4ade8033' : 'var(--border)',
+                color: rel.active ? '#4ade80' : 'var(--text-muted)',
+                fontWeight: rel.active ? 700 : 400,
               }}>{rel.channel}</span>
-              {rel.active && <span style={{ fontSize: 10, color: '#4ade80' }}>● ACTIVE</span>}
+              {rel.active && <span style={{ fontSize: 10, color: '#4ade80', fontWeight: 700 }}>● PUBLISHED</span>}
             </div>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rel.created_at ? new Date(rel.created_at).toLocaleDateString() : ''}</span>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rel.created_at ? new Date(rel.created_at).toLocaleDateString() : ''}</span>
+              {!rel.active && (
+                <button className="btn btn-primary" style={{ fontSize: 10, padding: '2px 8px' }}
+                  onClick={() => handlePublish(rel)}
+                  disabled={promoting === rel.version}>
+                  {promoting === rel.version ? 'Publishing…' : 'Publish'}
+                </button>
+              )}
+              {rel.active && (
+                <button className="btn" style={{ fontSize: 10, padding: '2px 8px', color: '#f59e0b' }}
+                  onClick={() => handleRollback(rel)}
+                  disabled={promoting === rel.version}
+                  title="Roll back to previous active version">
+                  Rollback
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            {(rel.flow_names ?? []).map(f => (
-              <span key={f} style={{
-                background: 'var(--sidebar-bg, #0f1117)', border: '1px solid var(--border)',
-                borderRadius: 3, padding: '1px 6px', fontFamily: 'monospace',
-              }}>{f}</span>
-            ))}
-          </div>
-          {rel.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{rel.notes}</div>}
+          {/* APIs in this release */}
+          {(rel.api_names ?? []).length > 0 && (
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>APIs</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {(rel.api_names ?? []).map(n => (
+                  <span key={n} style={{
+                    background: '#89b4fa22', border: '1px solid #89b4fa44',
+                    borderRadius: 3, padding: '1px 6px', fontFamily: 'monospace', fontSize: 11, color: '#89b4fa',
+                  }}>{n}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Flows in this release */}
+          {(rel.flow_names ?? []).length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Flows</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {(rel.flow_names ?? []).map(f => (
+                  <span key={f} style={{
+                    background: '#4ade8011', border: '1px solid #4ade8033',
+                    borderRadius: 3, padding: '1px 6px', fontFamily: 'monospace', fontSize: 11, color: '#4ade80',
+                  }}>{f}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {rel.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontStyle: 'italic' }}>{rel.notes}</div>}
         </div>
       ))}
 
+      {/* New Release form */}
       {showNewForm && (
         <div style={{
           background: 'var(--block-bg)', border: '1px solid var(--border)',
           borderRadius: 6, padding: 12, marginTop: 8,
         }}>
-          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8 }}>New Release</div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 10 }}>Draft New Release</div>
+
+          {/* API selection */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>APIs to include</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn" style={{ fontSize: 10, padding: '1px 6px' }} onClick={() => setSelectedApis(appApis.map(a => a.name))}>All</button>
+                <button className="btn" style={{ fontSize: 10, padding: '1px 6px' }} onClick={() => setSelectedApis([])}>None</button>
+              </div>
+            </div>
+            {appApis.length === 0 ? (
+              <div style={{ fontSize: 11, color: '#f59e0b', fontStyle: 'italic' }}>
+                No APIs found for this app — add APIs first.
+              </div>
+            ) : (
+              <div style={{
+                border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden',
+              }}>
+                {appApis.map((api, i) => (
+                  <label key={api.name} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px',
+                    cursor: 'pointer', fontSize: 12,
+                    borderBottom: i < appApis.length - 1 ? '1px solid var(--border)' : undefined,
+                    background: selectedApis.includes(api.name) ? '#89b4fa0a' : undefined,
+                  }}>
+                    <input type="checkbox"
+                      checked={selectedApis.includes(api.name)}
+                      onChange={() => { toggleApi(api.name); setCreateErr('') }} />
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, color: '#fff', minWidth: 36, textAlign: 'center',
+                      background: METHOD_COLORS[(api.method ?? 'ANY').toUpperCase()] ?? '#607d8b',
+                      borderRadius: 3, padding: '1px 4px',
+                    }}>{(api.method ?? 'ANY').toUpperCase()}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 11, flex: 1 }}>{api.path}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{api.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Flows derived from selected APIs (read-only) */}
+          {derivedFlows.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, display: 'block', marginBottom: 4 }}>
+                Flows included <span style={{ fontWeight: 400, fontStyle: 'italic' }}>(auto-derived from selected APIs)</span>
+              </label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {derivedFlows.map(f => (
+                  <span key={f} style={{
+                    background: '#4ade8011', border: '1px solid #4ade8033',
+                    borderRadius: 3, padding: '1px 7px', fontFamily: 'monospace', fontSize: 11, color: '#4ade80',
+                  }}>{f}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Version *</label>
               <input className="input" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
@@ -1354,48 +1983,31 @@ function ReleasesSection({ appName, flowNames = [] }: { appName: string; flowNam
             </div>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Channel</label>
-              <input className="input" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
-                placeholder="stable" value={newChannel}
-                onChange={e => setNewChannel(e.target.value)} />
+              <select className="input" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                value={newChannel} onChange={e => setNewChannel(e.target.value)}>
+                <option value="production">production</option>
+                <option value="staging">staging</option>
+              </select>
             </div>
           </div>
-          <div style={{ marginBottom: 8 }}>
-            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Flows *</label>
-            {flowNames.length > 0 ? (
-              <div style={{
-                background: 'var(--sidebar-bg, #0f1117)', border: '1px solid var(--border)',
-                borderRadius: 4, padding: '6px 10px', marginBottom: 6,
-                display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 120, overflowY: 'auto',
-              }}>
-                {flowNames.map(fn => (
-                  <label key={fn} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    <input type="checkbox" checked={selectedFlows.includes(fn)} onChange={() => { toggleFlow(fn); setCreateErr('') }} />
-                    <span style={{ fontFamily: 'monospace' }}>{fn}</span>
-                  </label>
-                ))}
-              </div>
-            ) : null}
-            <input className="input" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
-              placeholder={flowNames.length > 0 ? 'Additional flows not listed above (comma-separated)' : 'Flow names, comma-separated'}
-              value={extraFlows}
-              onChange={e => { setExtraFlows(e.target.value); setCreateErr('') }} />
-          </div>
+
           <div style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Notes</label>
+            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Release notes</label>
             <input className="input" style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
-              placeholder="Optional release notes" value={newNotes}
+              placeholder="What's in this release?" value={newNotes}
               onChange={e => setNewNotes(e.target.value)} />
           </div>
-          {createErr && <div style={{ color: '#f87171', fontSize: 11, marginBottom: 8 }}>{createErr}</div>}
-          <button className="btn" style={{ fontSize: 12 }} onClick={handleCreate} disabled={creating}>
-            {creating ? 'Creating…' : 'Create Release'}
-          </button>
-        </div>
-      )}
 
-      {active && active.flow_names && active.flow_names.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-          Active release <strong>v{active.version}</strong> includes {active.flow_names.length} flow(s).
+          {createErr && <div style={{ color: '#f87171', fontSize: 11, marginBottom: 8 }}>{createErr}</div>}
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="btn btn-primary" style={{ fontSize: 12 }} onClick={handleCreate} disabled={creating}>
+              {creating ? 'Creating…' : 'Create Release Draft'}
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Then click <strong>Publish</strong> to deploy to gateway.
+            </span>
+          </div>
         </div>
       )}
     </div>
@@ -1409,9 +2021,10 @@ interface AppPanelProps {
   savedFlows?: SavedFlow[]
   blocks?: PaletteBlock[]
   onSaveFlow?: (name: string, steps: FlowStep[], constants: Record<string, string>) => void
+  directSyncEnabled?: boolean
 }
 
-function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = [], onSaveFlow }: AppPanelProps) {
+function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = [], onSaveFlow, directSyncEnabled = true }: AppPanelProps) {
   const [designingFlow, setDesigningFlow] = useState<string | null>(null)
   const [testingApp, setTestingApp] = useState(false)
   const [editMode, setEditMode]     = useState(false)
@@ -1640,7 +2253,7 @@ function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = []
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>
-        <ReleasesSection appName={app.name} flowNames={flowNames} />
+        <ReleasesSection appName={app.name} />
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>
@@ -1649,6 +2262,7 @@ function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = []
           gatewayBase={gatewayBase}
           flowNames={flowNames}
           onDesignNew={name => setDesigningFlow(name || `${app.name.replace(/-/g,'_')}_flow`)}
+          directSyncEnabled={directSyncEnabled}
         />
       </div>
 
@@ -1680,16 +2294,204 @@ function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = []
   )
 }
 
+// ── Storage providers manager ─────────────────────────────────────────────────
+
+const PROVIDER_TYPES = ['s3', 'gcs', 'local'] as const
+type ProviderType = typeof PROVIDER_TYPES[number]
+
+const EMPTY_CFG: StorageProviderConfig = { name: '', type: 's3' }
+
+function StorageProvidersPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [providers, setProviders]   = useState<StorageProviderConfig[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
+  const [editing, setEditing]       = useState<StorageProviderConfig | null>(null)
+  const [isNew, setIsNew]           = useState(false)
+  const [saving, setSaving]         = useState(false)
+  const [deleting, setDeleting]     = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    listStorageProviders()
+      .then(r => setProviders(r.providers ?? []))
+      .catch(e => setErr(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  function startAdd() {
+    setEditing({ ...EMPTY_CFG })
+    setIsNew(true)
+    setErr('')
+  }
+
+  function startEdit(p: StorageProviderConfig) {
+    setEditing({ ...p })
+    setIsNew(false)
+    setErr('')
+  }
+
+  async function save() {
+    if (!editing) return
+    setSaving(true); setErr('')
+    try {
+      if (isNew) {
+        await addStorageProvider(editing)
+      } else {
+        await updateStorageProvider(editing.name, editing)
+      }
+      setEditing(null)
+      load()
+      onChanged()
+    } catch (ex) { setErr(String(ex)) }
+    finally { setSaving(false) }
+  }
+
+  async function remove(name: string) {
+    if (!window.confirm(`Delete connector "${name}"? This cannot be undone.`)) return
+    setDeleting(name)
+    try {
+      await deleteStorageProvider(name)
+      load()
+      onChanged()
+    } catch (ex) { setErr(String(ex)) }
+    finally { setDeleting(null) }
+  }
+
+  function setField(k: keyof StorageProviderConfig, v: string) {
+    setEditing(prev => prev ? { ...prev, [k]: v } : prev)
+  }
+
+  const typeFields: Record<ProviderType, Array<{ key: keyof StorageProviderConfig; label: string; placeholder?: string }>> = {
+    s3: [
+      { key: 'bucket_ref', label: 'Bucket', placeholder: 'my-bucket or env:BUCKET_NAME' },
+      { key: 'region', label: 'Region', placeholder: 'us-east-1' },
+      { key: 'endpoint_url', label: 'Endpoint URL (optional)', placeholder: 'https://s3.example.com' },
+      { key: 'access_key_ref', label: 'Access Key', placeholder: 'AKID… or env:AWS_ACCESS_KEY_ID' },
+      { key: 'secret_key_ref', label: 'Secret Key', placeholder: 'env:AWS_SECRET_ACCESS_KEY' },
+    ],
+    gcs: [
+      { key: 'bucket_ref', label: 'Bucket', placeholder: 'my-bucket or env:BUCKET_NAME' },
+      { key: 'project_id', label: 'Project ID' },
+      { key: 'credential_ref', label: 'Credential', placeholder: 'env:GOOGLE_APPLICATION_CREDENTIALS' },
+    ],
+    local: [
+      { key: 'root_dir', label: 'Root Directory', placeholder: './rah-assets' },
+    ],
+  }
+
+  return (
+    <div style={{ background: 'var(--sidebar-bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>Manage Storage Connectors</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={startAdd}>+ Add Connector</button>
+          <button className="btn" style={{ fontSize: 11 }} onClick={onClose}>Close</button>
+        </div>
+      </div>
+      {err && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 8 }}>{err}</div>}
+
+      {/* Provider list */}
+      {loading ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>
+      ) : providers.length === 0 && !editing ? (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No connectors yet. Click "+ Add Connector" to create one.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: editing ? 12 : 0 }}>
+          {providers.map(p => (
+            <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px' }}>
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>{p.type}</span>
+                {p.bucket_ref && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>bucket: {p.bucket_ref}</span>}
+                {p.root_dir && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>{p.root_dir}</span>}
+              </div>
+              <button className="btn" style={{ fontSize: 11 }} onClick={() => startEdit(p)}>Edit</button>
+              <button className="btn" style={{ fontSize: 11, color: '#f44336' }}
+                onClick={() => remove(p.name)} disabled={deleting === p.name}>
+                {deleting === p.name ? '…' : 'Delete'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Edit / Add form */}
+      {editing && (
+        <div style={{ background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginTop: 8 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 10 }}>{isNew ? 'New Connector' : `Edit: ${editing.name}`}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Name</div>
+              <input className="input" style={{ width: '100%', fontSize: 12 }}
+                placeholder="e.g. my-s3"
+                value={editing.name}
+                disabled={!isNew}
+                onChange={e => setField('name', e.target.value)} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Type</div>
+              <select className="input" style={{ width: '100%', fontSize: 12 }}
+                value={editing.type}
+                onChange={e => setEditing(prev => prev ? { name: prev.name, type: e.target.value } : prev)}>
+                {PROVIDER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+            {(typeFields[editing.type as ProviderType] ?? []).map(f => (
+              <div key={String(f.key)}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>{f.label}</div>
+                <input className="input" style={{ width: '100%', fontSize: 12 }}
+                  type="text"
+                  placeholder={f.placeholder}
+                  value={(editing[f.key] as string) ?? ''}
+                  onChange={e => setField(f.key, e.target.value)} />
+              </div>
+            ))}
+          </div>
+          {err && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{err}</div>}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => { setEditing(null); setErr('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Static assets section ────────────────────────────────────────────────────
 
 function AssetsSection({ appName }: { appName: string }) {
-  const [assets, setAssets]     = useState<AssetMeta[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [err, setErr]           = useState('')
-  const [uploading, setUploading] = useState(false)
-  const [deleting, setDeleting] = useState<string | null>(null)
+  const [assets, setAssets]         = useState<AssetMeta[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
+  const [uploading, setUploading]   = useState(false)
+  const [deleting, setDeleting]     = useState<string | null>(null)
   const [unavailable, setUnavailable] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // connector config
+  const [connectors, setConnectors]     = useState<string[]>([])
+  const [storeCfg, setStoreCfg]         = useState<AppAssetStoreConfig>({ connector: '' })
+  const [editCfg, setEditCfg]           = useState<AppAssetStoreConfig>({ connector: '' })
+  const [showCfg, setShowCfg]           = useState(false)
+  const [savingCfg, setSavingCfg]       = useState(false)
+  const [cfgErr, setCfgErr]             = useState('')
+  const [showManage, setShowManage]     = useState(false)
+
+  const refreshConnectors = useCallback(() => {
+    listAssetConnectors().then(r => setConnectors(r.connectors ?? [])).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshConnectors()
+    getAppAssetStoreConfig(appName).then(c => { setStoreCfg(c); setEditCfg(c) }).catch(() => {})
+  }, [appName, refreshConnectors])
 
   const load = useCallback(() => {
     setLoading(true); setErr('')
@@ -1709,10 +2511,8 @@ function AssetsSection({ appName }: { appName: string }) {
     const file = e.target.files?.[0]
     if (!file) return
     setUploading(true); setErr('')
-    try {
-      await uploadAsset(appName, file)
-      load()
-    } catch (ex) { setErr(String(ex)) }
+    try { await uploadAsset(appName, file); load() }
+    catch (ex) { setErr(String(ex)) }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
@@ -1723,13 +2523,80 @@ function AssetsSection({ appName }: { appName: string }) {
     finally { setDeleting(null) }
   }
 
-  if (unavailable) {
+  async function saveConnectorCfg() {
+    setSavingCfg(true); setCfgErr('')
+    try {
+      await putAppAssetStoreConfig(appName, editCfg)
+      setStoreCfg(editCfg)
+      setShowCfg(false)
+      load()
+    } catch (ex) { setCfgErr(String(ex)) }
+    finally { setSavingCfg(false) }
+  }
+
+  const connectorLabel = storeCfg.connector
+    ? storeCfg.connector + (storeCfg.prefix ? ` (${storeCfg.prefix})` : '')
+    : 'default (disk)'
+
+  const configPanel = showCfg && (
+    <div style={{ background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Storage Connector</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Connector</div>
+          <select className="input" style={{ width: '100%', fontSize: 12 }}
+            value={editCfg.connector}
+            onChange={e => setEditCfg(c => ({ ...c, connector: e.target.value }))}>
+            <option value="">— studio default (disk) —</option>
+            {connectors.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+          {connectors.length === 0 && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+              No connectors yet.{' '}
+              <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setShowManage(true)}>Add one</span>
+            </div>
+          )}
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Key prefix <span style={{ fontWeight: 400 }}>(optional)</span></div>
+          <input className="input" style={{ width: '100%', fontSize: 12 }}
+            placeholder="e.g. assets"
+            value={editCfg.prefix ?? ''}
+            onChange={e => setEditCfg(c => ({ ...c, prefix: e.target.value }))} />
+        </div>
+      </div>
+      {cfgErr && <div style={{ fontSize: 11, color: '#f44336', marginBottom: 6 }}>{cfgErr}</div>}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="btn btn-primary" style={{ fontSize: 11 }} onClick={saveConnectorCfg} disabled={savingCfg}>
+          {savingCfg ? 'Saving…' : 'Save'}
+        </button>
+        <button className="btn" style={{ fontSize: 11 }} onClick={() => { setShowCfg(false); setEditCfg(storeCfg); setCfgErr('') }}>Cancel</button>
+        <button className="btn" style={{ fontSize: 11, marginLeft: 'auto' }} onClick={() => setShowManage(v => !v)}>
+          {showManage ? 'Hide' : 'Manage Connectors'}
+        </button>
+      </div>
+    </div>
+  )
+
+  if (unavailable && !showCfg) {
     return (
       <div>
-        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13, marginBottom: 8 }}>Static Assets</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
-          Asset storage not configured. Start Studio with <code>--assets-dir ./rah-assets</code> to enable file hosting.
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowManage(v => !v)}>
+              {showManage ? 'Hide Connectors' : 'Manage Connectors'}
+            </button>
+            <button className="btn" style={{ fontSize: 11 }} onClick={() => setShowCfg(true)}>Configure Storage</button>
+          </div>
         </div>
+        {showManage && <StorageProvidersPanel onClose={() => setShowManage(false)} onChanged={refreshConnectors} />}
+        {configPanel}
+        {!showCfg && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--block-bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px' }}>
+            Asset storage not configured. Click "Configure Storage" to pick a connector, or start Studio with <code>--assets-dir ./rah-assets</code>.
+          </div>
+        )}
       </div>
     )
   }
@@ -1737,7 +2604,13 @@ function AssetsSection({ appName }: { appName: string }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 13 }}>Static Assets</div>
+          <span
+            style={{ fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer', borderBottom: '1px dashed var(--border)' }}
+            onClick={() => { setShowCfg(v => !v); setEditCfg(storeCfg) }}
+          >{connectorLabel}</span>
+        </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {uploading && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Uploading…</span>}
           <button className="btn" style={{ fontSize: 11 }} onClick={() => fileRef.current?.click()} disabled={uploading}>
@@ -1746,6 +2619,8 @@ function AssetsSection({ appName }: { appName: string }) {
           <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleUpload} />
         </div>
       </div>
+      {configPanel}
+      {showManage && <StorageProvidersPanel onClose={() => setShowManage(false)} onChanged={refreshConnectors} />}
       {err && <div style={{ fontSize: 12, color: '#f87171', marginBottom: 8 }}>{err}</div>}
       {loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>}
       {!loading && assets.length === 0 && (
@@ -2433,20 +3308,32 @@ interface AppsProps {
 }
 
 export default function Apps({ flowNames = [], savedFlows = [], blocks = [], onSaveFlow, initialAppName, onAppNavConsumed, onNavigateToFlow }: AppsProps) {
-  const [apps, setApps]           = useState<App[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [err, setErr]             = useState('')
-  const [selected, setSelected]   = useState<App | null>(null)
-  const [view, setView]           = useState<'list' | 'new'>('list')
+  const [apps, setApps]                   = useState<App[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [err, setErr]                     = useState('')
+  const [selected, setSelected]           = useState<App | null>(null)
+  const [view, setView]                   = useState<'list' | 'new'>('list')
+  const [directSyncEnabled, setDirectSyncEnabled] = useState(true)
+
+  useEffect(() => {
+    fetchStudioConfig()
+      .then(cfg => setDirectSyncEnabled(cfg.direct_sync_enabled))
+      .catch(() => {}) // default to true (direct sync) if endpoint not available
+  }, [])
   const [liveAppNames, setLiveAppNames] = useState<Set<string>>(new Set())
 
   const loadApps = useCallback(() => {
     setLoading(true); setErr('')
-    Promise.all([listApps(), listAppUsages().catch(() => ({ flow_usages: {} }))])
-      .then(([registered, usages]) => {
+    Promise.all([
+      listApps(),
+      listAppUsages().catch(() => ({ flow_usages: {} })),
+      fetchGatewaySnapshot().catch(() => ({ flows: [], apis: [] })),
+    ])
+      .then(([registered, usages, snap]) => {
         const all = [...(registered ?? [])]
         const registeredNames = new Set(all.map(a => a.name))
-        // Discover apps deployed via rah-sync from release data in app-usages
+
+        // Discover apps from rah-sync flow_usages
         const syncedNames = new Set<string>()
         for (const entries of Object.values(usages.flow_usages ?? {})) {
           for (const e of entries) if (e.app_name) syncedNames.add(e.app_name)
@@ -2454,8 +3341,20 @@ export default function Apps({ flowNames = [], savedFlows = [], blocks = [], onS
         for (const name of syncedNames) {
           if (!registeredNames.has(name)) {
             all.push({ app_id: 0, name, description: 'Deployed via rah-sync', labels: { source: 'sync' }, created_at: 0, updated_at: 0 })
+            registeredNames.add(name)
           }
         }
+
+        // Discover apps from gateway APIs that have app_name set
+        const gatewayNames = new Set((snap.apis ?? []).map((a: any) => a.app_name).filter(Boolean) as string[])
+        setLiveAppNames(gatewayNames)
+        for (const name of gatewayNames) {
+          if (!registeredNames.has(name)) {
+            all.push({ app_id: 0, name, description: 'Discovered from gateway APIs', labels: { source: 'gateway' }, created_at: 0, updated_at: 0 })
+            registeredNames.add(name)
+          }
+        }
+
         setApps(all)
       })
       .catch(e => setErr(String(e)))
@@ -2463,15 +3362,6 @@ export default function Apps({ flowNames = [], savedFlows = [], blocks = [], onS
   }, [])
 
   useEffect(() => { loadApps() }, [loadApps])
-
-  useEffect(() => {
-    fetchGatewaySnapshot()
-      .then(snap => {
-        const names = new Set((snap.apis ?? []).map((a: any) => a.app_name).filter(Boolean) as string[])
-        setLiveAppNames(names)
-      })
-      .catch(() => {})
-  }, [apps])
 
   useEffect(() => {
     if (initialAppName && apps.length > 0) {
@@ -2571,6 +3461,7 @@ export default function Apps({ flowNames = [], savedFlows = [], blocks = [], onS
             savedFlows={savedFlows}
             blocks={blocks}
             onSaveFlow={onSaveFlow}
+            directSyncEnabled={directSyncEnabled}
           />
         )}
         {view === 'list' && !selected && !loading && (

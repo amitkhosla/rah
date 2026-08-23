@@ -1,0 +1,16 @@
+apis:
+  - name: faq-ask
+    app_name: product-faq
+    path: /faq/ask
+    method: POST
+    flow_name: faq_answer
+    rate_limit_config: faq-rl
+    action: upsert
+
+  - name: faq-health
+    app_name: product-faq
+    path: /faq/health
+    method: GET
+    flow_name: faq_health
+    skip_rate_limit: true
+    action: upsert

@@ -1567,6 +1567,61 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("value", "Object path", "Key/path of the object to delete; supports {slot} references", "files/{file_id}"),
 			},
 		},
+		StepDescriptor{
+			Type: "storage_presign", Title: "Storage Presign", Category: "storage", Capability: "read",
+			Description: "Generate a time-limited signed URL for direct client upload (PUT) or download (GET) without proxying bytes through the gateway. Supported by S3 and GCS providers.",
+			Defaults:    map[string]string{"key": "default", "method": "GET", "expiry_seconds": "900", "as": "presigned_url"},
+			Fields: []StepField{
+				sf("key", "Provider", "Name of the storage_provider configured in gateway.yaml", "default"),
+				sf("value", "Object path", "Key/path of the object; supports {slot} references", "files/{file_id}"),
+				sf("method", "HTTP Method", "GET for download, PUT for upload", "GET"),
+				sf("expiry_seconds", "Expiry (sec)", "How long the URL is valid (default 900 = 15 min)", "900"),
+				sf("as", "Store as", "Slot to save the signed URL string into", "presigned_url"),
+			},
+		},
+	)
+
+	// ── SFTP ─────────────────────────────────────────────────────────────────────
+	base = append(base,
+		StepDescriptor{
+			Type: "sftp_get", Title: "SFTP Get", Category: "sftp", Capability: "read",
+			Description: "Retrieve a file from an SFTP server.",
+			Defaults:    map[string]string{"key": "default", "as": "file_content"},
+			Fields: []StepField{
+				sf("key", "Connector", "Name of the sftp_connector configured in gateway.yaml", "default"),
+				sf("value", "Remote path", "Path of the file to retrieve; supports {slot} references", "/uploads/{file_name}"),
+				sf("as", "Store as", "Slot to save the retrieved bytes into", "file_content"),
+			},
+		},
+		StepDescriptor{
+			Type: "sftp_put", Title: "SFTP Put", Category: "sftp", Capability: "write",
+			Description: "Upload a file to an SFTP server.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Connector", "Name of the sftp_connector configured in gateway.yaml", "default"),
+				sf("value", "Remote path", "Path where the file will be stored; supports {slot} references", "/uploads/{file_name}"),
+				sf("body_var", "Content slot", "Slot containing the bytes to upload", "file_content"),
+			},
+		},
+		StepDescriptor{
+			Type: "sftp_delete", Title: "SFTP Delete", Category: "sftp", Capability: "write",
+			Description: "Delete a file from an SFTP server.",
+			Defaults:    map[string]string{"key": "default"},
+			Fields: []StepField{
+				sf("key", "Connector", "Name of the sftp_connector configured in gateway.yaml", "default"),
+				sf("value", "Remote path", "Path of the file to delete; supports {slot} references", "/uploads/{file_name}"),
+			},
+		},
+		StepDescriptor{
+			Type: "sftp_list", Title: "SFTP List", Category: "sftp", Capability: "read",
+			Description: "List files in a directory on an SFTP server. Returns a JSON array of {name, size, is_dir, mod_time}.",
+			Defaults:    map[string]string{"key": "default", "as": "file_list"},
+			Fields: []StepField{
+				sf("key", "Connector", "Name of the sftp_connector configured in gateway.yaml", "default"),
+				sf("value", "Remote directory", "Directory path to list; supports {slot} references", "/uploads/{folder}"),
+				sf("as", "Store as", "Slot to save the JSON array of file entries into", "file_list"),
+			},
+		},
 	)
 
 	// ── Redis ─────────────────────────────────────────────────────────────
@@ -2064,6 +2119,7 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, GraphQLStepDescriptors()...)
 	base = append(base, XMLStepDescriptors()...)
 	base = append(base, ConvertStepDescriptors()...)
+	base = append(base, CircuitControlStepDescriptors()...)
 	return base
 }
 

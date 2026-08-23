@@ -368,6 +368,23 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
     case 'on_error':
       return [mk({ action: 'capture_error', key: p['code'] ?? '', as: p['message'] ?? '' })]
 
+    // ── Circuit breaker ────────────────────────────────────────────────────
+    case 'trip_circuit': {
+      const name = unquote(positional(1)[0] ?? '')
+      const forMs = p['for_ms'] ?? p['for'] ?? ''
+      const inp: Record<string, string> = { name }
+      if (forMs) inp['for_ms'] = forMs
+      return [mk({ action: 'trip_circuit', input: inp })]
+    }
+    case 'check_circuit': {
+      const name = unquote(positional(1)[0] ?? '')
+      return [mk({ action: 'check_circuit', input: { name }, ...withAs })]
+    }
+    case 'reset_circuit': {
+      const name = unquote(positional(1)[0] ?? '')
+      return [mk({ action: 'reset_circuit', input: { name } })]
+    }
+
     // ── Generic fallback (any other gateway action) ────────────────────────
     default:
       return [mk({ action, ...p, ...withAs })]

@@ -73,7 +73,7 @@ func (c *Compiler) compileMessagePublish(step StepConfig) error {
 	c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 		Name: "MESSAGE_PUBLISH",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			if msgPubMgr == nil {
+			if msgPubMgr == nil || msgPubMgr.Load() == nil {
 				ctx.ResponseStatus = 500
 				ctx.Failed = true
 				msg := "[message_publish] MessagingPublisherManager is nil — no messaging_publishers configured"

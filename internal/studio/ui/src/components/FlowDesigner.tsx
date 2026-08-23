@@ -1384,6 +1384,7 @@ export default function FlowDesigner({
     const temperature   = cfg['temperature'] ?? '0.7'
     const messagesSlot  = cfg['messages_slot'] ?? ''
     const systemSlot    = cfg['system_slot'] ?? ''
+    const staticSystem  = cfg['static_system'] ?? ''
 
     const modelAliases = llmModels.map(m => m.alias)
     const prevVars     = slotsUpTo(i)
@@ -1450,12 +1451,57 @@ export default function FlowDesigner({
           </div>
         ))}
         <button className="btn muted mt4" style={{ fontSize: 11 }}
-          onClick={() => updateCfg('fallback_chain', [...fallbackChain, ''].join(','))}>
+          onClick={() => {
+            if (modelAliases.length > 0) {
+              const firstAvailable = availableForFallback(fallbackChain.length)[0]
+              if (!firstAvailable) return
+              updateCfg('fallback_chain', [...fallbackChain, firstAvailable].join(','))
+            } else {
+              updateCfg('fallback_chain', [...fallbackChain, 'model-alias'].join(','))
+            }
+          }}
+          disabled={modelAliases.length > 0 && availableForFallback(fallbackChain.length).length === 0}>
           + Add fallback
         </button>
         {fallbackChain.length === 0 && (
           <span className="field-desc">No fallback configured — if the primary model fails the request will error.</span>
         )}
+
+        {/* Cost limits */}
+        {(() => {
+          let costLimits: Array<{window: string; limit_usd: number}> = []
+          try { costLimits = JSON.parse(cfg['cost_limits'] || '[]') } catch { /**/ }
+          const updateCostLimits = (next: typeof costLimits) => updateCfg('cost_limits', JSON.stringify(next))
+          return (
+            <>
+              <label className="field-label" style={{ marginTop: 10 }}>
+                Cost limits <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(trips circuit when exceeded)</span>
+              </label>
+              {costLimits.map((cl, ci) => (
+                <div key={ci} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <select className="input" style={{ flex: 1 }} value={cl.window}
+                    onChange={e => { const n = [...costLimits]; n[ci] = { ...n[ci], window: e.target.value }; updateCostLimits(n) }}>
+                    <option value="minute">per minute</option>
+                    <option value="hour">per hour</option>
+                    <option value="day">per day</option>
+                  </select>
+                  <input className="input" type="number" step="0.01" min="0" placeholder="USD limit"
+                    style={{ width: 90, flexShrink: 0 }} value={cl.limit_usd}
+                    onChange={e => { const n = [...costLimits]; n[ci] = { ...n[ci], limit_usd: Number(e.target.value) }; updateCostLimits(n) }} />
+                  <button className="btn muted" style={{ padding: '2px 8px', fontSize: 13, flexShrink: 0 }}
+                    onClick={() => updateCostLimits(costLimits.filter((_, j) => j !== ci))}>×</button>
+                </div>
+              ))}
+              <button className="btn muted mt4" style={{ fontSize: 11 }}
+                onClick={() => updateCostLimits([...costLimits, { window: 'hour', limit_usd: 1 }])}>
+                + Add cost limit
+              </button>
+              {costLimits.length === 0 && (
+                <span className="field-desc">No cost quota — model will run without spend limits.</span>
+              )}
+            </>
+          )
+        })()}
 
         {/* Input / output variables */}
         <label className="field-label" style={{ marginTop: 10 }}>
@@ -1491,6 +1537,39 @@ export default function FlowDesigner({
           </div>
         </div>
 
+        {/* Static system prompt */}
+        <label className="field-label" style={{ marginTop: 10 }}>
+          System prompt <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(static, baked into flow)</span>
+        </label>
+        <textarea
+          className="input"
+          rows={4}
+          placeholder="You are a helpful assistant…"
+          value={staticSystem}
+          onChange={e => updateCfg('static_system', e.target.value)}
+          style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <span className="field-desc" style={{ flex: 1, margin: 0 }}>
+            Baked in at save time. Use <em>System prompt slot</em> (advanced) for dynamic runtime prompts — slot overrides this.
+          </span>
+          <button className="btn muted" style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+            onClick={() => {
+              try {
+                const raw = localStorage.getItem('rah_studio_prompts')
+                const prompts: Array<{ name: string; content: string }> = raw ? JSON.parse(raw) : []
+                if (prompts.length === 0) { alert('No saved prompts found. Go to Settings → Prompts to create some.'); return }
+                const names = prompts.map((p, i) => `${i + 1}. ${p.name}`).join('\n')
+                const choice = window.prompt(`Pick a prompt (enter number):\n${names}`)
+                if (!choice) return
+                const idx = parseInt(choice, 10) - 1
+                if (idx >= 0 && idx < prompts.length) updateCfg('static_system', prompts[idx].content)
+              } catch { /* ignore */ }
+            }}>
+            Pick from library
+          </button>
+        </div>
+
         {/* Advanced */}
         <details style={{ marginTop: 10 }}>
           <summary style={{ fontSize: 11, color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' as const, padding: '4px 0' }}>
@@ -1522,6 +1601,74 @@ export default function FlowDesigner({
             <span className="field-desc">Slot holding a dynamic system prompt injected before the conversation.</span>
           </div>
         </details>
+      </div>
+    )
+  }
+
+  function renderTripCircuitBody(step: FlowStep, i: number) {
+    const rawInput = step['input']
+    let cfg: Record<string, string> = {}
+    if (typeof rawInput === 'string') { try { cfg = JSON.parse(rawInput) } catch { /**/ } }
+    else if (rawInput && typeof rawInput === 'object') { cfg = { ...(rawInput as Record<string, string>) } }
+    function updateCfg(key: string, value: string) {
+      const next = { ...cfg, [key]: value }
+      if (!value) delete next[key]
+      updateStep(i, 'input', JSON.stringify(next))
+    }
+    return (
+      <div className="step-body">
+        <label className="field-label">Circuit name</label>
+        <input className="input" placeholder="e.g. llm:gpt-4o" value={cfg['name'] ?? ''}
+          onChange={e => updateCfg('name', e.target.value)} />
+        <span className="field-desc">Name of the named circuit to open. Convention: "llm:&lt;alias&gt;" for LLM models.</span>
+        <label className="field-label" style={{ marginTop: 8 }}>Open for (ms)</label>
+        <input className="input" type="number" placeholder="60000" value={cfg['for_ms'] ?? ''}
+          onChange={e => updateCfg('for_ms', e.target.value)} />
+        <span className="field-desc">How long the circuit stays open before allowing probe requests. Default: 60 000 ms.</span>
+      </div>
+    )
+  }
+
+  function renderCheckCircuitBody(step: FlowStep, i: number) {
+    const rawInput = step['input']
+    let cfg: Record<string, string> = {}
+    if (typeof rawInput === 'string') { try { cfg = JSON.parse(rawInput) } catch { /**/ } }
+    else if (rawInput && typeof rawInput === 'object') { cfg = { ...(rawInput as Record<string, string>) } }
+    function updateCfg(key: string, value: string) {
+      const next = { ...cfg, [key]: value }
+      if (!value) delete next[key]
+      updateStep(i, 'input', JSON.stringify(next))
+    }
+    const outputVar = (step['as'] ?? '') as string
+    return (
+      <div className="step-body">
+        <label className="field-label">Circuit name</label>
+        <input className="input" placeholder="e.g. llm:gpt-4o" value={cfg['name'] ?? ''}
+          onChange={e => updateCfg('name', e.target.value)} />
+        <span className="field-desc">Writes "closed", "open", or "half_open" to the output variable.</span>
+        <label className="field-label" style={{ marginTop: 8 }}>Output variable</label>
+        <input className="input" placeholder="var.circuit_state" value={outputVar}
+          onChange={e => updateStep(i, 'as', e.target.value)} />
+      </div>
+    )
+  }
+
+  function renderResetCircuitBody(step: FlowStep, i: number) {
+    const rawInput = step['input']
+    let cfg: Record<string, string> = {}
+    if (typeof rawInput === 'string') { try { cfg = JSON.parse(rawInput) } catch { /**/ } }
+    else if (rawInput && typeof rawInput === 'object') { cfg = { ...(rawInput as Record<string, string>) } }
+    function updateCfg(key: string, value: string) {
+      const next = { ...cfg, [key]: value }
+      if (!value) delete next[key]
+      updateStep(i, 'input', JSON.stringify(next))
+    }
+    return (
+      <div className="step-body">
+        <label className="field-label">Circuit name</label>
+        <input className="input" placeholder="e.g. llm:gpt-4o" value={cfg['name'] ?? ''}
+          onChange={e => updateCfg('name', e.target.value)} />
+        <span className="field-desc">Force-closes the named circuit and resets failure/success counters.</span>
       </div>
     )
   }
@@ -3591,6 +3738,9 @@ export default function FlowDesigner({
                        </div>
                      ))() :
                      step.action === 'llm_call'          ? renderLlmCallBody(step, i)             :
+                     step.action === 'trip_circuit'      ? renderTripCircuitBody(step, i)         :
+                     step.action === 'check_circuit'     ? renderCheckCircuitBody(step, i)        :
+                     step.action === 'reset_circuit'     ? renderResetCircuitBody(step, i)        :
                      ['db_query', 'db_query_one', 'db_exec'].includes(step.action)
                                                          ? renderDbQueryBody(step, i)             :
                      step.action === 'send_email'        ? renderSendEmailBody(step, i)           :

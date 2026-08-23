@@ -405,6 +405,25 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
       case 'call':
         lines.push(`${I}call ${str(step['flow_name'])}`); break
 
+      // ── Circuit breaker ───────────────────────────────────────────────────
+      case 'trip_circuit': {
+        const cfg = parseInput(step['input'])
+        const name = cfg['name'] ?? ''
+        const forMsPart = cfg['for_ms'] ? `, for_ms: ${cfg['for_ms']}` : ''
+        lines.push(`${I}trip_circuit(${q(name)}${forMsPart})`); break
+      }
+      case 'check_circuit': {
+        const cfg = parseInput(step['input'])
+        const name = cfg['name'] ?? ''
+        const lhs = as_ ? `${as_} = ` : ''
+        lines.push(`${I}${lhs}check_circuit(${q(name)})`); break
+      }
+      case 'reset_circuit': {
+        const cfg = parseInput(step['input'])
+        const name = cfg['name'] ?? ''
+        lines.push(`${I}reset_circuit(${q(name)})`); break
+      }
+
       case 'if': {
         const condRaw  = step['condition']
         let condStr = str(condRaw)

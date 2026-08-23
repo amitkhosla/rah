@@ -653,7 +653,9 @@ export interface GatewayApi {
   method?: string
   flow_name: string
   app_name?: string
+  source?: string   // "app" = created from within an app in studio; absent = linked from outside
   action?: string
+  endpoint_configs?: Array<{ path: string; method?: string; flow_name?: string }>
 }
 
 export interface GatewayState {

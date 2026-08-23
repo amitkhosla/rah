@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/connectors/document"
+	"github.com/amitkhosla/rah/internal/connectors/messaging"
+	"github.com/amitkhosla/rah/internal/connectors/sftp"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/engine/steps"
@@ -15,6 +18,7 @@ import (
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
 	"github.com/amitkhosla/rah/internal/router"
 	"github.com/amitkhosla/rah/internal/scheduler"
+	"github.com/amitkhosla/rah/internal/secrets"
 	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
@@ -81,7 +85,23 @@ type ManagementServer struct {
 
 	WorkflowHandler *WorkflowHandler // optional; nil if workflows domain not configured
 
-	StorageMgr *storage.StorageManager
+	// Live connector holders — atomic swap for hot-reload
+	DocConnMgr       *LiveDocConnMgr
+	MessagingMgr     *LiveMessagingMgr
+	SFTPConnectorMgr *LiveSFTPConnMgr
+	StorageMgr       *LiveStorageMgr
+
+	// Persistent stores for each connector type
+	docConnStore    *gwConnStore[config.DocumentConnectorConfig]
+	msgPubStore     *gwConnStore[config.PublisherConfig]
+	sftpConnStore   *gwConnStore[config.SFTPConnectorConfig]
+	gwStorageStore  *gwConnStore[storage.StorageProviderConfig]
+
+	// SecretsResolver for rebuilding connector managers
+	SecretsResolver secrets.Resolver
+
+	// gatewayCtx is needed when rebuilding connector managers
+	gatewayCtx context.Context
 
 	configVersion atomic.Uint32 // incremented on every live config apply; readable via ConfigVersion()
 }
@@ -95,6 +115,24 @@ func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry,
 		RegMgr:      regMgr,
 		flowConfigs: make(map[string][]StepConfig),
 		apiConfigs:  make(map[string]ApiUpdate),
+	}
+}
+
+// InitConnectorStores initialises in-memory connector stores seeded from the gateway config.
+// Call this after assigning the live holder fields (DocConnMgr, MessagingMgr, etc.).
+func (s *ManagementServer) InitConnectorStores(ctx context.Context, gw config.GatewayConfig) {
+	s.gatewayCtx = ctx
+	if st, err := newGWConnStore(gw.DocumentConnectors, func(c config.DocumentConnectorConfig) string { return c.Name }, ""); err == nil {
+		s.docConnStore = st
+	}
+	if st, err := newGWConnStore(gw.MessagingPublishers, func(c config.PublisherConfig) string { return c.Name }, ""); err == nil {
+		s.msgPubStore = st
+	}
+	if st, err := newGWConnStore(gw.SFTPConnectors, func(c config.SFTPConnectorConfig) string { return c.Name }, ""); err == nil {
+		s.sftpConnStore = st
+	}
+	if st, err := newGWConnStore(gw.StorageProviders, func(c storage.StorageProviderConfig) string { return c.Name }, ""); err == nil {
+		s.gwStorageStore = st
 	}
 }
 
@@ -142,6 +180,8 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 			Path:              api.Path,
 			Method:            api.Method,
 			FlowName:          api.FlowName,
+			AppName:           api.AppName,
+			Source:            api.Source,
 			RateLimitName:     api.RateLimitName,
 			EndpointConfigs:   api.EndpointConfigs,
 			Async:             api.Async,
@@ -478,7 +518,11 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 						newRouteUpstreamUrls[routeKey] = buildUpstreamUrlInfo(a.UpstreamUrl, slotIdx, s.RegMgr)
 					}
 				}
-				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+				rootMethod := a.Method
+				if rootMethod == "" {
+					rootMethod = "ANY"
+				}
+				s.Compiler.BakeSubRouter(def, "/", rootMethod, instructions, true, apiRLId, 0, asyncMode)
 			} else {
 				for ecIdx, ec := range a.EndpointConfigs {
 					// Resolve and register multi-entry RL policies at endpoint level.
@@ -905,7 +949,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 						log.Printf("[Management] Warning: cannot allocate upstream_url slot for API %s: %v", a.Name, serr)
 					}
 				}
-				s.Compiler.BakeSubRouter(def, "/", "ANY", instructions, true, apiRLId, 0, asyncMode)
+				rootMethod2 := a.Method
+				if rootMethod2 == "" {
+					rootMethod2 = "ANY"
+				}
+				s.Compiler.BakeSubRouter(def, "/", rootMethod2, instructions, true, apiRLId, 0, asyncMode)
 				bakeEndpointSchema(def)
 				if s.InstrSchemaHook != nil {
 					ep := &def.Endpoints[len(def.Endpoints)-1]
@@ -1027,6 +1075,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				Method:            a.Method,
 				FlowName:          a.FlowName,
 				AppName:           a.AppName,
+				Source:            a.Source,
 				RateLimitName:     a.RateLimitName,
 				EndpointConfigs:   a.EndpointConfigs,
 				Async:             a.Async,
@@ -1969,7 +2018,11 @@ func (s *ManagementServer) DocumentConnectorsHandler(w http.ResponseWriter, r *h
 		Type string `json:"type"`
 	}
 	var out []item
-	if s.cfgMgr != nil {
+	if s.docConnStore != nil {
+		for _, c := range s.docConnStore.List() {
+			out = append(out, item{Name: c.Name, Type: c.Kind})
+		}
+	} else if s.cfgMgr != nil {
 		for _, c := range s.cfgMgr.Gateway().DocumentConnectors {
 			out = append(out, item{Name: c.Name, Type: c.Kind})
 		}
@@ -1992,7 +2045,11 @@ func (s *ManagementServer) StorageConnectorsHandler(w http.ResponseWriter, r *ht
 		Type string `json:"type"`
 	}
 	var out []item
-	if s.cfgMgr != nil {
+	if s.gwStorageStore != nil {
+		for _, c := range s.gwStorageStore.List() {
+			out = append(out, item{Name: c.Name, Type: c.Type})
+		}
+	} else if s.cfgMgr != nil {
 		for _, c := range s.cfgMgr.Gateway().StorageProviders {
 			out = append(out, item{Name: c.Name, Type: c.Type})
 		}
@@ -2001,6 +2058,29 @@ func (s *ManagementServer) StorageConnectorsHandler(w http.ResponseWriter, r *ht
 		out = []item{}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+}
+
+// SFTPConnectorsHandler serves GET /sftp-connectors.
+func (s *ManagementServer) SFTPConnectorsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	type entry struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	var result []entry
+	if s.SFTPConnectorMgr != nil {
+		for _, name := range s.SFTPConnectorMgr.Names() {
+			result = append(result, entry{Name: name, Type: "sftp"})
+		}
+	}
+	if result == nil {
+		result = []entry{}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": result})
 }
 
 // MessagingPublishersHandler serves GET /messaging-publishers.
@@ -2015,7 +2095,11 @@ func (s *ManagementServer) MessagingPublishersHandler(w http.ResponseWriter, r *
 		Type string `json:"type"`
 	}
 	var out []item
-	if s.cfgMgr != nil {
+	if s.msgPubStore != nil {
+		for _, c := range s.msgPubStore.List() {
+			out = append(out, item{Name: c.Name, Type: c.Kind})
+		}
+	} else if s.cfgMgr != nil {
 		for _, c := range s.cfgMgr.Gateway().MessagingPublishers {
 			out = append(out, item{Name: c.Name, Type: c.Kind})
 		}
@@ -2075,4 +2159,444 @@ func (s *ManagementServer) storeQueries(queries map[string]datasource.NamedQuery
 	}
 	data, _ := json.Marshal(queries)
 	_ = s.dataStore.PutGlobal(context.Background(), config.DomainNamedQueries, key, data)
+}
+
+// rebuildDocConnMgr rebuilds the DocumentConnectorManager from the store and swaps atomically.
+func (s *ManagementServer) rebuildDocConnMgr() error {
+	if s.docConnStore == nil || s.DocConnMgr == nil {
+		return nil
+	}
+	cfgs := s.docConnStore.List()
+	if len(cfgs) == 0 {
+		s.DocConnMgr.Store(nil)
+		return nil
+	}
+	ctx := s.gatewayCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mgr, err := document.New(ctx, cfgs, s.SecretsResolver)
+	if err != nil {
+		return fmt.Errorf("rebuild doc connectors: %w", err)
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("rebuild doc connectors start: %w", err)
+	}
+	// Stop old manager
+	if old := s.DocConnMgr.Load(); old != nil {
+		_ = old.Stop()
+	}
+	s.DocConnMgr.Store(mgr)
+	return nil
+}
+
+// rebuildMessagingMgr rebuilds the MessagePublisherManager from the store and swaps atomically.
+func (s *ManagementServer) rebuildMessagingMgr() error {
+	if s.msgPubStore == nil || s.MessagingMgr == nil {
+		return nil
+	}
+	cfgs := s.msgPubStore.List()
+	if len(cfgs) == 0 {
+		s.MessagingMgr.Store(nil)
+		return nil
+	}
+	ctx := s.gatewayCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mgr, err := messaging.New(ctx, cfgs, s.SecretsResolver)
+	if err != nil {
+		return fmt.Errorf("rebuild messaging: %w", err)
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("rebuild messaging start: %w", err)
+	}
+	if old := s.MessagingMgr.Load(); old != nil {
+		_ = old.Stop()
+	}
+	s.MessagingMgr.Store(mgr)
+	return nil
+}
+
+// rebuildSFTPConnMgr rebuilds the SFTPConnectorManager from the store and swaps atomically.
+func (s *ManagementServer) rebuildSFTPConnMgr() error {
+	if s.sftpConnStore == nil || s.SFTPConnectorMgr == nil {
+		return nil
+	}
+	cfgs := s.sftpConnStore.List()
+	if len(cfgs) == 0 {
+		s.SFTPConnectorMgr.Store(nil)
+		return nil
+	}
+	ctx := s.gatewayCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mgr, err := sftp.New(ctx, cfgs, s.SecretsResolver)
+	if err != nil {
+		return fmt.Errorf("rebuild sftp: %w", err)
+	}
+	if err := mgr.Start(ctx); err != nil {
+		return fmt.Errorf("rebuild sftp start: %w", err)
+	}
+	if old := s.SFTPConnectorMgr.Load(); old != nil {
+		_ = old.Stop()
+	}
+	s.SFTPConnectorMgr.Store(mgr)
+	return nil
+}
+
+// rebuildGWStorageMgr rebuilds the StorageManager from the store and swaps atomically.
+func (s *ManagementServer) rebuildGWStorageMgr() error {
+	if s.gwStorageStore == nil || s.StorageMgr == nil {
+		return nil
+	}
+	cfgs := s.gwStorageStore.List()
+	if len(cfgs) == 0 {
+		s.StorageMgr.Store(nil)
+		return nil
+	}
+	mgr, err := storage.New(cfgs)
+	if err != nil {
+		return fmt.Errorf("rebuild storage: %w", err)
+	}
+	s.StorageMgr.Store(mgr)
+	return nil
+}
+
+// crudName extracts the named-resource segment from a CRUD URL path.
+// Returns "" if the request targets the collection (e.g. "/document-connectors" or "/document-connectors/").
+// Returns the name segment if the request targets a specific resource (e.g. "/document-connectors/my-conn").
+func crudName(urlPath, prefix string) string {
+	if urlPath == prefix || urlPath == prefix+"/" {
+		return ""
+	}
+	name := strings.TrimPrefix(urlPath, prefix+"/")
+	return strings.TrimSuffix(name, "/")
+}
+
+// DocumentConnectorsCRUDHandler handles GET/POST /document-connectors and GET/PUT/DELETE /document-connectors/{name}.
+func (s *ManagementServer) DocumentConnectorsCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.docConnStore == nil {
+		s.DocumentConnectorsHandler(w, r)
+		return
+	}
+	name := crudName(r.URL.Path, "/document-connectors")
+	if name == "" {
+		switch r.Method {
+		case http.MethodGet:
+			cfgs := s.docConnStore.List()
+			type item struct {
+				Name string `json:"name"`
+				Kind string `json:"kind"`
+			}
+			out := make([]item, 0, len(cfgs))
+			for _, c := range cfgs {
+				out = append(out, item{Name: c.Name, Kind: c.Kind})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+		case http.MethodPost:
+			var cfg config.DocumentConnectorConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cfg.Name == "" {
+				http.Error(w, "name is required", http.StatusBadRequest)
+				return
+			}
+			if err := s.docConnStore.Set(cfg.Name, cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.rebuildDocConnMgr(); err != nil {
+				log.Printf("[doc-connectors] rebuild warning: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg, ok := s.docConnStore.Get(name)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var cfg config.DocumentConnectorConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name
+		if err := s.docConnStore.Set(name, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.rebuildDocConnMgr(); err != nil {
+			log.Printf("[doc-connectors] rebuild warning: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
+	case http.MethodDelete:
+		if err := s.docConnStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err := s.rebuildDocConnMgr(); err != nil {
+			log.Printf("[doc-connectors] rebuild warning: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// MessagingPublishersCRUDHandler handles GET/POST /messaging-publishers and GET/PUT/DELETE /messaging-publishers/{name}.
+func (s *ManagementServer) MessagingPublishersCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.msgPubStore == nil {
+		s.MessagingPublishersHandler(w, r)
+		return
+	}
+	name := crudName(r.URL.Path, "/messaging-publishers")
+	if name == "" {
+		switch r.Method {
+		case http.MethodGet:
+			cfgs := s.msgPubStore.List()
+			type item struct {
+				Name string `json:"name"`
+				Kind string `json:"kind"`
+			}
+			out := make([]item, 0, len(cfgs))
+			for _, c := range cfgs {
+				out = append(out, item{Name: c.Name, Kind: c.Kind})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"publishers": out})
+		case http.MethodPost:
+			var cfg config.PublisherConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cfg.Name == "" {
+				http.Error(w, "name is required", http.StatusBadRequest)
+				return
+			}
+			if err := s.msgPubStore.Set(cfg.Name, cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.rebuildMessagingMgr(); err != nil {
+				log.Printf("[messaging] rebuild warning: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg, ok := s.msgPubStore.Get(name)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var cfg config.PublisherConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name
+		if err := s.msgPubStore.Set(name, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.rebuildMessagingMgr(); err != nil {
+			log.Printf("[messaging] rebuild warning: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
+	case http.MethodDelete:
+		if err := s.msgPubStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err := s.rebuildMessagingMgr(); err != nil {
+			log.Printf("[messaging] rebuild warning: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// SFTPConnectorsCRUDHandler handles GET/POST /sftp-connectors and GET/PUT/DELETE /sftp-connectors/{name}.
+func (s *ManagementServer) SFTPConnectorsCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.sftpConnStore == nil {
+		s.SFTPConnectorsHandler(w, r)
+		return
+	}
+	name := crudName(r.URL.Path, "/sftp-connectors")
+	if name == "" {
+		switch r.Method {
+		case http.MethodGet:
+			cfgs := s.sftpConnStore.List()
+			type item struct {
+				Name     string `json:"name"`
+				Host     string `json:"host"`
+				Port     int    `json:"port,omitempty"`
+				Username string `json:"username"`
+			}
+			out := make([]item, 0, len(cfgs))
+			for _, c := range cfgs {
+				out = append(out, item{Name: c.Name, Host: c.Host, Port: c.Port, Username: c.Username})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"connectors": out})
+		case http.MethodPost:
+			var cfg config.SFTPConnectorConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cfg.Name == "" {
+				http.Error(w, "name is required", http.StatusBadRequest)
+				return
+			}
+			if err := s.sftpConnStore.Set(cfg.Name, cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.rebuildSFTPConnMgr(); err != nil {
+				log.Printf("[sftp] rebuild warning: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg, ok := s.sftpConnStore.Get(name)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var cfg config.SFTPConnectorConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name
+		if err := s.sftpConnStore.Set(name, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.rebuildSFTPConnMgr(); err != nil {
+			log.Printf("[sftp] rebuild warning: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
+	case http.MethodDelete:
+		if err := s.sftpConnStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if err := s.rebuildSFTPConnMgr(); err != nil {
+			log.Printf("[sftp] rebuild warning: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// GWStorageProvidersCRUDHandler handles GET/POST /storage-providers and GET/PUT/DELETE /storage-providers/{name}.
+func (s *ManagementServer) GWStorageProvidersCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.gwStorageStore == nil {
+		s.StorageConnectorsHandler(w, r)
+		return
+	}
+	name := crudName(r.URL.Path, "/storage-providers")
+	if name == "" {
+		switch r.Method {
+		case http.MethodGet:
+			cfgs := s.gwStorageStore.List()
+			_ = json.NewEncoder(w).Encode(map[string]any{"providers": cfgs})
+		case http.MethodPost:
+			var cfg storage.StorageProviderConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cfg.Name == "" {
+				http.Error(w, "name is required", http.StatusBadRequest)
+				return
+			}
+			if err := s.gwStorageStore.Set(cfg.Name, cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := s.rebuildGWStorageMgr(); err != nil {
+				log.Printf("[gw-storage] rebuild warning: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg, ok := s.gwStorageStore.Get(name)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(cfg)
+	case http.MethodPut:
+		var cfg storage.StorageProviderConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name
+		if err := s.gwStorageStore.Set(name, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.rebuildGWStorageMgr(); err != nil {
+			log.Printf("[gw-storage] rebuild warning: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
+	case http.MethodDelete:
+		if _, ok := s.gwStorageStore.Get(name); !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := s.gwStorageStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.rebuildGWStorageMgr(); err != nil {
+			log.Printf("[gw-storage] rebuild warning: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
