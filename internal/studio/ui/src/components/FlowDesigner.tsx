@@ -2013,11 +2013,11 @@ export default function FlowDesigner({
 
     return (
       <div className="step-body">
-        {/* Data source */}
-        <label className="field-label">Data Source (key)</label>
+        {/* Connector */}
+        <label className="field-label">Connector</label>
         <input className="input" placeholder="my_database"
           value={key} onChange={e => updateStep(i, 'key', e.target.value)} />
-        <span className="field-desc">Name of the configured database connection.</span>
+        <span className="field-desc">Name of the SQL connector configured in Studio → SQL Data Sources.</span>
 
         {/* SQL Query */}
         <label className="field-label" style={{ marginTop: 8 }}>SQL Query</label>
@@ -3539,6 +3539,26 @@ export default function FlowDesigner({
                         '  call process_item_flow',
                         '}',
                         'call auth_validation',
+                      ]],
+                      ['SQL / Database', [
+                        '# Query — returns JSON array',
+                        'rows = db_query(connector: my_db,',
+                        '  value: "SELECT * FROM t WHERE id = ${user_id}")',
+                        '',
+                        '# Query one — returns JSON object',
+                        'row = db_query_one(connector: my_db,',
+                        '  value: "SELECT * FROM t WHERE id = ${user_id}")',
+                        '',
+                        '# Execute — INSERT / UPDATE / DELETE',
+                        'db_exec(connector: my_db,',
+                        '  value: "INSERT INTO t (a,b) VALUES (${x}, ${y})")',
+                        '',
+                        '# Dynamic connector (chosen at runtime)',
+                        'rows = db_query(connector: "{{tenant_db}}",',
+                        '  value: "SELECT * FROM orders")',
+                        '',
+                        '# Named query (defined in connector config)',
+                        'rows = db_query(connector: my_db, value: "query:get_orders")',
                       ]],
                       ['Logging & observability', [
                         '# Write to access log',

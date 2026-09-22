@@ -1143,32 +1143,38 @@ export async function deleteDocumentConnector(name: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
-// ── Data Stores ────────────────────────────────────────────────────────────
+// ── SQL Data Sources ────────────────────────────────────────────────────────
 
-export interface DataStoreDef {
+export interface SQLDataSourceDef {
   name: string
-  type: string  // "postgres" | "redis" | "disk"
-  host?: string
-  database?: string
-  path?: string
+  driver: string          // "postgres" | "mysql"
+  dsn_ref?: string        // DSN or env:VAR reference, e.g. "env:DATABASE_URL"
+  max_connections?: number
+  query_timeout_sec?: number
+  tenant_isolation?: string   // "schema" | "rls" | ""
+  tenant_key?: string
+  rls_variable?: string
+  shared_schemas?: string[]
 }
 
-export interface DataStoreTestResult {
-  ok: boolean
-  latency_ms?: number
-  error?: string
+export async function listSQLDataSources(): Promise<{ sources: SQLDataSourceDef[] }> {
+  return request('/api/sql-data-sources')
 }
 
-export async function listDataStores(): Promise<{ datastores: DataStoreDef[] }> {
-  return request('/api/config/datastores')
+export async function addSQLDataSource(cfg: SQLDataSourceDef): Promise<void> {
+  await request('/api/sql-data-sources', { method: 'POST', body: JSON.stringify(cfg) })
 }
 
-export async function testDataStore(name: string): Promise<DataStoreTestResult> {
-  return request('/api/config/datastores/' + name + '/test', { method: 'POST' })
+export async function updateSQLDataSource(name: string, cfg: SQLDataSourceDef): Promise<void> {
+  const body: Record<string, unknown> = { ...cfg }
+  if (body.dsn_ref === undefined) {
+    delete body.dsn_ref
+  }
+  await request('/api/sql-data-sources/' + name, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
 
-export async function deleteDataStore(name: string): Promise<void> {
-  await request('/api/config/datastores/' + name, { method: 'DELETE' })
+export async function deleteSQLDataSource(name: string): Promise<void> {
+  await request('/api/sql-data-sources/' + name, { method: 'DELETE' })
 }
 
 // ── Storage Connectors ──────────────────────────────────────────────────────────

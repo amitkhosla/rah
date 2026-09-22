@@ -12,6 +12,11 @@ const (
 	BaseByteSlots = 48 // inline byte-slot count — covers realistic flows
 	BaseIntSlots  = 16 // inline int-slot count
 	BaseBoolSlots = 8  // inline bool-slot count
+
+	// ExtIntSlots is the overflow int-slot count, pool-borrowed when the inline
+	// base fills. Total available = BaseIntSlots + ExtIntSlots = 32.
+	// Sized at 2 cache lines (16 × 8 = 128 bytes) — stays warm after first access.
+	ExtIntSlots = 16
 )
 
 // arenaBlock is a fixed-size memory region for slot data.
@@ -22,8 +27,19 @@ type arenaBlock struct {
 	used int32
 }
 
+// intSlotBlock is a pool-borrowed overflow block for flows that need more than
+// BaseIntSlots integer counters (e.g. complex flows with many loop variables).
+// Zeroed on borrow; returned to pool by ReleaseOverflow before ctx.Pool.Put.
+type intSlotBlock struct {
+	slots [ExtIntSlots]int64
+}
+
 var (
 	// arenaPool holds pre-allocated 4KB blocks returned by requests that
 	// exceeded their inline primary arena. GC does not scan block contents.
 	arenaPool = sync.Pool{New: func() any { return new(arenaBlock) }}
+
+	// intSlotExtPool holds overflow int-slot blocks for complex flows.
+	// Nil intSlotExt on Context means the common path — no overhead.
+	intSlotExtPool = sync.Pool{New: func() any { return new(intSlotBlock) }}
 )

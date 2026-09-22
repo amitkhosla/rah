@@ -466,6 +466,18 @@ export function serializeDSL(steps: FlowStep[], indent = ''): string {
         lines.push(`${I}}`); break
       }
 
+      // ── SQL / database ────────────────────────────────────────────────────
+      case 'db_query':
+      case 'db_query_one':
+      case 'db_exec': {
+        const connector = str(step['key']); const sql = str(step['value'])
+        const args = [`connector: ${q(connector)}`, `value: ${q(sql)}`]
+        const call = `${a}(${args.join(', ')})`
+        if (as_) lines.push(`${I}${as_} = ${call}`)
+        else lines.push(`${I}${call}`)
+        break
+      }
+
       // ── generic fallback ──────────────────────────────────────────────────
       default: {
         const p2 = params(step, as_ ? new Set(['as']) : new Set())

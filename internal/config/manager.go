@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/amitkhosla/rah/internal/datasource"
+	"github.com/amitkhosla/rah/internal/storage"
 	"gopkg.in/yaml.v3"
 )
 
@@ -232,4 +234,39 @@ func (m *Manager) DeleteTenantQuota(tenantID string) bool {
 		}
 	}
 	return false
+}
+
+// SetDataSources replaces the entire DataSources slice atomically.
+func (m *Manager) SetDataSources(sources []datasource.DataSourceConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.DataSources = sources
+}
+
+// SetDocumentConnectors replaces the entire DocumentConnectors slice atomically.
+func (m *Manager) SetDocumentConnectors(connectors []DocumentConnectorConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.DocumentConnectors = connectors
+}
+
+// SetMessagingPublishers replaces the entire MessagingPublishers slice atomically.
+func (m *Manager) SetMessagingPublishers(publishers []PublisherConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.MessagingPublishers = publishers
+}
+
+// SetStorageProviders replaces the entire StorageProviders slice atomically.
+func (m *Manager) SetStorageProviders(providers []storage.StorageProviderConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.StorageProviders = providers
+}
+
+// SetSFTPConnectors replaces the entire SFTPConnectors slice atomically.
+func (m *Manager) SetSFTPConnectors(connectors []SFTPConnectorConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gateway.SFTPConnectors = connectors
 }

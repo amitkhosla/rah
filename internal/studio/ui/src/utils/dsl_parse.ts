@@ -385,6 +385,15 @@ function actionSteps(action: string, rawParams: string, as_?: string): FlowStep[
       return [mk({ action: 'reset_circuit', input: { name } })]
     }
 
+    // ── SQL / Database ────────────────────────────────────────────────────
+    case 'db_query':
+    case 'db_query_one':
+    case 'db_exec': {
+      // Accept both `connector:` (preferred) and legacy `key:`
+      const connectorName = p['connector'] ?? p['key'] ?? ''
+      return [mk({ action, key: connectorName, value: p['value'] ?? '', ...withAs })]
+    }
+
     // ── Generic fallback (any other gateway action) ────────────────────────
     default:
       return [mk({ action, ...p, ...withAs })]

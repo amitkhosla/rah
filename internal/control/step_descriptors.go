@@ -441,6 +441,16 @@ func AllStepDescriptors() []StepDescriptor {
 			},
 		},
 		{
+			Type: "bind_json", Title: "Extract JSON Field", Category: "data", Capability: "extract",
+			Description: "Extract a gjson path from an arbitrary slot holding JSON bytes into another slot. Use inside foreach loops to unpack row fields from db_query results.",
+			Defaults:    map[string]string{"variable": "", "path": "", "as": ""},
+			Fields: []StepField{
+				sf("variable", "Source variable", "Slot name holding the JSON source (e.g. account_row)", "account_row"),
+				sf("path", "gjson path", "gjson path to extract (e.g. id, breeze_api_key)", "id"),
+				sf("as", "Store into variable", "Variable name to write the extracted value into", "acc_id"),
+			},
+		},
+		{
 			Type: "bind_header", Title: "Read Header", Category: "request", Capability: "request",
 			Description: "Extract an HTTP request header value into a variable.",
 			Defaults:    map[string]string{"key": "", "as": "auth_header"},
@@ -1470,6 +1480,17 @@ func AllStepDescriptors() []StepDescriptor {
 				sf("value", "SQL Statement", "SQL INSERT/UPDATE/DELETE; use $1,$2,... for parameters", "INSERT INTO logs (msg) VALUES ($1)"),
 				sf("vars", "Parameters", "Ordered parameter values; reference slots with {slot_name}", `["{log_msg}"]`),
 				sf("as", "Store as", "Slot to save the affected row count into (optional)", "affected_rows"),
+			},
+		},
+		StepDescriptor{
+			Type: "db_foreach", Title: "DB For Each Row", Category: "database", Capability: "iteration",
+			SupportsNested: true,
+			Description: "Run a SQL query, materialise all rows into a compact binary buffer (releasing the DB connection immediately), then iterate row-by-row binding named columns directly into slots. No JSON. Zero per-row allocations.",
+			Defaults:    map[string]string{},
+			Fields: []StepField{
+				sf("key",   "Data source",     "Named data source (e.g. trading_db)", "trading_db"),
+				sf("value", "SQL query",       "SELECT statement; use ${slot} for parameters", "SELECT id, name FROM accounts WHERE active = true"),
+				sf("bind",  "Column bindings", "YAML map of column_name: slot_name pairs", "id: acc_id"),
 			},
 		},
 	)

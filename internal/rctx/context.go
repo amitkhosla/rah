@@ -138,6 +138,10 @@ type Context struct {
 	IntSlots  []int64
 	BoolSlots []bool
 
+	// Cursors holds materialised db_foreach result state, one slot per nested loop.
+	// Index allocated at bake time; max 4 concurrent db_foreach loops per flow.
+	Cursors [4]any
+
 	// Proxy State
 	MutationLog   []HeaderMutation
 	MutationCount int
@@ -241,6 +245,11 @@ type Context struct {
 	// arenaExt is a single pool-borrowed 4KB block used when arenaInline fills.
 	// Nil in the common case (most requests fit in 1KB inline).
 	arenaExt *arenaBlock
+
+	// intSlotExt is a pool-borrowed overflow block for flows that allocate more
+	// than BaseIntSlots loop counters. Nil for the vast majority of requests.
+	// Borrowed on first SetIntSlot(idx >= BaseIntSlots); returned in ReleaseOverflow.
+	intSlotExt *intSlotBlock
 
 	// ArenaOverflowed is true if any pool-borrowed or heap fallback was needed.
 	ArenaOverflowed bool
@@ -556,13 +565,17 @@ func (ctx *Context) AllocOpKey(n int) []byte {
 	return ctx.Alloc(n)
 }
 
-// ReleaseOverflow returns the pool-borrowed ext block (if any) back to the
-// pool. Must be called before Pool.Put so the block is available immediately.
+// ReleaseOverflow returns pool-borrowed blocks (arena ext + int-slot ext) back
+// to their pools. Must be called before Pool.Put so blocks are available immediately.
 func (ctx *Context) ReleaseOverflow() {
 	if ctx.arenaExt != nil {
 		ctx.arenaExt.used = 0
 		arenaPool.Put(ctx.arenaExt)
 		ctx.arenaExt = nil
+	}
+	if ctx.intSlotExt != nil {
+		intSlotExtPool.Put(ctx.intSlotExt)
+		ctx.intSlotExt = nil
 	}
 }
 
@@ -681,6 +694,9 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	}
 	for i := range ctx.boolSlotBase {
 		ctx.boolSlotBase[i] = false
+	}
+	for i := range ctx.Cursors {
+		ctx.Cursors[i] = nil
 	}
 	// Re-point public slice headers at the (now-zeroed) inline bases.
 	ctx.ByteSlots = ctx.byteSlotBase[:BaseByteSlots]
@@ -802,14 +818,24 @@ func (ctx *Context) SetSlot(idx int, val []byte) {
 }
 
 func (ctx *Context) SetInt(idx int, val int64) {
-	if idx < len(ctx.IntSlots) {
-		ctx.IntSlots[idx] = val
+	if idx < BaseIntSlots {
+		ctx.intSlotBase[idx] = val
+		return
 	}
+	if ctx.intSlotExt == nil {
+		b := intSlotExtPool.Get().(*intSlotBlock)
+		*b = intSlotBlock{} // zero dirty pool block before first use
+		ctx.intSlotExt = b
+	}
+	ctx.intSlotExt.slots[idx-BaseIntSlots] = val
 }
 
 func (ctx *Context) GetInt(idx int) int64 {
-	if idx < len(ctx.IntSlots) {
-		return ctx.IntSlots[idx]
+	if idx < BaseIntSlots {
+		return ctx.intSlotBase[idx]
+	}
+	if ctx.intSlotExt != nil {
+		return ctx.intSlotExt.slots[idx-BaseIntSlots]
 	}
 	return 0
 }

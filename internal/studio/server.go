@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/amitkhosla/rah/internal/control"
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/observability"
 	"github.com/amitkhosla/rah/internal/storage"
 	rahsync "github.com/amitkhosla/rah/internal/sync"
@@ -353,6 +354,7 @@ type Server struct {
 	storageMgrMu  sync.RWMutex
 	storageMgr    *storage.StorageManager // rebuilt on connector add/update/delete
 	connStore     *connectorStore
+	sqlStore      *sqlDataSourceStore
 
 	appAssetCfgsMu sync.RWMutex
 	appAssetCfgs   map[string]appAssetCfg // appName → per-app connector selection
@@ -463,6 +465,15 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 	}
 	srv.connStore = cs
 
+	// SQL data source store — persists to <store-path>/sql_data_sources.json when a file store is configured.
+	sqlStorePath := ""
+	if cfg.StorePath != "" {
+		sqlStorePath = cfg.StorePath + "/sql_data_sources.json"
+	}
+	if ss, err := newSQLDataSourceStore(nil, sqlStorePath); err == nil {
+		srv.sqlStore = ss
+	}
+
 	// Build initial StorageManager from all known connectors.
 	if err := srv.rebuildStorageMgr(); err != nil {
 		return nil, fmt.Errorf("storage manager: %w", err)
@@ -541,6 +552,8 @@ func (s *Server) Handler() http.Handler {
 	apiMux.HandleFunc("/api/grpc/descriptors/", s.grpcDescriptorsMgmtProxy)
 	apiMux.HandleFunc("/api/document-connectors", s.documentConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/document-connectors/", s.documentConnectorsMgmtProxy)
+	apiMux.HandleFunc("/api/sql-data-sources", s.sqlDataSourcesMgmtProxy)
+	apiMux.HandleFunc("/api/sql-data-sources/", s.sqlDataSourcesMgmtProxy)
 	apiMux.HandleFunc("/api/storage-connectors", s.storageConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/storage-connectors/", s.storageConnectorsMgmtProxy)
 	apiMux.HandleFunc("/api/sftp-connectors", s.sftpConnectorsMgmtProxy)
@@ -1687,6 +1700,18 @@ func resolveKeyRef(ref string) (string, error) {
 	return ref, nil
 }
 
+// maskRef masks a credential reference before returning to browser.
+// Returns scheme:*** for scheme-prefixed refs, *** for literals.
+func maskRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if i := strings.Index(ref, ":"); i > 0 {
+		return ref[:i+1] + "***"
+	}
+	return "***"
+}
+
 // findOrCreateApp returns the AppID for the named app, creating it if absent.
 // Returns 0 on failure.
 func (s *Server) findOrCreateApp(ctx context.Context, targetBase, appName string) uint32 {
@@ -1968,21 +1993,60 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // documentConnectorsMgmtProxy forwards /api/document-connectors[/name] → /document-connectors[/name].
+// Defense-in-depth: The gateway mangement API masks credential_ref fields in GET responses.
+// If a future version of the gateway stops masking, Studio should intercept GET responses
+// here and mask the CredentialRef field before returning to browser. See maskRef().
 func (s *Server) documentConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
+// sqlDataSourcesMgmtProxy forwards /api/sql-data-sources[/name] → /sql-data-sources[/name].
+// Defense-in-depth: The gateway management API masks DSNRef fields in GET responses.
+// If a future version of the gateway stops masking, Studio should intercept GET responses
+// here and mask the DSNRef field before returning to browser. See maskRef().
+// Also saves mutations to local sqlStore so Studio owns SQL data sources.
+func (s *Server) sqlDataSourcesMgmtProxy(w http.ResponseWriter, r *http.Request) {
+	if s.sqlStore != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete) {
+		gwPath := strings.TrimPrefix(r.URL.Path, "/api")
+		name := ""
+		if parts := strings.Split(strings.TrimPrefix(gwPath, "/sql-data-sources/"), "/"); len(parts) > 0 {
+			name = parts[0]
+		}
+		if r.Method == http.MethodDelete && name != "" {
+			_ = s.sqlStore.Delete(name)
+		} else if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				var cfg datasource.DataSourceConfig
+				if json.Unmarshal(body, &cfg) == nil && cfg.Name != "" {
+					_ = s.sqlStore.Set(cfg)
+				}
+			}
+		}
+	}
+	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
+}
+
 // storageConnectorsMgmtProxy forwards /api/storage-connectors → /storage-connectors.
+// Defense-in-depth: The gateway management API does not expose full credentials in responses.
+// Storage connector configs returned by the gateway do not include sensitive auth details.
 func (s *Server) storageConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, "/storage-connectors")
 }
 
 // sftpConnectorsMgmtProxy forwards /api/sftp-connectors[/name] → /sftp-connectors[/name].
+// Defense-in-depth: The gateway management API masks credential_ref fields in GET responses.
+// If a future version of the gateway stops masking, Studio should intercept GET responses
+// here and mask the CredentialRef field before returning to browser. See maskRef().
 func (s *Server) sftpConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
 // messagingPublishersMgmtProxy forwards /api/messaging-publishers[/name] → /messaging-publishers[/name].
+// Defense-in-depth: The gateway management API masks credential_ref fields in GET responses.
+// If a future version of the gateway stops masking, Studio should intercept GET responses
+// here and mask the CredentialRef field before returning to browser. See maskRef().
 func (s *Server) messagingPublishersMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
@@ -3066,6 +3130,27 @@ func (s *Server) createReleaseHandler(w http.ResponseWriter, r *http.Request) {
 	// Translate user-facing variable keys (e.g. system_var â†’ system_slot) now
 	// that lint has passed. The compiler expects the internal _slot keys.
 	translateBundleVarKeys(bundle.Flows)
+
+	// TODO: Include connector configs from Studio’s local connectorStore (s.connStore) in the
+	// release payload. When a release is created, the bundle should be merged with any connectors
+	// defined in Studio’s configuration so that the stored bundle is self-contained.
+	// This requires determining the connector format compatibility between Studio’s connectorStore
+	// and UnifiedSyncRequest.DataSources/DocumentConnectors etc. to avoid format mismatches.
+
+	// Merge SQL data sources from Studio’s local store into the release bundle.
+	if s.sqlStore != nil {
+		if existing := s.sqlStore.List(); len(existing) > 0 {
+			seen := make(map[string]struct{}, len(bundle.DataSources))
+			for _, ds := range bundle.DataSources {
+				seen[ds.Name] = struct{}{}
+			}
+			for _, ds := range existing {
+				if _, ok := seen[ds.Name]; !ok {
+					bundle.DataSources = append(bundle.DataSources, ds)
+				}
+			}
+		}
+	}
 
 	// Serialize the translated bundle as the stored payload.
 	payload, err := json.Marshal(bundle)

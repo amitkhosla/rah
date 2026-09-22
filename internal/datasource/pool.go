@@ -8,12 +8,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 )
+
+// SecretResolver resolves secret references of the form scheme:path.
+// *secrets.Manager satisfies this interface — defined here to avoid import cycles.
+type SecretResolver interface {
+	Resolve(ctx context.Context, ref string) ([]byte, error)
+}
 
 // DataSourcePool holds named pgx connection pools.
 type DataSourcePool struct {
@@ -23,13 +30,13 @@ type DataSourcePool struct {
 }
 
 // New creates and opens all configured data source pools.
-func New(configs []DataSourceConfig) (*DataSourcePool, error) {
+func New(configs []DataSourceConfig, resolver SecretResolver) (*DataSourcePool, error) {
 	p := &DataSourcePool{
 		pools:   make(map[string]*pgxpool.Pool, len(configs)),
 		configs: make(map[string]DataSourceConfig, len(configs)),
 	}
 	for _, cfg := range configs {
-		dsn := resolveDSN(cfg.DSNRef)
+		dsn := resolveDSN(cfg.DSNRef, resolver)
 		if dsn == "" {
 			return nil, fmt.Errorf("datasource %q: empty DSN (ref: %s)", cfg.Name, cfg.DSNRef)
 		}
@@ -59,6 +66,16 @@ func (p *DataSourcePool) Get(name string) (*pgxpool.Pool, bool) {
 	return pool, ok
 }
 
+// GetByBytes looks up a pool by a []byte key without allocating a string.
+// The byte slice must not be modified during the call.
+func (p *DataSourcePool) GetByBytes(name []byte) (*pgxpool.Pool, bool) {
+	if len(name) == 0 {
+		return nil, false
+	}
+	s := unsafe.String(unsafe.SliceData(name), len(name))
+	return p.Get(s)
+}
+
 // Close closes all pools.
 func (p *DataSourcePool) Close() {
 	for _, pool := range p.pools {
@@ -86,9 +103,14 @@ func (p *DataSourcePool) GetBatchLoader(ctx context.Context, sourceName, queryNa
 }
 
 // resolveDSN resolves env:VAR references or returns the string as-is.
-func resolveDSN(ref string) string {
+func resolveDSN(ref string, resolver SecretResolver) string {
 	if strings.HasPrefix(ref, "env:") {
 		return os.Getenv(strings.TrimPrefix(ref, "env:"))
+	}
+	if resolver != nil && strings.Contains(ref, ":") {
+		if val, err := resolver.Resolve(context.Background(), ref); err == nil {
+			return string(val)
+		}
 	}
 	return ref
 }
