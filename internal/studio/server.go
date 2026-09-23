@@ -1700,17 +1700,6 @@ func resolveKeyRef(ref string) (string, error) {
 	return ref, nil
 }
 
-// maskRef masks a credential reference before returning to browser.
-// Returns scheme:*** for scheme-prefixed refs, *** for literals.
-func maskRef(ref string) string {
-	if ref == "" {
-		return ""
-	}
-	if i := strings.Index(ref, ":"); i > 0 {
-		return ref[:i+1] + "***"
-	}
-	return "***"
-}
 
 // findOrCreateApp returns the AppID for the named app, creating it if absent.
 // Returns 0 on failure.
@@ -1995,7 +1984,7 @@ func (s *Server) cacheMgmtProxy(w http.ResponseWriter, r *http.Request) {
 // documentConnectorsMgmtProxy forwards /api/document-connectors[/name] → /document-connectors[/name].
 // Defense-in-depth: The gateway mangement API masks credential_ref fields in GET responses.
 // If a future version of the gateway stops masking, Studio should intercept GET responses
-// here and mask the CredentialRef field before returning to browser. See maskRef().
+// here and mask the CredentialRef field before returning to browser.
 func (s *Server) documentConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
@@ -2003,7 +1992,7 @@ func (s *Server) documentConnectorsMgmtProxy(w http.ResponseWriter, r *http.Requ
 // sqlDataSourcesMgmtProxy forwards /api/sql-data-sources[/name] → /sql-data-sources[/name].
 // Defense-in-depth: The gateway management API masks DSNRef fields in GET responses.
 // If a future version of the gateway stops masking, Studio should intercept GET responses
-// here and mask the DSNRef field before returning to browser. See maskRef().
+// here and mask the DSNRef field before returning to browser.
 // Also saves mutations to local sqlStore so Studio owns SQL data sources.
 func (s *Server) sqlDataSourcesMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	if s.sqlStore != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete) {
@@ -2038,7 +2027,7 @@ func (s *Server) storageConnectorsMgmtProxy(w http.ResponseWriter, r *http.Reque
 // sftpConnectorsMgmtProxy forwards /api/sftp-connectors[/name] → /sftp-connectors[/name].
 // Defense-in-depth: The gateway management API masks credential_ref fields in GET responses.
 // If a future version of the gateway stops masking, Studio should intercept GET responses
-// here and mask the CredentialRef field before returning to browser. See maskRef().
+// here and mask the CredentialRef field before returning to browser.
 func (s *Server) sftpConnectorsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }

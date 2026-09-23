@@ -17,8 +17,14 @@ func (m *mockResolver) Resolve(_ context.Context, _ string) ([]byte, error) {
 }
 
 func TestResolveDSN_EnvPrefix(t *testing.T) {
-	os.Setenv("TEST_DSN_VAR", "postgres://localhost/testdb")
-	defer os.Unsetenv("TEST_DSN_VAR")
+	if err := os.Setenv("TEST_DSN_VAR", "postgres://localhost/testdb"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Unsetenv("TEST_DSN_VAR"); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	got := resolveDSN("env:TEST_DSN_VAR", nil)
 	if got != "postgres://localhost/testdb" {
 		t.Fatalf("expected resolved DSN, got %q", got)
