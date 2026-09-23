@@ -18,4 +18,6 @@ type StorageProviderConfig struct {
 
 	// Local filesystem fields
 	RootDir string `json:"root_dir,omitempty" yaml:"root_dir,omitempty"` // base directory for local storage
+
+	Action string `json:"action,omitempty" yaml:"action,omitempty"` // "upsert" or "delete"
 }

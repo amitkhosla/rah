@@ -263,6 +263,13 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
       .catch(() => setSyncing(false))
   }, [])
 
+  // Auto-select first API when list loads and nothing is selected
+  useEffect(() => {
+    if (apis.length > 0 && selectedApiId === null && !showWizard) {
+      setSelectedApiId(apis[0].id)
+    }
+  }, [apis])
+
   // ── Derived ────────────────────────────────────────────────────────────────
 
   const flowNames = flows.map(f => f.name)
@@ -1140,7 +1147,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
             rlWarnings={rlWarningsMap[selectedApi.name] ?? []}
           />
         ) : (
-          <EmptyRight onNewApi={openNewWizard} onNavigateToDesigner={onNavigateToDesigner} />
+          <EmptyRight onNewApi={openNewWizard} onNavigateToDesigner={onNavigateToDesigner} hasApis={apis.length > 0} />
         )}
       </div>
     </div>
@@ -1525,7 +1532,7 @@ export default function APIsSection({ flows, apis, setApis, onCreateFlow, onLoad
 
 // ── Empty right panel ────────────────────────────────────────────────────────
 
-function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; onNavigateToDesigner: (flowName?: string) => void }) {
+function EmptyRight({ onNewApi, onNavigateToDesigner, hasApis }: { onNewApi: () => void; onNavigateToDesigner: (flowName?: string) => void; hasApis: boolean }) {
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
@@ -1534,11 +1541,16 @@ function EmptyRight({ onNewApi, onNavigateToDesigner }: { onNewApi: () => void; 
     }}>
       <span style={{ fontSize: 36, opacity: 0.2 }}>⚡</span>
       <div style={{ textAlign: 'center' }}>
-        <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6 }}>Register your first API</p>
+        <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6 }}>
+          {hasApis ? 'Select an API to view details' : 'Register your first API'}
+        </p>
         <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.6 }}>
-          Group endpoints under a base path and connect them to flows.<br />
-          Each endpoint routes incoming requests to a flow that handles<br />
-          authentication, upstream calls, and responses.
+          {hasApis
+            ? <>Choose an API from the list on the left to view<br />and edit its endpoints, flows, and settings.</>
+            : <>Group endpoints under a base path and connect them to flows.<br />
+               Each endpoint routes incoming requests to a flow that handles<br />
+               authentication, upstream calls, and responses.</>
+          }
         </p>
       </div>
       <div style={{ display: 'flex', gap: 10 }}>

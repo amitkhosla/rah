@@ -170,6 +170,7 @@ release:
     owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
     name: rah
   name_template: "v{{ .Version }}"
+  replace_existing_artifacts: true
   header: |
     ## RAH Gateway {{ .Version }}
 

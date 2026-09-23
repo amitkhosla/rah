@@ -17,6 +17,7 @@ import (
 	"github.com/amitkhosla/rah/internal/emailprovider"
 	"github.com/amitkhosla/rah/internal/storage"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/geo"
@@ -156,8 +157,9 @@ func resolveUpstreamPassthrough(
 type Compiler struct {
 	slotMap   map[string]int
 	freeSlots []int // slots freed by liveness analysis, available for reuse
-	nextSlot  int
-	fm        *engine.FlowManager
+	nextSlot       int
+	nextCursorSlot int
+	fm             *engine.FlowManager
 	RegMgr      *registrypkg.RegistryManager // optional; enables KeyID pre-resolution at bake time
 	SecretsMgr  steps.SecretLoader           // optional; enables load_secret steps
 	CredMgr     steps.CredentialLookup       // optional; enables load_credential steps
@@ -1795,8 +1797,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "foreach":
 		// Allocate hidden iterSlot (IntSlot index) for the loop counter and
 		// indexSlot (ByteSlot) for the packed (start,end) array index — O(1) per step.
-		if c.nextSlot+1 >= rctx.BaseByteSlots {
-			return fmt.Errorf("slot limit exceeded at foreach iterator: max %d", rctx.BaseByteSlots)
+		if c.nextSlot+1 >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
 		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
@@ -1841,8 +1843,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		// step.Source: BoolSlot name for the loop condition
 		// step.Do: sub-steps executed each iteration
 		// step.Input["max_iter"]: optional integer safety limit (default 100)
-		if c.nextSlot >= rctx.BaseByteSlots {
-			return fmt.Errorf("slot limit exceeded at while iterator: max %d", rctx.BaseByteSlots)
+		if c.nextSlot >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at while iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
 		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
@@ -1896,8 +1898,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "foreach_header":
 		// Iterate over HTTP request headers.
 		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
-		if c.nextSlot+1 >= rctx.BaseIntSlots {
-			return fmt.Errorf("slot limit exceeded at foreach_header iterator: max %d", rctx.BaseIntSlots)
+		if c.nextSlot+1 >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_header iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
 		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
@@ -1944,8 +1946,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "foreach_param":
 		// Iterate over URL query parameters.
 		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
-		if c.nextSlot+1 >= rctx.BaseIntSlots {
-			return fmt.Errorf("slot limit exceeded at foreach_param iterator: max %d", rctx.BaseIntSlots)
+		if c.nextSlot+1 >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_param iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
 		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
@@ -1992,8 +1994,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "foreach_cookie":
 		// Iterate over HTTP request cookies.
 		// Allocate hidden iterSlot (IntSlot) and indexSlot (ByteSlot) for the packed index.
-		if c.nextSlot+1 >= rctx.BaseIntSlots {
-			return fmt.Errorf("slot limit exceeded at foreach_cookie iterator: max %d", rctx.BaseIntSlots)
+		if c.nextSlot+1 >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at foreach_cookie iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
 		}
 		iterSlot := c.nextSlot
 		c.nextSlot++
@@ -3381,8 +3383,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "db_query":
 		// SQL is compiled at bake time: ${varname} → $N positional parameters.
 		// Args are collected from ByteSlots at runtime — no string interpolation.
+		// key may be a literal name or {{slotVar}} for runtime connector selection.
 		dbQueryPool := c.DataSourcePool
-		dbQueryName := step.Key
+		dbQueryStaticName := step.Key
+		dbQueryKeySlot := -1
+		if strings.HasPrefix(step.Key, "{{") && strings.HasSuffix(step.Key, "}}") {
+			varName := step.Key[2 : len(step.Key)-2]
+			s, err := c.getSlotReadOnly(varName)
+			if err != nil {
+				return fmt.Errorf("db_query: key slot %q not declared", varName)
+			}
+			dbQueryKeySlot = s
+			dbQueryStaticName = ""
+		}
 		dbQuerySQL, _, err := c.resolveNamedQuerySQL(step.Value)
 		if err != nil {
 			return fmt.Errorf("db_query: %w", err)
@@ -3403,12 +3416,24 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					log.Printf("[db_query] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
-				pool, ok := dbQueryPool.Get(dbQueryName)
-				if !ok {
-					log.Printf("[db_query] unknown data source %q", dbQueryName)
-					ctx.ResponseStatus = 500
-					ctx.Failed = true
-					return -1
+				var pool *pgxpool.Pool
+				var ok bool
+				if dbQueryKeySlot >= 0 && dbQueryKeySlot < len(ctx.ByteSlots) {
+					pool, ok = dbQueryPool.GetByBytes(ctx.ByteSlots[dbQueryKeySlot])
+					if !ok {
+						log.Printf("[db_query] unknown data source %q", string(ctx.ByteSlots[dbQueryKeySlot]))
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				} else {
+					pool, ok = dbQueryPool.Get(dbQueryStaticName)
+					if !ok {
+						log.Printf("[db_query] unknown data source %q", dbQueryStaticName)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
 				}
 				argsp := pgxArgsPool.Get().(*[]any)
 				args := (*argsp)[:0]
@@ -3447,8 +3472,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "db_exec":
 		// SQL is compiled at bake time: ${varname} → $N positional parameters.
 		// Stores the affected-rows count (int64) in IntSlots[step.As] if step.As is set.
+		// key may be a literal name or {{slotVar}} for runtime connector selection.
 		dbExecPool := c.DataSourcePool
-		dbExecName := step.Key
+		dbExecStaticName := step.Key
+		dbExecKeySlot := -1
+		if strings.HasPrefix(step.Key, "{{") && strings.HasSuffix(step.Key, "}}") {
+			varName := step.Key[2 : len(step.Key)-2]
+			s, err := c.getSlotReadOnly(varName)
+			if err != nil {
+				return fmt.Errorf("db_exec: key slot %q not declared", varName)
+			}
+			dbExecKeySlot = s
+			dbExecStaticName = ""
+		}
 		dbExecSQL, _, err := c.resolveNamedQuerySQL(step.Value)
 		if err != nil {
 			return fmt.Errorf("db_exec: %w", err)
@@ -3469,12 +3505,24 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					log.Printf("[db_exec] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
-				pool, ok := dbExecPool.Get(dbExecName)
-				if !ok {
-					log.Printf("[db_exec] unknown data source %q", dbExecName)
-					ctx.ResponseStatus = 500
-					ctx.Failed = true
-					return -1
+				var pool *pgxpool.Pool
+				var ok bool
+				if dbExecKeySlot >= 0 && dbExecKeySlot < len(ctx.ByteSlots) {
+					pool, ok = dbExecPool.GetByBytes(ctx.ByteSlots[dbExecKeySlot])
+					if !ok {
+						log.Printf("[db_exec] unknown data source %q", string(ctx.ByteSlots[dbExecKeySlot]))
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				} else {
+					pool, ok = dbExecPool.Get(dbExecStaticName)
+					if !ok {
+						log.Printf("[db_exec] unknown data source %q", dbExecStaticName)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
 				}
 				argsp := pgxArgsPool.Get().(*[]any)
 				args := (*argsp)[:0]
@@ -3504,8 +3552,19 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "db_query_one":
 		// Like db_query but expects a single row; sets 404 if no rows returned.
 		// SQL is compiled at bake time: ${varname} → $N positional parameters.
+		// key may be a literal name or {{slotVar}} for runtime connector selection.
 		dbOnePool := c.DataSourcePool
-		dbOneName := step.Key
+		dbOneStaticName := step.Key
+		dbOneKeySlot := -1
+		if strings.HasPrefix(step.Key, "{{") && strings.HasSuffix(step.Key, "}}") {
+			varName := step.Key[2 : len(step.Key)-2]
+			s, err := c.getSlotReadOnly(varName)
+			if err != nil {
+				return fmt.Errorf("db_query_one: key slot %q not declared", varName)
+			}
+			dbOneKeySlot = s
+			dbOneStaticName = ""
+		}
 		dbOneSQL, _, err := c.resolveNamedQuerySQL(step.Value)
 		if err != nil {
 			return fmt.Errorf("db_query_one: %w", err)
@@ -3526,12 +3585,24 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 					log.Printf("[db_query_one] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
-				pool, ok := dbOnePool.Get(dbOneName)
-				if !ok {
-					log.Printf("[db_query_one] unknown data source %q", dbOneName)
-					ctx.ResponseStatus = 500
-					ctx.Failed = true
-					return -1
+				var pool *pgxpool.Pool
+				var ok bool
+				if dbOneKeySlot >= 0 && dbOneKeySlot < len(ctx.ByteSlots) {
+					pool, ok = dbOnePool.GetByBytes(ctx.ByteSlots[dbOneKeySlot])
+					if !ok {
+						log.Printf("[db_query_one] unknown data source %q", string(ctx.ByteSlots[dbOneKeySlot]))
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
+				} else {
+					pool, ok = dbOnePool.Get(dbOneStaticName)
+					if !ok {
+						log.Printf("[db_query_one] unknown data source %q", dbOneStaticName)
+						ctx.ResponseStatus = 500
+						ctx.Failed = true
+						return -1
+					}
 				}
 				argsp := pgxArgsPool.Get().(*[]any)
 				args := (*argsp)[:0]
@@ -3573,6 +3644,81 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 				return state.PC + 1
 			},
 		})
+
+	case "db_foreach":
+		// SQL compiled at bake time: ${varname} → $N positional parameters.
+		// Materialises all rows into a binary buffer; DB connection released immediately.
+		// Iterates row-by-row binding named columns into slots via the Bind map.
+		// Dynamic key ({{slotVar}}) is not yet supported — use a static data source name.
+		if strings.HasPrefix(step.Key, "{{") && strings.HasSuffix(step.Key, "}}") {
+			return fmt.Errorf("db_foreach: dynamic key ({{...}}) not yet supported; use a static key name")
+		}
+		if c.DataSourcePool == nil {
+			return fmt.Errorf("db_foreach: no data_sources configured")
+		}
+		dbForeachStaticPool, ok := c.DataSourcePool.Get(step.Key)
+		if !ok {
+			return fmt.Errorf("db_foreach: unknown data source %q", step.Key)
+		}
+
+		dbForeachSQL, _, err := c.resolveNamedQuerySQL(step.Value)
+		if err != nil {
+			return fmt.Errorf("db_foreach: %w", err)
+		}
+		dbForeachSQL, dbForeachParamSlots := compileParamSQL(dbForeachSQL, c.slotMap)
+
+		if c.nextCursorSlot >= 4 {
+			return fmt.Errorf("db_foreach: cursor slot limit reached (max 4 nested db_foreach per flow)")
+		}
+		dbForeachCursorIdx := c.nextCursorSlot
+		c.nextCursorSlot++
+
+		if c.nextSlot >= rctx.BaseIntSlots+rctx.ExtIntSlots {
+			return fmt.Errorf("slot limit exceeded at db_foreach iterator: max %d int slots", rctx.BaseIntSlots+rctx.ExtIntSlots)
+		}
+		dbForeachIterSlot := c.nextSlot
+		c.nextSlot++
+
+		if len(step.Bind) == 0 {
+			return fmt.Errorf("db_foreach: bind map is required")
+		}
+		var dbForeachBindings []steps.ColBinding
+		for colName, slotName := range step.Bind {
+			s, err := c.getSlot(slotName)
+			if err != nil {
+				return fmt.Errorf("db_foreach: bind %q: %w", colName, err)
+			}
+			dbForeachBindings = append(dbForeachBindings, steps.ColBinding{Name: colName, SlotIdx: s})
+		}
+
+		dbForeachGateID := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{Name: "DB_FOREACH_GATE_PLACEHOLDER"})
+
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "LOOP_REPEAT",
+			Action: steps.LoopRepeat(dbForeachGateID, dbForeachIterSlot),
+		})
+
+		dbForeachExitID := int16(len(c.GlobalTable))
+		c.GlobalTable[dbForeachGateID] = engine.Instruction{
+			Name: "DB_FOREACH_GATE",
+			Action: steps.DbForeachGate(
+				dbForeachStaticPool,
+				dbForeachCursorIdx,
+				dbForeachSQL,
+				dbForeachParamSlots,
+				dbForeachBindings,
+				dbForeachIterSlot,
+				dbForeachGateID+1,
+				dbForeachExitID,
+			),
+		}
 
 	// ── WebSocket broadcast/push/dynamic steps ────────────────────────────────
 
@@ -6544,6 +6690,7 @@ func (c *Compiler) resetSlots() {
 	c.slotMap = make(map[string]int)
 	c.freeSlots = c.freeSlots[:0]
 	c.nextSlot = 0
+	c.nextCursorSlot = 0
 }
 
 // egressParseWindow parses an egress window duration string into nanoseconds.

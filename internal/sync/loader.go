@@ -15,6 +15,7 @@ import (
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/mcpreg"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/storage"
 )
 
 // LoadResult is the output of Load: the merged bundle plus source map and lint issues.
@@ -665,6 +666,71 @@ func mergeBundles(existing, newBundle control.UnifiedSyncRequest) control.Unifie
 	result.Schedules = make([]control.ScheduleConfig, 0, len(existingSchedules))
 	for _, sched := range existingSchedules {
 		result.Schedules = append(result.Schedules, sched)
+	}
+
+	// Merge data sources: keep last occurrence by name.
+	existingDataSources := make(map[string]datasource.DataSourceConfig)
+	for _, ds := range existing.DataSources {
+		existingDataSources[ds.Name] = ds
+	}
+	for _, ds := range newBundle.DataSources {
+		existingDataSources[ds.Name] = ds
+	}
+	result.DataSources = make([]datasource.DataSourceConfig, 0, len(existingDataSources))
+	for _, ds := range existingDataSources {
+		result.DataSources = append(result.DataSources, ds)
+	}
+
+	// Merge document connectors: keep last occurrence by name.
+	existingDocConnectors := make(map[string]config.DocumentConnectorConfig)
+	for _, dc := range existing.DocumentConnectors {
+		existingDocConnectors[dc.Name] = dc
+	}
+	for _, dc := range newBundle.DocumentConnectors {
+		existingDocConnectors[dc.Name] = dc
+	}
+	result.DocumentConnectors = make([]config.DocumentConnectorConfig, 0, len(existingDocConnectors))
+	for _, dc := range existingDocConnectors {
+		result.DocumentConnectors = append(result.DocumentConnectors, dc)
+	}
+
+	// Merge messaging publishers: keep last occurrence by name.
+	existingPublishers := make(map[string]config.PublisherConfig)
+	for _, pub := range existing.MessagingPublishers {
+		existingPublishers[pub.Name] = pub
+	}
+	for _, pub := range newBundle.MessagingPublishers {
+		existingPublishers[pub.Name] = pub
+	}
+	result.MessagingPublishers = make([]config.PublisherConfig, 0, len(existingPublishers))
+	for _, pub := range existingPublishers {
+		result.MessagingPublishers = append(result.MessagingPublishers, pub)
+	}
+
+	// Merge storage providers: keep last occurrence by name.
+	existingStorageProviders := make(map[string]storage.StorageProviderConfig)
+	for _, sp := range existing.StorageProviders {
+		existingStorageProviders[sp.Name] = sp
+	}
+	for _, sp := range newBundle.StorageProviders {
+		existingStorageProviders[sp.Name] = sp
+	}
+	result.StorageProviders = make([]storage.StorageProviderConfig, 0, len(existingStorageProviders))
+	for _, sp := range existingStorageProviders {
+		result.StorageProviders = append(result.StorageProviders, sp)
+	}
+
+	// Merge SFTP connectors: keep last occurrence by name.
+	existingSFTPConnectors := make(map[string]config.SFTPConnectorConfig)
+	for _, sc := range existing.SFTPConnectors {
+		existingSFTPConnectors[sc.Name] = sc
+	}
+	for _, sc := range newBundle.SFTPConnectors {
+		existingSFTPConnectors[sc.Name] = sc
+	}
+	result.SFTPConnectors = make([]config.SFTPConnectorConfig, 0, len(existingSFTPConnectors))
+	for _, sc := range existingSFTPConnectors {
+		result.SFTPConnectors = append(result.SFTPConnectors, sc)
 	}
 
 	return result

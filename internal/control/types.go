@@ -5,6 +5,7 @@ import (
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/mcpreg"
 	registrypkg "github.com/amitkhosla/rah/internal/registry"
+	"github.com/amitkhosla/rah/internal/storage"
 )
 
 // UpstreamPassthroughConfig controls what is forwarded on every upstream http_call.
@@ -145,6 +146,9 @@ type StepConfig struct {
 	// Mappings is a map of string keys to string values, used by steps like map_status
 	// to define lookup tables (e.g. status code mappings: "502" -> "503").
 	Mappings map[string]string `json:"mappings,omitempty"`
+
+	// Bind maps DB column names to slot names for db_foreach.
+	Bind map[string]string `json:"bind,omitempty" yaml:"bind,omitempty"`
 
 	// Default is a fallback value used when a mapping lookup fails (e.g. "pass" for map_status
 	// to leave unchanged, or a status code like "503").
@@ -423,6 +427,13 @@ type UnifiedSyncRequest struct {
 	Migrations []MigrationDef `yaml:"migrations" json:"migrations,omitempty"`
 	// Named queries for data sources.
 	Queries map[string]datasource.NamedQueryConfig `yaml:"queries" json:"queries,omitempty"`
+
+	// Connector and provider configurations
+	DataSources         []datasource.DataSourceConfig    `json:"data_sources,omitempty"`
+	DocumentConnectors  []config.DocumentConnectorConfig `json:"document_connectors,omitempty"`
+	MessagingPublishers []config.PublisherConfig         `json:"messaging_publishers,omitempty"`
+	StorageProviders    []storage.StorageProviderConfig  `json:"storage_providers,omitempty"`
+	SFTPConnectors      []config.SFTPConnectorConfig     `json:"sftp_connectors,omitempty"`
 }
 
 type Step struct {

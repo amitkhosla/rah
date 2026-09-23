@@ -29,6 +29,52 @@ import (
 	"sync/atomic"
 )
 
+// maskRef masks a credential reference for API responses.
+// Returns scheme:*** for references with a scheme prefix, *** for literals.
+func maskRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if i := strings.Index(ref, ":"); i > 0 {
+		return ref[:i+1] + "***"
+	}
+	return "***"
+}
+
+// reconcileConnectorDomain applies per-item upsert or delete operations to a
+// connector domain. Items with action "delete" are removed; all others are written.
+// This matches the explicit "upsert"/"delete" pattern used by flows and APIs.
+func reconcileConnectorDomain[T any](
+	ctx context.Context,
+	ds *DataStoreManager,
+	domain config.DataDomain,
+	items []T,
+	keyFn func(T) string,
+	actionFn func(T) string,
+) error {
+	var errs []error
+	for _, item := range items {
+		key := keyFn(item)
+		if actionFn(item) == "delete" {
+			if err := ds.DeleteGlobal(ctx, domain, key); err != nil {
+				errs = append(errs, fmt.Errorf("delete %s: %w", key, err))
+			}
+		} else {
+			data, _ := json.Marshal(item)
+			if err := ds.PutGlobal(ctx, domain, key, data); err != nil {
+				errs = append(errs, fmt.Errorf("put %s: %w", key, err))
+			}
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	return fmt.Errorf("reconcile %v: %d error(s): %v", domain, len(errs), errs)
+}
+
 // ManagementServer coordinates the Control Plane. It translates high-level
 // JSON configurations into low-level Instruction Tables and swaps the
 // Engine's state atomically.
@@ -92,10 +138,11 @@ type ManagementServer struct {
 	StorageMgr       *LiveStorageMgr
 
 	// Persistent stores for each connector type
-	docConnStore    *gwConnStore[config.DocumentConnectorConfig]
-	msgPubStore     *gwConnStore[config.PublisherConfig]
-	sftpConnStore   *gwConnStore[config.SFTPConnectorConfig]
-	gwStorageStore  *gwConnStore[storage.StorageProviderConfig]
+	docConnStore       *gwConnStore[config.DocumentConnectorConfig]
+	msgPubStore        *gwConnStore[config.PublisherConfig]
+	sftpConnStore      *gwConnStore[config.SFTPConnectorConfig]
+	gwStorageStore     *gwConnStore[storage.StorageProviderConfig]
+	sqlDataSourceStore *gwConnStore[datasource.DataSourceConfig]
 
 	// SecretsResolver for rebuilding connector managers
 	SecretsResolver secrets.Resolver
@@ -133,6 +180,9 @@ func (s *ManagementServer) InitConnectorStores(ctx context.Context, gw config.Ga
 	}
 	if st, err := newGWConnStore(gw.StorageProviders, func(c storage.StorageProviderConfig) string { return c.Name }, ""); err == nil {
 		s.gwStorageStore = st
+	}
+	if st, err := newGWConnStore(gw.DataSources, func(c datasource.DataSourceConfig) string { return c.Name }, ""); err == nil {
+		s.sqlDataSourceStore = st
 	}
 }
 
@@ -476,6 +526,7 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
+			def.AppName = a.AppName
 			if len(a.AliasPaths) > 0 {
 				cleaned := make([]string, 0, len(a.AliasPaths))
 				for _, p := range a.AliasPaths {
@@ -908,6 +959,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
+			def.AppName = a.AppName
 
 			apiRLId := uint16(0)
 			if a.RateLimitName != "" && s.RegMgr != nil {
@@ -1204,6 +1256,56 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				gatewaylog.Default.Warn("[Management] failed to persist",
 					gatewaylog.F("kind", op.kind),
 					gatewaylog.F("name", op.name),
+					gatewaylog.F("error", err.Error()))
+			}
+		}
+	}
+
+	// 8.5 Reconcile connector domains to enforce "only deployed = present" semantics.
+	ctx := context.Background()
+	if s.dataStore != nil {
+		if s.dataStore.IsConfigured(config.DomainSQLDataSources) {
+			if err := reconcileConnectorDomain(ctx, s.dataStore, config.DomainSQLDataSources,
+				req.DataSources,
+				func(c datasource.DataSourceConfig) string { return c.Name },
+				func(c datasource.DataSourceConfig) string { return c.Action }); err != nil {
+				gatewaylog.Default.Warn("[Management] failed to reconcile SQL data sources",
+					gatewaylog.F("error", err.Error()))
+			}
+		}
+		if s.dataStore.IsConfigured(config.DomainDocumentConnectors) {
+			if err := reconcileConnectorDomain(ctx, s.dataStore, config.DomainDocumentConnectors,
+				req.DocumentConnectors,
+				func(c config.DocumentConnectorConfig) string { return c.Name },
+				func(c config.DocumentConnectorConfig) string { return c.Action }); err != nil {
+				gatewaylog.Default.Warn("[Management] failed to reconcile document connectors",
+					gatewaylog.F("error", err.Error()))
+			}
+		}
+		if s.dataStore.IsConfigured(config.DomainMessagingPublishers) {
+			if err := reconcileConnectorDomain(ctx, s.dataStore, config.DomainMessagingPublishers,
+				req.MessagingPublishers,
+				func(c config.PublisherConfig) string { return c.Name },
+				func(c config.PublisherConfig) string { return c.Action }); err != nil {
+				gatewaylog.Default.Warn("[Management] failed to reconcile messaging publishers",
+					gatewaylog.F("error", err.Error()))
+			}
+		}
+		if s.dataStore.IsConfigured(config.DomainStorageProviders) {
+			if err := reconcileConnectorDomain(ctx, s.dataStore, config.DomainStorageProviders,
+				req.StorageProviders,
+				func(c storage.StorageProviderConfig) string { return c.Name },
+				func(c storage.StorageProviderConfig) string { return c.Action }); err != nil {
+				gatewaylog.Default.Warn("[Management] failed to reconcile storage providers",
+					gatewaylog.F("error", err.Error()))
+			}
+		}
+		if s.dataStore.IsConfigured(config.DomainSFTPConnectors) {
+			if err := reconcileConnectorDomain(ctx, s.dataStore, config.DomainSFTPConnectors,
+				req.SFTPConnectors,
+				func(c config.SFTPConnectorConfig) string { return c.Name },
+				func(c config.SFTPConnectorConfig) string { return c.Action }); err != nil {
+				gatewaylog.Default.Warn("[Management] failed to reconcile SFTP connectors",
 					gatewaylog.F("error", err.Error()))
 			}
 		}
@@ -2264,6 +2366,30 @@ func (s *ManagementServer) rebuildGWStorageMgr() error {
 	return nil
 }
 
+// rebuildSQLDataSourcePool rebuilds the DataSourcePool from the store and swaps atomically.
+func (s *ManagementServer) rebuildSQLDataSourcePool() error {
+	if s.sqlDataSourceStore == nil {
+		return nil
+	}
+	cfgs := s.sqlDataSourceStore.List()
+	if len(cfgs) == 0 {
+		s.DataSourcePool = nil
+		if s.Compiler != nil {
+			s.Compiler.DataSourcePool = nil
+		}
+		return nil
+	}
+	pool, err := datasource.New(cfgs, s.SecretsResolver)
+	if err != nil {
+		return fmt.Errorf("rebuild sql data sources: %w", err)
+	}
+	s.DataSourcePool = pool
+	if s.Compiler != nil {
+		s.Compiler.DataSourcePool = pool
+	}
+	return nil
+}
+
 // crudName extracts the named-resource segment from a CRUD URL path.
 // Returns "" if the request targets the collection (e.g. "/document-connectors" or "/document-connectors/").
 // Returns the name segment if the request targets a specific resource (e.g. "/document-connectors/my-conn").
@@ -2273,6 +2399,110 @@ func crudName(urlPath, prefix string) string {
 	}
 	name := strings.TrimPrefix(urlPath, prefix+"/")
 	return strings.TrimSuffix(name, "/")
+}
+
+// SQLDataSourcesCRUDHandler handles GET/POST /sql-data-sources and GET/PUT/DELETE /sql-data-sources/{name}.
+func (s *ManagementServer) SQLDataSourcesCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.sqlDataSourceStore == nil {
+		http.Error(w, "sql data source store not initialised", http.StatusServiceUnavailable)
+		return
+	}
+	name := crudName(r.URL.Path, "/sql-data-sources")
+	if name == "" {
+		switch r.Method {
+		case http.MethodGet:
+			list := s.sqlDataSourceStore.List()
+			masked := make([]datasource.DataSourceConfig, len(list))
+			for i, c := range list {
+				masked[i] = c
+				masked[i].DSNRef = maskRef(c.DSNRef)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"sources": masked})
+		case http.MethodPost:
+			var cfg datasource.DataSourceConfig
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if cfg.Name == "" {
+				http.Error(w, "name is required", http.StatusBadRequest)
+				return
+			}
+			if cfg.Driver == "" {
+				http.Error(w, "driver is required", http.StatusBadRequest)
+				return
+			}
+			if err := s.sqlDataSourceStore.Set(cfg.Name, cfg); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if s.dataStore != nil && s.dataStore.IsConfigured(config.DomainSQLDataSources) {
+				if data, err := json.Marshal(cfg); err == nil {
+					_ = s.dataStore.PutGlobal(context.Background(), config.DomainSQLDataSources, cfg.Name, data)
+				}
+			}
+			if err := s.rebuildSQLDataSourcePool(); err != nil {
+				log.Printf("[sql-data-sources] rebuild warning: %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		cfg, ok := s.sqlDataSourceStore.Get(name)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		masked := cfg
+		masked.DSNRef = maskRef(cfg.DSNRef)
+		_ = json.NewEncoder(w).Encode(masked)
+	case http.MethodPut:
+		var cfg datasource.DataSourceConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		cfg.Name = name
+		// Sentinel guard: if incoming DSNRef is empty, ends with ":***" or equals "***", keep the stored value
+		if cfg.DSNRef == "" || cfg.DSNRef == "***" || strings.HasSuffix(cfg.DSNRef, ":***") {
+			if stored, ok := s.sqlDataSourceStore.Get(name); ok {
+				cfg.DSNRef = stored.DSNRef
+			}
+		}
+		if err := s.sqlDataSourceStore.Set(name, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if s.dataStore != nil && s.dataStore.IsConfigured(config.DomainSQLDataSources) {
+			if data, err := json.Marshal(cfg); err == nil {
+				_ = s.dataStore.PutGlobal(context.Background(), config.DomainSQLDataSources, name, data)
+			}
+		}
+		if err := s.rebuildSQLDataSourcePool(); err != nil {
+			log.Printf("[sql-data-sources] rebuild warning: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
+	case http.MethodDelete:
+		if err := s.sqlDataSourceStore.Delete(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if s.dataStore != nil && s.dataStore.IsConfigured(config.DomainSQLDataSources) {
+			_ = s.dataStore.DeleteGlobal(context.Background(), config.DomainSQLDataSources, name)
+		}
+		if err := s.rebuildSQLDataSourcePool(); err != nil {
+			log.Printf("[sql-data-sources] rebuild warning: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // DocumentConnectorsCRUDHandler handles GET/POST /document-connectors and GET/PUT/DELETE /document-connectors/{name}.

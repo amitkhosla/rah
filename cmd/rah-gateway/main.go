@@ -275,6 +275,92 @@ func main() {
 		}
 	}
 
+	// Connector domain bootstrap reads — datastore overrides YAML config
+	// SQL data sources
+	if dataStoreMgr.IsConfigured(config.DomainSQLDataSources) {
+		if snap, err := dataStoreMgr.ReadGlobalDomainSnapshot(bootstrapCtx, config.DomainSQLDataSources); err != nil {
+			log.Printf("[Gateway] failed to read SQL data sources from datastore: %v", err)
+		} else if len(snap) > 0 {
+			var dataSources []datasource.DataSourceConfig
+			for _, raw := range snap {
+				var c datasource.DataSourceConfig
+				if json.Unmarshal(raw, &c) == nil {
+					dataSources = append(dataSources, c)
+				}
+			}
+			cfgMgr.SetDataSources(dataSources)
+			log.Printf("sql_data_sources snapshot loaded: %d", len(dataSources))
+		}
+	}
+
+	// Document connectors
+	if dataStoreMgr.IsConfigured(config.DomainDocumentConnectors) {
+		if snap, err := dataStoreMgr.ReadGlobalDomainSnapshot(bootstrapCtx, config.DomainDocumentConnectors); err != nil {
+			log.Printf("[Gateway] failed to read document connectors from datastore: %v", err)
+		} else if len(snap) > 0 {
+			var connectors []config.DocumentConnectorConfig
+			for _, raw := range snap {
+				var c config.DocumentConnectorConfig
+				if json.Unmarshal(raw, &c) == nil {
+					connectors = append(connectors, c)
+				}
+			}
+			cfgMgr.SetDocumentConnectors(connectors)
+			log.Printf("document_connectors snapshot loaded: %d", len(connectors))
+		}
+	}
+
+	// Messaging publishers
+	if dataStoreMgr.IsConfigured(config.DomainMessagingPublishers) {
+		if snap, err := dataStoreMgr.ReadGlobalDomainSnapshot(bootstrapCtx, config.DomainMessagingPublishers); err != nil {
+			log.Printf("[Gateway] failed to read messaging publishers from datastore: %v", err)
+		} else if len(snap) > 0 {
+			var publishers []config.PublisherConfig
+			for _, raw := range snap {
+				var c config.PublisherConfig
+				if json.Unmarshal(raw, &c) == nil {
+					publishers = append(publishers, c)
+				}
+			}
+			cfgMgr.SetMessagingPublishers(publishers)
+			log.Printf("messaging_publishers snapshot loaded: %d", len(publishers))
+		}
+	}
+
+	// Storage providers
+	if dataStoreMgr.IsConfigured(config.DomainStorageProviders) {
+		if snap, err := dataStoreMgr.ReadGlobalDomainSnapshot(bootstrapCtx, config.DomainStorageProviders); err != nil {
+			log.Printf("[Gateway] failed to read storage providers from datastore: %v", err)
+		} else if len(snap) > 0 {
+			var providers []storage.StorageProviderConfig
+			for _, raw := range snap {
+				var c storage.StorageProviderConfig
+				if json.Unmarshal(raw, &c) == nil {
+					providers = append(providers, c)
+				}
+			}
+			cfgMgr.SetStorageProviders(providers)
+			log.Printf("storage_providers snapshot loaded: %d", len(providers))
+		}
+	}
+
+	// SFTP connectors
+	if dataStoreMgr.IsConfigured(config.DomainSFTPConnectors) {
+		if snap, err := dataStoreMgr.ReadGlobalDomainSnapshot(bootstrapCtx, config.DomainSFTPConnectors); err != nil {
+			log.Printf("[Gateway] failed to read SFTP connectors from datastore: %v", err)
+		} else if len(snap) > 0 {
+			var connectors []config.SFTPConnectorConfig
+			for _, raw := range snap {
+				var c config.SFTPConnectorConfig
+				if json.Unmarshal(raw, &c) == nil {
+					connectors = append(connectors, c)
+				}
+			}
+			cfgMgr.SetSFTPConnectors(connectors)
+			log.Printf("sftp_connectors snapshot loaded: %d", len(connectors))
+		}
+	}
+
 	// 2. Component Initialization
 	// registry is created before the goroutine so the handler closure never
 	// captures a nil pointer. Names are populated at sync time via
@@ -703,7 +789,7 @@ func main() {
 	var dsPool *datasource.DataSourcePool
 	if len(cfgMgr.Gateway().DataSources) > 0 {
 		var dsErr error
-		dsPool, dsErr = datasource.New(cfgMgr.Gateway().DataSources)
+		dsPool, dsErr = datasource.New(cfgMgr.Gateway().DataSources, secretsMgr)
 		if dsErr != nil {
 			gatewaylog.Default.Error("[DataSource] init failed", gatewaylog.F("error", dsErr.Error()))
 			os.Exit(1)
@@ -1342,7 +1428,12 @@ func main() {
 
 			// API name: resolved from registry (populated at sync time).
 			// TenantKey: set during request by registry_lookup step; empty for tenant-agnostic APIs.
+			// AppName: resolved from the API definition post-response, never carried as a string on ctx.
 			apiName := registry.GetNameByID(ctx.ApiId)
+			var appName string
+			if id := int(ctx.ApiId); id > 0 && id < len(currentState.Definitions) && currentState.Definitions[id] != nil {
+				appName = currentState.Definitions[id].AppName
+			}
 			// Build runtime extra KV pairs from log_field steps Ã¢â‚¬â€ allocated post-response,
 			// outside the hot path, so the small allocation here is acceptable.
 			var runtimeLogFields []observability.KV
@@ -1375,7 +1466,7 @@ func main() {
 				ctx.TenantID,
 				ctx.CallerKey,
 				ctx.CallerID,
-				ctx.AppName,
+				appName,
 				req.Method, req.URL.RequestURI(),
 				ctx.ResponseStatus,
 				clientTotal.Nanoseconds(), gateway.Nanoseconds(), upstreamNs, ttfbNs,
@@ -1428,6 +1519,7 @@ func main() {
 			obsWriter.WriteAccessLog(observability.AccessLogRecord{
 				TimestampNs: ctx.Timing.StartNs,
 				ApiName:     apiName,
+				AppName:     appName,
 				TenantID:    ctx.TenantID,
 				TenantKey:   ctx.TenantKey,
 				Method:      req.Method,
@@ -1879,6 +1971,8 @@ func main() {
 	mux.HandleFunc("/migrations", ms.MigrationsHandler)
 	mux.HandleFunc("/document-connectors", ms.DocumentConnectorsCRUDHandler)
 	mux.HandleFunc("/document-connectors/", ms.DocumentConnectorsCRUDHandler)
+	mux.HandleFunc("/sql-data-sources", ms.SQLDataSourcesCRUDHandler)
+	mux.HandleFunc("/sql-data-sources/", ms.SQLDataSourcesCRUDHandler)
 	mux.HandleFunc("/storage-connectors", ms.StorageConnectorsHandler)
 	mux.HandleFunc("/storage-providers", ms.GWStorageProvidersCRUDHandler)
 	mux.HandleFunc("/storage-providers/", ms.GWStorageProvidersCRUDHandler)

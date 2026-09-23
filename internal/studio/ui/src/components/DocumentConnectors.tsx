@@ -15,30 +15,20 @@ const YAML_SNIPPET = `document_connectors:
     pool_size: 10
     timeout_ms: 5000
 
-  - name: my-postgres
-    kind: postgresql
-    uri: "postgresql://user:pass@localhost:5432/mydb"
-    database: mydb
-
-  - name: my-mysql
-    kind: mysql
-    uri: "user:pass@tcp(localhost:3306)/mydb"
-    database: mydb`
+  - name: my-grpc
+    kind: grpc
+    grpc_endpoint: "host:50051"`
 
 const KIND_COLORS: Record<string, { bg: string; text: string }> = {
-  mongodb:    { bg: 'rgba(166,227,161,0.1)', text: '#a6e3a1' },
-  postgresql: { bg: 'rgba(137,180,250,0.1)', text: '#89b4fa' },
-  mysql:      { bg: 'rgba(250,179,135,0.1)', text: '#fab387' },
-  grpc:       { bg: 'rgba(203,166,247,0.1)', text: '#cba6f7' },
+  mongodb: { bg: 'rgba(166,227,161,0.1)', text: '#a6e3a1' },
+  grpc:    { bg: 'rgba(203,166,247,0.1)', text: '#cba6f7' },
 }
 
-const KINDS = ['mongodb', 'postgresql', 'mysql', 'grpc'] as const
+const KINDS = ['mongodb', 'grpc'] as const
 
 const URI_PLACEHOLDERS: Record<string, string> = {
-  mongodb:    'mongodb://localhost:27017',
-  postgresql: 'postgresql://user:pass@localhost:5432/mydb',
-  mysql:      'user:pass@tcp(localhost:3306)/mydb',
-  grpc:       '',
+  mongodb: 'mongodb://localhost:27017',
+  grpc:    '',
 }
 
 const EMPTY_FORM: DocumentConnectorDef = {
@@ -397,7 +387,7 @@ export default function DocumentConnectors() {
           <div style={{ fontSize: 11, color: '#6c7086', marginBottom: 8 }}>Add to gateway.yaml, then restart the gateway:</div>
           <pre style={{ margin: 0, fontSize: 12, color: '#cdd6f4', whiteSpace: 'pre', overflowX: 'auto' }}>{YAML_SNIPPET}</pre>
           <div style={{ fontSize: 11, color: '#6c7086', marginTop: 8 }}>
-            Supported kinds: <code>mongodb</code>, <code>postgresql</code>, <code>mysql</code>, <code>grpc</code>.
+            Supported kinds: <code>mongodb</code>, <code>grpc</code>.
             Use <code>credential_ref: "env:VAR"</code> to load credentials from environment variables.
           </div>
         </div>

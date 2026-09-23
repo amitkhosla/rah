@@ -64,6 +64,13 @@ const (
 	DomainMCPTools      DataDomain = "mcp_tools"      // virtual MCP server definitions + API tool catalog
 	DomainNamedQueries  DataDomain = "named_queries"  // named SQL queries for data sources
 
+	// Connector and provider domains
+	DomainSQLDataSources      DataDomain = "sql_data_sources"      // SQL data source configurations
+	DomainDocumentConnectors  DataDomain = "document_connectors"   // document connector configurations
+	DomainMessagingPublishers DataDomain = "messaging_publishers"  // messaging publisher configurations
+	DomainStorageProviders    DataDomain = "storage_providers"     // storage provider configurations
+	DomainSFTPConnectors      DataDomain = "sftp_connectors"       // SFTP connector configurations
+
 	// Deployment infrastructure domains
 	DomainEnvironments     DataDomain = "environments"      // environment definitions (dev/qa/prod)
 	DomainReleases         DataDomain = "releases"          // release bundles (named sets of API+flow versions)

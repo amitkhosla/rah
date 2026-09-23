@@ -581,6 +581,7 @@ type SFTPConnectorConfig struct {
 	PrivateKeyRef string `json:"private_key_ref,omitempty" yaml:"private_key_ref,omitempty"` // resolves via SecretLoader
 	KnownHostsRef string `json:"known_hosts_ref,omitempty" yaml:"known_hosts_ref,omitempty"` // resolves via SecretLoader
 	TimeoutMs     int    `json:"timeout_ms,omitempty"      yaml:"timeout_ms,omitempty"`       // connection timeout ms
+	Action        string `json:"action,omitempty"          yaml:"action,omitempty"`           // "upsert" or "delete"
 }
 
 // DocumentConnectorConfig configures a named document storage connector.
@@ -596,6 +597,7 @@ type DocumentConnectorConfig struct {
 	TimeoutMs     int    `yaml:"timeout_ms,omitempty"     json:"timeout_ms,omitempty"`     // default 5000
 	GRPCEndpoint  string `yaml:"grpc_endpoint,omitempty"  json:"grpc_endpoint,omitempty"` // for kind="grpc"
 	WriteBuffer   bool   `json:"write_buffer,omitempty" yaml:"write_buffer,omitempty"`   // enable read-your-writes buffering (default false)
+	Action        string `json:"action,omitempty"          yaml:"action,omitempty"`           // "upsert" or "delete"
 }
 
 // PublisherConfig configures a named message publisher connector.
@@ -620,6 +622,7 @@ type PublisherConfig struct {
 	// AckRequired controls whether Publish blocks for broker acknowledgement.
 	// Default true (sync). Set false for fire-and-forget (Kafka only for now).
 	AckRequired *bool `yaml:"ack_required,omitempty" json:"ack_required,omitempty"`
+	Action      string `json:"action,omitempty"          yaml:"action,omitempty"`           // "upsert" or "delete"
 }
 
 // EventListenerConfig configures one inbound event consumer.

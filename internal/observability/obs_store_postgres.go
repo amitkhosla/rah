@@ -93,6 +93,10 @@ END $$`)
     THEN ALTER TABLE public.obs_payloads SET SCHEMA rah_system; END IF;
 END $$`)
 
+	// Column migrations — ADD COLUMN IF NOT EXISTS is idempotent on PG 9.6+.
+	_, _ = s.pool.Exec(ctx, `ALTER TABLE IF EXISTS rah_system.obs_access_log ADD COLUMN IF NOT EXISTS app_name TEXT`)
+	_, _ = s.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS obs_access_log_app_idx ON rah_system.obs_access_log(app_name, ts DESC)`)
+
 	ddl := `
 CREATE TABLE IF NOT EXISTS rah_system.obs_access_log (
     id          BIGSERIAL PRIMARY KEY,

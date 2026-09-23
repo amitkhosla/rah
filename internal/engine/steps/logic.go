@@ -175,8 +175,8 @@ func LoopGate(source string, valueSlot int, iterSlot int, bodyStart int16, exitI
 
 func LoopRepeat(gateID int16, iterSlot int) engine.InstructionFunc {
 	return func(ctx *rctx.Context, s *engine.ExecutionState) int16 {
-		ctx.IntSlots[iterSlot]++ // Increment the iterator
-		return gateID            // Jump back to the LoopGate check
+		ctx.SetInt(iterSlot, ctx.GetInt(iterSlot)+1)
+		return gateID
 	}
 }
 
@@ -291,7 +291,7 @@ func InternalJump(targetID int16) engine.InstructionFunc {
 // When exhausted, jumps to exitID.
 func ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-		idx := int(ctx.IntSlots[iterSlot])
+		idx := int(ctx.GetInt(iterSlot))
 		if idx == 0 {
 			// Build flat list of (name, value) pairs from ctx.Request.Header (map[string][]string)
 			count := 0
@@ -344,7 +344,7 @@ func ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exit
 		total := int(binary.LittleEndian.Uint32(buf[0:4]))
 		if idx >= total {
 			ctx.ByteSlots[indexSlot] = nil
-			ctx.IntSlots[iterSlot] = 0
+			ctx.SetInt(iterSlot, 0)
 			return exitID
 		}
 
@@ -356,7 +356,7 @@ func ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exit
 		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
 		ctx.ByteSlots[nameSlot] = dataBuf[nameOff : nameOff+nameLen]
 		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
-		ctx.IntSlots[iterSlot]++
+		ctx.SetInt(iterSlot, int64(idx+1))
 		return bodyStart
 	}
 }
@@ -366,7 +366,7 @@ func ForeachHeader(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exit
 // of (keyOff, keyLen, valOff, valLen) tuples with decoded key/value data.
 func ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-		idx := int(ctx.IntSlots[iterSlot])
+		idx := int(ctx.GetInt(iterSlot))
 		if idx == 0 {
 			rawQuery := ctx.Request.URL.RawQuery
 			if rawQuery == "" {
@@ -434,7 +434,7 @@ func ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitI
 		total := int(binary.LittleEndian.Uint32(buf[0:4]))
 		if idx >= total {
 			ctx.ByteSlots[indexSlot] = nil
-			ctx.IntSlots[iterSlot] = 0
+			ctx.SetInt(iterSlot, 0)
 			return exitID
 		}
 
@@ -446,7 +446,7 @@ func ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitI
 		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
 		ctx.ByteSlots[nameSlot] = dataBuf[keyOff : keyOff+keyLen]
 		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
-		ctx.IntSlots[iterSlot]++
+		ctx.SetInt(iterSlot, int64(idx+1))
 		return bodyStart
 	}
 }
@@ -456,7 +456,7 @@ func ForeachParam(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitI
 // and builds a packed index of (nameOff, nameLen, valOff, valLen) tuples.
 func ForeachCookie(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exitID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-		idx := int(ctx.IntSlots[iterSlot])
+		idx := int(ctx.GetInt(iterSlot))
 		if idx == 0 {
 			cookieHeader := ctx.Request.Header.Get("Cookie")
 			if cookieHeader == "" {
@@ -523,7 +523,7 @@ func ForeachCookie(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exit
 		total := int(binary.LittleEndian.Uint32(buf[0:4]))
 		if idx >= total {
 			ctx.ByteSlots[indexSlot] = nil
-			ctx.IntSlots[iterSlot] = 0
+			ctx.SetInt(iterSlot, 0)
 			return exitID
 		}
 
@@ -535,7 +535,7 @@ func ForeachCookie(nameSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exit
 		valLen := binary.LittleEndian.Uint32(indexBuf[idx*16+12:])
 		ctx.ByteSlots[nameSlot] = dataBuf[nameOff : nameOff+nameLen]
 		ctx.ByteSlots[valueSlot] = dataBuf[valOff : valOff+valLen]
-		ctx.IntSlots[iterSlot]++
+		ctx.SetInt(iterSlot, int64(idx+1))
 		return bodyStart
 	}
 }

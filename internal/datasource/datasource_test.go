@@ -160,7 +160,7 @@ func TestQueryTimeout_Custom(t *testing.T) {
 
 func TestResolveDSN_DirectString(t *testing.T) {
 	dsn := "host=localhost port=5432"
-	got := resolveDSN(dsn)
+	got := resolveDSN(dsn, nil)
 	if got != dsn {
 		t.Errorf("resolveDSN(%q) = %q, want %q", dsn, got, dsn)
 	}
@@ -169,7 +169,7 @@ func TestResolveDSN_DirectString(t *testing.T) {
 func TestResolveDSN_EnvPrefix_Empty(t *testing.T) {
 	// Simulate env var not being set (empty env)
 	t.Setenv("NONEXISTENT_VAR", "")
-	got := resolveDSN("env:NONEXISTENT_VAR")
+	got := resolveDSN("env:NONEXISTENT_VAR", nil)
 	if got != "" {
 		t.Errorf("resolveDSN(env:NONEXISTENT_VAR) = %q, want empty string", got)
 	}
