@@ -97,6 +97,67 @@ apis:
     action: upsert | delete     # Create/update or delete
 ```
 
+### Connector Definitions
+
+Bundles can also provision connectors alongside flows and APIs. All connector types support `action: upsert | delete`.
+
+**Customer data sources (Postgres)**
+```yaml
+data_sources:
+  - name: trading_db
+    driver: postgres
+    dsn_ref: env:TRADING_DB_DSN
+    max_connections: 20
+    tenant_isolation: rls
+    rls_variable: app.tenant_id
+    action: upsert
+```
+
+**Document connectors (MongoDB / Postgres / MySQL / gRPC)**
+```yaml
+document_connectors:
+  - name: catalogue_mongo
+    kind: mongodb
+    dsn_ref: env:MONGO_DSN
+    database: catalogue
+    action: upsert
+```
+
+**Messaging publishers (Kafka / Pub/Sub / RabbitMQ / SQS / Redis Streams)**
+```yaml
+messaging_publishers:
+  - name: order_events
+    kind: kafka
+    brokers: kafka.internal:9092
+    topic: orders
+    action: upsert
+```
+
+**Object storage providers (S3 / GCS / local)**
+```yaml
+storage_providers:
+  - name: app_assets
+    kind: s3
+    bucket: my-assets-bucket
+    region: us-east-1
+    credentials_ref: env:AWS_CREDENTIALS
+    action: upsert
+```
+
+**SFTP connectors**
+```yaml
+sftp_connectors:
+  - name: reports_sftp
+    host: sftp.partner.com
+    port: 22
+    username: deployer
+    private_key_ref: env:SFTP_PRIVATE_KEY
+    max_connections: 5
+    action: upsert
+```
+
+All connector definitions are applied atomically alongside flows — the gateway hot-reloads connectors without a restart.
+
 ## Running rah-sync
 
 ### Basic Commands

@@ -4,7 +4,7 @@ All notable changes to RAH are documented here.
 
 ---
 
-## [v0.3.0] — 2026-08-20
+## [v0.4.0] — 2026-09-23
 
 ### Added
 
@@ -77,6 +77,11 @@ All notable changes to RAH are documented here.
 - `sleep` instruction: pause flow execution for a configurable duration.
 - Inline arithmetic: `+`, `-`, `*`, `/` operators can now be used directly in
   expressions in addition to the named `add` / `sub` / `mul` / `div` instructions.
+- `db_foreach` instruction: run a SQL SELECT, materialise all rows into a compact
+  binary buffer (DB connection released immediately), then iterate row-by-row binding
+  named columns directly into slots — no JSON serialisation, zero per-row allocations.
+- `bind_json` instruction: extract a gjson path from any ByteSlot into another slot.
+  Designed for use inside `db_foreach` loops to unpack nested JSON column values.
 
 ### Changed
 

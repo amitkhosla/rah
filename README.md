@@ -466,6 +466,7 @@ there is no distinction between "built-in" and "plugin" behaviour.
 | `db_query` | SQL SELECT on customer Postgres; returns JSON array |
 | `db_query_one` | SQL SELECT one row; 404 if empty |
 | `db_exec` | SQL INSERT / UPDATE / DELETE / DDL |
+| `db_foreach` | SQL SELECT — iterate row-by-row; bind named columns directly into slots with zero per-row allocation |
 | `doc_find` | MongoDB / document connector query; returns JSON array |
 | `doc_find_one` | Document connector single-document lookup |
 | `doc_insert` / `doc_update` / `doc_delete` | Document write operations |
