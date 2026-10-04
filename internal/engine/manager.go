@@ -269,7 +269,7 @@ func (fm *FlowManager) ProcessRequest(ctx *rctx.Context, req *http.Request) {
 	fm.Extract(ctx, req)
 
 	// 5. Plan Execution
-	Execute(ctx, endpoint.Plan, 0)
+	Execute(ctx, endpoint.Plan, 0, endpoint.MaxCallDepth)
 
 	// 5b. Engine-level error fallback: if the plan ended with an unhandled failure
 	// and no step committed a >=400 response status, synthesize a generic 500.
@@ -320,7 +320,7 @@ func (fm *FlowManager) ProcessFlow(ctx *rctx.Context, flowName string) {
 		gatewaylog.Default.Warn("[ProcessFlow] flow not found", gatewaylog.F("flow", flowName))
 		return
 	}
-	Execute(ctx, instructions, 0)
+	Execute(ctx, instructions, 0, 0)
 }
 
 // injectUpstreamUrl writes the upstream URL for the current route into the

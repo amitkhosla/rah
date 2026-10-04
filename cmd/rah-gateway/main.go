@@ -786,14 +786,14 @@ func main() {
 	}
 
 	// Initialize data sources.
-	var dsPool *datasource.DataSourcePool
+	dsPool := datasource.NewAtomicPool()
 	if len(cfgMgr.Gateway().DataSources) > 0 {
-		var dsErr error
-		dsPool, dsErr = datasource.New(cfgMgr.Gateway().DataSources, secretsMgr)
+		pool, dsErr := datasource.New(cfgMgr.Gateway().DataSources, secretsMgr)
 		if dsErr != nil {
 			gatewaylog.Default.Error("[DataSource] init failed", gatewaylog.F("error", dsErr.Error()))
 			os.Exit(1)
 		}
+		dsPool.Store(pool)
 	}
 
 	// Initialize Redis sources.
@@ -934,7 +934,16 @@ func main() {
 		_ = constants
 
 		fm.ProcessFlow(ctx, flowName)
+		failed := ctx.Failed
+		if ctx.ActiveTx != nil {
+			_ = ctx.ActiveTx.Rollback(context.Background())
+			ctx.ActiveTx = nil
+			ctx.TxDepth = 0
+		}
 		fm.Pool.Put(ctx)
+		if failed {
+			return fmt.Errorf("flow %s failed", flowName)
+		}
 		return nil
 	}
 	if schedCfg.Enabled {
@@ -1808,11 +1817,11 @@ func main() {
 		}
 	}
 
-	// Wire data source pool for migration processing.
-	if dsPool != nil && len(cfgMgr.Gateway().DataSources) > 0 {
-		ms.DataSourcePool = dsPool
-		ms.DataSourceConfigs = cfgMgr.Gateway().DataSources
-	}
+	// Wire data source pool. Always share the same AtomicPool pointer so that
+	// rebuildSQLDataSourcePool (triggered by the management API) swaps the inner
+	// pool for both the compiler and the management server in one Store call.
+	ms.DataSourcePool = dsPool
+	ms.DataSourceConfigs = cfgMgr.Gateway().DataSources
 
 	// Wire Redis source pool for redis_* step management.
 	if redisSrcPool != nil {

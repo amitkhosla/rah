@@ -202,7 +202,7 @@ func (h *TestHandler) executeOneCase(mode string, tc TestCase, testTenantID uint
 
 	// Execute the flow and measure wall-clock time.
 	startTime := time.Now()
-	engine.Execute(rctxCtx, table, 0)
+	engine.Execute(rctxCtx, table, 0, 0)
 	durationMs := time.Since(startTime).Seconds() * 1000
 
 	// Capture the response body.

@@ -23,8 +23,9 @@ type UpstreamPassthroughConfig struct {
 
 // BranchConfig defines one named branch in a parallel step.
 type BranchConfig struct {
-	Name string       `json:"name"`
-	Flow []StepConfig `json:"flow"`
+	Name    string       `json:"name"`
+	Flow    []StepConfig `json:"flow"`
+	OnError string       `json:"on_error,omitempty"` // Error handling: "ignore" to swallow branch failure, "" or "fail" to propagate
 }
 
 // StepConfig defines a single atomic instruction in a flow.
@@ -80,6 +81,9 @@ type StepConfig struct {
 	Branches    []BranchConfig `json:"branches,omitempty"`    // For parallel: list of named branches with inline flows
 	TimeoutMs   uint32         `json:"timeout_ms,omitempty"`  // For parallel: max wait in ms (default 3000)
 	ErrorPolicy string         `json:"error_policy,omitempty"` // For parallel: "continue" (default) or "fail_fast"
+
+	// Transaction execution (for "transaction" action)
+	DataSource string `json:"data_source,omitempty"` // For transaction: database source name
 
 	// TX ID / Correlation
 	GenerateIfMissing bool `json:"generate_if_missing,omitempty"` // For bind_correlation_id: generate ID when header absent
@@ -166,6 +170,13 @@ type StepConfig struct {
 	Count      int64    `yaml:"count"       json:"count,omitempty"`
 	Members    []string `yaml:"members"     json:"members,omitempty"`
 	Vars       []string `yaml:"vars"        json:"vars,omitempty"`
+
+	// JSON Merge — merge N JSON slot values into a single JSON object
+	Sources    []struct {
+		Slot string `json:"slot"`          // slot name to merge
+		Key  string `json:"key,omitempty"` // wrap key; empty means spread
+	} `json:"sources,omitempty"`
+	TargetSlot string `json:"target_slot,omitempty"` // destination slot name
 }
 
 // â"€â"€â"€ Rate Limit Warning Types â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€

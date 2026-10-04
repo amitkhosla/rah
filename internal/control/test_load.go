@@ -195,7 +195,7 @@ func runLoadTest(req LoadTestRequest, table []engine.Instruction) ([]int64, int)
 				}
 
 				start := time.Now()
-				engine.Execute(ctx, table, 0)
+				engine.Execute(ctx, table, 0, 0)
 				elapsed := time.Since(start).Nanoseconds()
 
 				// Determine effective status for error counting.

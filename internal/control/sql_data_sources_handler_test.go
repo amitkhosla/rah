@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -15,6 +16,15 @@ import (
 // seeded from the provided initial configs.
 func newTestMSWithSQLSources(t *testing.T, initial []datasource.DataSourceConfig) *ManagementServer {
 	t.Helper()
+	// Set dummy env vars for testing (env:VAR refs need values)
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = os.Setenv("DATABASE_URL", "postgres://localhost/testdb")
+		t.Cleanup(func() { _ = os.Unsetenv("DATABASE_URL") })
+	}
+	if os.Getenv("REAL_DATABASE_URL") == "" {
+		_ = os.Setenv("REAL_DATABASE_URL", "postgres://localhost/realdb")
+		t.Cleanup(func() { _ = os.Unsetenv("REAL_DATABASE_URL") })
+	}
 	ms := newTestMS(t)
 	ms.InitConnectorStores(t.Context(), config.GatewayConfig{DataSources: initial})
 	return ms

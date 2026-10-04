@@ -17,9 +17,9 @@ type Store interface {
 	Delete(ctx context.Context, name string) error
 	// ListDueWithin returns schedules whose NextRunAt is within the next windowSec seconds.
 	ListDueWithin(ctx context.Context, windowSec int) ([]*ScheduledEvent, error)
-	// Claim attempts to atomically claim an event for this instance.
+	// Claim attempts to atomically claim a schedule by name for this instance.
 	// Returns ClaimWon if this instance should execute it.
-	Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error)
+	Claim(ctx context.Context, name string, instanceID string) (ClaimResult, error)
 	// RecordExecution writes an execution record and advances NextRunAt.
 	RecordExecution(ctx context.Context, rec ExecutionRecord, nextRun time.Time) error
 	// ListAll returns all schedules (for management API).
@@ -92,14 +92,18 @@ func (ms *MemoryStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sch
 		if !s.Enabled {
 			continue
 		}
-		if s.NextRunAt.After(now) && s.NextRunAt.Before(cutoff) {
+		if !s.NextRunAt.Before(now) && s.NextRunAt.Before(cutoff) {
 			events = append(events, &ScheduledEvent{
-				Name:        s.Name,
-				FlowName:    s.FlowName,
-				TenantAlias: s.TenantAlias,
-				TimeoutSec:  s.TimeoutSec,
-				Constants:   s.Constants,
-				ScheduledAt: s.NextRunAt,
+				Name:             s.Name,
+				FlowName:         s.FlowName,
+				TenantAlias:      s.TenantAlias,
+				TimeoutSec:       s.TimeoutSec,
+				Constants:        s.Constants,
+				ScheduledAt:      s.NextRunAt,
+				Cron:             s.Cron,
+				RetryCount:       s.OnFailure.RetryCount,
+				RetryIntervalSec: s.OnFailure.RetryIntervalSec,
+				DeadLetterFlow:   s.OnFailure.DeadLetterFlow,
 			})
 		}
 	}
@@ -107,8 +111,15 @@ func (ms *MemoryStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sch
 	return events, nil
 }
 
-// Claim always returns ClaimWon for single-instance mode.
-func (ms *MemoryStore) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) {
+// Claim always succeeds in MemoryStore (single-instance mode has no competing claimants).
+// Returns ClaimLost if the schedule has been deleted.
+func (ms *MemoryStore) Claim(ctx context.Context, name string, instanceID string) (ClaimResult, error) {
+	ms.mu.RLock()
+	_, ok := ms.schedules[name]
+	ms.mu.RUnlock()
+	if !ok {
+		return ClaimLost, nil
+	}
 	return ClaimWon, nil
 }
 
@@ -117,11 +128,14 @@ func (ms *MemoryStore) RecordExecution(ctx context.Context, rec ExecutionRecord,
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	// Append to history (keep last 100)
-	history, ok := ms.history[rec.Name]
+	// Check schedule exists first before writing history
+	s, ok := ms.schedules[rec.Name]
 	if !ok {
-		history = []ExecutionRecord{}
+		return fmt.Errorf("schedule not found: %s", rec.Name)
 	}
+
+	// Append to history (keep last 100)
+	history := ms.history[rec.Name]
 	history = append(history, rec)
 	if len(history) > 100 {
 		history = history[1:]
@@ -129,11 +143,6 @@ func (ms *MemoryStore) RecordExecution(ctx context.Context, rec ExecutionRecord,
 	ms.history[rec.Name] = history
 
 	// Update schedule
-	s, ok := ms.schedules[rec.Name]
-	if !ok {
-		return fmt.Errorf("schedule not found: %s", rec.Name)
-	}
-
 	s.LastRunAt = rec.FinishedAt
 	s.LastStatus = rec.Status
 	s.NextRunAt = nextRun
@@ -163,7 +172,10 @@ func (ms *MemoryStore) ListHistory(ctx context.Context, name string, limit int) 
 		return []ExecutionRecord{}, nil
 	}
 
-	if limit <= 0 || limit > len(history) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > len(history) {
 		limit = len(history)
 	}
 
@@ -204,7 +216,7 @@ func (rs *RedisStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sche
 }
 
 // Claim is not yet implemented.
-func (rs *RedisStore) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) {
+func (rs *RedisStore) Claim(ctx context.Context, name string, instanceID string) (ClaimResult, error) {
 	return ClaimError, fmt.Errorf("redis store: not yet implemented")
 }
 
@@ -249,7 +261,7 @@ type memoryStoreStub struct {
 func (s *memoryStoreStub) Upsert(ctx context.Context, sc *Schedule) error                                  { return s.err }
 func (s *memoryStoreStub) Delete(ctx context.Context, name string) error                                    { return s.err }
 func (s *memoryStoreStub) ListDueWithin(ctx context.Context, windowSec int) ([]*ScheduledEvent, error)      { return nil, s.err }
-func (s *memoryStoreStub) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) { return ClaimError, s.err }
+func (s *memoryStoreStub) Claim(ctx context.Context, name string, instanceID string) (ClaimResult, error) { return ClaimError, s.err }
 func (s *memoryStoreStub) RecordExecution(ctx context.Context, rec ExecutionRecord, nextRun time.Time) error { return s.err }
 func (s *memoryStoreStub) ListAll(ctx context.Context) ([]*Schedule, error)                                  { return nil, s.err }
 func (s *memoryStoreStub) ListHistory(ctx context.Context, name string, limit int) ([]ExecutionRecord, error) { return nil, s.err }

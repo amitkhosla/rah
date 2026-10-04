@@ -146,6 +146,13 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 				return apiKeyFail(s, ctx, slots, cfg)
 			}
 
+			if cfg.RequireTenant && ctx.TenantID == 0 {
+				apikey.Global.Attempts.Add(1)
+				apikey.Global.TenantDenied.Add(1)
+				apikey.Global.RecordTiming(time.Now().UnixNano() - start)
+				return apiKeyFail(s, ctx, slots, cfg)
+			}
+
 			if len(entry.AllowedTenants) > 0 {
 				allowed := false
 				for _, tid := range entry.AllowedTenants {
@@ -165,12 +172,15 @@ func ValidateAPIKey(slots APIKeyValidationSlots, cfg APIKeyValidationConfig) eng
 			// Scope check — if key has scopes and required scopes are configured,
 			// the intersection must cover all required scopes.
 			if len(cfg.RequiredScopes) > 0 && len(entry.Scopes) > 0 {
-				scopeSet := make(map[string]struct{}, len(entry.Scopes))
-				for _, sc := range entry.Scopes {
-					scopeSet[sc] = struct{}{}
-				}
 				for _, req := range cfg.RequiredScopes {
-					if _, ok := scopeSet[req]; !ok {
+					found := false
+					for _, sc := range entry.Scopes {
+						if sc == req {
+							found = true
+							break
+						}
+					}
+					if !found {
 						apikey.Global.Attempts.Add(1)
 						apikey.Global.TenantDenied.Add(1)
 						apikey.Global.RecordTiming(time.Now().UnixNano() - start)
@@ -202,7 +212,7 @@ func extractAPIKey(ctx *rctx.Context, sourceSlot int, cfg APIKeyValidationConfig
 	case APIKeyFromHeader:
 		return ctx.Request.Header.Get(cfg.SourceKey)
 	case APIKeyFromQuery:
-		return ctx.Request.URL.Query().Get(cfg.SourceKey)
+		return ctx.CachedQuery().Get(cfg.SourceKey)
 	case APIKeyFromCookie:
 		c, err := ctx.Request.Cookie(cfg.SourceKey)
 		if err != nil {

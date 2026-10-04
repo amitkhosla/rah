@@ -262,17 +262,39 @@ func WhileRepeat(gateID int16) engine.InstructionFunc {
 
 func CallFragment(entryID int16) engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-		// Push the NEXT instruction after this one onto the return stack
-		state.LinkStack[state.StackPtr] = state.PC + 1
+		sp := int(state.StackPtr)
+		switch {
+		case sp < 16:
+			state.LinkStack[sp] = state.PC + 1
+		case sp < 128:
+			if state.LinkExt == nil {
+				// Lazily borrow when Execute didn't pre-borrow (maxCallDepth unknown).
+				state.LinkExt = engine.BorrowLinkExt()
+			}
+			state.LinkExt[sp-16] = state.PC + 1
+		default:
+			ctx.Failed = true
+			ctx.ResponseStatus = 500
+			return engine.StopPlan
+		}
 		state.StackPtr++
-		return entryID // JUMP to shared flow
+		return entryID
 	}
 }
 
 func Return() engine.InstructionFunc {
 	return func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 		state.StackPtr--
-		return state.LinkStack[state.StackPtr] // JUMP BACK
+		sp := int(state.StackPtr)
+		if sp < 0 || (sp >= 16 && state.LinkExt == nil) {
+			ctx.Failed = true
+			ctx.ResponseStatus = 500
+			return engine.StopPlan
+		}
+		if sp < 16 {
+			return state.LinkStack[sp]
+		}
+		return state.LinkExt[sp-16]
 	}
 }
 

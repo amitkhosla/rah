@@ -43,6 +43,7 @@ func (c *Compiler) BakeSubRouter(
 		AsyncMode:           asyncMode,
 		APIRateLimitId:      apiRateLimitId,
 		EndpointRateLimitId: endpointRateLimitId,
+		MaxCallDepth:        c.ComputeMaxCallDepth(int16(len(plan))),
 		Plan:                plan,
 	})
 	epIdx := uint32(len(def.Endpoints) - 1)

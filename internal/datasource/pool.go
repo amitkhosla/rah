@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -20,6 +21,42 @@ import (
 // *secrets.Manager satisfies this interface — defined here to avoid import cycles.
 type SecretResolver interface {
 	Resolve(ctx context.Context, ref string) ([]byte, error)
+}
+
+// AtomicPool is a live-swappable handle around *DataSourcePool.
+// Create once at startup with NewAtomicPool(); share the pointer between
+// the Compiler and ManagementServer. Call Store to atomically replace the
+// inner pool — all closures that captured the handle see the new pool
+// immediately on the next request without re-baking.
+type AtomicPool struct {
+	p atomic.Pointer[DataSourcePool]
+}
+
+// NewAtomicPool returns an empty handle. Store must be called before Get works.
+func NewAtomicPool() *AtomicPool { return &AtomicPool{} }
+
+// Store replaces the inner pool. Passing nil marks the handle as empty.
+func (a *AtomicPool) Store(pool *DataSourcePool) { a.p.Store(pool) }
+
+// GetInner returns the current *DataSourcePool snapshot. May be nil.
+func (a *AtomicPool) GetInner() *DataSourcePool { return a.p.Load() }
+
+// Get looks up a named pgx pool. Returns nil,false when the handle is empty
+// or the name is unknown — safe to call even before Store.
+func (a *AtomicPool) Get(name string) (*pgxpool.Pool, bool) {
+	if p := a.p.Load(); p != nil {
+		return p.Get(name)
+	}
+	return nil, false
+}
+
+// GetByBytes looks up a pool by []byte key without allocating a string.
+// The byte slice must not be modified during the call.
+func (a *AtomicPool) GetByBytes(name []byte) (*pgxpool.Pool, bool) {
+	if p := a.p.Load(); p != nil {
+		return p.GetByBytes(name)
+	}
+	return nil, false
 }
 
 // DataSourcePool holds named pgx connection pools.

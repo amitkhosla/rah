@@ -2,6 +2,7 @@
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -167,20 +168,35 @@ func executeBranchTable(bc *rctx.Context, table []engine.Instruction) {
 
 // â"€â"€ Result type â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+// BranchMode controls how a parallel branch's failure is reported to the parent.
+// Stored in a bake-time slice — zero per-request allocation.
+type BranchMode uint8
+
+const (
+	// BranchModeFail is the default: branch failure propagates to the parent and
+	// triggers compensation for any already-committed siblings (saga mode).
+	BranchModeFail BranchMode = 0
+	// BranchModeIgnore swallows a branch failure: the parent flow continues as if
+	// the branch succeeded. Use for non-critical branches (logging, analytics, etc.).
+	BranchModeIgnore BranchMode = 1
+)
+
 type branchResult struct {
 	bc        *rctx.Context
 	branchIdx int
 	failed    bool
+	committed bool  // saga: true when this branch's transaction committed before a sibling failed
+	errorCode int16 // copied from bc.ErrorCode before bc is released
 }
 
 // â"€â"€ ParallelStep â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-// ParallelStep returns an engine.Instruction that executes multiple pre-compiled
-// instruction sub-tables concurrently and waits for all of them to complete (or
-// for the timeout / fail_fast cancellation to fire).
+// ParallelStep executes multiple instruction sub-tables concurrently.
 //
-// subTables[i] is the flat instruction slice for branch i, compiled independently
-// by the control-plane compiler. Each branch gets its own rctx.Context (C1).
+// compensateTables[i] is the compensation instruction table for branch i, run in reverse
+// commit order when the parallel block fails in saga mode. Nil = strict mode (no compensation).
+//
+// branchModes[i] controls failure propagation for branch i. Nil = all BranchModeFail.
 //
 // Concurrency guarantees:
 //
@@ -189,7 +205,7 @@ type branchResult struct {
 //	C3: sync.Once wraps cancelCh close — no close-of-closed-channel panic
 //	C4: defer recover() inside every worker goroutine
 //	C5: resultCh buffered to N — workers never block on send
-func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast bool) engine.Instruction {
+func ParallelStep(subTables [][]engine.Instruction, compensateTables [][]engine.Instruction, branchModes []BranchMode, timeoutMs uint32, failFast bool) engine.Instruction {
 	if timeoutMs == 0 {
 		timeoutMs = 3000
 	}
@@ -242,10 +258,20 @@ func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast b
 					}()
 
 					failed := panicked || bc.Failed || atomic.LoadInt32(&bc.Cancelled) != 0
-					if failFast && failed {
+					mode := BranchModeFail
+					if branchModes != nil && i < len(branchModes) {
+						mode = branchModes[i]
+					}
+					if failFast && failed && mode == BranchModeFail {
 						cancelFn()
 					}
-					resultCh <- branchResult{branchIdx: i, failed: failed, bc: bc}
+					resultCh <- branchResult{
+						branchIdx: i,
+						failed:    failed,
+						committed: !failed && compensateTables != nil && i < len(compensateTables) && compensateTables[i] != nil,
+						errorCode: bc.ErrorCode,
+						bc:        bc,
+					}
 				})
 			}
 
@@ -255,7 +281,7 @@ func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast b
 
 			results := make([]branchResult, 0, n)
 			collected := 0
-			anyFailed := false
+			anyHardFailed := false
 
 		collect:
 			for collected < n {
@@ -264,9 +290,15 @@ func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast b
 					results = append(results, r)
 					collected++
 					if r.failed {
-						anyFailed = true
+						rmode := BranchModeFail
+						if branchModes != nil && r.branchIdx < len(branchModes) {
+							rmode = branchModes[r.branchIdx]
+						}
+						if rmode == BranchModeFail {
+							anyHardFailed = true
+						}
 					}
-					if failFast && anyFailed {
+					if failFast && anyHardFailed {
 						cancelFn()
 						break collect
 					}
@@ -290,12 +322,31 @@ func ParallelStep(subTables [][]engine.Instruction, timeoutMs uint32, failFast b
 				}()
 			}
 
+			// Saga compensation: run compensate tables in reverse collect order for committed branches.
+			if anyHardFailed && compensateTables != nil {
+				for i := len(results) - 1; i >= 0; i-- {
+					r := results[i]
+					if !r.committed {
+						continue
+					}
+					if r.branchIdx >= len(compensateTables) || compensateTables[r.branchIdx] == nil {
+						continue
+					}
+					bc := acquireBranchCtx(ctx)
+					executeBranchTable(bc, compensateTables[r.branchIdx])
+					if bc.Failed {
+						log.Printf("[saga] compensation failed branch=%d code=%d", r.branchIdx, bc.ErrorCode)
+					}
+					releaseBranchCtx(bc)
+				}
+			}
+
 			// Release collected branch contexts now that we are done reading them.
 			for _, r := range results {
 				releaseBranchCtx(r.bc)
 			}
 
-			if anyFailed && failFast {
+			if anyHardFailed {
 				ctx.Failed = true
 				return engine.StopPlan
 			}

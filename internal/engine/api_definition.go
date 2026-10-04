@@ -50,6 +50,9 @@ type Endpoint struct {
 	RateLimitMode       RateLimitMode // 0=tenant (default), 1=global (all tenants share counter)
 	APIRateLimitId      uint16        // rate limit config at API level; 0 = gateway default
 	EndpointRateLimitId uint16        // rate limit config at endpoint level; 0 = inherit API
+	// MaxCallDepth is the compile-time maximum fragment call nesting depth for this endpoint's plan.
+	// 0 = no fragment calls. Execute pre-borrows LinkExt when this is > 15.
+	MaxCallDepth        int8
 	Plan                []Instruction
 	InstrSchema         []InstrMeta    // length == len(Plan); set at compile time, read-only at runtime
 	Counters            []InstrCounter // length == len(Plan); updated atomically by drain goroutine

@@ -25,22 +25,42 @@ type Schedule struct {
 
 // ScheduledEvent is what the wheel fires — a snapshot of what to execute.
 type ScheduledEvent struct {
-	Name        string
-	FlowName    string
-	TenantAlias string
-	TimeoutSec  int
-	Constants   map[string]string
-	ScheduledAt time.Time
+	Name             string
+	FlowName         string
+	TenantAlias      string
+	TimeoutSec       int
+	Constants        map[string]string
+	ScheduledAt      time.Time
+	Cron             string
+	Epoch            uint32
+	RetryCount       int
+	RetryIntervalSec int
+	DeadLetterFlow   string
 }
 
 // ClaimResult indicates whether this instance claimed the event.
 type ClaimResult uint8
 
 const (
-	ClaimWon   ClaimResult = 0
-	ClaimLost  ClaimResult = 1
-	ClaimError ClaimResult = 2
+	ClaimUnset ClaimResult = 0
+	ClaimWon   ClaimResult = 1
+	ClaimLost  ClaimResult = 2
+	ClaimError ClaimResult = 3
 )
+
+func (e *ScheduledEvent) Reset() {
+	e.Name = ""
+	e.FlowName = ""
+	e.TenantAlias = ""
+	e.TimeoutSec = 0
+	e.Constants = nil
+	e.ScheduledAt = time.Time{}
+	e.Cron = ""
+	e.Epoch = 0
+	e.RetryCount = 0
+	e.RetryIntervalSec = 0
+	e.DeadLetterFlow = ""
+}
 
 // ExecutionRecord is written after each execution attempt.
 type ExecutionRecord struct {

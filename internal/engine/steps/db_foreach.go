@@ -8,8 +8,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
@@ -61,6 +62,7 @@ func buildPositions(colBindings []ColBinding, fields []fieldDesc) []int {
 // DbForeachGate returns an InstructionFunc that implements db_foreach in two phases.
 //
 // Phase 1 — first entry (ctx.Cursors[cursorIdx] == nil):
+//   - Resolves the live pool from atomicPool using sourceName (atomic load — no re-bake needed).
 //   - Executes the SQL query.
 //   - Reads every row via rows.RawValues() — zero-alloc; bytes are sub-slices of pgx's
 //     internal network buffer, valid only until the next rows.Next() call.
@@ -76,9 +78,12 @@ func buildPositions(colBindings []ColBinding, fields []fieldDesc) []int {
 //
 // Binary row format (per column):
 //
-//	[val_len: uint16 LE][val_bytes]   val_len=0xFFFF → NULL → nil slot
+//	[val_len: uint32 LE][val_bytes]   val_len=0xFFFFFFFF → NULL → nil slot
+//
+// uint32 supports column values up to 4GB — well above PostgreSQL's 1GB cell limit.
 func DbForeachGate(
-	pool *pgxpool.Pool,
+	atomicPool *datasource.AtomicPool,
+	sourceName string,
 	cursorIdx int,
 	sql string,
 	paramSlots []int,
@@ -96,9 +101,16 @@ func DbForeachGate(
 
 		// ── Phase 1: materialise ─────────────────────────────────────────────────
 		if ctx.Cursors[cursorIdx] == nil {
-			if pool == nil {
+			if atomicPool == nil || atomicPool.GetInner() == nil {
 				log.Printf("[db_foreach] DataSourcePool is nil — no data_sources configured")
 				return state.PC + 1
+			}
+			pool, ok := atomicPool.Get(sourceName)
+			if !ok {
+				log.Printf("[db_foreach] unknown data source %q", sourceName)
+				ctx.ResponseStatus = 500
+				ctx.Failed = true
+				return -1
 			}
 
 			argsp := dbForeachArgsPool.Get().(*[]any)
@@ -108,7 +120,16 @@ func DbForeachGate(
 					args = append(args, ctx.ByteSlots[idx])
 				}
 			}
-			rows, err := pool.Query(context.Background(), sql, args...)
+			var rows pgx.Rows
+			var err error
+			if ctx.ActiveTx != nil {
+				rows, err = ctx.ActiveTx.Query(context.Background(), sql, args...)
+			} else {
+				rows, err = pool.Query(context.Background(), sql, args...)
+			}
+			for i := range args {
+				args[i] = nil
+			}
 			*argsp = args[:0]
 			dbForeachArgsPool.Put(argsp)
 			if err != nil {
@@ -138,6 +159,7 @@ func DbForeachGate(
 			sort.Slice(bound, func(i, j int) bool { return bound[i].pos < bound[j].pos })
 
 			// Accumulate packed rows into pooled temp buffer.
+			// Binary format: [val_len: uint32 LE][val_bytes], 0xFFFFFFFF = NULL.
 			tmp := rowBufPool.Get().(*bytes.Buffer)
 			tmp.Reset()
 			var rowOffsets []int32
@@ -147,10 +169,10 @@ func DbForeachGate(
 				rowOffsets = append(rowOffsets, int32(tmp.Len()))
 				for _, rb := range rows.RawValues() { // zero-alloc pgx API
 					if rb == nil {
-						tmp.Write([]byte{0xFF, 0xFF})
+						tmp.Write([]byte{0xFF, 0xFF, 0xFF, 0xFF})
 					} else {
-						var lbuf [2]byte
-						binary.LittleEndian.PutUint16(lbuf[:], uint16(len(rb)))
+						var lbuf [4]byte
+						binary.LittleEndian.PutUint32(lbuf[:], uint32(len(rb)))
 						tmp.Write(lbuf[:])
 						tmp.Write(rb)
 					}
@@ -202,23 +224,23 @@ func DbForeachGate(
 		prevPos := 0
 		for i, pos := range cs.positions {
 			for col := prevPos; col < pos; col++ {
-				if cur+2 > len(cs.buf) {
+				if cur+4 > len(cs.buf) {
 					break
 				}
-				vlen := binary.LittleEndian.Uint16(cs.buf[cur:])
-				cur += 2
-				if vlen != 0xFFFF {
+				vlen := binary.LittleEndian.Uint32(cs.buf[cur:])
+				cur += 4
+				if vlen != 0xFFFFFFFF {
 					cur += int(vlen)
 				}
 			}
-			if cur+2 > len(cs.buf) {
+			if cur+4 > len(cs.buf) {
 				ctx.ByteSlots[cs.slotIndices[i]] = nil
 				prevPos = pos + 1
 				continue
 			}
-			vlen := binary.LittleEndian.Uint16(cs.buf[cur:])
-			cur += 2
-			if vlen == 0xFFFF {
+			vlen := binary.LittleEndian.Uint32(cs.buf[cur:])
+			cur += 4
+			if vlen == 0xFFFFFFFF {
 				ctx.ByteSlots[cs.slotIndices[i]] = nil
 			} else {
 				ctx.ByteSlots[cs.slotIndices[i]] = cs.buf[cur : cur+int(vlen)] // zero-copy

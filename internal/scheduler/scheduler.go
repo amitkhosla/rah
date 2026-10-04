@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/amitkhosla/rah/internal/gatewaylog"
@@ -10,23 +11,27 @@ import (
 
 // Scheduler is the top-level coordinator. Created once at gateway startup.
 type Scheduler struct {
-	Store    Store
-	Wheel    *SchedulerWheel
-	Executor *Executor
-	Loader   *Loader
+	Store        Store
+	Wheel        *SchedulerWheel
+	Executor     *Executor
+	Loader       *Loader
+	lookaheadSec int
+	cancelled    sync.Map
 }
 
 // NewWithStore creates a Scheduler with an explicitly provided store.
 // Use this when the backend requires external initialisation (e.g. postgres).
 func NewWithStore(store Store, instanceID string, runner FlowRunner, cfg SchedulerConfig) *Scheduler {
-	executor := NewExecutor(store, instanceID, runner)
-	wheel := NewSchedulerWheel(func(event *ScheduledEvent) { executor.Handle(event) })
 	lookahead := cfg.LookaheadSec
 	if lookahead <= 0 {
 		lookahead = 3600
 	}
-	loader := NewLoader(store, wheel, lookahead)
-	return &Scheduler{Store: store, Wheel: wheel, Executor: executor, Loader: loader}
+	dispatch := NewDispatchRing(512)
+	sched := &Scheduler{Store: store, lookaheadSec: lookahead}
+	sched.Executor = NewExecutor(store, instanceID, runner, dispatch, &sched.cancelled)
+	sched.Wheel = NewSchedulerWheel(dispatch)
+	sched.Loader = NewLoader(store, sched.Wheel, lookahead)
+	return sched
 }
 
 // New creates a Scheduler from gateway config.
@@ -34,30 +39,22 @@ func NewWithStore(store Store, instanceID string, runner FlowRunner, cfg Schedul
 func New(cfg SchedulerConfig, instanceID string, runner FlowRunner) *Scheduler {
 	store := NewStore(cfg)
 
-	executor := NewExecutor(store, instanceID, runner)
-
-	wheel := NewSchedulerWheel(func(event *ScheduledEvent) {
-		executor.Handle(event)
-	})
-
-	// Default lookahead window: 1 hour
 	lookahead := cfg.LookaheadSec
 	if lookahead <= 0 {
 		lookahead = 3600
 	}
 
-	loader := NewLoader(store, wheel, lookahead)
-
-	return &Scheduler{
-		Store:    store,
-		Wheel:    wheel,
-		Executor: executor,
-		Loader:   loader,
-	}
+	dispatch := NewDispatchRing(512)
+	sched := &Scheduler{Store: store, lookaheadSec: lookahead}
+	sched.Executor = NewExecutor(store, instanceID, runner, dispatch, &sched.cancelled)
+	sched.Wheel = NewSchedulerWheel(dispatch)
+	sched.Loader = NewLoader(store, sched.Wheel, lookahead)
+	return sched
 }
 
-// Start launches the wheel ticker and loader background goroutine.
+// Start launches the executor, wheel ticker and loader background goroutine.
 func (s *Scheduler) Start(ctx context.Context) {
+	s.Executor.Start(ctx)
 	s.Wheel.Start(ctx)
 	s.Loader.Start(ctx)
 	gatewaylog.Default.Info("[Scheduler] started")
@@ -85,16 +82,36 @@ func (s *Scheduler) UpsertSchedule(ctx context.Context, sc *Schedule) error {
 	// If due within lookahead, arm in wheel.
 	if sc.Enabled {
 		now := time.Now()
-		if sc.NextRunAt.After(now) && sc.NextRunAt.Before(now.Add(time.Hour)) {
-			event := &ScheduledEvent{
-				Name:        sc.Name,
-				FlowName:    sc.FlowName,
-				TenantAlias: sc.TenantAlias,
-				TimeoutSec:  sc.TimeoutSec,
-				Constants:   sc.Constants,
-				ScheduledAt: sc.NextRunAt,
+		lookaheadDur := time.Duration(s.lookaheadSec) * time.Second
+		if !sc.NextRunAt.Before(now) && sc.NextRunAt.Before(now.Add(lookaheadDur)) {
+			pooled := globalEventPool.Get()
+			pooled.Name = sc.Name
+			pooled.FlowName = sc.FlowName
+			pooled.TenantAlias = sc.TenantAlias
+			pooled.TimeoutSec = sc.TimeoutSec
+			pooled.Cron = sc.Cron
+			pooled.RetryCount = sc.OnFailure.RetryCount
+			pooled.RetryIntervalSec = sc.OnFailure.RetryIntervalSec
+			pooled.DeadLetterFlow = sc.OnFailure.DeadLetterFlow
+			pooled.ScheduledAt = sc.NextRunAt
+			pooled.Epoch = uint32(sc.NextRunAt.Unix() / 3600)
+			if sc.Constants != nil {
+				if pooled.Constants == nil {
+					pooled.Constants = make(map[string]string, len(sc.Constants))
+				} else {
+					for k := range pooled.Constants {
+						delete(pooled.Constants, k)
+					}
+				}
+				for k, v := range sc.Constants {
+					pooled.Constants[k] = v
+				}
+			} else {
+				pooled.Constants = nil
 			}
-			s.Wheel.Schedule(event)
+			if !s.Wheel.Schedule(pooled) {
+				globalEventPool.Put(pooled) // slot full; loader will retry
+			}
 		}
 	}
 
@@ -108,8 +125,10 @@ func (s *Scheduler) UpsertSchedule(ctx context.Context, sc *Schedule) error {
 
 // DeleteSchedule removes a schedule by name.
 func (s *Scheduler) DeleteSchedule(ctx context.Context, name string) error {
+	s.cancelled.Store(name, time.Now().Add(time.Duration(s.lookaheadSec+60)*time.Second))
 	err := s.Store.Delete(ctx, name)
 	if err != nil {
+		s.cancelled.Delete(name)
 		return err
 	}
 
