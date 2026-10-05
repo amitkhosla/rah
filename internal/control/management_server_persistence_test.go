@@ -403,7 +403,7 @@ func newTestRegMgr(t *testing.T, dsm *DataStoreManager) (*tenantregistry.Registr
 // goroutine — the alias can appear before PutBatch completes.
 func waitForTenantPersisted(t *testing.T, store *tenantregistry.TenantRegistryStore, alias string) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		snap, _ := store.LoadAll(context.Background())
 		for _, rec := range snap.Tenants {

@@ -1,24 +1,10 @@
 package apikey
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"testing"
 )
-
-// Helper functions used by tests and benchmarks
-
-// sha256sum computes SHA256 of a raw key string.
-func sha256sum(rawKey string) [32]byte {
-	return sha256.Sum256([]byte(rawKey))
-}
-
-// hexEncode converts a byte array to hex string.
-func hexEncode(b []byte) string {
-	return hex.EncodeToString(b)
-}
 
 // LookupByID returns the management-plane record for a key ID, or nil.
 // This is an alias for GetRecord used in benchmarks.
@@ -53,6 +39,7 @@ func TestLookupByHash_Hit(t *testing.T) {
 	entry := LookupByHash(rec.Hash)
 	if entry == nil {
 		t.Fatal("LookupByHash returned nil, expected non-nil")
+		return
 	}
 
 	if entry.KeyID != keyID {
@@ -372,6 +359,7 @@ func TestLookupByHash_PointerStability(t *testing.T) {
 	ptr1 := LookupByHash(hash1)
 	if ptr1 == nil {
 		t.Fatal("Failed to get pointer to first key")
+		return
 	}
 
 	// Capture the values from the first pointer
