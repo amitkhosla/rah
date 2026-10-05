@@ -123,7 +123,7 @@ type ManagementServer struct {
 	OnFlowRun func(flowName, tenantAlias string, constants map[string]string) error
 
 	// DataSourcePool enables access to schema-isolated data sources for migrations.
-	DataSourcePool    *datasource.DataSourcePool
+	DataSourcePool    *datasource.AtomicPool
 	DataSourceConfigs []datasource.DataSourceConfig
 
 	// RedisSourcePool enables access to customer Redis sources for redis_* steps.
@@ -156,12 +156,13 @@ type ManagementServer struct {
 // NewManagementServer initializes the server with the required compiler and manager.
 func NewManagementServer(fm *engine.FlowManager, c *Compiler, reg *NameRegistry, regMgr *registrypkg.RegistryManager) *ManagementServer {
 	return &ManagementServer{
-		FlowManager: fm,
-		Compiler:    c,
-		Registry:    reg,
-		RegMgr:      regMgr,
-		flowConfigs: make(map[string][]StepConfig),
-		apiConfigs:  make(map[string]ApiUpdate),
+		FlowManager:    fm,
+		Compiler:       c,
+		Registry:       reg,
+		RegMgr:         regMgr,
+		flowConfigs:    make(map[string][]StepConfig),
+		apiConfigs:     make(map[string]ApiUpdate),
+		DataSourcePool: datasource.NewAtomicPool(),
 	}
 }
 
@@ -1328,7 +1329,7 @@ func (s *ManagementServer) applyMigrations(ctx context.Context, migrations []Mig
 	if len(migrations) == 0 {
 		return nil
 	}
-	if s.DataSourcePool == nil {
+	if s.DataSourcePool == nil || s.DataSourcePool.GetInner() == nil {
 		return nil
 	}
 
@@ -2367,26 +2368,22 @@ func (s *ManagementServer) rebuildGWStorageMgr() error {
 }
 
 // rebuildSQLDataSourcePool rebuilds the DataSourcePool from the store and swaps atomically.
+// All live closures that captured the *AtomicPool see the new inner pool immediately
+// on the next request — no re-bake required.
 func (s *ManagementServer) rebuildSQLDataSourcePool() error {
 	if s.sqlDataSourceStore == nil {
 		return nil
 	}
 	cfgs := s.sqlDataSourceStore.List()
 	if len(cfgs) == 0 {
-		s.DataSourcePool = nil
-		if s.Compiler != nil {
-			s.Compiler.DataSourcePool = nil
-		}
+		s.DataSourcePool.Store(nil)
 		return nil
 	}
 	pool, err := datasource.New(cfgs, s.SecretsResolver)
 	if err != nil {
 		return fmt.Errorf("rebuild sql data sources: %w", err)
 	}
-	s.DataSourcePool = pool
-	if s.Compiler != nil {
-		s.Compiler.DataSourcePool = pool
-	}
+	s.DataSourcePool.Store(pool)
 	return nil
 }
 
@@ -2443,7 +2440,8 @@ func (s *ManagementServer) SQLDataSourcesCRUDHandler(w http.ResponseWriter, r *h
 				}
 			}
 			if err := s.rebuildSQLDataSourcePool(); err != nil {
-				log.Printf("[sql-data-sources] rebuild warning: %v", err)
+				http.Error(w, "source saved but pool build failed: "+err.Error(), http.StatusInternalServerError)
+				return
 			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": cfg.Name})
@@ -2485,7 +2483,8 @@ func (s *ManagementServer) SQLDataSourcesCRUDHandler(w http.ResponseWriter, r *h
 			}
 		}
 		if err := s.rebuildSQLDataSourcePool(); err != nil {
-			log.Printf("[sql-data-sources] rebuild warning: %v", err)
+			http.Error(w, "source saved but pool build failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"name": name})
 	case http.MethodDelete:

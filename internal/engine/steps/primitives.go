@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"unsafe"
 
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
@@ -138,10 +139,12 @@ func MergeStep(slotA, slotB int, nextID int16) engine.Instruction {
 }
 
 func PrimitiveAddResponseHeader(key, value string, nextID int16) engine.Instruction {
+	kb := []byte(key)
+	vb := []byte(value)
 	return engine.Instruction{
 		Name: "AddResponseHeader",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			ctx.SetResponseHeader([]byte(key), []byte(value))
+			ctx.SetResponseHeader(kb, vb)
 			return nextID
 		},
 	}
@@ -153,7 +156,7 @@ func PrimitiveExtractHeader(headerKey string, targetSlot int, nextID int16) engi
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			val := ctx.Request.Header.Get(headerKey)
 			if val != "" {
-				ctx.ByteSlots[targetSlot] = []byte(val)
+				ctx.ByteSlots[targetSlot] = unsafe.Slice(unsafe.StringData(val), len(val))
 			}
 			return nextID
 		},

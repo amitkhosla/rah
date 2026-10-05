@@ -78,9 +78,12 @@ type CreateResponse struct {
 
 var (
 	globalKeyIDCounter atomic.Uint32
-	globalKeysByHash   sync.Map // SHA256-hex → APIKeyEntry  (hot path, O(1))
+	globalKeysByHash   sync.Map // SHA256-hex → *APIKeyEntry  (hot path, O(1))
 	globalKeysByID     sync.Map // uint32 KeyID → APIKeyRecord (management plane)
 )
+
+var globalKeysByAppMu sync.RWMutex
+var globalKeysByApp   = map[uint32][]uint32{} // AppID → []KeyID
 
 // NextKeyID returns the next monotonically increasing Key ID.
 func NextKeyID() uint32 {
@@ -160,8 +163,23 @@ func UpsertKey(rec APIKeyRecord) {
 		Scopes:         rec.Scopes,
 		ExpiresAt:      rec.ExpiresAt,
 	}
-	globalKeysByHash.Store(rec.Hash, entry)
+	globalKeysByHash.Store(rec.Hash, &entry)
 	globalKeysByID.Store(rec.KeyID, rec)
+
+	// Maintain per-app index
+	globalKeysByAppMu.Lock()
+	appKeys := globalKeysByApp[rec.AppID]
+	alreadyPresent := false
+	for _, id := range appKeys {
+		if id == rec.KeyID {
+			alreadyPresent = true
+			break
+		}
+	}
+	if !alreadyPresent {
+		globalKeysByApp[rec.AppID] = append(appKeys, rec.KeyID)
+	}
+	globalKeysByAppMu.Unlock()
 }
 
 // DeleteKey removes a key from both indexes.
@@ -169,6 +187,17 @@ func DeleteKey(keyID uint32) {
 	if v, ok := globalKeysByID.Load(keyID); ok {
 		rec := v.(APIKeyRecord)
 		globalKeysByHash.Delete(rec.Hash)
+
+		// Remove from per-app index
+		globalKeysByAppMu.Lock()
+		appKeys := globalKeysByApp[rec.AppID]
+		for i, id := range appKeys {
+			if id == keyID {
+				globalKeysByApp[rec.AppID] = append(appKeys[:i], appKeys[i+1:]...)
+				break
+			}
+		}
+		globalKeysByAppMu.Unlock()
 	}
 	globalKeysByID.Delete(keyID)
 }
@@ -180,8 +209,7 @@ func LookupByHash(hash string) *APIKeyEntry {
 	if !ok {
 		return nil
 	}
-	e := v.(APIKeyEntry)
-	return &e
+	return v.(*APIKeyEntry)
 }
 
 // GetRecord returns the management-plane record for a key ID, or nil.
@@ -206,14 +234,15 @@ func ListKeys() []APIKeyRecord {
 
 // ListKeysByApp returns all keys belonging to a specific AppID.
 func ListKeysByApp(appID uint32) []APIKeyRecord {
+	globalKeysByAppMu.RLock()
+	ids := append([]uint32(nil), globalKeysByApp[appID]...)
+	globalKeysByAppMu.RUnlock()
 	var out []APIKeyRecord
-	globalKeysByID.Range(func(_, v any) bool {
-		r := v.(APIKeyRecord)
-		if r.AppID == appID {
-			out = append(out, r)
+	for _, id := range ids {
+		if v, ok := globalKeysByID.Load(id); ok {
+			out = append(out, v.(APIKeyRecord))
 		}
-		return true
-	})
+	}
 	return out
 }
 
@@ -225,6 +254,8 @@ func (r APIKeyRecord) ToView() APIKeyView {
 		Alias:          r.Alias,
 		Prefix:         r.Prefix,
 		AllowedTenants: r.AllowedTenants,
+		Scopes:         r.Scopes,
+		ExpiresAt:      r.ExpiresAt,
 		Enabled:        r.Enabled,
 		CreatedAt:      r.CreatedAt,
 		UpdatedAt:      r.UpdatedAt,

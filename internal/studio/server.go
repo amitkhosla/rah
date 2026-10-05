@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"log"
@@ -1702,6 +1703,9 @@ func resolveKeyRef(ref string) (string, error) {
 
 
 // findOrCreateApp returns the AppID for the named app, creating it if absent.
+// The ID is derived deterministically from the app name via stableAppID so that
+// the same name always maps to the same ID regardless of which gateway instance
+// processes the create request or whether Studio has restarted.
 // Returns 0 on failure.
 func (s *Server) findOrCreateApp(ctx context.Context, targetBase, appName string) uint32 {
 	listURL, err := buildTargetURL(targetBase, "/apps", "")
@@ -1725,7 +1729,10 @@ func (s *Server) findOrCreateApp(ctx context.Context, targetBase, appName string
 			}
 		}
 	}
-	body, _ := json.Marshal(map[string]string{"name": appName})
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":   appName,
+		"app_id": stableAppID(appName),
+	})
 	createURL, err := buildTargetURL(targetBase, "/apps", "")
 	if err != nil {
 		return 0
@@ -1741,6 +1748,18 @@ func (s *Server) findOrCreateApp(ctx context.Context, targetBase, appName string
 		return created.AppID
 	}
 	return 0
+}
+
+// stableAppID derives a deterministic uint32 from an app name using FNV-32a.
+// This lets Studio assign the same App ID across restarts and across multiple
+// gateway instances without any coordination.
+func stableAppID(name string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	if id := h.Sum32(); id != 0 {
+		return id
+	}
+	return 1
 }
 
 // resolveTenantIDs resolves tenant aliases to numeric IDs via the gateway.

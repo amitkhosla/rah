@@ -401,22 +401,20 @@ func TestDbForeach_MultipleInSequence(t *testing.T) {
 // Uses unsafe pointers to inject a mock pools map without needing real pgx connections.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func createMockDataSourcePool(keys map[string]bool) *datasource.DataSourcePool {
-	// Create a real DataSourcePool struct
-	pool := &datasource.DataSourcePool{}
+func createMockDataSourcePool(keys map[string]bool) *datasource.AtomicPool {
+	inner := &datasource.DataSourcePool{}
 
-	// Create the pools map with dummy pgxpool.Pool values
 	poolsMap := make(map[string]*pgxpool.Pool)
 	for k := range keys {
-		// We use nil as a sentinel; the compiler never actually dereferences these during compilation
 		poolsMap[k] = nil
 	}
 
-	// Use unsafe to set the private pools field
-	// DataSourcePool struct layout: pools map[string]*pgxpool.Pool, configs map[string]DataSourceConfig, loaders sync.Map
-	// The first field (pools) is at offset 0
-	poolsPtr := (*map[string]*pgxpool.Pool)(unsafe.Pointer(pool))
+	// DataSourcePool.pools is the first field — inject via unsafe so tests
+	// don't need real pgx connections.
+	poolsPtr := (*map[string]*pgxpool.Pool)(unsafe.Pointer(inner))
 	*poolsPtr = poolsMap
 
-	return pool
+	ap := datasource.NewAtomicPool()
+	ap.Store(inner)
+	return ap
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/amitkhosla/rah/internal/gatewaylog"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/robfig/cron/v3"
 )
@@ -56,6 +57,11 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			FOREIGN KEY (schedule_name) REFERENCES rah_system.sch_schedules(name) ON DELETE CASCADE
 		);
+		ALTER TABLE rah_system.sch_schedules ADD COLUMN IF NOT EXISTS timeout_sec INT NOT NULL DEFAULT 300;
+		ALTER TABLE rah_system.sch_schedules ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+		ALTER TABLE rah_system.sch_schedules ADD COLUMN IF NOT EXISTS claimed_until TIMESTAMPTZ;
+		CREATE INDEX IF NOT EXISTS idx_sch_schedules_next_run ON rah_system.sch_schedules(next_run_at) WHERE enabled = true;
+		CREATE INDEX IF NOT EXISTS idx_sch_exec_hist_name ON rah_system.sch_execution_history(schedule_name);
 	`)
 	return err
 }
@@ -76,20 +82,28 @@ func (s *PostgresStore) Upsert(ctx context.Context, sc *Schedule) error {
 	// Serialize optional fields as JSONB.
 	var constantsJSON []byte
 	if sc.Constants != nil {
-		constantsJSON, _ = json.Marshal(sc.Constants)
+		var err error
+		constantsJSON, err = json.Marshal(sc.Constants)
+		if err != nil {
+			return fmt.Errorf("marshal constants: %w", err)
+		}
 	}
 
 	var onFailureJSON []byte
 	if sc.OnFailure.RetryCount > 0 || sc.OnFailure.RetryIntervalSec > 0 || sc.OnFailure.DeadLetterFlow != "" {
-		onFailureJSON, _ = json.Marshal(sc.OnFailure)
+		var err error
+		onFailureJSON, err = json.Marshal(sc.OnFailure)
+		if err != nil {
+			return fmt.Errorf("marshal on_failure: %w", err)
+		}
 	}
 
 	// Upsert the schedule.
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO rah_system.sch_schedules (
 			name, cron, flow_name, tenant_alias, constants, enabled, on_failure, max_concurrent,
-			next_run_at, last_run_at, last_status, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+			timeout_sec, next_run_at, last_run_at, last_status, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
 		ON CONFLICT (name) DO UPDATE SET
 			cron = EXCLUDED.cron,
 			flow_name = EXCLUDED.flow_name,
@@ -98,13 +112,14 @@ func (s *PostgresStore) Upsert(ctx context.Context, sc *Schedule) error {
 			enabled = EXCLUDED.enabled,
 			on_failure = EXCLUDED.on_failure,
 			max_concurrent = EXCLUDED.max_concurrent,
+			timeout_sec = EXCLUDED.timeout_sec,
 			next_run_at = EXCLUDED.next_run_at,
 			last_run_at = EXCLUDED.last_run_at,
 			last_status = EXCLUDED.last_status,
 			updated_at = NOW()
 	`,
 		sc.Name, sc.Cron, sc.FlowName, sc.TenantAlias, constantsJSON, sc.Enabled, onFailureJSON,
-		sc.MaxConcurrent, sc.NextRunAt, sc.LastRunAt, sc.LastStatus,
+		sc.MaxConcurrent, sc.TimeoutSec, sc.NextRunAt, sc.LastRunAt, sc.LastStatus,
 	)
 	return err
 }
@@ -121,12 +136,14 @@ func (s *PostgresStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sc
 	cutoff := now.Add(time.Duration(windowSec) * time.Second)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT name, flow_name, tenant_alias, COALESCE(constants, '{}'::jsonb),
-		       COALESCE((constants->>'timeout_sec')::int, 0) as timeout_sec,
+		SELECT name, cron, flow_name, tenant_alias,
+		       COALESCE(constants, '{}'::jsonb),
+		       timeout_sec,
+		       on_failure,
 		       next_run_at
 		FROM rah_system.sch_schedules
 		WHERE enabled = true
-		  AND next_run_at > $1
+		  AND next_run_at >= $1
 		  AND next_run_at < $2
 		ORDER BY next_run_at ASC
 	`, now, cutoff)
@@ -137,12 +154,15 @@ func (s *PostgresStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sc
 
 	var events []*ScheduledEvent
 	for rows.Next() {
-		var name, flowName, tenantAlias string
-		var constantsJSON []byte
+		var name, cronExpr, flowName, tenantAlias string
+		var constantsJSON, onFailureJSON []byte
 		var timeoutSec int
 		var scheduledAt time.Time
 
-		if err := rows.Scan(&name, &flowName, &tenantAlias, &constantsJSON, &timeoutSec, &scheduledAt); err != nil {
+		if err := rows.Scan(&name, &cronExpr, &flowName, &tenantAlias, &constantsJSON, &timeoutSec, &onFailureJSON, &scheduledAt); err != nil {
+			gatewaylog.Default.Error("scheduler postgres_store: rows.Scan error (row skipped)",
+				gatewaylog.F("func", "ListDueWithin"),
+				gatewaylog.F("error", err.Error()))
 			continue
 		}
 
@@ -151,47 +171,49 @@ func (s *PostgresStore) ListDueWithin(ctx context.Context, windowSec int) ([]*Sc
 			_ = json.Unmarshal(constantsJSON, &constants)
 		}
 
+		var onFailure struct {
+			RetryCount       int    `json:"retry_count"`
+			RetryIntervalSec int    `json:"retry_interval_sec"`
+			DeadLetterFlow   string `json:"dead_letter_flow"`
+		}
+		if len(onFailureJSON) > 0 {
+			_ = json.Unmarshal(onFailureJSON, &onFailure)
+		}
+
 		events = append(events, &ScheduledEvent{
-			Name:        name,
-			FlowName:    flowName,
-			TenantAlias: tenantAlias,
-			TimeoutSec:  timeoutSec,
-			Constants:   constants,
-			ScheduledAt: scheduledAt,
+			Name:             name,
+			FlowName:         flowName,
+			TenantAlias:      tenantAlias,
+			TimeoutSec:       timeoutSec,
+			Cron:             cronExpr,
+			Constants:        constants,
+			ScheduledAt:      scheduledAt,
+			RetryCount:       onFailure.RetryCount,
+			RetryIntervalSec: onFailure.RetryIntervalSec,
+			DeadLetterFlow:   onFailure.DeadLetterFlow,
 		})
 	}
 
 	return events, rows.Err()
 }
 
-// Claim attempts to atomically claim an event for this instance.
-// Uses SELECT FOR UPDATE SKIP LOCKED to ensure only one instance claims the event.
-func (s *PostgresStore) Claim(ctx context.Context, event *ScheduledEvent, instanceID string) (ClaimResult, error) {
-	tx, err := s.pool.Begin(ctx)
+// Claim attempts to atomically claim a schedule for this instance.
+// Uses an UPDATE statement to set claimed_by and claimed_until atomically.
+func (s *PostgresStore) Claim(ctx context.Context, name string, instanceID string) (ClaimResult, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE rah_system.sch_schedules
+		SET    claimed_by    = $2,
+		       claimed_until = NOW() + INTERVAL '5 minutes'
+		WHERE  name          = $1
+		  AND  enabled       = true
+		  AND  (claimed_until IS NULL OR claimed_until < NOW())
+	`, name, instanceID)
 	if err != nil {
-		return ClaimError, err
+		return ClaimError, fmt.Errorf("claim %s: %w", name, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Try to acquire exclusive lock without blocking.
-	// If another instance has locked the row, we lose the claim.
-	var claimedName string
-	err = tx.QueryRow(ctx, `
-		SELECT name FROM rah_system.sch_schedules
-		WHERE name = $1
-		FOR UPDATE SKIP LOCKED
-	`, event.Name).Scan(&claimedName)
-
-	if err != nil {
-		// Row is locked by another instance or doesn't exist.
+	if tag.RowsAffected() == 0 {
 		return ClaimLost, nil
 	}
-
-	// We have the lock; this instance wins the claim.
-	if err := tx.Commit(ctx); err != nil {
-		return ClaimError, err
-	}
-
 	return ClaimWon, nil
 }
 
@@ -213,9 +235,11 @@ func (s *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord
 	}
 
 	// Update schedule with new last run and next run times.
+	// Clear claimed_by/claimed_until so the next fire cycle can be claimed immediately.
 	_, err = tx.Exec(ctx, `
 		UPDATE rah_system.sch_schedules
-		SET last_run_at = $1, last_status = $2, next_run_at = $3, updated_at = NOW()
+		SET last_run_at = $1, last_status = $2, next_run_at = $3, updated_at = NOW(),
+		    claimed_by = NULL, claimed_until = NULL
 		WHERE name = $4
 	`, rec.FinishedAt, rec.Status, nextRun, rec.Name)
 	if err != nil {
@@ -229,7 +253,7 @@ func (s *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord
 func (s *PostgresStore) ListAll(ctx context.Context) ([]*Schedule, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, cron, flow_name, tenant_alias, constants, enabled, on_failure,
-		       max_concurrent, next_run_at, last_run_at, last_status
+		       max_concurrent, timeout_sec, next_run_at, last_run_at, last_status
 		FROM rah_system.sch_schedules
 		ORDER BY name ASC
 	`)
@@ -242,12 +266,23 @@ func (s *PostgresStore) ListAll(ctx context.Context) ([]*Schedule, error) {
 	for rows.Next() {
 		var sc Schedule
 		var constantsJSON, onFailureJSON []byte
+		var nextRunAt, lastRunAt *time.Time
 
 		if err := rows.Scan(
 			&sc.Name, &sc.Cron, &sc.FlowName, &sc.TenantAlias, &constantsJSON, &sc.Enabled,
-			&onFailureJSON, &sc.MaxConcurrent, &sc.NextRunAt, &sc.LastRunAt, &sc.LastStatus,
+			&onFailureJSON, &sc.MaxConcurrent, &sc.TimeoutSec, &nextRunAt, &lastRunAt, &sc.LastStatus,
 		); err != nil {
+			gatewaylog.Default.Error("scheduler postgres_store: rows.Scan error (row skipped)",
+				gatewaylog.F("func", "ListAll"),
+				gatewaylog.F("error", err.Error()))
 			continue
+		}
+
+		if nextRunAt != nil {
+			sc.NextRunAt = *nextRunAt
+		}
+		if lastRunAt != nil {
+			sc.LastRunAt = *lastRunAt
 		}
 
 		if len(constantsJSON) > 0 {
@@ -285,6 +320,9 @@ func (s *PostgresStore) ListHistory(ctx context.Context, name string, limit int)
 	for rows.Next() {
 		var rec ExecutionRecord
 		if err := rows.Scan(&rec.Name, &rec.StartedAt, &rec.FinishedAt, &rec.Status, &rec.Error); err != nil {
+			gatewaylog.Default.Error("scheduler postgres_store: rows.Scan error (row skipped)",
+				gatewaylog.F("func", "ListHistory"),
+				gatewaylog.F("error", err.Error()))
 			continue
 		}
 		records = append(records, rec)

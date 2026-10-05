@@ -264,7 +264,7 @@ func (h *TestHandler) ExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Execute the flow and measure wall-clock time.
 	startTime := time.Now()
-	engine.Execute(ctx, table, 0)
+	engine.Execute(ctx, table, 0, 0)
 	durationMs := time.Since(startTime).Seconds() * 1000
 
 	// Capture the response body: prefer the context ResponseBuffer (if the

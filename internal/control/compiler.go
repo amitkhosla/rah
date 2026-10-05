@@ -175,7 +175,7 @@ type Compiler struct {
 	GrpcRegistry   *grpcutil.DescriptorRegistry        // optional; enables bake-time gRPC method resolution
 	GeoMgr         *geo.Manager                        // optional; enables geo_block steps
 	AvroRegistry   *avro.SchemaRegistry                // optional; enables avro_* steps
-	DataSourcePool *datasource.DataSourcePool          // optional; enables db_query/db_exec/db_query_one steps
+	DataSourcePool *datasource.AtomicPool               // optional; enables db_query/db_exec/db_query_one steps
 	QueryLibrary   map[string]datasource.NamedQueryConfig // optional; enables named query resolution
 	EmailMgr       *emailprovider.EmailManager         // optional; enables send_email steps
 	StorageMgr     *storage.StorageManager             // optional; enables storage_get/storage_put/storage_delete steps
@@ -185,6 +185,9 @@ type Compiler struct {
 	SFTPConnectorMgr      *LiveSFTPConnMgr  // optional; enables sftp_* steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
+	// callInstrTargets maps the GlobalTable PC of each CALL instruction to its target fragment PC.
+	// Reset at the start of CompileExecutable alongside GlobalTable. Used by computeMaxCallDepth.
+	callInstrTargets map[int16]int16
 	FlowLibrary  map[string][]StepConfig
 	FlowProfiles map[string]FlowProfile // flow name â†’ profile; populated by BakeAll and Compile
 	// pendingJumps tracks on_error:jump: wrappers that referenced a not-yet-compiled
@@ -622,11 +625,33 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "format_response":
 		return c.compileFormatResponse(step)
 
+	case "json_merge":
+		// Merge N JSON slot values into a single JSON object.
+		// step.Sources contains list of {slot, key} pairs.
+		// step.TargetSlot is the destination slot name.
+		targetSlot, err := c.getSlot(step.TargetSlot)
+		if err != nil {
+			return err
+		}
+		var sources []steps.JsonMergeSource
+		for _, src := range step.Sources {
+			slotIdx, err := c.getSlotReadOnly(src.Slot)
+			if err != nil {
+				return fmt.Errorf("json_merge source slot %q: %w", src.Slot, err)
+			}
+			sources = append(sources, steps.JsonMergeSource{Slot: slotIdx, Key: src.Key})
+		}
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:   "json_merge",
+			Action: steps.JsonMerge(sources, targetSlot),
+		})
+
 	case "parallel":
 		// Compile each branch's inline flow into its own independent instruction table.
 		// Each sub-table is self-contained: it has its own PC space starting at 0 and
 		// does not reference indices in the parent GlobalTable.
 		var subTables [][]engine.Instruction
+		var branchModes []steps.BranchMode
 		for _, branch := range step.Branches {
 			subTable, err := c.CompileExecutable(branch.Flow, fragments)
 			if err != nil {
@@ -637,9 +662,16 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			tableCopy := make([]engine.Instruction, len(subTable))
 			copy(tableCopy, subTable)
 			subTables = append(subTables, tableCopy)
+
+			// Build branchModes from on_error field
+			mode := steps.BranchModeFail
+			if branch.OnError == "ignore" {
+				mode = steps.BranchModeIgnore
+			}
+			branchModes = append(branchModes, mode)
 		}
 		failFast := step.ErrorPolicy == "fail_fast"
-		c.GlobalTable = append(c.GlobalTable, steps.ParallelStep(subTables, step.TimeoutMs, failFast))
+		c.GlobalTable = append(c.GlobalTable, steps.ParallelStep(subTables, nil, branchModes, step.TimeoutMs, failFast))
 
 	case "registry_lookup":
 		// Resolves the alias in keySlot â†’ ctx.TenantID.
@@ -2052,6 +2084,11 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			}
 		}
 		if targetID, ok := c.FragmentMap[step.FlowName]; ok {
+			callPC := int16(len(c.GlobalTable))
+			if c.callInstrTargets == nil {
+				c.callInstrTargets = make(map[int16]int16)
+			}
+			c.callInstrTargets[callPC] = targetID
 			c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 				Name:   "CALL",
 				Action: steps.CallFragment(targetID),
@@ -3412,7 +3449,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_query",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-				if dbQueryPool == nil {
+				if dbQueryPool == nil || dbQueryPool.GetInner() == nil {
 					log.Printf("[db_query] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
@@ -3501,7 +3538,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_exec",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-				if dbExecPool == nil {
+				if dbExecPool == nil || dbExecPool.GetInner() == nil {
 					log.Printf("[db_exec] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
@@ -3581,7 +3618,7 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
 			Name: "db_query_one",
 			Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-				if dbOnePool == nil {
+				if dbOnePool == nil || dbOnePool.GetInner() == nil {
 					log.Printf("[db_query_one] DataSourcePool is nil — no data_sources configured")
 					return state.PC + 1
 				}
@@ -3653,11 +3690,10 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		if strings.HasPrefix(step.Key, "{{") && strings.HasSuffix(step.Key, "}}") {
 			return fmt.Errorf("db_foreach: dynamic key ({{...}}) not yet supported; use a static key name")
 		}
-		if c.DataSourcePool == nil {
+		if c.DataSourcePool == nil || c.DataSourcePool.GetInner() == nil {
 			return fmt.Errorf("db_foreach: no data_sources configured")
 		}
-		dbForeachStaticPool, ok := c.DataSourcePool.Get(step.Key)
-		if !ok {
+		if _, ok := c.DataSourcePool.Get(step.Key); !ok {
 			return fmt.Errorf("db_foreach: unknown data source %q", step.Key)
 		}
 
@@ -3709,7 +3745,8 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		c.GlobalTable[dbForeachGateID] = engine.Instruction{
 			Name: "DB_FOREACH_GATE",
 			Action: steps.DbForeachGate(
-				dbForeachStaticPool,
+				c.DataSourcePool,
+				step.Key,
 				dbForeachCursorIdx,
 				dbForeachSQL,
 				dbForeachParamSlots,
@@ -6461,6 +6498,47 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 		"crypto_hmac_sha256", "crypto_hmac_sha1", "crypto_sha256", "crypto_md5":
 		return c.compileCryptoStep(step)
 
+	case "transaction":
+		// Emit BEGIN_TX, compile body steps, emit COMMIT_TX on success, ROLLBACK_TX on error
+		sourceName := step.DataSource
+		stepIdx := int16(len(c.GlobalTable))
+
+		// Emit BEGIN_TX
+		beginIdx := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:    "BEGIN_TX",
+			Action:  steps.BeginTx(c.DataSourcePool, sourceName, 0),
+			StepIdx: stepIdx,
+		})
+
+		// Compile body steps (using the Do field like db_foreach and retry do)
+		for _, subStep := range step.Do {
+			if err := c.compileStep(subStep, fragments); err != nil {
+				return err
+			}
+		}
+
+		// Emit COMMIT_TX on success path
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:    "COMMIT_TX",
+			Action:  steps.CommitTx(),
+			StepIdx: stepIdx,
+		})
+
+		// Wire error path: if body fails, jump to ROLLBACK_TX
+		rollbackIdx := int16(len(c.GlobalTable))
+		c.GlobalTable = append(c.GlobalTable, engine.Instruction{
+			Name:    "ROLLBACK_TX",
+			Action:  steps.RollbackTx(),
+			StepIdx: stepIdx,
+		})
+		// Patch BEGIN_TX to set ErrorHandlerPC to rollbackIdx
+		c.GlobalTable[beginIdx] = engine.Instruction{
+			Name:    "BEGIN_TX",
+			Action:  steps.BeginTx(c.DataSourcePool, sourceName, rollbackIdx),
+			StepIdx: c.GlobalTable[beginIdx].StepIdx,
+		}
+
 	default:
 		return fmt.Errorf("unknown step action %q", step.Action)
 	}
@@ -6614,6 +6692,7 @@ func (c *Compiler) discoverDependenciesWithFragments(flow []StepConfig, fragment
 
 func (c *Compiler) CompileExecutable(flow []StepConfig, fragments map[string][]StepConfig) ([]engine.Instruction, error) {
 	c.GlobalTable = make([]engine.Instruction, 0)
+	c.callInstrTargets = make(map[int16]int16) // reset alongside GlobalTable
 	c.resetSlots()
 
 	// Emit stream-response-body flag as first instruction — set once at flow start.
@@ -7757,6 +7836,61 @@ func (c *Compiler) BakeAPI(api ApiUpdate, fragments map[string][]StepConfig) (in
 func (c *Compiler) GetFlowProfile(name string) (FlowProfile, bool) {
 	p, ok := c.FlowProfiles[name]
 	return p, ok
+}
+
+// ComputeMaxCallDepth returns the maximum fragment call nesting depth reachable
+// from planStartPC by following CALL edges recorded in callInstrTargets.
+// planEnd is the exclusive end PC of the root plan (len of GlobalTable at call time).
+// Returns 0 when there are no fragment calls.
+// Call this immediately after CompileExecutable; callInstrTargets is reset each time.
+func (c *Compiler) ComputeMaxCallDepth(planEnd int16) int8 {
+	if len(c.callInstrTargets) == 0 {
+		return 0
+	}
+	// Build sorted fragment start PCs so we can find the end of each fragment.
+	fragStarts := make([]int16, 0, len(c.FragmentMap))
+	for _, pc := range c.FragmentMap {
+		fragStarts = append(fragStarts, pc)
+	}
+	// Sort ascending (simple insertion sort — fragStarts is small).
+	for i := 1; i < len(fragStarts); i++ {
+		for j := i; j > 0 && fragStarts[j] < fragStarts[j-1]; j-- {
+			fragStarts[j], fragStarts[j-1] = fragStarts[j-1], fragStarts[j]
+		}
+	}
+
+	fragEndPC := func(start int16) int16 {
+		for _, fs := range fragStarts {
+			if fs > start {
+				return fs
+			}
+		}
+		return int16(len(c.GlobalTable))
+	}
+
+	var maxDepth int8
+	visited := make(map[int16]bool, len(c.FragmentMap))
+
+	var dfs func(start, end int16, depth int8)
+	dfs = func(start, end int16, depth int8) {
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		for callPC, target := range c.callInstrTargets {
+			if callPC < start || callPC >= end {
+				continue
+			}
+			if visited[target] {
+				continue // cycle guard (Studio should prevent cycles, but be safe)
+			}
+			visited[target] = true
+			dfs(target, fragEndPC(target), depth+1)
+			delete(visited, target)
+		}
+	}
+
+	dfs(0, planEnd, 0)
+	return maxDepth
 }
 
 // canStreamResponseBody returns true when the compiler determines the http_call's

@@ -5,8 +5,10 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"github.com/amitkhosla/rah/internal/mqtt"
 	"github.com/amitkhosla/rah/internal/observability"
+	"github.com/jackc/pgx/v5"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -130,6 +132,7 @@ type Context struct {
 	RemainingPath []byte
 
 	RawQuery       []byte
+	ParsedQuery    url.Values
 	metadataBuffer [1024]byte
 	overflowBuffer []byte
 
@@ -280,6 +283,13 @@ type Context struct {
 	// by FlowManager via TxIDGenerator. Use rctx.FormatTxID to format.
 	InternalTxID [2]uint64
 
+	// ActiveTx is non-nil when a transaction scope is active for this request.
+	// DB steps route queries through this instead of acquiring a fresh pool connection.
+	// Nil on the vast majority of requests — single nil-check overhead on non-tx path.
+	ActiveTx pgx.Tx
+	// TxDepth tracks transaction nesting: 0=none, 1=outermost BEGIN, 2..8=savepoint level.
+	TxDepth int8
+
 	// InstrPC / InstrDurNs / InstrCount accumulate per-instruction timing
 	// during Execute(). Stored here (not on ExecutionState) so Execute() can
 	// return void, avoiding a ~1200-byte struct copy + GC pointer scan per
@@ -417,6 +427,15 @@ func (ctx *Context) InitSlots() {
 	ctx.BoolSlots = ctx.boolSlotBase[:BaseBoolSlots]
 	ctx.Ops = ctx.opsBase[:0]
 	ctx.doneChan = make(chan struct{}) // pre-allocate for context.Context impl
+}
+
+// CachedQuery parses the request URL query string once and caches the result.
+// Subsequent calls return the cached url.Values without re-parsing.
+func (c *Context) CachedQuery() url.Values {
+	if c.ParsedQuery == nil && c.Request != nil {
+		c.ParsedQuery, _ = url.ParseQuery(c.Request.URL.RawQuery)
+	}
+	return c.ParsedQuery
 }
 
 // â"€â"€ context.Context implementation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -617,6 +636,11 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.WSPool = nil
 	ctx.WSBroadcaster = nil
 	ctx.DynamicPool = nil
+	if ctx.ActiveTx != nil {
+		_ = ctx.ActiveTx.Rollback(context.Background())
+		ctx.ActiveTx = nil
+		ctx.TxDepth = 0
+	}
 	ctx.ArenaOverflowed = false
 	ctx.Failed = false
 	ctx.Cancelled = 0
@@ -684,6 +708,7 @@ func (ctx *Context) Reset(w ResponseWriter) {
 	ctx.Path = nil
 	ctx.RemainingPath = nil
 	ctx.RawQuery = nil
+	ctx.ParsedQuery = nil
 
 	// Nil inline slot bases — arena memory is already logically freed above.
 	for i := range ctx.byteSlotBase {

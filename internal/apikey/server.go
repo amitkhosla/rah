@@ -13,6 +13,7 @@ import (
 // ─── Request / Response shapes ────────────────────────────────────────────────
 
 type createAppReq struct {
+	AppID       uint32            `json:"app_id,omitempty"`
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Labels      map[string]string `json:"labels,omitempty"`
@@ -185,8 +186,26 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.AppID == 0 {
+		http.Error(w, "app_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Caller-supplied ID (e.g. from Studio). Check for conflicts before using it.
+	if existing := GetApp(req.AppID); existing != nil {
+		if existing.Name == req.Name {
+			// Idempotent: same ID and same name already exist — return as-is.
+			jsonOK(w, existing)
+			return
+		}
+		http.Error(w, "app_id already in use by a different app", http.StatusConflict)
+		return
+	}
+	appID := req.AppID
+	BumpAppIDCounterIfNeeded(appID)
+
 	app := App{
-		AppID:       NextAppID(),
+		AppID:       appID,
 		Name:        req.Name,
 		Description: req.Description,
 		Labels:      req.Labels,

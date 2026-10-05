@@ -617,7 +617,7 @@ func readToken(ctx *rctx.Context, tokenSlot int, cfg TokenValidationConfig) stri
 		if ctx.Request == nil || cfg.TokenRefKey == "" {
 			return ""
 		}
-		return ctx.Request.URL.Query().Get(cfg.TokenRefKey)
+		return ctx.CachedQuery().Get(cfg.TokenRefKey)
 	case TokenReadFromCookie:
 		if ctx.Request == nil || cfg.TokenRefKey == "" {
 			return ""

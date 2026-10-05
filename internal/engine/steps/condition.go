@@ -19,7 +19,7 @@ func BindInput(source, key string, slot int) engine.Instruction {
 				// Standard lib Header.Get is fine, it handles the map lookup
 				ctx.ByteSlots[slot] = []byte(ctx.Request.Header.Get(key))
 			case "query":
-				ctx.ByteSlots[slot] = []byte(ctx.Request.URL.Query().Get(key))
+				ctx.ByteSlots[slot] = []byte(ctx.CachedQuery().Get(key))
 			case "path":
 				// REPLACED: Use the index-based logic instead of ctx.PathParams map
 				// Note: BindPath (above) is preferred for performance

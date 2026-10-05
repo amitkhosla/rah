@@ -2,6 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/amitkhosla/rah/internal/gatewaylog"
@@ -10,9 +13,10 @@ import (
 // Loader pre-loads upcoming scheduled events from the store into the wheel.
 // Called at startup and periodically to advance the lookahead window.
 type Loader struct {
-	store         Store
-	wheel         *SchedulerWheel
-	lookaheadSec  int
+	store        Store
+	wheel        *SchedulerWheel
+	lookaheadSec int
+	armed        sync.Map // key: "name:unix_timestamp", value: struct{}{}
 }
 
 // NewLoader creates a new loader.
@@ -31,9 +35,56 @@ func (l *Loader) LoadUpcoming(ctx context.Context) error {
 		return err
 	}
 
-	for _, event := range events {
-		l.wheel.Schedule(event)
+	now := time.Now()
+	for _, ev := range events {
+		key := ev.Name + ":" + strconv.FormatInt(ev.ScheduledAt.Unix(), 10)
+		if _, loaded := l.armed.LoadOrStore(key, struct{}{}); loaded {
+			continue // already armed this fire-time
+		}
+
+		pooled := globalEventPool.Get()
+		pooled.Name = ev.Name
+		pooled.FlowName = ev.FlowName
+		pooled.TenantAlias = ev.TenantAlias
+		pooled.TimeoutSec = ev.TimeoutSec
+		pooled.Cron = ev.Cron
+		pooled.RetryCount = ev.RetryCount
+		pooled.RetryIntervalSec = ev.RetryIntervalSec
+		pooled.DeadLetterFlow = ev.DeadLetterFlow
+		pooled.ScheduledAt = ev.ScheduledAt
+		pooled.Epoch = uint32(ev.ScheduledAt.Unix() / 3600)
+		if ev.Constants != nil {
+			if pooled.Constants == nil {
+				pooled.Constants = make(map[string]string, len(ev.Constants))
+			} else {
+				for k := range pooled.Constants {
+					delete(pooled.Constants, k)
+				}
+			}
+			for k, v := range ev.Constants {
+				pooled.Constants[k] = v
+			}
+		} else {
+			pooled.Constants = nil
+		}
+
+		if !l.wheel.Schedule(pooled) {
+			globalEventPool.Put(pooled)
+			l.armed.Delete(key) // slot full: undo so we retry next cycle
+		}
 	}
+
+	// Prune keys whose fire-time has passed.
+	nowUnix := now.Unix()
+	l.armed.Range(func(k, _ any) bool {
+		key := k.(string)
+		if idx := strings.LastIndex(key, ":"); idx >= 0 {
+			if ts, err := strconv.ParseInt(key[idx+1:], 10, 64); err == nil && ts < nowUnix {
+				l.armed.Delete(key)
+			}
+		}
+		return true
+	})
 
 	if len(events) > 0 {
 		gatewaylog.Default.Debug("[Scheduler] loaded upcoming events")
