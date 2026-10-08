@@ -1,0 +1,104 @@
+2026/10/07 19:31:50 config loaded from gateway-inmem.yaml
+2026/10/07 19:31:51 admin user store initialised with 0 user(s)
+2026/10/07 19:31:51 api_definitions snapshot loaded: 34
+2026/10/07 19:31:51 flows snapshot loaded: 33
+2026/10/07 19:31:51 registrystore bootstrap records loaded: 0
+2026/10/07 19:31:51 [concurrency] disabled — gate inactive, no 429s
+2026/10/07 19:31:51 [concurrency] enabled=false limit=0 adaptive=true
+2026/10/07 19:31:51 [ingest] pipeline disabled (ingest.enabled=false)
+2026/10/07 19:31:51 Loading cost quotas...
+2026/10/07 19:31:51 No tenant quotas configured (all tenants unlimited)
+2026/10/07 19:31:51 rah-gateway started | instance=b876d8236305867d5e517073ddce8eba port=8080
+2026/10/07 19:31:51 [grpc] registry and connection pool initialized
+2026/10/07 19:31:51 [mqtt] no brokers configured -- mqtt_publish/mqtt_call steps require runtime pool
+2026/10/07 19:31:51 [scheduler] started (backend=memory)
+2026/10/07 19:31:51 Bootstrap complete: loaded 13 models from hardcoded defaults
+2026/10/07 19:31:51 No explicit pricing in config, using bootstrapped defaults
+2026/10/07 19:31:51 Pricing manager ready: 13 models in catalog
+2026/10/07 19:31:51 [egress] manager initialized
+2026/10/07 19:31:51 CredentialRegistry enabled (credentials domain configured)
+2026/10/07 19:31:51 Cache enabled: mem=64MB sizeClasses=[256 1024 4096 16384] ttlTiers=[60 300 3600] backend=memory
+2026/10/07 19:31:51 [rate-limit] distributed rate limiting not configured (add 'rate_limit_sync' binding to datastore config) -- using local counters
+2026/10/07 19:31:51 Rah Gateway listening on :8080
+2026/10/07 19:31:51 [Registry] Restored 4 tenant(s) and 0 rate limit config(s)
+2026/10/07 19:31:51 apikey: restored 2 apps, 0 keys
+2026/10/07 19:31:51 [AI] loaded 13 persisted LLM model(s)
+2026/10/07 19:31:51 [Management] Compiled Flow: test_flow (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: user_list (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_students_list (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_classes_list (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_teacher_create (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_teacher_get (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: tic_tac_score (5 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: tic_tac_toe_handler (12 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_class_get (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_ai_ask (6 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: test_param (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_timetable_set (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_homework_list (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: dynamic_header_name_flow (4 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_fees_outstanding (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: user_create (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: api_hello (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_teachers_list (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_class_create (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_student_create (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_fee_record (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_homework_assign (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: test_school (3 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_student_update (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: __dsl_else_1 (3 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_homework_submit (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: hello_world (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_timetable_get (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_student_get (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: user_ask (4 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: user_get (3 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: __dsl_then_0 (2 instructions)
+2026/10/07 19:31:51 [Management] Compiled Flow: school_fees_list (2 instructions)
+2026/10/07 19:31:51 [Management] Linked API /hello -> Flow hello_world
+2026/10/07 19:31:51 [Management] Linked API /ask -> Flow user_ask
+2026/10/07 19:31:51 [Management] Linked API /school/students -> Flow school_students_list
+2026/10/07 19:31:51 [Management] Linked API /user -> Flow user_get
+2026/10/07 19:31:51 [Management] Linked API /school/fees -> Flow school_fee_record
+2026/10/07 19:31:51 [Management] Linked API /school/classes -> Flow school_class_create
+2026/10/07 19:31:51 [Management] Linked API /school/homework/{id}/submit -> Flow school_homework_submit
+2026/10/07 19:31:51 [Management] Linked API /school/students/{id} -> Flow school_student_get
+2026/10/07 19:31:51 [Management] Linked API /users/{id} -> Flow user_get
+2026/10/07 19:31:51 [Management] Linked API /school/homework -> Flow school_homework_assign
+2026/10/07 19:31:51 [Management] Linked API /school/students/{id} -> Flow school_student_update
+2026/10/07 19:31:51 [Management] Linked API /school/homework -> Flow school_homework_list
+2026/10/07 19:31:51 [Management] Linked API /school/teachers -> Flow school_teacher_create
+2026/10/07 19:31:51 [Management] Linked API /school/classes -> Flow school_classes_list
+2026/10/07 19:31:51 [Management] Linked API /school/timetable -> Flow school_timetable_get
+2026/10/07 19:31:51 [Management] Linked API /school/fees -> Flow school_fees_list
+2026/10/07 19:31:51 [Management] Linked API /api/users/{id} -> Flow user_get
+2026/10/07 19:31:51 [Management] Linked API /tic-tac-toe/zero_one -> Flow tic_tac_toe_handler
+2026/10/07 19:31:51 [Management] Linked API /school/ai/ask -> Flow school_ai_ask
+2026/10/07 19:31:51 [Management] Linked API /school/fees/outstanding -> Flow school_fees_outstanding
+2026/10/07 19:31:51 [Management] Linked API /school/teachers -> Flow school_teachers_list
+2026/10/07 19:31:51 [Management] Linked API /school/students -> Flow school_student_create
+2026/10/07 19:31:51 [Management] Linked API /users -> Flow user_list
+2026/10/07 19:31:51 [Management] Linked API /users/ask -> Flow user_ask
+2026/10/07 19:31:51 [Management] Linked API /score -> Flow tic_tac_score
+2026/10/07 19:31:51 [Management] Linked API /school/timetable -> Flow school_timetable_set
+2026/10/07 19:31:51 [Management] Linked API /api/users/ask -> Flow user_ask
+2026/10/07 19:31:51 [Management] Linked API /api/users/new -> Flow user_create
+2026/10/07 19:31:51 [Management] Linked API /create-user -> Flow user_create
+2026/10/07 19:31:51 [Management] Linked API /school/classes/{id} -> Flow school_class_get
+2026/10/07 19:31:51 [Management] Linked API /school/teachers/{id} -> Flow school_teacher_get
+2026/10/07 19:31:51 [Management] Linked API /tic-tac-toe -> Flow tic_tac_toe_handler
+2026/10/07 19:31:51 [Management] Linked API /p/{id} -> Flow test_param
+2026/10/07 19:31:51 [Management] Linked API /users -> Flow user_list
+2026/10/07 19:31:51 [Management] Sync Complete. RouterChanged=true
+2026/10/07 19:31:51 [Bootstrap] BakeMultipliers complete
+2026/10/07 19:31:51 [InstanceSync] started | env=default poll=10s heartbeat=10s
+2026/10/07 19:31:51 Warning: ADMIN_TOKEN environment variable not set. Cost tracking endpoints will deny all access.
+2026/10/07 19:31:51 Cost tracking endpoints registered at /api/v1/costs*
+2026/10/07 19:31:51 Pricing endpoints registered at /pricing and /pricing/refresh
+2026/10/07 19:31:51 [AI] loaded 13 persisted LLM model(s)
+2026/10/07 19:31:51 MCPReg initialized; virtual MCP server routes available at /ai/mcp/virtual
+2026/10/07 19:31:51 Admin user endpoints registered at /admin/users
+2026/10/07 19:31:51 Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:8081/ai)
+2026/10/07 19:31:51 OpenAI-compatible adapter registered at /v1/chat/completions
+2026/10/07 19:31:51 Management API running on 8081
