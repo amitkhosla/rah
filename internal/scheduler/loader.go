@@ -2,8 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +14,7 @@ type Loader struct {
 	store        Store
 	wheel        *SchedulerWheel
 	lookaheadSec int
-	armed        sync.Map // key: "name:unix_timestamp", value: struct{}{}
+	armed        sync.Map // key: schedule name (string), value: scheduled-at unix (int64)
 }
 
 // NewLoader creates a new loader.
@@ -35,11 +33,10 @@ func (l *Loader) LoadUpcoming(ctx context.Context) error {
 		return err
 	}
 
-	now := time.Now()
 	for _, ev := range events {
-		key := ev.Name + ":" + strconv.FormatInt(ev.ScheduledAt.Unix(), 10)
-		if _, loaded := l.armed.LoadOrStore(key, struct{}{}); loaded {
-			continue // already armed this fire-time
+		scheduledUnix := ev.ScheduledAt.Unix()
+		if ts, ok := l.armed.Load(ev.Name); ok && ts.(int64) == scheduledUnix {
+			continue // already armed this exact fire-time
 		}
 
 		pooled := globalEventPool.Get()
@@ -70,21 +67,11 @@ func (l *Loader) LoadUpcoming(ctx context.Context) error {
 
 		if !l.wheel.Schedule(pooled) {
 			globalEventPool.Put(pooled)
-			l.armed.Delete(key) // slot full: undo so we retry next cycle
+			l.armed.Delete(ev.Name) // slot full: undo so we retry next cycle
+		} else {
+			l.armed.Store(ev.Name, scheduledUnix)
 		}
 	}
-
-	// Prune keys whose fire-time has passed.
-	nowUnix := now.Unix()
-	l.armed.Range(func(k, _ any) bool {
-		key := k.(string)
-		if idx := strings.LastIndex(key, ":"); idx >= 0 {
-			if ts, err := strconv.ParseInt(key[idx+1:], 10, 64); err == nil && ts < nowUnix {
-				l.armed.Delete(key)
-			}
-		}
-		return true
-	})
 
 	if len(events) > 0 {
 		gatewaylog.Default.Debug("[Scheduler] loaded upcoming events")

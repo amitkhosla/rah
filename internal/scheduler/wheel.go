@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -16,7 +17,8 @@ type paddedU32 struct {
 	_ [60]byte // 4 (Uint32 internal uint32) + 60 = 64
 }
 
-const wheelSlotCap = 64 // must be power of two; max events per second-slot
+const wheelSlotCap = 64      // must be power of two; max events per second-slot
+const maxScheduleSpins = 10_000
 
 // wheelCell is one entry in a slot's MPSC ring.
 // The seq field is the Vyukov sequence number; epoch and ptr are written under
@@ -61,11 +63,11 @@ func (w *SchedulerWheel) Start(ctx context.Context) {
 }
 
 // Schedule arms event in the correct slot using a lock-free MPSC push.
-// Returns true on success, false if the slot ring is full.
+// Returns true on success, false if the slot ring is full or spin limit reached.
 // Called by the loader and UpsertSchedule (multiple producers).
 func (w *SchedulerWheel) Schedule(event *ScheduledEvent) bool {
 	slot := &w.slots[uint32(event.ScheduledAt.Unix())%3600]
-	for {
+	for spins := 0; spins < maxScheduleSpins; spins++ {
 		pos := slot.head.Load()
 		idx := pos & (wheelSlotCap - 1)
 		cell := &slot.cells[idx]
@@ -85,28 +87,38 @@ func (w *SchedulerWheel) Schedule(event *ScheduledEvent) bool {
 			runtime.Gosched()
 		}
 	}
+	gatewaylog.Default.Warn("[Scheduler] wheel Schedule spin limit reached",
+		gatewaylog.F("name", event.Name),
+	)
+	return false
 }
 
-// runTicker advances the wheel every second.
+// runTicker is the outer restart loop: recovers from panics in tickLoop and restarts it.
 func (w *SchedulerWheel) runTicker(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			var panicMsg string
-			switch v := r.(type) {
-			case string:
-				panicMsg = v
-			default:
-				panicMsg = "non-string panic"
-			}
-			gatewaylog.Default.Error("[Scheduler] wheel panic recovered, restarting ticker",
-				gatewaylog.F("panic", panicMsg),
-			)
-			if ctx.Err() == nil {
-				go w.runTicker(ctx)
-			}
+	for {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					gatewaylog.Default.Error("[Scheduler] wheel ticker panic, restarting",
+						gatewaylog.F("panic", fmt.Sprint(r)),
+					)
+				}
+			}()
+			w.tickLoop(ctx)
+		}()
+		if ctx.Err() != nil {
+			return
 		}
-	}()
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
+// tickLoop runs the actual ticker until the context is cancelled or a panic occurs.
+func (w *SchedulerWheel) tickLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 

@@ -146,6 +146,10 @@ type LLMCallConfig struct {
 	// StaticSystem is a bake-time static system prompt. Used when SystemSlot == -1 or
 	// when the slot is empty at runtime. SystemSlot takes precedence when non-empty.
 	StaticSystem string
+
+	// Guardrail holds output-side content filtering rules. Zero value = disabled.
+	// Applied after the LLM response is written to ResultSlot (non-streaming path only).
+	Guardrail GuardrailConfig
 }
 
 // FallbackEntry holds one step in the fallback chain, resolved at bake time.
@@ -304,6 +308,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 	}
 
 	bakedEndpointHost := extractUpstreamHost(bakedParams.endpoint)
+
+	// Bake-time: compile guardrail rules once so per-request there is no regex compilation.
+	var guardrailFn func(ctx *rctx.Context, state *engine.ExecutionState) int16
+	if len(cfg.Guardrail.RegexRules) > 0 || len(cfg.Guardrail.Providers) > 0 {
+		instr := GuardrailCheck(cfg.Guardrail)
+		guardrailFn = instr.Action
+	}
 
 	return engine.Instruction{
 		Name: "llm_call[" + cfg.ModelConfig.Alias + "]",
@@ -833,6 +844,13 @@ func LLMCall(cfg LLMCallConfig) engine.Instruction {
 							ReqBytes:     body,
 							ResBytes:     respBody,
 						})
+					}
+
+					// Apply output-side guardrails (regex + provider checks).
+					if guardrailFn != nil {
+						if next := guardrailFn(ctx, state); next == engine.StopPlan {
+							return engine.StopPlan
+						}
 					}
 
 					return state.PC + 1

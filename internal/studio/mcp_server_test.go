@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const wantToolCount = 56
+const wantToolCount = 60
 
 func TestMCPToolsListCount(t *testing.T) {
 	if got := len(studioMCPTools); got != wantToolCount {

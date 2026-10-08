@@ -43,11 +43,13 @@ func NewDispatchRing(cap uint64) *DispatchRing {
 	return &DispatchRing{mask: cap - 1, cells: cells, NotifyCh: make(chan struct{}, 1)}
 }
 
+const maxPushSpins = 10_000
+
 // TryPush attempts to push an event into the ring.
 // Called by the timing wheel (single producer).
-// Returns true if successful, false if the ring is full.
+// Returns true if successful, false if the ring is full or spin limit reached.
 func (r *DispatchRing) TryPush(ev *ScheduledEvent) bool {
-	for {
+	for spins := 0; spins < maxPushSpins; spins++ {
 		pos := r.enqPos.Load()
 		cell := &r.cells[pos&r.mask]
 		seq := cell.seq.Load()
@@ -69,6 +71,7 @@ func (r *DispatchRing) TryPush(ev *ScheduledEvent) bool {
 			runtime.Gosched()
 		}
 	}
+	return false // spin limit reached
 }
 
 // TryPop attempts to pop an event from the ring.

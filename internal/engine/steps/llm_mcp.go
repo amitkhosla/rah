@@ -233,21 +233,47 @@ func MCPListTools(cfg MCPListToolsConfig) engine.Instruction {
 	return engine.Instruction{
 		Name: "mcp_list_tools[" + cfg.ServerConfig.Alias + "]",
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
-			// Only HTTP and SSE (treated as HTTP) transports are supported.
+			// Dispatch by transport type.
 			t := cfg.ServerConfig.Transport
-			if t != config.MCPTransportHTTP && t != config.MCPTransportSSE {
+			var tools []mcpRawTool
+			switch t {
+			case config.MCPTransportHTTP, config.MCPTransportSSE:
+				tools = mcpFetchTools(ctx, cfg.ServerConfig.URL, cfg.APIKey, timeoutMs)
+				if tools == nil {
+					// ctx already populated by mcpFetchTools
+					return engine.StopPlan
+				}
+			case config.MCPTransportStdio:
+				proc, procErr := getOrStartStdioProcess(ctx.TenantID, cfg.ServerConfig.Alias, cfg.ServerConfig.Command)
+				if procErr != nil {
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					msg := "mcp: stdio start failed: " + procErr.Error()
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				}
+				proc.mu.Lock()
+				rawTools, stdioErr := mcpFetchToolsStdio(proc)
+				proc.mu.Unlock()
+				if stdioErr != nil {
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					msg := "mcp: stdio error: " + stdioErr.Error()
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				}
+				tools = rawTools
+			default:
 				ctx.ResponseStatus = 501
 				ctx.Failed = true
 				ctx.ErrorCode = 501
 				msg := "mcp: unsupported transport: " + string(t)
 				ctx.ErrorMsg = ctx.Alloc(len(msg))
 				copy(ctx.ErrorMsg, msg)
-				return engine.StopPlan
-			}
-
-			tools := mcpFetchTools(ctx, cfg.ServerConfig.URL, cfg.APIKey, timeoutMs)
-			if tools == nil {
-				// ctx already populated by mcpFetchTools
 				return engine.StopPlan
 			}
 
@@ -343,20 +369,46 @@ func MCPFetchSchemas(cfg MCPFetchSchemasConfig) engine.Instruction {
 				want[n] = struct{}{}
 			}
 
-			// Only HTTP and SSE transports are supported.
+			// Dispatch by transport type.
 			t := cfg.ServerConfig.Transport
-			if t != config.MCPTransportHTTP && t != config.MCPTransportSSE {
+			var allTools []mcpRawTool
+			switch t {
+			case config.MCPTransportHTTP, config.MCPTransportSSE:
+				allTools = mcpFetchTools(ctx, cfg.ServerConfig.URL, cfg.APIKey, timeoutMs)
+				if allTools == nil {
+					return engine.StopPlan
+				}
+			case config.MCPTransportStdio:
+				proc, procErr := getOrStartStdioProcess(ctx.TenantID, cfg.ServerConfig.Alias, cfg.ServerConfig.Command)
+				if procErr != nil {
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					msg := "mcp: stdio start failed: " + procErr.Error()
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				}
+				proc.mu.Lock()
+				rawTools, stdioErr := mcpFetchToolsStdio(proc)
+				proc.mu.Unlock()
+				if stdioErr != nil {
+					ctx.ResponseStatus = 502
+					ctx.Failed = true
+					ctx.ErrorCode = 502
+					msg := "mcp: stdio error: " + stdioErr.Error()
+					ctx.ErrorMsg = ctx.Alloc(len(msg))
+					copy(ctx.ErrorMsg, msg)
+					return engine.StopPlan
+				}
+				allTools = rawTools
+			default:
 				ctx.ResponseStatus = 501
 				ctx.Failed = true
 				ctx.ErrorCode = 501
 				msg := "mcp: unsupported transport: " + string(t)
 				ctx.ErrorMsg = ctx.Alloc(len(msg))
 				copy(ctx.ErrorMsg, msg)
-				return engine.StopPlan
-			}
-
-			allTools := mcpFetchTools(ctx, cfg.ServerConfig.URL, cfg.APIKey, timeoutMs)
-			if allTools == nil {
 				return engine.StopPlan
 			}
 

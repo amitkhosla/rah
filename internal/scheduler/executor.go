@@ -79,7 +79,9 @@ func (e *Executor) handle(event *ScheduledEvent) {
 	}
 
 	// Claim the schedule via UPDATE-based atomic claim.
-	result, err := e.store.Claim(context.Background(), event.Name, e.instanceID)
+	claimCtx, claimCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	result, err := e.store.Claim(claimCtx, event.Name, e.instanceID)
+	claimCancel()
 	if err != nil {
 		gatewaylog.Default.Error("[Scheduler] claim failed",
 			gatewaylog.F("event", event.Name),

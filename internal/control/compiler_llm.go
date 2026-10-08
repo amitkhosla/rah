@@ -410,6 +410,12 @@ func (c *Compiler) compileLLMCall(step StepConfig) error {
 		llmCfg.CircuitEventPipeline = c.IngestPipeline
 	}
 
+	guardrailCfg, err := compileGuardrailConfig(c, step, resultSlot)
+	if err != nil {
+		return fmt.Errorf("llm_call: %w", err)
+	}
+	llmCfg.Guardrail = guardrailCfg
+
 	c.GlobalTable = append(c.GlobalTable, steps.LLMCall(llmCfg))
 
 	// Register per-model upstream rate limits at bake time for all catalog models.

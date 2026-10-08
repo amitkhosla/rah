@@ -222,9 +222,8 @@ func TestMCPListTools_UnsupportedTransport_Returns501(t *testing.T) {
 	ctx := newMCPTestContext()
 	cfg := MCPListToolsConfig{
 		ServerConfig: config.MCPServerConfig{
-			Alias:     "stdio_server",
-			Transport: config.MCPTransportStdio,
-			Command:   []string{"python", "server.py"},
+			Alias:     "unknown_server",
+			Transport: config.MCPTransport("unsupported_transport"),
 		},
 		Mode:       MCPLoadFull,
 		ResultSlot: 0,

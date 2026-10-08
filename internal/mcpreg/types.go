@@ -45,4 +45,14 @@ type VirtualMCPServerDef struct {
 	// Non-zero = scoped to that tenant
 	TenantID uint16       `json:"tenant_id,omitempty"`
 	Sources  []ToolSource `json:"sources"`
+	Auth     *MCPOAuthConfig `json:"auth,omitempty"`
+}
+
+// MCPOAuthConfig declares the OAuth issuer protecting this virtual MCP server.
+// Used by Sync to auto-generate a /.well-known/oauth-protected-resource API
+// that the gateway serves as a regular flow — no custom gateway logic needed.
+type MCPOAuthConfig struct {
+	Issuer   string   `json:"issuer"`
+	Audience string   `json:"audience,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
 }

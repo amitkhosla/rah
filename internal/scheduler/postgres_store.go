@@ -223,7 +223,16 @@ func (s *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	var commitErr error
+	defer func() {
+		rbErr := tx.Rollback(ctx)
+		if commitErr != nil && rbErr != nil {
+			gatewaylog.Default.Error("[Scheduler] rollback failed after commit error",
+				gatewaylog.F("commit_err", commitErr.Error()),
+				gatewaylog.F("rollback_err", rbErr.Error()),
+			)
+		}
+	}()
 
 	// Insert execution history record.
 	_, err = tx.Exec(ctx, `
@@ -246,7 +255,8 @@ func (s *PostgresStore) RecordExecution(ctx context.Context, rec ExecutionRecord
 		return fmt.Errorf("update schedule: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	commitErr = tx.Commit(ctx)
+	return commitErr
 }
 
 // ListAll returns all schedules (for management API).

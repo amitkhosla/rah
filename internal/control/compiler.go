@@ -544,6 +544,25 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 	case "save_history":
 		return c.compileSaveHistory(step)
 
+	case "agent_state_get":
+		return c.compileAgentStateGet(step)
+	case "agent_state_set":
+		return c.compileAgentStateSet(step)
+	case "agent_state_merge":
+		return c.compileAgentStateMerge(step)
+	case "agent_state_clear":
+		return c.compileAgentStateClear(step)
+
+	case "task_create":
+		return c.compileTaskCreate(step)
+	case "task_update":
+		return c.compileTaskUpdate(step)
+	case "task_get":
+		return c.compileTaskGet(step)
+
+	case "a2a_call":
+		return c.compileA2ACall(step)
+
 	case "mcp_list_tools":
 		return c.compileMCPListTools(step)
 
@@ -612,6 +631,9 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 
 	case "serve_mcp":
 		return c.compileServeMCP(step)
+
+	case "a2a_serve":
+		return c.compileServeA2A(step)
 
 	case "emit_event":
 		return c.compileEmitEvent(step)

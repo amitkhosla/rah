@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,6 +113,9 @@ func Load(dir string) (LoadResult, error) {
 			}
 		}
 	}
+
+	// Auto-derive VirtualMCPServerDef and A2A flows+APIs from AppProtocolUpdate entries
+	processAppProtocols(&result)
 
 	return result, nil
 }
@@ -734,4 +738,306 @@ func mergeBundles(existing, newBundle control.UnifiedSyncRequest) control.Unifie
 	}
 
 	return result
+}
+
+// processAppProtocols auto-derives VirtualMCPServerDef entries and A2A flows+APIs
+// from AppProtocolUpdate entries. This is an APPEND-ONLY function: it never modifies
+// existing entries in result.Bundle.Flows, .Apis, or .VirtualMCPServers.
+func processAppProtocols(result *LoadResult) {
+	if len(result.Bundle.AppProtocols) == 0 {
+		return
+	}
+
+	for _, protocol := range result.Bundle.AppProtocols {
+		// Process MCP protocol if present and not being deleted
+		if protocol.MCP != nil && protocol.Action != "delete" {
+			processMCPProtocol(protocol, result)
+		}
+
+		// Process A2A protocol if present and not being deleted
+		if protocol.A2A != nil && protocol.Action != "delete" {
+			processA2AProtocol(protocol, result)
+		}
+	}
+}
+
+// isValidAppName returns true if name contains only alphanumeric, hyphen, or underscore chars.
+func isValidAppName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// processMCPProtocol builds a VirtualMCPServerDef from flows marked with Expose.AsMCPTool.
+func processMCPProtocol(protocol control.AppProtocolUpdate, result *LoadResult) {
+	if !isValidAppName(protocol.AppName) {
+		log.Printf("[sync] skipping protocol for app %q: name contains invalid characters (only a-z A-Z 0-9 _ - allowed)", protocol.AppName)
+		return
+	}
+
+	// Build map of APIs by (FlowName + ":" + AppName)
+	apiMap := make(map[string]control.ApiUpdate)
+	for _, api := range result.Bundle.Apis {
+		key := api.FlowName + ":" + api.AppName
+		apiMap[key] = api
+	}
+
+	// Collect tool sources from flows marked for MCP exposure
+	var sources []mcpreg.ToolSource
+
+	for _, flow := range result.Bundle.Flows {
+		if flow.Expose == nil || !flow.Expose.AsMCPTool {
+			continue
+		}
+
+		// Look for matching API
+		apiKey := flow.Name + ":" + protocol.AppName
+		api, ok := apiMap[apiKey]
+		if !ok {
+			continue
+		}
+
+		// Build tool name
+		toolName := flow.Expose.ToolName
+		if toolName == "" {
+			toolName = flow.Name
+		}
+
+		// Build method
+		method := api.Method
+		if method == "" {
+			method = "POST"
+		}
+
+		// Build APIToolDef
+		toolDef := mcpreg.APIToolDef{
+			Name:        toolName,
+			Description: flow.Description,
+			Path:        api.Path,
+			Method:      method,
+			InputSchema: nil,
+			AuthKind:    "",
+			AuthHeader:  "",
+			AuthKeyRef:  "",
+		}
+
+		// Build ToolSource
+		source := mcpreg.ToolSource{
+			Kind:    mcpreg.ToolSourceAPI,
+			APITool: &toolDef,
+		}
+
+		sources = append(sources, source)
+	}
+
+	// Append extra sources from protocol config
+	sources = append(sources, protocol.MCP.ExtraSources...)
+
+	// Build VirtualMCPServerDef
+	def := mcpreg.VirtualMCPServerDef{
+		Name:        protocol.MCP.ServerName,
+		Description: protocol.MCP.Description,
+		TenantID:    0, // tenant scoping happens via app registration
+		Sources:     sources,
+	}
+
+	// Convert OAuth config if present
+	if protocol.MCP.Auth != nil {
+		def.Auth = &mcpreg.MCPOAuthConfig{
+			Issuer:   protocol.MCP.Auth.Issuer,
+			Audience: protocol.MCP.Auth.Audience,
+			Scopes:   protocol.MCP.Auth.Scopes,
+		}
+	}
+
+	// Append to result
+	result.Bundle.VirtualMCPServers = append(result.Bundle.VirtualMCPServers, def)
+}
+
+// processA2AProtocol builds A2A flows and APIs for an app agent endpoint.
+func processA2AProtocol(protocol control.AppProtocolUpdate, result *LoadResult) {
+	if !isValidAppName(protocol.AppName) {
+		log.Printf("[sync] skipping protocol for app %q: name contains invalid characters (only a-z A-Z 0-9 _ - allowed)", protocol.AppName)
+		return
+	}
+
+	// Build map of APIs by (FlowName + ":" + AppName)
+	apiMap := make(map[string]control.ApiUpdate)
+	apisByAppName := make([]control.ApiUpdate, 0)
+	for _, api := range result.Bundle.Apis {
+		key := api.FlowName + ":" + api.AppName
+		apiMap[key] = api
+		if api.AppName == protocol.AppName {
+			apisByAppName = append(apisByAppName, api)
+		}
+	}
+
+	// Collect skills from flows marked for A2A exposure
+	skillRoutes := make(map[string]string)
+	var skills []map[string]string
+
+	for _, flow := range result.Bundle.Flows {
+		if flow.Expose == nil || !flow.Expose.AsA2ASkill {
+			continue
+		}
+
+		// Look for matching API
+		apiKey := flow.Name + ":" + protocol.AppName
+		api, ok := apiMap[apiKey]
+		if !ok {
+			continue
+		}
+
+		// Build skill ID
+		skillID := flow.Expose.SkillID
+		if skillID == "" {
+			skillID = flow.Name
+		}
+
+		// Add to skill routes
+		skillRoutes[skillID] = api.Path
+
+		// Add to skills list
+		skills = append(skills, map[string]string{
+			"id":          skillID,
+			"name":        flow.Name,
+			"description": flow.Description,
+		})
+	}
+
+	// Determine base path: common prefix of all APIs for this app
+	basePath := "/" + protocol.AppName
+	if len(apisByAppName) > 0 {
+		firstPath := apisByAppName[0].Path
+		// Strip the last segment if it looks like an endpoint
+		parts := strings.Split(strings.TrimPrefix(firstPath, "/"), "/")
+		if len(parts) > 1 {
+			basePath = "/" + strings.Join(parts[:len(parts)-1], "/")
+		} else {
+			basePath = "/" + protocol.AppName
+		}
+	}
+
+	// Serialize skill routes to JSON
+	skillRoutesJSON, _ := json.Marshal(skillRoutes)
+
+	// Build agent card JSON
+	agentCardData := map[string]any{
+		"name":    protocol.AppName,
+		"version": "1.0",
+		"capabilities": map[string]bool{
+			"streaming":         false,
+			"pushNotifications": false,
+		},
+		"skills": skills,
+	}
+	if protocol.A2A.Description != "" {
+		agentCardData["description"] = protocol.A2A.Description
+	}
+	if protocol.A2A.Version != "" {
+		agentCardData["version"] = protocol.A2A.Version
+	}
+
+	agentCardJSON, _ := json.Marshal(agentCardData)
+
+	if len(skillRoutes) == 0 {
+		log.Printf("[sync] app %q has A2A protocol but no flows marked as_a2a_skill — skipping __a2a_serve flow generation", protocol.AppName)
+		// Still generate the agent card and oauth meta so discovery works
+	}
+
+	if len(skillRoutes) > 0 {
+		// Create __a2a_serve flow
+		serveFlowName := "__a2a_serve_" + protocol.AppName
+		result.Bundle.Flows = append(result.Bundle.Flows, control.FlowUpdate{
+			Name: serveFlowName,
+			Instructions: []control.StepConfig{
+				{
+					Action: "a2a_serve",
+					Input: map[string]string{
+						"skills_json":   string(skillRoutesJSON),
+						"gateway_base":  "",
+					},
+				},
+			},
+			Action: "upsert",
+		})
+
+		// Create __a2a_serve API
+		result.Bundle.Apis = append(result.Bundle.Apis, control.ApiUpdate{
+			Name:     "__a2a_serve_api_" + protocol.AppName,
+			Path:     basePath + "/a2a",
+			Method:   "POST",
+			FlowName: serveFlowName,
+			AppName:  protocol.AppName,
+			Action:   "upsert",
+		})
+	}
+
+	// Create __a2a_card flow
+	cardFlowName := "__a2a_card_" + protocol.AppName
+	result.Bundle.Flows = append(result.Bundle.Flows, control.FlowUpdate{
+		Name: cardFlowName,
+		Instructions: []control.StepConfig{
+			{
+				Action: "return",
+				Input: map[string]string{
+					"body":         string(agentCardJSON),
+					"status":       "200",
+					"content_type": "application/json",
+				},
+			},
+		},
+		Action: "upsert",
+	})
+
+	// Create __a2a_card API
+	result.Bundle.Apis = append(result.Bundle.Apis, control.ApiUpdate{
+		Name:     "__a2a_card_api_" + protocol.AppName,
+		Path:     basePath + "/.well-known/agent.json",
+		Method:   "GET",
+		FlowName: cardFlowName,
+		AppName:  protocol.AppName,
+		Action:   "upsert",
+	})
+
+	// If OAuth config exists, create OAuth metadata flow and API
+	if protocol.MCP != nil && protocol.MCP.Auth != nil {
+		oauthMetaData := map[string]any{
+			"resource": basePath,
+			"authorization_servers": []string{protocol.MCP.Auth.Issuer},
+			"scopes_supported":       protocol.MCP.Auth.Scopes,
+		}
+		oauthMetaJSON, _ := json.Marshal(oauthMetaData)
+
+		oauthFlowName := "__oauth_meta_" + protocol.AppName
+		result.Bundle.Flows = append(result.Bundle.Flows, control.FlowUpdate{
+			Name: oauthFlowName,
+			Instructions: []control.StepConfig{
+				{
+					Action: "return",
+					Input: map[string]string{
+						"body":         string(oauthMetaJSON),
+						"status":       "200",
+						"content_type": "application/json",
+					},
+				},
+			},
+			Action: "upsert",
+		})
+
+		result.Bundle.Apis = append(result.Bundle.Apis, control.ApiUpdate{
+			Name:     "__oauth_meta_api_" + protocol.AppName,
+			Path:     basePath + "/.well-known/oauth-protected-resource",
+			Method:   "GET",
+			FlowName: oauthFlowName,
+			AppName:  protocol.AppName,
+			Action:   "upsert",
+		})
+	}
 }

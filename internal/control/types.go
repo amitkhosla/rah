@@ -318,7 +318,19 @@ type FlowUpdate struct {
 	Code         string            `json:"code,omitempty"          yaml:"code,omitempty"`
 	Instructions []StepConfig      `json:"instructions"            yaml:"instructions"`
 	Constants    map[string]string `json:"constants,omitempty"     yaml:"constants,omitempty"`
+	Description  string            `json:"description,omitempty"   yaml:"description,omitempty"`
+	Expose       *FlowExposeConfig `json:"expose,omitempty"        yaml:"expose,omitempty"`
 	Action       string            `json:"action"                  yaml:"action"` // "upsert" or "delete"
+}
+
+// FlowExposeConfig marks a flow for auto-publication as an MCP tool and/or A2A skill.
+// Sync reads this to auto-derive VirtualMCPServerDef entries and A2A agent flows —
+// no manual virtual_mcp_servers YAML needed.
+type FlowExposeConfig struct {
+	AsMCPTool  bool   `json:"as_mcp_tool,omitempty"  yaml:"as_mcp_tool,omitempty"`
+	AsA2ASkill bool   `json:"as_a2a_skill,omitempty" yaml:"as_a2a_skill,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"    yaml:"tool_name,omitempty"`
+	SkillID    string `json:"skill_id,omitempty"     yaml:"skill_id,omitempty"`
 }
 
 const (
@@ -334,6 +346,7 @@ type ApiUpdate struct {
 	Name            string             `json:"name"`
 	Path            string             `json:"path"`
 	Method          string             `json:"method,omitempty"`          // HTTP method; empty = all methods
+	Description     string             `json:"description,omitempty" yaml:"description,omitempty"`
 	FlowName        string             `json:"flow_name"`                 // Reference to a Flow name
 	AppName         string             `json:"app_name,omitempty"`        // App this API belongs to
 	Source          string             `json:"source,omitempty"`          // "app" if created from an app in studio; "" if linked externally
@@ -427,6 +440,7 @@ type UnifiedSyncRequest struct {
 	MCPServers        []config.MCPServerConfig      `json:"mcp_servers,omitempty"`
 	VirtualMCPServers []mcpreg.VirtualMCPServerDef  `json:"virtual_mcp_servers,omitempty"`
 	APITools          []mcpreg.APIToolDef           `json:"api_tools,omitempty"`
+	AppProtocols      []AppProtocolUpdate           `json:"app_protocols,omitempty" yaml:"app_protocols,omitempty"`
 
 	// EventListeners to register on this gateway instance. Merged into cfgMgr on apply.
 	EventListeners []config.EventListenerConfig `json:"event_listeners,omitempty"`
@@ -445,6 +459,39 @@ type UnifiedSyncRequest struct {
 	MessagingPublishers []config.PublisherConfig         `json:"messaging_publishers,omitempty"`
 	StorageProviders    []storage.StorageProviderConfig  `json:"storage_providers,omitempty"`
 	SFTPConnectors      []config.SFTPConnectorConfig     `json:"sftp_connectors,omitempty"`
+}
+
+// AppProtocolUpdate declares MCP and/or A2A protocol publishing for an app.
+// Sync auto-derives VirtualMCPServerDef and A2A flows from this — no manual
+// gateway config required. Gateway is a pure executor.
+type AppProtocolUpdate struct {
+	AppName string          `json:"app_name" yaml:"app_name"`
+	MCP     *AppMCPProtocol `json:"mcp,omitempty"  yaml:"mcp,omitempty"`
+	A2A     *AppA2AProtocol `json:"a2a,omitempty"  yaml:"a2a,omitempty"`
+	Action  string          `json:"action"   yaml:"action"`
+}
+
+// AppMCPProtocol configures auto-generation of a virtual MCP server from
+// flows that have Expose.AsMCPTool set.
+type AppMCPProtocol struct {
+	ServerName   string              `json:"server_name"             yaml:"server_name"`
+	Description  string              `json:"description,omitempty"   yaml:"description,omitempty"`
+	Auth         *MCPOAuthConfig     `json:"auth,omitempty"          yaml:"auth,omitempty"`
+	ExtraSources []mcpreg.ToolSource `json:"extra_sources,omitempty" yaml:"extra_sources,omitempty"`
+}
+
+// AppA2AProtocol configures auto-generation of an A2A agent endpoint from
+// flows that have Expose.AsA2ASkill set.
+type AppA2AProtocol struct {
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	Version     string `json:"version,omitempty"     yaml:"version,omitempty"`
+}
+
+// MCPOAuthConfig declares the OAuth issuer protecting a virtual MCP server.
+type MCPOAuthConfig struct {
+	Issuer   string   `json:"issuer"`
+	Audience string   `json:"audience,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
 }
 
 type Step struct {

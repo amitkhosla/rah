@@ -1,14 +1,19 @@
 ﻿package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"github.com/amitkhosla/rah/internal/studio"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/amitkhosla/rah/internal/studio"
 )
 
 func main() {
@@ -59,7 +64,26 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("RAH Studio listening on %s (gateway management: %s, targets_file: %s, store=%s, store_path=%s)", addr, *gatewayManagementURL, *targetsFile, cfg.StoreKind, cfg.StorePath)
-	log.Fatal(http.ListenAndServe(addr, srv.Handler()))
+	httpSrv := &http.Server{
+		Addr:         addr,
+		Handler:      srv.Handler(),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("studio: server error: %v", err)
+			stop()
+		}
+	}()
+	<-sigCtx.Done()
+	log.Printf("studio: shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
 }
 
 func envInt(name string, fallback int) int {

@@ -1600,7 +1600,9 @@ func (s *Server) deployHandler(w http.ResponseWriter, r *http.Request) {
 		actor = sess.Username
 	}
 	go func() {
-		_ = s.auditStore.Append(context.Background(), AuditRecord{
+		auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer auditCancel()
+		_ = s.auditStore.Append(auditCtx, AuditRecord{
 			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 			Actor: actor, Action: "deploy", ResourceType: "release",
 			ResourceID: rec.ReleaseID, Status: "success",
@@ -1825,7 +1827,9 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 			status = "failure"
 		}
 		go func() {
-			_ = s.auditStore.Append(context.Background(), AuditRecord{
+			auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer auditCancel()
+			_ = s.auditStore.Append(auditCtx, AuditRecord{
 				ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 				Actor: actor, Action: "sync", ResourceType: "flow",
 				Status: status, Summary: actor + " synced flows",
@@ -1849,7 +1853,9 @@ func (s *Server) syncProxy(w http.ResponseWriter, r *http.Request) {
 		status = "failure"
 	}
 	go func() {
-		_ = s.auditStore.Append(context.Background(), AuditRecord{
+		auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer auditCancel()
+		_ = s.auditStore.Append(auditCtx, AuditRecord{
 			ID: fmt.Sprintf("%d", time.Now().UnixNano()), Timestamp: time.Now().UTC(),
 			Actor: actor, Action: "sync", ResourceType: "flow",
 			Status: status, Summary: actor + " synced flows",
@@ -3593,7 +3599,9 @@ func (s *Server) recordingProxy(w http.ResponseWriter, r *http.Request, targetPa
 		resourceID = parts[len(parts)-1]
 	}
 	go func() {
-		_ = s.auditStore.Append(context.Background(), AuditRecord{
+		auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer auditCancel()
+		_ = s.auditStore.Append(auditCtx, AuditRecord{
 			ID:           fmt.Sprintf("%d", time.Now().UnixNano()),
 			Timestamp:    time.Now().UTC(),
 			Actor:        actor,

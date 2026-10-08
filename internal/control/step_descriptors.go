@@ -2141,6 +2141,11 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, XMLStepDescriptors()...)
 	base = append(base, ConvertStepDescriptors()...)
 	base = append(base, CircuitControlStepDescriptors()...)
+	base = append(base, GuardrailStepDescriptors()...)
+	base = append(base, AgentStateStepDescriptors()...)
+	base = append(base, AgentTaskStepDescriptors()...)
+	base = append(base, A2AStepDescriptors()...)
+	base = append(base, A2AServeStepDescriptors()...)
 	return base
 }
 

@@ -139,17 +139,24 @@ func getMCPServeClient(baseURL string, timeoutMs int) *http.Client {
 
 // â"€â"€ tools/list cache for mcp_all sources â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+// mcpServCacheKey scopes the tools cache by tenant and server alias.
+type mcpServCacheKey struct {
+	tenantID uint16
+	alias    string
+}
+
 type mcpServCachedTools struct {
 	tools     []mcpServRawTool
 	expiresAt time.Time
 }
 
-var mcpServeToolsCache sync.Map // key: serverAlias â†’ *mcpServCachedTools
+var mcpServeToolsCache sync.Map // key: mcpServCacheKey â†’ *mcpServCachedTools
 
 // fetchExternalTools calls tools/list on an external MCP server, with 60s caching.
-func fetchExternalTools(alias, serverURL, apiKey string, timeoutMs int) ([]mcpServRawTool, error) {
+func fetchExternalTools(tenantID uint16, alias, serverURL, apiKey string, timeoutMs int) ([]mcpServRawTool, error) {
 	now := time.Now()
-	if v, ok := mcpServeToolsCache.Load(alias); ok {
+	key := mcpServCacheKey{tenantID, alias}
+	if v, ok := mcpServeToolsCache.Load(key); ok {
 		c := v.(*mcpServCachedTools)
 		if now.Before(c.expiresAt) {
 			return c.tools, nil
@@ -207,7 +214,7 @@ func fetchExternalTools(alias, serverURL, apiKey string, timeoutMs int) ([]mcpSe
 	}
 
 	// Cache for 60 seconds.
-	mcpServeToolsCache.Store(alias, &mcpServCachedTools{
+	mcpServeToolsCache.Store(key, &mcpServCachedTools{
 		tools:     tools,
 		expiresAt: now.Add(60 * time.Second),
 	})
@@ -324,7 +331,7 @@ func ServeMCP(cfg ServeMCPConfig) engine.Instruction {
 			case "notifications/initialized":
 				mcpServWriteResult(w, req.ID, map[string]any{})
 			case "tools/list":
-				mcpServHandleToolsList(w, req, def, cfg, timeoutMs)
+				mcpServHandleToolsList(w, req, def, cfg, timeoutMs, ctx.TenantID)
 			case "tools/call":
 				mcpServHandleToolsCall(w, req, def, cfg, timeoutMs, ctx)
 			default:
@@ -364,6 +371,7 @@ func mcpServHandleToolsList(
 	def mcpreg.VirtualMCPServerDef,
 	cfg ServeMCPConfig,
 	timeoutMs int,
+	tenantID uint16,
 ) {
 	type toolEntry struct {
 		Name        string          `json:"name"`
@@ -405,7 +413,7 @@ func mcpServHandleToolsList(
 			if !ok {
 				continue
 			}
-			extTools, err := fetchExternalTools(src.ServerAlias, serverCfg.URL, apiKey, timeoutMs)
+			extTools, err := fetchExternalTools(tenantID, src.ServerAlias, serverCfg.URL, apiKey, timeoutMs)
 			if err != nil || len(extTools) == 0 {
 				continue
 			}

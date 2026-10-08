@@ -208,6 +208,9 @@ func (s *ManagementServer) promoteAppRelease(w http.ResponseWriter, r *http.Requ
 	rel.Active = true
 	rel.Channel = req.Channel
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Read current active version (if any) and deactivate
 	activeKey := fmt.Sprintf("release:%s:active:%s", appName, req.Channel)
 	if currentActiveData, ok, _ := s.dataStore.GetGlobal(ctx, config.DomainApps, activeKey); ok {
@@ -216,19 +219,29 @@ func (s *ManagementServer) promoteAppRelease(w http.ResponseWriter, r *http.Requ
 			activeRel.Active = false
 			if oldData, err := json.Marshal(activeRel); err == nil {
 				oldKey := fmt.Sprintf("release:%s:%s", appName, activeRel.Version)
-				_ = s.dataStore.PutGlobal(ctx, config.DomainApps, oldKey, oldData)
+				if err := s.dataStore.PutGlobal(ctx, config.DomainApps, oldKey, oldData); err != nil {
+					http.Error(w, "deactivate old release: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 	}
 
 	// Store promoted version as active
-	if newData, err := json.Marshal(rel); err == nil {
-		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, releaseKey, newData)
+	newData, err := json.Marshal(rel)
+	if err != nil {
+		http.Error(w, "marshal release: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.dataStore.PutGlobal(ctx, config.DomainApps, releaseKey, newData); err != nil {
+		http.Error(w, "store release: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// Store pointer to active version
-	if ptrData, err := json.Marshal(rel); err == nil {
-		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, activeKey, ptrData)
+	if err := s.dataStore.PutGlobal(ctx, config.DomainApps, activeKey, newData); err != nil {
+		http.Error(w, "store active pointer: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -270,6 +283,9 @@ func (s *ManagementServer) rollbackAppRelease(w http.ResponseWriter, r *http.Req
 	rel.Active = true
 	rel.Channel = req.Channel
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Read current active version (if any) and deactivate
 	activeKey := fmt.Sprintf("release:%s:active:%s", appName, req.Channel)
 	if currentActiveData, ok, _ := s.dataStore.GetGlobal(ctx, config.DomainApps, activeKey); ok {
@@ -278,19 +294,29 @@ func (s *ManagementServer) rollbackAppRelease(w http.ResponseWriter, r *http.Req
 			activeRel.Active = false
 			if oldData, err := json.Marshal(activeRel); err == nil {
 				oldKey := fmt.Sprintf("release:%s:%s", appName, activeRel.Version)
-				_ = s.dataStore.PutGlobal(ctx, config.DomainApps, oldKey, oldData)
+				if err := s.dataStore.PutGlobal(ctx, config.DomainApps, oldKey, oldData); err != nil {
+					http.Error(w, "deactivate old release: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 	}
 
 	// Store rollback version as active
-	if newData, err := json.Marshal(rel); err == nil {
-		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, releaseKey, newData)
+	newData, err := json.Marshal(rel)
+	if err != nil {
+		http.Error(w, "marshal release: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.dataStore.PutGlobal(ctx, config.DomainApps, releaseKey, newData); err != nil {
+		http.Error(w, "store release: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// Store pointer to active version
-	if ptrData, err := json.Marshal(rel); err == nil {
-		_ = s.dataStore.PutGlobal(ctx, config.DomainApps, activeKey, ptrData)
+	if err := s.dataStore.PutGlobal(ctx, config.DomainApps, activeKey, newData); err != nil {
+		http.Error(w, "store active pointer: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
