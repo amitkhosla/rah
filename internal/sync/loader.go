@@ -749,13 +749,38 @@ func processAppProtocols(result *LoadResult) {
 	}
 
 	for _, protocol := range result.Bundle.AppProtocols {
-		// Process MCP protocol if present and not being deleted
-		if protocol.MCP != nil && protocol.Action != "delete" {
+		if protocol.Action == "delete" {
+			if !isValidAppName(protocol.AppName) {
+				continue
+			}
+			appName := protocol.AppName
+			// Remove all derived A2A flows and APIs.
+			result.Bundle.Flows = append(result.Bundle.Flows,
+				control.FlowUpdate{Name: "__a2a_serve_" + appName, Action: "delete"},
+				control.FlowUpdate{Name: "__a2a_card_" + appName, Action: "delete"},
+				control.FlowUpdate{Name: "__oauth_meta_" + appName, Action: "delete"},
+			)
+			result.Bundle.Apis = append(result.Bundle.Apis,
+				control.ApiUpdate{Name: "__a2a_serve_api_" + appName, Action: "delete"},
+				control.ApiUpdate{Name: "__a2a_card_api_" + appName, Action: "delete"},
+				control.ApiUpdate{Name: "__oauth_meta_api_" + appName, Action: "delete"},
+			)
+			// Remove derived MCP virtual server if one was configured.
+			if protocol.MCP != nil && protocol.MCP.ServerName != "" {
+				result.Bundle.VirtualMCPServers = append(result.Bundle.VirtualMCPServers,
+					mcpreg.VirtualMCPServerDef{Name: protocol.MCP.ServerName, Action: "delete"},
+				)
+			}
+			continue
+		}
+
+		// Process MCP protocol if present
+		if protocol.MCP != nil {
 			processMCPProtocol(protocol, result)
 		}
 
-		// Process A2A protocol if present and not being deleted
-		if protocol.A2A != nil && protocol.Action != "delete" {
+		// Process A2A protocol if present
+		if protocol.A2A != nil {
 			processA2AProtocol(protocol, result)
 		}
 	}
@@ -767,7 +792,7 @@ func isValidAppName(name string) bool {
 		return false
 	}
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			return false
 		}
 	}
@@ -928,8 +953,13 @@ func processA2AProtocol(protocol control.AppProtocolUpdate, result *LoadResult) 
 	skillRoutesJSON, _ := json.Marshal(skillRoutes)
 
 	// Build agent card JSON
+	agentCardURL := basePath + "/a2a"
+	if protocol.A2A.URL != "" {
+		agentCardURL = protocol.A2A.URL
+	}
 	agentCardData := map[string]any{
 		"name":    protocol.AppName,
+		"url":     agentCardURL,
 		"version": "1.0",
 		"capabilities": map[string]bool{
 			"streaming":         false,

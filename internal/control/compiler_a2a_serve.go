@@ -30,10 +30,13 @@ func (c *Compiler) compileServeA2A(step StepConfig) error {
 		skillRoutes = make(map[string]string)
 	}
 
-	// Resolve gateway base URL.
+	// Resolve gateway base URL. Use a lazy getter so Bootstrap-compiled flows
+	// still work even when compiler.GatewayBase is assigned after Bootstrap runs.
 	gatewayBase := step.Input["gateway_base"]
+	var gatewayBaseFunc func() string
 	if gatewayBase == "" {
-		gatewayBase = c.GatewayBase
+		compiler := c
+		gatewayBaseFunc = func() string { return compiler.GatewayBase }
 	}
 
 	// Resolve timeout.
@@ -45,9 +48,10 @@ func (c *Compiler) compileServeA2A(step StepConfig) error {
 	}
 
 	cfg := steps.ServeA2AConfig{
-		SkillRoutes: skillRoutes,
-		GatewayBase: gatewayBase,
-		TimeoutMs:   timeoutMs,
+		SkillRoutes:     skillRoutes,
+		GatewayBase:     gatewayBase,
+		GatewayBaseFunc: gatewayBaseFunc,
+		TimeoutMs:       timeoutMs,
 	}
 	c.GlobalTable = append(c.GlobalTable, steps.ServeA2A(cfg))
 	return nil

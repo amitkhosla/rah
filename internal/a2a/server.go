@@ -66,7 +66,7 @@ func (s *A2AServer) handleTaskSend(w http.ResponseWriter, r *http.Request, req J
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		data, _ := json.Marshal(task)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 		if fl, ok := w.(http.Flusher); ok {
 			fl.Flush()
 		}

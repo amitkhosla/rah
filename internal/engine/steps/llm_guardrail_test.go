@@ -9,22 +9,6 @@ import (
 	"github.com/amitkhosla/rah/internal/engine"
 )
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-func guardrailCtx(resultSlot int, content string) *testGuardrailCtx {
-	ctx := newTestContext()
-	if resultSlot >= 0 && resultSlot < len(ctx.ByteSlots) {
-		ctx.ByteSlots[resultSlot] = []byte(content)
-	}
-	return &testGuardrailCtx{ctx: ctx, resultSlot: resultSlot}
-}
-
-type testGuardrailCtx struct {
-	ctx        interface {
-		// same shape as *rctx.Context - we just embed it directly
-	}
-	resultSlot int
-}
 
 // ── 1. Noop ───────────────────────────────────────────────────────────────────
 

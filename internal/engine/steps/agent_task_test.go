@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestTaskCreate_CreatesPendingTask(t *testing.T) {
 	}
 
 	key := agentTaskKey("acme", taskID)
-	raw, found, err := store.Get(nil, agentGlobalTenant, key)
+	raw, found, err := store.Get(context.TODO(), agentGlobalTenant, key)
 	if err != nil || !found {
 		t.Fatalf("task not found in store: err=%v found=%v", err, found)
 	}
@@ -86,7 +87,7 @@ func TestTaskUpdate_ChangesStatus(t *testing.T) {
 		t.Fatalf("expected PC 1, got %d", next)
 	}
 
-	raw, found, _ := store.Get(nil, agentGlobalTenant, agentTaskKey("acme", taskID))
+	raw, found, _ := store.Get(context.TODO(), agentGlobalTenant, agentTaskKey("acme", taskID))
 	if !found {
 		t.Fatal("task not found after update")
 	}

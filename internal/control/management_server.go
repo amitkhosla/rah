@@ -287,8 +287,19 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 		}
 	}
 
+	// Read app protocols so Bootstrap re-derives virtual MCP servers and A2A flows.
+	if dsm.IsConfigured(config.DomainAppProtocols) {
+		if raw, ok, err := dsm.GetGlobal(ctx, config.DomainAppProtocols, appProtocolsKey); err == nil && ok {
+			var protocols []AppProtocolUpdate
+			if json.Unmarshal(raw, &protocols) == nil {
+				req.AppProtocols = protocols
+			}
+		}
+	}
+
 	if len(req.Flows) == 0 && len(req.Apis) == 0 &&
-		len(req.RateLimitConfigsV2) == 0 && len(req.Tiers) == 0 && len(req.UpstreamServices) == 0 {
+		len(req.RateLimitConfigsV2) == 0 && len(req.Tiers) == 0 && len(req.UpstreamServices) == 0 &&
+		len(req.AppProtocols) == 0 {
 		return nil
 	}
 
@@ -709,7 +720,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	// Process virtual MCP servers.
 	if len(req.VirtualMCPServers) > 0 && s.mcpReg != nil {
 		for _, def := range req.VirtualMCPServers {
-			s.mcpReg.UpsertServer(def)
+			if def.Action == "delete" {
+				s.mcpReg.DeleteServer(def.TenantID, def.Name)
+			} else {
+				s.mcpReg.UpsertServer(def)
+			}
 		}
 		if s.dataStore != nil {
 			persistMCPTools(s.mcpReg, s.dataStore)

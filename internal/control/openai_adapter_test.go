@@ -15,7 +15,7 @@ import (
 // given LLMConfig and returns it alongside a reference to the mux.
 func buildOpenAITestMux(llmCfg config.LLMConfig) *http.ServeMux {
 	mux := http.NewServeMux()
-	RegisterOpenAIAdapter(mux, llmCfg)
+	RegisterOpenAIAdapter(mux, func() config.LLMConfig { return llmCfg }, nil)
 	return mux
 }
 
@@ -105,7 +105,7 @@ func TestOpenAIAdapter_SystemPromptExtraction(t *testing.T) {
 			t.Logf("read upstream body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(mockOpenAIProviderResp))
+		_, _ = w.Write([]byte(mockOpenAIProviderResp))
 	}))
 	defer upstream.Close()
 
@@ -183,7 +183,7 @@ func TestOpenAIAdapter_AuthHeaderOverride(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuthHeader = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(mockOpenAIProviderResp))
+		_, _ = w.Write([]byte(mockOpenAIProviderResp))
 	}))
 	defer upstream.Close()
 

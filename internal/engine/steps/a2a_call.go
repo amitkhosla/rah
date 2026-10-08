@@ -24,9 +24,6 @@ type A2ACallConfig struct {
 	TimeoutSec int    // HTTP timeout in seconds; default 30
 }
 
-var a2aHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
-}
 
 // A2ACall returns an Instruction that sends a tasks/send JSON-RPC request
 // to a remote A2A agent and writes the result JSON into OutputSlot.
@@ -44,6 +41,23 @@ func A2ACall(cfg A2ACallConfig) engine.Instruction {
 			var msgBytes []byte
 			if cfg.InputSlot >= 0 && cfg.InputSlot < len(ctx.ByteSlots) {
 				msgBytes = ctx.ByteSlots[cfg.InputSlot]
+			}
+
+			// Inject skill hint into message so the serving side can route it.
+			if cfg.SkillID != "" {
+				if len(msgBytes) == 0 {
+					msgBytes = []byte("{}")
+				}
+				var msgMap map[string]json.RawMessage
+				if err := json.Unmarshal(msgBytes, &msgMap); err == nil {
+					if _, hasSkill := msgMap["skill"]; !hasSkill {
+						skillBytes, _ := json.Marshal(cfg.SkillID)
+						msgMap["skill"] = skillBytes
+						if merged, mergeErr := json.Marshal(msgMap); mergeErr == nil {
+							msgBytes = merged
+						}
+					}
+				}
 			}
 
 			taskID := uuid.New().String()
@@ -69,7 +83,7 @@ func A2ACall(cfg A2ACallConfig) engine.Instruction {
 				return state.PC + 1
 			}
 
-			targetURL := cfg.URL + "/"
+			targetURL := cfg.URL
 			reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 			defer cancel()
 
@@ -86,7 +100,7 @@ func A2ACall(cfg A2ACallConfig) engine.Instruction {
 				writeA2ANullResult(ctx, state, cfg.OutputSlot)
 				return state.PC + 1
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			respBody, err := io.ReadAll(resp.Body)
 			if err != nil {
 				writeA2ANullResult(ctx, state, cfg.OutputSlot)

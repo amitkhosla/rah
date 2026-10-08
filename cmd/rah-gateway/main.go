@@ -1661,12 +1661,18 @@ func main() {
 			}
 			inner := gwHandler
 			cardHandler := a2apkg.ServeAgentCard(card)
+			// /a2a must enforce the same gateway-auth middleware as all other data-plane routes.
+			// /.well-known/agent.json remains unauthenticated — it is a public discovery endpoint.
+			var a2aHandler http.Handler = a2aSrv
+			if cfgMgr.Gateway().Admin.RequireGatewayAuth {
+				a2aHandler = adminUserStore.Middleware(a2aSrv)
+			}
 			gwHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				switch req.URL.Path {
 				case "/.well-known/agent.json":
 					cardHandler(w, req)
 				case "/a2a":
-					a2aSrv.ServeHTTP(w, req)
+					a2aHandler.ServeHTTP(w, req)
 				default:
 					inner.ServeHTTP(w, req)
 				}
@@ -2390,7 +2396,7 @@ func main() {
 	control.RegisterAnthropicAdapter(mux, fmt.Sprintf("http://localhost:%d", *port))
 	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
 
-	control.RegisterOpenAIAdapter(mux, cfgMgr.Gateway().LLM)
+	control.RegisterOpenAIAdapter(mux, cfgMgr.LLM, secretsMgr)
 	log.Printf("OpenAI-compatible adapter registered at /v1/chat/completions")
 
 	mux.HandleFunc("/agent/tasks", ms.AgentTasksHandler)

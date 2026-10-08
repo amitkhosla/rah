@@ -485,6 +485,9 @@ type AppMCPProtocol struct {
 type AppA2AProtocol struct {
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	Version     string `json:"version,omitempty"     yaml:"version,omitempty"`
+	// URL is the full task endpoint URL advertised in the agent card (e.g. "https://api.acme.com/myapp/a2a").
+	// Defaults to the derived basePath+"/a2a" when empty.
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 }
 
 // MCPOAuthConfig declares the OAuth issuer protecting a virtual MCP server.

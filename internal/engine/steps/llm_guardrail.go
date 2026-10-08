@@ -217,7 +217,7 @@ func callOpenAIModeration(ctx *rctx.Context, content, endpoint, apiKey string, t
 		return false, "upstream error"
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return false, "status error"
 	}
@@ -275,7 +275,7 @@ func callBedrockGuardrail(ctx *rctx.Context, content, region, apiKey, resourceID
 		return false, "upstream error"
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return false, "status error"
 	}
@@ -314,7 +314,7 @@ func callModelArmor(ctx *rctx.Context, content, endpoint, apiKey, resourceID str
 		return false, "upstream error"
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return false, "status error"
 	}
@@ -351,7 +351,7 @@ func callWebhookGuardrail(ctx *rctx.Context, content, endpoint, apiKey string, t
 		return false, "upstream error"
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return false, "status error"
 	}

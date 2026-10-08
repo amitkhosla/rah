@@ -53,16 +53,9 @@ type openAIPassResp struct {
 }
 
 // RegisterOpenAIAdapter registers POST /v1/chat/completions on mux.
-func RegisterOpenAIAdapter(mux *http.ServeMux, llmCfg config.LLMConfig) {
-	catalog := make(map[string]config.LLMModelConfig, len(llmCfg.Models))
-	for _, m := range llmCfg.Models {
-		catalog[m.Alias] = m
-		if m.ModelID != "" && m.ModelID != m.Alias {
-			catalog[m.ModelID] = m
-		}
-	}
-	defaultAlias := llmCfg.Default
-
+// getLLM is called on every request so newly-registered models are visible immediately.
+// sm is used to resolve api_key_ref values like "env:OPENAI_KEY"; pass nil to skip resolution.
+func RegisterOpenAIAdapter(mux *http.ServeMux, getLLM func() config.LLMConfig, sm steps.SecretLoader) {
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			openAIPassError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -78,9 +71,20 @@ func RegisterOpenAIAdapter(mux *http.ServeMux, llmCfg config.LLMConfig) {
 			openAIPassError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
+
+		// Build catalog from live config so models registered via the UI are visible.
+		llmCfg := getLLM()
+		catalog := make(map[string]config.LLMModelConfig, len(llmCfg.Models))
+		for _, m := range llmCfg.Models {
+			catalog[m.Alias] = m
+			if m.ModelID != "" && m.ModelID != m.Alias {
+				catalog[m.ModelID] = m
+			}
+		}
+
 		modelAlias := req.Model
 		if modelAlias == "" {
-			modelAlias = defaultAlias
+			modelAlias = llmCfg.Default
 		}
 		mc, ok := catalog[modelAlias]
 		if !ok {
@@ -123,6 +127,10 @@ func RegisterOpenAIAdapter(mux *http.ServeMux, llmCfg config.LLMConfig) {
 		apiKey := mc.APIKeyRef
 		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 			apiKey = strings.TrimPrefix(auth, "Bearer ")
+		} else if sm != nil && apiKey != "" {
+			if resolved, resolveErr := sm.Resolve(r.Context(), apiKey); resolveErr == nil {
+				apiKey = string(resolved)
+			}
 		}
 
 		llmReq := steps.LLMRequest{

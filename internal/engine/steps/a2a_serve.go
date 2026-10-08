@@ -19,9 +19,10 @@ import (
 // Gateway dispatches tasks/send to the skill's HTTP endpoint — same pattern
 // as serve_mcp's API tool calls.
 type ServeA2AConfig struct {
-	SkillRoutes map[string]string
-	GatewayBase string
-	TimeoutMs   int
+	SkillRoutes     map[string]string
+	GatewayBase     string       // static base URL; empty means use GatewayBaseFunc
+	GatewayBaseFunc func() string // called at request time when GatewayBase is empty
+	TimeoutMs       int
 }
 
 // ── JSON-RPC 2.0 types ────────────────────────────────────────────────────────
@@ -226,7 +227,11 @@ func a2aServHandleTaskSend(
 	reqCtx, cancel := context.WithTimeout(baseCtx, time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.GatewayBase+path, bytes.NewReader(bodyBytes))
+	base := cfg.GatewayBase
+	if base == "" && cfg.GatewayBaseFunc != nil {
+		base = cfg.GatewayBaseFunc()
+	}
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+path, bytes.NewReader(bodyBytes))
 	if err != nil {
 		a2aServWriteError(w, req.ID, -32603, "dispatch error: "+err.Error())
 		return
@@ -244,7 +249,7 @@ func a2aServHandleTaskSend(
 		}
 	}
 
-	client := getA2AServeClient(cfg.GatewayBase, timeoutMs)
+	client := getA2AServeClient(base, timeoutMs)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		a2aServWriteError(w, req.ID, -32603, "skill dispatch failed: "+err.Error())
