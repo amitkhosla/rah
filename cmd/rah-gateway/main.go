@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/amitkhosla/rah/internal/apikey"
+	a2apkg "github.com/amitkhosla/rah/internal/a2a"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
@@ -41,11 +42,13 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
@@ -54,6 +57,7 @@ import (
 	"go.opentelemetry.io/otel"
 	otlpmetricgrpc "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	otlptracegrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -182,7 +186,7 @@ func main() {
 		enginesteps.SetTransportShardsPerCPU(cfg.TransportShardsPerCPU)
 	}
 
-	gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
+	gatewayCtx, gatewayCancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer gatewayCancel()
 
 	enginesteps.StartTimerWheel(gatewayCtx)
@@ -628,6 +632,7 @@ func main() {
 	log.Printf("rah-gateway started | instance=%s port=%d", fm.TxIDGen.Fingerprint(), *port)
 	compiler := control.NewCompiler(fm)
 	compiler.SecretsMgr = secretsMgr
+	compiler.DSM = dataStoreMgr
 
 	// gRPC Ã¢â‚¬â€ create registry and conn pool before Bootstrap so that grpc_call
 	// steps can resolve method descriptors at bake time (compiler.GrpcRegistry)
@@ -1271,6 +1276,10 @@ func main() {
 		})
 	}
 
+	// gatewaySrvPtr holds the HTTP server once the handler goroutine creates it,
+	// so the shutdown block at the bottom of main can drain it on SIGTERM.
+	var gatewaySrvPtr atomic.Pointer[http.Server]
+
 	// 4. The Unified Hot-Path Handler
 	go func() {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -1614,6 +1623,62 @@ func main() {
 		if cfgMgr.Gateway().Admin.RequireGatewayAuth {
 			gwHandler = adminUserStore.Middleware(handler)
 		}
+		// Extract W3C traceparent from inbound requests so OTEL spans are parented correctly.
+		// Zero-alloc when header absent — guarded by non-empty check before Extract.
+		{
+			inner := gwHandler
+			tc := propagation.TraceContext{}
+			gwHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Header.Get("Traceparent") != "" {
+					req = req.WithContext(tc.Extract(req.Context(), propagation.HeaderCarrier(req.Header)))
+				}
+				inner.ServeHTTP(w, req)
+			})
+		}
+		// A2A (Agent-to-Agent) routes: /.well-known/agent.json and POST /a2a.
+		// Enabled only when a2a_server.enabled=true in gateway config.
+		if a2aCfg := cfgMgr.Gateway().A2AServer; a2aCfg != nil && a2aCfg.Enabled {
+			card := a2apkg.AgentCard{
+				Name:        a2aCfg.Name,
+				Description: a2aCfg.Description,
+				URL:         fmt.Sprintf("http://localhost:%d/a2a", *port),
+				Version:     a2aCfg.Version,
+				Capabilities: a2apkg.Capabilities{Streaming: true},
+			}
+			for _, s := range a2aCfg.Skills {
+				card.Skills = append(card.Skills, a2apkg.Skill{
+					ID: s.ID, Name: s.Name, Description: s.Description, Tags: s.Tags,
+				})
+			}
+			a2aSrv := &a2apkg.A2AServer{
+				Card: card,
+				Send: func(ctx context.Context, params a2apkg.TaskSendParams) (*a2apkg.Task, error) {
+					return &a2apkg.Task{
+						ID:     params.ID,
+						Status: a2apkg.TaskStatus{State: "submitted"},
+					}, nil
+				},
+			}
+			inner := gwHandler
+			cardHandler := a2apkg.ServeAgentCard(card)
+			// /a2a must enforce the same gateway-auth middleware as all other data-plane routes.
+			// /.well-known/agent.json remains unauthenticated — it is a public discovery endpoint.
+			var a2aHandler http.Handler = a2aSrv
+			if cfgMgr.Gateway().Admin.RequireGatewayAuth {
+				a2aHandler = adminUserStore.Middleware(a2aSrv)
+			}
+			gwHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/.well-known/agent.json":
+					cardHandler(w, req)
+				case "/a2a":
+					a2aHandler.ServeHTTP(w, req)
+				default:
+					inner.ServeHTTP(w, req)
+				}
+			})
+			log.Printf("[a2a] server enabled: name=%q version=%q skills=%d", a2aCfg.Name, a2aCfg.Version, len(a2aCfg.Skills))
+		}
 		// Use http.Server with ConnContext to capture TCP accept time for connection
 		// setup latency tracking. Zero overhead on the hot path Ã¢â‚¬â€ runs once per TCP
 		// connection (not per request) and stores one time.Time in the context.
@@ -1639,6 +1704,7 @@ func main() {
 				return context.WithValue(ctx, connAcceptKey{}, time.Now())
 			},
 		}
+		gatewaySrvPtr.Store(srv)
 		// Optional TLS listener Ã¢â‚¬â€ started only when gateway.yaml has a tls: section
 		// with cert_file + key_file. Plain HTTP listener above is never disabled;
 		// customer opts in by configuring tls: and routing traffic accordingly.
@@ -1664,11 +1730,19 @@ func main() {
 						return context.WithValue(ctx, connAcceptKey{}, time.Now())
 					},
 				}
-				log.Fatal(tlsSrv.ListenAndServeTLS(tlsCfg.CertFile, tlsCfg.KeyFile))
+				if err := tlsSrv.ListenAndServeTLS(tlsCfg.CertFile, tlsCfg.KeyFile); err != nil && err != http.ErrServerClosed {
+					log.Printf("[gateway] TLS listener error: %v", err)
+					gatewayCancel()
+				}
 			}()
 		}
 
-		log.Fatal(srv.ListenAndServe())
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("[gateway] HTTP listener error: %v", err)
+				gatewayCancel()
+			}
+		}()
 	}()
 
 	ts := tenantregistry.NewTenantServer(regMgr)
@@ -2322,6 +2396,12 @@ func main() {
 	control.RegisterAnthropicAdapter(mux, fmt.Sprintf("http://localhost:%d", *port))
 	log.Printf("Anthropic adapter registered at /ai/v1/messages (set ANTHROPIC_BASE_URL=http://localhost:%d/ai)", *mPort)
 
+	control.RegisterOpenAIAdapter(mux, cfgMgr.LLM, secretsMgr)
+	log.Printf("OpenAI-compatible adapter registered at /v1/chat/completions")
+
+	mux.HandleFunc("/agent/tasks", ms.AgentTasksHandler)
+	mux.HandleFunc("/agent/tasks/", ms.AgentTasksHandler)
+
 	// Background GC stats logger Ã¢â‚¬â€ writes a compact [gc-stats] line to stderr
 	// every 30 seconds. Controlled by gcStatsEnabled atomic flag (togglable at runtime
 	// via PATCH /observability/config or obsCfg.GCStats.Enabled in gateway.yaml).
@@ -2367,7 +2447,24 @@ func main() {
 	}()
 
 	log.Printf("Management API running on %d", *mPort)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *mPort), adminUserStore.Middleware(mux)))
+	mgmtSrv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", *mPort),
+		Handler: adminUserStore.Middleware(mux),
+	}
+	go func() {
+		if err := mgmtSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[gateway] management listener error: %v", err)
+			gatewayCancel()
+		}
+	}()
+	<-gatewayCtx.Done()
+	log.Printf("[gateway] shutting down")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if s := gatewaySrvPtr.Load(); s != nil {
+		_ = s.Shutdown(shutdownCtx)
+	}
+	_ = mgmtSrv.Shutdown(shutdownCtx)
 }
 
 // parseMetricWindows converts a slice of duration strings (e.g. ["1m","5m","1h"])

@@ -369,6 +369,27 @@ var studioMCPTools = []mcpToolDef{
 		Description: "Promote a release version to active status in a channel",
 		InputSchema: multiParamSchema([]string{"app_name", "version"}, []string{"channel"}),
 	},
+
+	// ── App protocol configuration ───────────────────────────────────────────────
+	{
+		Name:        "set_app_protocol",
+		Description: "Configure MCP and/or A2A protocol publishing for an app. Syncs auto-derives virtual MCP servers and A2A agent flows from this config.",
+		InputSchema: bodySchema("AppProtocolUpdate JSON: {app_name, mcp: {server_name, description, auth?, extra_sources?}, a2a: {description?, version?}, action: 'upsert'}"),
+	},
+	{
+		Name:        "get_app_protocol",
+		Description: "Get the protocol configuration for a specific app.",
+		InputSchema: paramSchema("app_name", "App name to retrieve protocol config for"),
+	},
+	{
+		Name:        "delete_app_protocol",
+		Description: "Remove the protocol configuration for an app. Disables MCP and A2A publishing.",
+		InputSchema: paramSchema("app_name", "App name to remove protocol config for"),
+	},
+	{
+		Name:        "list_app_protocols",
+		Description: "List all app protocol configurations. Use get_app_protocol to retrieve a specific app's config.",
+	},
 }
 
 // toolMetaTable maps tool name → routing metadata.
@@ -429,6 +450,10 @@ var toolMetaTable = map[string]mcpToolMeta{
 	"list_app_releases":           {HTTPMethod: http.MethodGet, Path: "/apps/{app_name}/releases", PathParam: "app_name"},
 	"create_app_release":          {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases", PathParam: "app_name", BodyFields: []string{"version", "flow_names", "channel", "notes"}},
 	"promote_app_release":         {HTTPMethod: http.MethodPost, Path: "/apps/{app_name}/releases/{version}/promote", PathParams: map[string]string{"app_name": "app_name", "version": "version"}, BodyFields: []string{"channel"}},
+	"set_app_protocol":            {HTTPMethod: http.MethodPost, Path: "/ai/app-protocols", BodyParam: "body"},
+	"get_app_protocol":            {HTTPMethod: http.MethodGet, Path: "/ai/app-protocols/{app_name}", PathParam: "app_name"},
+	"delete_app_protocol":         {HTTPMethod: http.MethodDelete, Path: "/ai/app-protocols/{app_name}", PathParam: "app_name"},
+	"list_app_protocols":          {HTTPMethod: http.MethodGet, Path: "/ai/app-protocols"},
 }
 
 // ── Schema helpers ────────────────────────────────────────────────────────────

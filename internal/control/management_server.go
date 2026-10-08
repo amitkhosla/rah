@@ -287,8 +287,19 @@ func (s *ManagementServer) Bootstrap(ctx context.Context, dsm *DataStoreManager)
 		}
 	}
 
+	// Read app protocols so Bootstrap re-derives virtual MCP servers and A2A flows.
+	if dsm.IsConfigured(config.DomainAppProtocols) {
+		if raw, ok, err := dsm.GetGlobal(ctx, config.DomainAppProtocols, appProtocolsKey); err == nil && ok {
+			var protocols []AppProtocolUpdate
+			if json.Unmarshal(raw, &protocols) == nil {
+				req.AppProtocols = protocols
+			}
+		}
+	}
+
 	if len(req.Flows) == 0 && len(req.Apis) == 0 &&
-		len(req.RateLimitConfigsV2) == 0 && len(req.Tiers) == 0 && len(req.UpstreamServices) == 0 {
+		len(req.RateLimitConfigsV2) == 0 && len(req.Tiers) == 0 && len(req.UpstreamServices) == 0 &&
+		len(req.AppProtocols) == 0 {
 		return nil
 	}
 
@@ -709,7 +720,11 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	// Process virtual MCP servers.
 	if len(req.VirtualMCPServers) > 0 && s.mcpReg != nil {
 		for _, def := range req.VirtualMCPServers {
-			s.mcpReg.UpsertServer(def)
+			if def.Action == "delete" {
+				s.mcpReg.DeleteServer(def.TenantID, def.Name)
+			} else {
+				s.mcpReg.UpsertServer(def)
+			}
 		}
 		if s.dataStore != nil {
 			persistMCPTools(s.mcpReg, s.dataStore)
@@ -2234,6 +2249,40 @@ func (s *ManagementServer) EventListenersHandler(w http.ResponseWriter, r *http.
 		out = []item{}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"listeners": out})
+}
+
+// AgentTasksHandler serves GET /agent/tasks.
+// Returns a JSON array of all agent task records for the given tenant_alias query parameter.
+func (s *ManagementServer) AgentTasksHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.dataStore == nil || !s.dataStore.IsConfigured(config.DomainAgentTasks) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": []any{}})
+		return
+	}
+	tenantAlias := r.URL.Query().Get("tenant_alias")
+	prefix := "agent_task:"
+	if tenantAlias != "" {
+		prefix = "agent_task:" + tenantAlias + ":"
+	}
+	ctx := r.Context()
+	keys, err := s.dataStore.ListGlobalKeys(ctx, config.DomainAgentTasks, prefix)
+	if err != nil {
+		http.Error(w, "failed to list tasks", http.StatusInternalServerError)
+		return
+	}
+	tasks := make([]json.RawMessage, 0, len(keys))
+	for _, key := range keys {
+		data, ok, getErr := s.dataStore.GetGlobal(ctx, config.DomainAgentTasks, key)
+		if getErr != nil || !ok {
+			continue
+		}
+		tasks = append(tasks, json.RawMessage(data))
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"tasks": tasks})
 }
 
 // getStoredQueries retrieves named queries from the registry store.

@@ -28,6 +28,8 @@ func Lint(result LoadResult) []LintIssue {
 	issues = append(issues, lintRedisMultiKeySteps(result)...)
 	issues = append(issues, lintNamedQueryBatchBy(result)...)
 	issues = append(issues, lintRedisZAddScore(result)...)
+	// Protocol validation for MCP and A2A
+	issues = append(issues, lintProtocols(result)...)
 	return issues
 }
 
@@ -2585,6 +2587,165 @@ func checkRedisZAddScore(step control.StepConfig, flowName string, stepNum int, 
 }
 
 // â"€â"€â"€ Utilities â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+// â"€â"€â"€ Protocol validation: MCP and A2A expose rules â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+// lintProtocols validates expose/protocol fields on flows and app_protocol entries.
+// Rules checked:
+//   1. flow_expose_no_description: flow is exposed but has no description
+//   2. flow_expose_no_api_binding: flow.expose.as_mcp_tool is true but no API binds to it
+//   3. app_protocol_unknown_app: app_protocol references an app with no APIs
+//   4. app_protocol_mcp_no_tools: app has mcp config but no flows expose as_mcp_tool
+//   5. app_protocol_a2a_no_skills: app has a2a config but no flows expose as_a2a_skill
+//   6. app_protocol_mcp_name_conflict: mcp.server_name conflicts with an explicit virtual_mcp_servers entry
+func lintProtocols(result LoadResult) []LintIssue {
+	var issues []LintIssue
+	b := result.Bundle
+
+	// Build lookup maps for efficiency.
+	apisByAppName := make(map[string][]control.ApiUpdate)
+	for _, api := range b.Apis {
+		if api.AppName != "" {
+			apisByAppName[api.AppName] = append(apisByAppName[api.AppName], api)
+		}
+	}
+
+	flowsByAppAndExpose := make(map[string]map[string][]control.FlowUpdate)
+	for _, flow := range b.Flows {
+		if flow.Expose == nil {
+			continue
+		}
+		appName := ""
+		for _, api := range b.Apis {
+			if api.FlowName == flow.Name {
+				appName = api.AppName
+				break
+			}
+		}
+		if appName == "" {
+			appName = "default"
+		}
+		if flowsByAppAndExpose[appName] == nil {
+			flowsByAppAndExpose[appName] = make(map[string][]control.FlowUpdate)
+		}
+		if flow.Expose.AsMCPTool {
+			flowsByAppAndExpose[appName]["mcp"] = append(flowsByAppAndExpose[appName]["mcp"], flow)
+		}
+		if flow.Expose.AsA2ASkill {
+			flowsByAppAndExpose[appName]["a2a"] = append(flowsByAppAndExpose[appName]["a2a"], flow)
+		}
+	}
+
+	virtualMCPServerNames := make(map[string]bool)
+	for _, def := range b.VirtualMCPServers {
+		if def.Name != "" {
+			virtualMCPServerNames[def.Name] = true
+		}
+	}
+
+	// Rule 1: flow_expose_no_description
+	for _, flow := range b.Flows {
+		if flow.Expose != nil && (flow.Expose.AsMCPTool || flow.Expose.AsA2ASkill) && flow.Description == "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityWarning,
+				Rule:       "flow_expose_no_description",
+				File:       "",
+				Line:       0,
+				Message:    fmt.Sprintf("flow %q is exposed as MCP tool or A2A skill but has no description; tool/skill descriptions will be empty", flow.Name),
+				Suggestion: "add a description: field to the flow definition",
+			})
+		}
+	}
+
+	// Rule 2: flow_expose_no_api_binding
+	for _, flow := range b.Flows {
+		if flow.Expose != nil && flow.Expose.AsMCPTool {
+			hasBinding := false
+			for _, api := range b.Apis {
+				if api.FlowName == flow.Name {
+					hasBinding = true
+					break
+				}
+			}
+			if !hasBinding {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "flow_expose_no_api_binding",
+					File:       "",
+					Line:       0,
+					Message:    fmt.Sprintf("flow %q has expose.as_mcp_tool: true but no API in this bundle binds to it; cannot derive tool path", flow.Name),
+					Suggestion: "add an API definition that binds to this flow, or remove expose.as_mcp_tool",
+				})
+			}
+		}
+	}
+
+	// Rule 3: app_protocol_unknown_app
+	for _, proto := range b.AppProtocols {
+		if _, hasAPIs := apisByAppName[proto.AppName]; !hasAPIs && proto.AppName != "" {
+			issues = append(issues, LintIssue{
+				Severity:   SeverityError,
+				Rule:       "app_protocol_unknown_app",
+				File:       "",
+				Line:       0,
+				Message:    fmt.Sprintf("app_protocol for app %q: no APIs found for this app name in the bundle", proto.AppName),
+				Suggestion: "check that app_name matches the app_name field on your API definitions",
+			})
+		}
+	}
+
+	// Rule 4: app_protocol_mcp_no_tools
+	for _, proto := range b.AppProtocols {
+		if proto.MCP != nil {
+			exposedFlows := flowsByAppAndExpose[proto.AppName]["mcp"]
+			if len(exposedFlows) == 0 {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityWarning,
+					Rule:       "app_protocol_mcp_no_tools",
+					File:       "",
+					Line:       0,
+					Message:    fmt.Sprintf("app_protocol for app %q has mcp config but no flows expose as_mcp_tool; virtual MCP server will have no auto-derived tools", proto.AppName),
+					Suggestion: "add expose: {as_mcp_tool: true} to flows you want exposed as MCP tools",
+				})
+			}
+		}
+	}
+
+	// Rule 5: app_protocol_a2a_no_skills
+	for _, proto := range b.AppProtocols {
+		if proto.A2A != nil {
+			exposedFlows := flowsByAppAndExpose[proto.AppName]["a2a"]
+			if len(exposedFlows) == 0 {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityWarning,
+					Rule:       "app_protocol_a2a_no_skills",
+					File:       "",
+					Line:       0,
+					Message:    fmt.Sprintf("app_protocol for app %q has a2a config but no flows expose as_a2a_skill; A2A agent will have no skills", proto.AppName),
+					Suggestion: "add expose: {as_a2a_skill: true} to flows you want as A2A skills",
+				})
+			}
+		}
+	}
+
+	// Rule 6: app_protocol_mcp_name_conflict
+	for _, proto := range b.AppProtocols {
+		if proto.MCP != nil && proto.MCP.ServerName != "" {
+			if virtualMCPServerNames[proto.MCP.ServerName] {
+				issues = append(issues, LintIssue{
+					Severity:   SeverityError,
+					Rule:       "app_protocol_mcp_name_conflict",
+					File:       "",
+					Line:       0,
+					Message:    fmt.Sprintf("app_protocol for app %q: mcp.server_name %q conflicts with an explicit virtual_mcp_servers entry", proto.AppName, proto.MCP.ServerName),
+					Suggestion: "rename mcp.server_name or remove the explicit virtual_mcp_servers entry",
+				})
+			}
+		}
+	}
+
+	return issues
+}
 
 func methodOrAny(method string) string {
 	if method == "" {

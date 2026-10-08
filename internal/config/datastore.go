@@ -107,9 +107,16 @@ const (
 	// Geo-blocking — shared MaxMind GeoLite2-Country mmdb storage
 	DomainGeoData DataDomain = "geo_data"
 
+	// Agentic layer — agent session state and task tracking
+	DomainAgentState DataDomain = "agent_state"
+	DomainAgentTasks DataDomain = "agent_tasks"
+
 	// Hot-path security — optional; skip gracefully if not bound
 	DomainDPoPJTI            DataDomain = "dpop_jti"            // DPoP proof JTI replay prevention
 	DomainIntrospectionCache DataDomain = "introspection_cache" // token introspection response cache
+
+	// App protocols — per-app MCP/A2A protocol config for Studio persistence and gateway serving
+	DomainAppProtocols DataDomain = "app_protocols"
 )
 
 var requiredDomains = []DataDomain{

@@ -646,6 +646,29 @@ type EventListenerConfig struct {
 	BatchPayloadVar string            `json:"batch_payload_var,omitempty" yaml:"batch_payload_var,omitempty"`
 }
 
+// A2ASkillConfig describes one skill exposed by the A2A agent card.
+type A2ASkillConfig struct {
+	ID          string   `yaml:"id"                    json:"id"`
+	Name        string   `yaml:"name"                  json:"name"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Tags        []string `yaml:"tags,omitempty"        json:"tags,omitempty"`
+}
+
+// A2AAuthConfig holds authentication settings for the A2A server endpoint.
+type A2AAuthConfig struct {
+	BearerToken string `yaml:"bearer_token,omitempty" json:"bearer_token,omitempty"`
+}
+
+// A2AServerConfig enables and configures the Agent-to-Agent (A2A) protocol endpoint.
+type A2AServerConfig struct {
+	Enabled     bool             `yaml:"enabled"               json:"enabled"`
+	Name        string           `yaml:"name"                  json:"name"`
+	Description string           `yaml:"description,omitempty" json:"description,omitempty"`
+	Version     string           `yaml:"version,omitempty"     json:"version,omitempty"`
+	Skills      []A2ASkillConfig `yaml:"skills,omitempty"      json:"skills,omitempty"`
+	Auth        A2AAuthConfig    `yaml:"auth,omitempty"        json:"auth,omitempty"`
+}
+
 type GatewayConfig struct {
 	Layout           GlobalLayout                        `json:"layout"                   yaml:"layout"`
 	DataStore        DataStoreConfig                     `json:"datastore"                yaml:"datastore"`
@@ -679,6 +702,7 @@ type GatewayConfig struct {
 	MessagingPublishers []PublisherConfig                   `json:"messaging_publishers,omitempty"  yaml:"messaging_publishers,omitempty"`
 	EventListeners      []EventListenerConfig               `json:"event_listeners,omitempty"       yaml:"event_listeners,omitempty"`
 	SFTPConnectors      []SFTPConnectorConfig               `json:"sftp_connectors,omitempty"       yaml:"sftp_connectors,omitempty"`
+	A2AServer           *A2AServerConfig                    `json:"a2a_server,omitempty"            yaml:"a2a_server,omitempty"`
 }
 
 // ── Ingestion pipeline ───────────────────────────────────────────────────────

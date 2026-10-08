@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/engine/steps"
 	"github.com/amitkhosla/rah/internal/mcpreg"
@@ -34,6 +35,11 @@ const (
 const (
 	mcpToolsKeyAPITools        = "api_tools"
 	mcpToolsKeyVirtualServers  = "virtual_servers"
+)
+
+// persistenceKeys used in the DomainAppProtocols datastore domain.
+const (
+	appProtocolsKey = "app_protocols"
 )
 
 func writeAIOK(w http.ResponseWriter, data interface{}) {
@@ -75,6 +81,21 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 			log.Printf("[AI] failed to load persisted mcp_tools: %v", err)
 		}
 	}
+
+	// Bootstrap persisted app protocols.
+	// This will be loaded into appProtocols map on ManagementServer.
+	var appProtocols map[string]AppProtocolUpdate
+	if dsm != nil && dsm.IsConfigured(config.DomainAppProtocols) {
+		if loaded, err := loadPersistedAppProtocols(dsm); err != nil {
+			log.Printf("[AI] failed to load persisted app_protocols: %v", err)
+		} else {
+			appProtocols = loaded
+		}
+	}
+	if appProtocols == nil {
+		appProtocols = make(map[string]AppProtocolUpdate)
+	}
+	var appProtocolsMu sync.RWMutex
 
 	// LLM model routes.
 	mux.HandleFunc("/ai/llm/models", func(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +377,34 @@ func RegisterAIRoutes(mux *http.ServeMux, cfgMgr *config.Manager, rebake func(),
 				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 		})
+
+		// App Protocols CRUD routes.
+		mux.HandleFunc("/ai/app-protocols", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				appProtocolListHandler(w, r, &appProtocolsMu, appProtocols)
+			case http.MethodPost:
+				appProtocolUpsertHandler(w, r, &appProtocolsMu, appProtocols, dsm, rebake)
+			default:
+				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		})
+
+		mux.HandleFunc("/ai/app-protocols/", func(w http.ResponseWriter, r *http.Request) {
+			appName := strings.TrimPrefix(r.URL.Path, "/ai/app-protocols/")
+			if appName == "" {
+				writeAIError(w, http.StatusBadRequest, "app_name required in path")
+				return
+			}
+			switch r.Method {
+			case http.MethodGet:
+				appProtocolGetHandler(w, r, &appProtocolsMu, appProtocols, appName)
+			case http.MethodDelete:
+				appProtocolDeleteHandler(w, r, &appProtocolsMu, appProtocols, appName, dsm, rebake)
+			default:
+				writeAIError(w, http.StatusMethodNotAllowed, "method not allowed")
+			}
+		})
 	}
 }
 
@@ -616,6 +665,108 @@ func findMCPServer(cfgMgr *config.Manager, alias string) *config.MCPServerConfig
 	return nil
 }
 
+// â"€â"€â"€ App Protocol handlers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+// appProtocolUpsertHandler decodes AppProtocolUpdate from request body,
+// validates AppName is not empty, stores in memory, and persists to datastore.
+func appProtocolUpsertHandler(w http.ResponseWriter, r *http.Request, mu *sync.RWMutex, appProtocols map[string]AppProtocolUpdate, dsm *DataStoreManager, rebake func()) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
+	if err != nil {
+		writeAIError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
+		return
+	}
+	var update AppProtocolUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		writeAIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if update.AppName == "" {
+		writeAIError(w, http.StatusBadRequest, "app_name must not be empty")
+		return
+	}
+
+	mu.Lock()
+	appProtocols[update.AppName] = update
+	snapshot := make(map[string]AppProtocolUpdate, len(appProtocols))
+	for k, v := range appProtocols {
+		snapshot[k] = v
+	}
+	mu.Unlock()
+
+	log.Printf("[AI] upserted app protocol for %q", update.AppName)
+	if rebake != nil {
+		go rebake()
+	}
+
+	persistAppProtocols(snapshot, dsm)
+
+	writeAIOK(w, update)
+}
+
+// appProtocolListHandler returns JSON array of all AppProtocolUpdate entries,
+// optionally filtered by app_name query param if provided.
+func appProtocolListHandler(w http.ResponseWriter, r *http.Request, mu *sync.RWMutex, appProtocols map[string]AppProtocolUpdate) {
+	filterAppName := r.URL.Query().Get("app_name")
+
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if filterAppName != "" {
+		if proto, ok := appProtocols[filterAppName]; ok {
+			writeAIOK(w, []AppProtocolUpdate{proto})
+		} else {
+			writeAIOK(w, []AppProtocolUpdate{})
+		}
+		return
+	}
+
+	// Return all protocols as a slice
+	result := make([]AppProtocolUpdate, 0, len(appProtocols))
+	for _, proto := range appProtocols {
+		result = append(result, proto)
+	}
+	writeAIOK(w, result)
+}
+
+// appProtocolGetHandler looks up a single app protocol by name and writes it as JSON.
+func appProtocolGetHandler(w http.ResponseWriter, _ *http.Request, mu *sync.RWMutex, appProtocols map[string]AppProtocolUpdate, appName string) {
+	mu.RLock()
+	proto, ok := appProtocols[appName]
+	mu.RUnlock()
+
+	if !ok {
+		writeAIError(w, http.StatusNotFound, fmt.Sprintf("app protocol for %q not found", appName))
+		return
+	}
+	writeAIOK(w, proto)
+}
+
+// appProtocolDeleteHandler removes an app protocol entry by app_name from the map,
+// re-persists remaining entries, and returns 200 if found, 404 if not.
+func appProtocolDeleteHandler(w http.ResponseWriter, r *http.Request, mu *sync.RWMutex, appProtocols map[string]AppProtocolUpdate, appName string, dsm *DataStoreManager, rebake func()) {
+	mu.Lock()
+	if _, ok := appProtocols[appName]; !ok {
+		mu.Unlock()
+		writeAIError(w, http.StatusNotFound, fmt.Sprintf("app protocol for %q not found", appName))
+		return
+	}
+	delete(appProtocols, appName)
+	snapshot := make(map[string]AppProtocolUpdate, len(appProtocols))
+	for k, v := range appProtocols {
+		snapshot[k] = v
+	}
+	mu.Unlock()
+
+	log.Printf("[AI] deleted app protocol for %q", appName)
+	if rebake != nil {
+		go rebake()
+	}
+
+	persistAppProtocols(snapshot, dsm)
+
+	writeAIOK(w, map[string]string{"app_name": appName})
+}
+
 // â"€â"€â"€ Persistence helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 // persistAIModels writes the current model catalog to the DomainAIConfig store.
@@ -821,4 +972,60 @@ func LoadFromDatastore(ctx context.Context, dsm *DataStoreManager, reg *mcpreg.R
 	}
 
 	return nil
+}
+
+// persistAppProtocols writes the full app protocols map to the DomainAppProtocols store.
+// Errors are logged; they do not affect in-memory state.
+func persistAppProtocols(appProtocols map[string]AppProtocolUpdate, dsm *DataStoreManager) {
+	if dsm == nil || !dsm.IsConfigured(config.DomainAppProtocols) {
+		return
+	}
+
+	// Convert map to slice for JSON marshaling
+	protocols := make([]AppProtocolUpdate, 0, len(appProtocols))
+	for _, p := range appProtocols {
+		protocols = append(protocols, p)
+	}
+
+	data, err := json.Marshal(protocols)
+	if err != nil {
+		log.Printf("[AI] failed to marshal app protocols for persistence: %v", err)
+		return
+	}
+
+	if err := dsm.PutGlobal(context.Background(), config.DomainAppProtocols, appProtocolsKey, data); err != nil {
+		log.Printf("[AI] failed to persist app protocols: %v", err)
+	}
+}
+
+// loadPersistedAppProtocols reads app protocols from the datastore and returns them as a map.
+// Errors are logged; returns empty map on error.
+func loadPersistedAppProtocols(dsm *DataStoreManager) (map[string]AppProtocolUpdate, error) {
+	result := make(map[string]AppProtocolUpdate)
+
+	if dsm == nil || !dsm.IsConfigured(config.DomainAppProtocols) {
+		return result, nil
+	}
+
+	ctx := context.Background()
+	raw, ok, err := dsm.GetGlobal(ctx, config.DomainAppProtocols, appProtocolsKey)
+	if err != nil {
+		return result, fmt.Errorf("get app_protocols from datastore: %w", err)
+	}
+	if !ok {
+		// Key not found; return empty map (not an error)
+		return result, nil
+	}
+
+	var protocols []AppProtocolUpdate
+	if err := json.Unmarshal(raw, &protocols); err != nil {
+		return result, fmt.Errorf("unmarshal persisted app protocols: %w", err)
+	}
+
+	for _, p := range protocols {
+		result[p.AppName] = p
+	}
+	log.Printf("[AI] loaded %d persisted app protocol(s)", len(protocols))
+
+	return result, nil
 }
