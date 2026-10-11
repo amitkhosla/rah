@@ -85,9 +85,10 @@ func NewRedisExecStep(
 	staticCount := 0
 	slotCount := 0
 	for _, kind := range argKinds {
-		if kind == redisArgKindStatic {
+		switch kind {
+		case redisArgKindStatic:
 			staticCount++
-		} else if kind == redisArgKindSlot {
+		case redisArgKindSlot:
 			slotCount++
 		}
 	}
@@ -151,17 +152,18 @@ func (cfg *RedisExecConfig) Execute(ctx *rctx.Context, state *engine.ExecutionSt
 	staticIdx := 0
 	slotIdx := 0
 	for _, kind := range cfg.argKinds {
-		if kind == redisArgKindStatic {
+		switch kind {
+		case redisArgKindStatic:
 			args = append(args, cfg.staticArgs[staticIdx])
 			staticIdx++
-		} else if kind == redisArgKindSlot {
+		case redisArgKindSlot:
 			args = append(args, ctx.ByteSlots[cfg.slotArgs[slotIdx]])
 			slotIdx++
 		}
 	}
 
 	// Prepare context with optional timeout.
-	var cmdCtx context.Context = ctx.Request.Context()
+	cmdCtx := ctx.Request.Context()
 	var cancel context.CancelFunc
 	if cfg.timeoutMs > 0 {
 		cmdCtx, cancel = context.WithTimeout(cmdCtx, time.Duration(cfg.timeoutMs)*time.Millisecond)

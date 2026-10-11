@@ -3,19 +3,12 @@ package steps
 import (
 	"encoding/json"
 	"sort"
-	"sync"
 
 	"github.com/amitkhosla/rah/internal/engine"
 	"github.com/amitkhosla/rah/internal/rctx"
 )
 
 // NOTE: array_ops parse JSON on each call. Use for batch/background flows, not sub-ms REST hot path.
-
-// jsonArrayPool is a shared pool for []map[string]interface{} slices used by all array operations.
-var jsonArrayPool = sync.Pool{New: func() any {
-	s := make([]map[string]interface{}, 0, 256)
-	return &s
-}}
 
 // parseJSONArray unmarshals a JSON byte slice into a pooled []map[string]interface{}.
 func parseJSONArray(data []byte) ([]map[string]interface{}, error) {

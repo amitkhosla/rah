@@ -24,7 +24,7 @@ func BenchmarkArena_Append(b *testing.B) {
 		arena.Reset()
 
 		// Append a single record
-		arena.Append([]interface{}{42.5, 99.9, 0.01})
+		_ = arena.Append([]interface{}{42.5, 99.9, 0.01})
 	}
 }
 
@@ -39,7 +39,7 @@ func BenchmarkArena_Float64Read(b *testing.B) {
 
 	// Pre-fill with 100 records
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{float64(i)})
+		_ = arena.Append([]interface{}{float64(i)})
 	}
 
 	b.ReportAllocs()
@@ -62,7 +62,7 @@ func BenchmarkArena_Int64Read(b *testing.B) {
 
 	// Pre-fill with 100 records
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{int64(i)})
+		_ = arena.Append([]interface{}{int64(i)})
 	}
 
 	b.ReportAllocs()
@@ -205,8 +205,8 @@ func BenchmarkManager_CreateDrop(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		name := fmt.Sprintf("coll%d", i)
-		manager.Create(name, opts)
-		manager.Drop(name, 1, "bench")
+		_ = manager.Create(name, opts)
+		_ = manager.Drop(name, 1, "bench")
 	}
 }
 
@@ -236,7 +236,7 @@ func BenchmarkManager_AppendJSON(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		manager.AppendJSON("test", jsonData)
+		_ = manager.AppendJSON("test", jsonData)
 	}
 }
 
@@ -261,14 +261,14 @@ func BenchmarkManager_QueryAll(b *testing.B) {
 
 	// Pre-populate with 100 records
 	for i := 0; i < 100; i++ {
-		manager.AppendJSON("test", []byte(`{"price": 42.5}`))
+		_ = manager.AppendJSON("test", []byte(`{"price": 42.5}`))
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		manager.QueryAll("test", func(size int) []byte {
+		_, _ = manager.QueryAll("test", func(size int) []byte {
 			return make([]byte, 0, size)
 		})
 	}
@@ -321,7 +321,7 @@ func BenchmarkQuota_Reserve(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		tenantID := uint16(i % 100)
-		qr.Reserve(tenantID, "app", 100, 1)
+		_ = qr.Reserve(tenantID, "app", 100, 1)
 		qr.Release(tenantID, "app", 100, 1)
 	}
 }

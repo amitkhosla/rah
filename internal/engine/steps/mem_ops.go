@@ -14,7 +14,8 @@ import (
 // Pre-allocated with cap 64 to avoid heap pressure.
 var valuesPool = sync.Pool{
 	New: func() any {
-		return make([]interface{}, 0, 64)
+		s := make([]interface{}, 0, 64)
+		return &s
 	},
 }
 
@@ -182,8 +183,8 @@ func MemAppendStep(mgr *datacache.DataCacheManager, nameSlot int, valueSlots []i
 			name := string(ctx.ByteSlots[nameSlot])
 
 			// Borrow scratch slice from pool
-			vals := valuesPool.Get().([]interface{})
-			vals = vals[:0]
+			valsp := valuesPool.Get().(*[]interface{})
+			vals := (*valsp)[:0]
 
 			// Build values from ByteSlots — all arrive as byte strings, arena.Append handles coercion
 			for _, slot := range valueSlots {
@@ -199,7 +200,8 @@ func MemAppendStep(mgr *datacache.DataCacheManager, nameSlot int, valueSlots []i
 			err := mgr.AppendVals(name, vals)
 
 			// Return to pool
-			valuesPool.Put(vals)
+			*valsp = vals
+			valuesPool.Put(valsp)
 
 			if err != nil {
 				ctx.Failed = true

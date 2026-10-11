@@ -286,7 +286,7 @@ func TestArena_NaNAndInf(t *testing.T) {
 		math.Inf(1),
 		math.Inf(-1),
 		0.0,
-		-0.0,
+		0.0,
 	}
 
 	for i, val := range testValues {
@@ -378,8 +378,12 @@ func TestArena_DoubleDelete(t *testing.T) {
 	a := &Arena{Schema: schema, Cap: 4, buf: make([]byte, schema.BufSize)}
 	a.freeRows = make([]uint32, 0, 4)
 
-	a.Append([]interface{}{1.0})
-	a.Append([]interface{}{2.0})
+	if err := a.Append([]interface{}{1.0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Append([]interface{}{2.0}); err != nil {
+		t.Fatal(err)
+	}
 	// LiveCount should be 2
 	if a.LiveCount.Load() != 2 {
 		t.Fatalf("expected LiveCount=2, got %d", a.LiveCount.Load())

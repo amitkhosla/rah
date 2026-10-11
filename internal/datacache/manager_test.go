@@ -218,7 +218,9 @@ func TestManager_AppendVals(t *testing.T) {
 	}
 
 	var rows []map[string]interface{}
-	json.Unmarshal(result, &rows)
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
 
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
@@ -323,7 +325,9 @@ func TestManager_AppendJSONMissingFields(t *testing.T) {
 	}
 
 	var rows []map[string]interface{}
-	json.Unmarshal(result, &rows)
+	if err := json.Unmarshal(result, &rows); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
 
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
@@ -381,7 +385,9 @@ func TestManager_MultipleCollections(t *testing.T) {
 	}
 
 	// Drop one and verify the other still exists
-	manager.Drop("col1", 1, "app1")
+	if err := manager.Drop("col1", 1, "app1"); err != nil {
+		t.Fatalf("Drop failed: %v", err)
+	}
 
 	_, err = manager.Get("col1")
 	if err != ErrCollectionNotFound {
