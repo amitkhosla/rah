@@ -2146,6 +2146,7 @@ func AllStepDescriptors() []StepDescriptor {
 	base = append(base, AgentTaskStepDescriptors()...)
 	base = append(base, A2AStepDescriptors()...)
 	base = append(base, A2AServeStepDescriptors()...)
+	base = append(base, MemStepDescriptors()...)
 	return base
 }
 

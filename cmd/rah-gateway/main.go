@@ -10,6 +10,7 @@ import (
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datacache"
 	"github.com/amitkhosla/rah/internal/connectors/document"
 	"github.com/amitkhosla/rah/internal/connectors/messaging"
 	"github.com/amitkhosla/rah/internal/connectors/sftp"
@@ -1184,6 +1185,31 @@ func main() {
 		}
 	}()
 	compiler.VectorStores = vectorStores
+
+	// DataCache (in-process columnar arena pool) — always initialized; config controls capacity.
+	{
+		dcCfg := cfg.DataCache
+		poolSlots := dcCfg.PoolSlots
+		if poolSlots == 0 {
+			poolSlots = datacache.DefaultPoolSlots
+		}
+		maxBufBytes := dcCfg.MaxBufBytesPerSlot
+		if maxBufBytes == 0 {
+			maxBufBytes = 64 << 20 // 64 MB per slot
+		}
+		maxRecords := dcCfg.MaxRecordsPerSlot
+		if maxRecords == 0 {
+			maxRecords = 1 << 20 // 1M records
+		}
+		pool := datacache.NewArenaPool(poolSlots, maxBufBytes, maxRecords)
+		quotas := datacache.NewQuotaRegistry(maxBufBytes*int64(poolSlots), int32(poolSlots))
+		dcMgr := datacache.NewDataCacheManager(pool, quotas)
+		defer dcMgr.Close()
+		fm.DataCache = dcMgr
+		compiler.DataCacheMgr = dcMgr
+		log.Printf("[datacache] initialized: pool_slots=%d max_buf_per_slot=%dMB max_records=%d",
+			poolSlots, maxBufBytes>>20, maxRecords)
+	}
 
 	// Registry manager Ã¢â‚¬â€ created here (before the gateway goroutine) so that
 	// RegistryExec can be wired to fm before the first request arrives.

@@ -459,6 +459,24 @@ type UnifiedSyncRequest struct {
 	MessagingPublishers []config.PublisherConfig         `json:"messaging_publishers,omitempty"`
 	StorageProviders    []storage.StorageProviderConfig  `json:"storage_providers,omitempty"`
 	SFTPConnectors      []config.SFTPConnectorConfig     `json:"sftp_connectors,omitempty"`
+
+	// ArenaConfigs declares named DataCache collections to pre-create at sync time.
+	ArenaConfigs []ArenaSyncDef `json:"arena_configs,omitempty"`
+}
+
+// ArenaSyncDef declares a named DataCache collection to create at deploy time.
+type ArenaSyncDef struct {
+	Name       string            `json:"name"`
+	Fields     map[string]string `json:"fields,omitempty"`     // field name → type (float64, int64, enum, string:<n>)
+	Capacity   int               `json:"capacity,omitempty"`   // initial record capacity (default 1024)
+	MaxCap     int               `json:"max_cap,omitempty"`    // max capacity for auto-growth
+	Growth     string            `json:"growth,omitempty"`     // "auto" (default) or "fixed"
+	Access     string            `json:"access,omitempty"`     // "read_write" (default) or "read_only"
+	TTLSec     int               `json:"ttl_sec,omitempty"`    // 0 = no expiry
+	TenantID   uint16            `json:"tenant_id,omitempty"`  // 0 = platform-level (no tenant isolation)
+	App        string            `json:"app,omitempty"`        // app name for quota tracking
+	Action     string            `json:"action,omitempty"`     // "create" (default) or "drop"
+	Version    string            `json:"version,omitempty"`    // opaque schema version; re-create only when changed
 }
 
 // AppProtocolUpdate declares MCP and/or A2A protocol publishing for an app.

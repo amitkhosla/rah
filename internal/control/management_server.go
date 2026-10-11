@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/connectors/document"
+	"github.com/amitkhosla/rah/internal/datacache"
 	"github.com/amitkhosla/rah/internal/connectors/messaging"
 	"github.com/amitkhosla/rah/internal/connectors/sftp"
 	"github.com/amitkhosla/rah/internal/datasource"
@@ -867,6 +868,67 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 	for _, svc := range req.UpstreamServices {
 		if data, merr := json.Marshal(svc); merr == nil {
 			pendingPersist = append(pendingPersist, persistOp{kind: "upstreamsvc_upsert", name: svc.Name, payload: data})
+		}
+	}
+
+	// Apply DataCache arena configs — create/drop named collections.
+	if len(req.ArenaConfigs) > 0 && s.Compiler.DataCacheMgr != nil {
+		for _, def := range req.ArenaConfigs {
+			if def.Name == "" {
+				continue
+			}
+			if def.Action == "drop" {
+				if err := s.Compiler.DataCacheMgr.Drop(def.Name, def.TenantID, def.App); err != nil {
+					log.Printf("[datacache] drop %q: %v", def.Name, err)
+				}
+				continue
+			}
+			fields := make([]datacache.FieldDef, 0, len(def.Fields))
+			for fname, fspec := range def.Fields {
+				fd, err := parseOneMemField(fname, fspec)
+				if err != nil {
+					log.Printf("[datacache] arena_config %q field %q: %v", def.Name, fname, err)
+					continue
+				}
+				fields = append(fields, fd)
+			}
+			capacity := def.Capacity
+			if capacity <= 0 {
+				capacity = 1024
+			}
+			var access datacache.AccessMode
+			if def.Access == "read_only" {
+				access = datacache.AccessReadOnly
+			}
+			var growth datacache.GrowthMode
+			if def.Growth == "fixed" {
+				growth = datacache.GrowthFixed
+			}
+			opts := datacache.CreateOpts{
+				TenantID: def.TenantID,
+				App:      def.App,
+				Fields:   fields,
+				Capacity: capacity,
+				MaxCap:   def.MaxCap,
+				Access:   access,
+				Growth:   growth,
+				TTLSec:   def.TTLSec,
+				Version:  def.Version,
+			}
+			if err := s.Compiler.DataCacheMgr.Create(def.Name, opts); err == datacache.ErrCollectionExists {
+				existing, getErr := s.Compiler.DataCacheMgr.Get(def.Name)
+				versionChanged := getErr != nil || (def.Version != "" && existing.Version != def.Version)
+				if versionChanged {
+					// Schema version changed: drop and recreate with the new schema.
+					_ = s.Compiler.DataCacheMgr.Drop(def.Name, def.TenantID, def.App)
+					if err2 := s.Compiler.DataCacheMgr.Create(def.Name, opts); err2 != nil {
+						log.Printf("[datacache] recreate %q: %v", def.Name, err2)
+					}
+				}
+				// Same version (or no version specified): leave existing data intact.
+			} else if err != nil {
+				log.Printf("[datacache] create %q: %v", def.Name, err)
+			}
 		}
 	}
 

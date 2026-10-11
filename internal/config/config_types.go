@@ -831,6 +831,14 @@ type InstanceConfig struct {
 	AcceptDraftExecution bool `json:"accept_draft_execution,omitempty" yaml:"accept_draft_execution,omitempty"`
 }
 
+// DataCacheConfig configures the in-process typed columnar data cache (arena pool).
+type DataCacheConfig struct {
+	PoolSlots          int   `json:"pool_slots,omitempty"          yaml:"pool_slots,omitempty"`           // max concurrent collections (default 256)
+	MaxBufBytesPerSlot int64 `json:"max_buf_bytes_per_slot,omitempty" yaml:"max_buf_bytes_per_slot,omitempty"` // arena buf per slot (default 64MB)
+	MaxRecordsPerSlot  int   `json:"max_records_per_slot,omitempty" yaml:"max_records_per_slot,omitempty"` // max records per collection (default 1M)
+	MaxTempTTLSec      int   `json:"max_temp_ttl_sec,omitempty"    yaml:"max_temp_ttl_sec,omitempty"`     // cap for anonymous (runtime-created) TTL (default 300)
+}
+
 type GlobalLayout struct {
 	MaxBytesSlots         int               `json:"max_bytes_slots,omitempty"      yaml:"max_bytes_slots,omitempty"`
 	MaxIntsSlots          int               `json:"max_ints_slots,omitempty"       yaml:"max_ints_slots,omitempty"`
@@ -840,4 +848,5 @@ type GlobalLayout struct {
 	SlotValueThreshold    int               `json:"slot_value_threshold,omitempty"    yaml:"slot_value_threshold,omitempty"`      // per-value arena limit; 0 = rctx default (256)
 	DefaultRateLimits     []RateLimitPreset `json:"default_rate_limits,omitempty"     yaml:"default_rate_limits,omitempty"`       // system-wide defaults loaded at startup
 	TransportShardsPerCPU int               `json:"transport_shards_per_cpu,omitempty" yaml:"transport_shards_per_cpu,omitempty"` // http transport pool shards per CPU; 0 = default (4)
+	DataCache             DataCacheConfig   `json:"data_cache,omitempty"              yaml:"data_cache,omitempty"`                // in-process typed data cache (mem_* steps)
 }

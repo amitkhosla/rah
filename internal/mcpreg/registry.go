@@ -64,10 +64,11 @@ func (r *Registry) GetServer(tenantID uint16, name string) (VirtualMCPServerDef,
 }
 
 // ListServers returns all definitions, optionally filtered by tenantID (0 = all).
+// Always returns a non-nil slice so JSON callers receive [] instead of null.
 func (r *Registry) ListServers(tenantID uint16) []VirtualMCPServerDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var out []VirtualMCPServerDef
+	out := make([]VirtualMCPServerDef, 0, len(r.servers))
 	for _, def := range r.servers {
 		if tenantID == 0 || def.TenantID == 0 || def.TenantID == tenantID {
 			out = append(out, def)
