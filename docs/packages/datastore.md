@@ -59,6 +59,17 @@ Provides a **pluggable key-value store abstraction** with multiple backend imple
 - **Local stores** (Disk, File): Lowest latency but limited to single instance
 - **Tenant isolation**: Achieved via tenant/prefix separation, not authentication
 
+## Connector `action` Field
+
+All connector configuration types (`DataSourceConfig`, `DocumentConnectorConfig`, `PublisherConfig`, `SFTPConnectorConfig`) carry an `action` field used when syncing connectors via bundles or the management API:
+
+| Value | Behaviour |
+|-------|-----------|
+| `upsert` | Create the connector if it does not exist; update it if it does. The gateway hot-reloads the connector pool — no restart required. |
+| `delete` | Remove the connector and release all pooled connections. |
+
+The `action` field is meaningful only in sync/management API payloads. It is ignored in static gateway config files.
+
 ## Store Wrappers (Middleware Decorators)
 
 Store wrappers layer additional functionality on top of any backend without coupling to specific implementations.

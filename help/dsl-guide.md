@@ -161,6 +161,52 @@ key = load_secret("aws://my-secret-name")
 
 ---
 
+## Database Iteration (db_foreach)
+
+`db_foreach` runs a SQL SELECT, reads all rows into an in-memory binary buffer (releasing the DB connection immediately), then iterates row-by-row binding named columns into slots. Use it wherever `db_query` + loop would require JSON round-trips.
+
+```
+db_foreach(key: trading_db, value: "SELECT id, name, balance FROM accounts WHERE active = true") {
+  bind: { id: acc_id, name: acc_name, balance: acc_balance }
+  # body executes once per row; acc_id, acc_name, acc_balance are filled
+  resp = http.post(url: "https://internal/notify", body_slot: acc_id)
+}
+```
+
+**Column bindings** (`bind`) map SQL column names to slot names. Only listed columns are extracted — unbound columns are ignored.
+
+Use `bind_json` inside the loop body to unpack JSON stored in a column:
+
+```
+db_foreach(key: catalogue_db, value: "SELECT id, metadata FROM products") {
+  bind: { id: prod_id, metadata: meta_raw }
+  sku  = bind_json(variable: meta_raw, path: "sku")
+  tier = bind_json(variable: meta_raw, path: "pricing.tier")
+}
+```
+
+---
+
+## SFTP File Operations
+
+`sftp_get`, `sftp_put`, `sftp_list`, and `sftp_delete` interact with SFTP servers configured under `sftp_connectors`. No client code or shell commands needed.
+
+```
+# Download a file into a slot
+sftp_get(connector: reports_sftp, path: "/exports/daily.csv", as: csv_data)
+
+# Upload slot contents to a remote path
+sftp_put(connector: reports_sftp, path: "/imports/upload.csv", slot: csv_data)
+
+# List a remote directory (returns JSON array of filenames)
+files = sftp_list(connector: reports_sftp, path: "/exports/")
+
+# Delete a remote file
+sftp_delete(connector: reports_sftp, path: "/exports/old.csv")
+```
+
+---
+
 ## AI / LLM Instructions
 
 ```
