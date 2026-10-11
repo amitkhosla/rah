@@ -83,7 +83,7 @@ func BenchmarkArena_StringRead(b *testing.B) {
 
 	// Pre-fill with 100 records
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{"benchmark"})
+		_ = arena.Append([]interface{}{"benchmark"})
 	}
 
 	b.ReportAllocs()
@@ -104,7 +104,7 @@ func BenchmarkArena_EnumRead(b *testing.B) {
 
 	// Pre-fill with 100 records
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{uint8(i % 256)})
+		_ = arena.Append([]interface{}{uint8(i % 256)})
 	}
 
 	b.ReportAllocs()
@@ -130,7 +130,7 @@ func BenchmarkArena_MultiFieldAppend(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		arena.Reset()
-		arena.Append([]interface{}{
+		_ = arena.Append([]interface{}{
 			49.99,
 			int64(42),
 			"product",
@@ -149,7 +149,7 @@ func BenchmarkArena_Tombstone(b *testing.B) {
 
 	// Pre-fill with 100 records
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{float64(i)})
+		_ = arena.Append([]interface{}{float64(i)})
 	}
 
 	b.ReportAllocs()
@@ -170,7 +170,7 @@ func BenchmarkArena_TombstoneCheck(b *testing.B) {
 
 	// Pre-fill with 100 records, delete half of them
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{float64(i)})
+		_ = arena.Append([]interface{}{float64(i)})
 		if i%2 == 0 {
 			arena.Delete(i)
 		}
@@ -301,7 +301,7 @@ func BenchmarkPool_SortBy(b *testing.B) {
 
 	// Pre-fill with 100 records in reverse order
 	for i := 99; i >= 0; i-- {
-		arena.Append([]interface{}{float64(i)})
+		_ = arena.Append([]interface{}{float64(i)})
 	}
 
 	b.ReportAllocs()
@@ -343,7 +343,7 @@ func BenchmarkArena_Parallel(b *testing.B) {
 			if int(arena.Size.Load()) >= arena.Cap {
 				arena.Reset()
 			}
-			arena.Append([]interface{}{42.5, 99.9, 0.01})
+			_ = arena.Append([]interface{}{42.5, 99.9, 0.01})
 		}
 	})
 }
@@ -358,7 +358,7 @@ func BenchmarkArena_ParallelRead(b *testing.B) {
 
 	// Pre-fill
 	for i := 0; i < 100; i++ {
-		arena.Append([]interface{}{float64(i)})
+		_ = arena.Append([]interface{}{float64(i)})
 	}
 
 	b.ReportAllocs()

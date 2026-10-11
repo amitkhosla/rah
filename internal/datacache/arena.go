@@ -3,6 +3,7 @@ package datacache
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -94,10 +95,7 @@ func (a *Arena) SetStringAt(col, i int, v []byte) {
 	}
 
 	// Copy as much as fits
-	copyLen := len(v)
-	if copyLen > r.Stride {
-		copyLen = r.Stride
-	}
+	copyLen := min(len(v), r.Stride)
 	copy(slot[:copyLen], v)
 }
 
@@ -108,12 +106,7 @@ func (a *Arena) IsLive(i int) bool {
 	}
 	a.freeMu.RLock()
 	defer a.freeMu.RUnlock()
-	for _, del := range a.freeRows {
-		if uint32(i) == del {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(a.freeRows, uint32(i))
 }
 
 // Delete marks row i as deleted, adds it to the free list for reuse, and decrements LiveCount.
@@ -123,11 +116,9 @@ func (a *Arena) Delete(i int) {
 		return
 	}
 	a.freeMu.Lock()
-	for _, del := range a.freeRows {
-		if del == uint32(i) {
-			a.freeMu.Unlock()
-			return // already deleted
-		}
+	if slices.Contains(a.freeRows, uint32(i)) {
+		a.freeMu.Unlock()
+		return
 	}
 	a.freeRows = append(a.freeRows, uint32(i))
 	a.freeMu.Unlock()
@@ -157,7 +148,7 @@ func (a *Arena) allocRows(n int) ([]uint32, error) {
 			a.freeMu.Unlock()
 			return nil, ErrArenaFull
 		}
-		for i := 0; i < newNeeded; i++ {
+		for i := range newNeeded {
 			rows[reused+i] = uint32(oldSize + i)
 		}
 		a.Size.Store(int32(oldSize + newNeeded))
@@ -169,7 +160,7 @@ func (a *Arena) allocRows(n int) ([]uint32, error) {
 }
 
 // writeRow writes the given values to row r without modifying Size, LiveCount, or freeRows.
-func (a *Arena) writeRow(r int, vals []interface{}) error {
+func (a *Arena) writeRow(r int, vals []any) error {
 	if len(vals) != len(a.Schema.Fields) {
 		return fmt.Errorf("datacache: expected %d values, got %d", len(a.Schema.Fields), len(vals))
 	}
@@ -185,18 +176,26 @@ func (a *Arena) writeRow(r int, vals []interface{}) error {
 			a.SetFloat64(i, r, fv)
 
 		case FieldInt64:
-			iv, ok := v.(int64)
-			if !ok {
+			switch vt := v.(type) {
+			case int64:
+				a.SetInt64(i, r, vt)
+			case float64:
+				a.SetInt64(i, r, int64(vt))
+			default:
 				return ErrBadType
 			}
-			a.SetInt64(i, r, iv)
 
 		case FieldEnum:
-			ev, ok := v.(uint8)
-			if !ok {
+			switch vt := v.(type) {
+			case uint8:
+				a.SetEnum(i, r, vt)
+			case float64:
+				a.SetEnum(i, r, uint8(vt))
+			case int64:
+				a.SetEnum(i, r, uint8(vt))
+			default:
 				return ErrBadType
 			}
-			a.SetEnum(i, r, ev)
 
 		case FieldStringN:
 			var sv []byte
@@ -219,7 +218,7 @@ func (a *Arena) writeRow(r int, vals []interface{}) error {
 // vals should have len(vals) == len(Schema.Fields).
 // Returns ErrArenaFull if Size >= Cap.
 // Returns ErrBadType if a value has the wrong type for its field.
-func (a *Arena) Append(vals []interface{}) error {
+func (a *Arena) Append(vals []any) error {
 	rows, err := a.allocRows(1)
 	if err != nil {
 		return err
@@ -237,9 +236,15 @@ func (a *Arena) Append(vals []interface{}) error {
 
 // AppendBatch adds multiple records to the arena in a single batch.
 // Returns ErrArenaFull if the arena cannot accommodate all records.
-func (a *Arena) AppendBatch(allVals [][]interface{}) error {
+func (a *Arena) AppendBatch(allVals [][]any) error {
 	if len(allVals) == 0 {
 		return nil
+	}
+	// Pre-validate field counts before allocating rows.
+	for i, vals := range allVals {
+		if len(vals) != len(a.Schema.Fields) {
+			return fmt.Errorf("datacache: batch row %d: expected %d values, got %d", i, len(a.Schema.Fields), len(vals))
+		}
 	}
 	rows, err := a.allocRows(len(allVals))
 	if err != nil {
@@ -247,7 +252,12 @@ func (a *Arena) AppendBatch(allVals [][]interface{}) error {
 	}
 	for i, vals := range allVals {
 		if err := a.writeRow(int(rows[i]), vals); err != nil {
-			return err
+			// Roll back all allocated rows.
+			a.freeMu.Lock()
+			a.freeRows = append(a.freeRows, rows...)
+			a.freeMu.Unlock()
+			a.LiveCount.Add(-int32(len(allVals)))
+			return fmt.Errorf("datacache: batch row %d: %w", i, err)
 		}
 	}
 	return nil

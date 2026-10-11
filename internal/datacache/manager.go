@@ -11,6 +11,7 @@ import (
 var (
 	ErrCollectionNotFound = errors.New("datacache: collection not found")
 	ErrCollectionExists   = errors.New("datacache: collection already exists")
+	ErrReadOnly           = errors.New("datacache: collection is read-only")
 )
 
 // AccessMode controls how a collection can be accessed.
@@ -38,6 +39,7 @@ type CollectionMeta struct {
 	MaxCap   int
 	QuotaKey quotaKey
 	TTLSec   int
+	Version  string // opaque schema version; re-create only when changed
 }
 
 // CreateOpts are passed to Create.
@@ -49,7 +51,8 @@ type CreateOpts struct {
 	MaxCap   int        // max capacity for GrowthAuto; ignored for GrowthFixed
 	Access   AccessMode
 	Growth   GrowthMode
-	TTLSec   int // 0 = no expiry
+	TTLSec   int    // 0 = no expiry
+	Version  string // opaque schema version tag
 }
 
 // DataCacheManager manages the lifecycle of named arena collections.
@@ -142,6 +145,7 @@ func (m *DataCacheManager) Create(name string, opts CreateOpts) error {
 		MaxCap:   opts.MaxCap,
 		QuotaKey: qk,
 		TTLSec:   opts.TTLSec,
+		Version:  opts.Version,
 	}
 
 	// Store in named map
@@ -204,6 +208,9 @@ func (m *DataCacheManager) AppendJSONBatch(name string, jsonArray []byte) error 
 	if err != nil {
 		return err
 	}
+	if meta.Access == AccessReadOnly {
+		return ErrReadOnly
+	}
 	slot := &m.pool.slots[meta.PoolIdx]
 
 	var rawRows []json.RawMessage
@@ -215,13 +222,13 @@ func (m *DataCacheManager) AppendJSONBatch(name string, jsonArray []byte) error 
 	}
 
 	// Parse all records first, then allocate rows in one shot.
-	allVals := make([][]interface{}, len(rawRows))
+	allVals := make([][]any, len(rawRows))
 	for i, raw := range rawRows {
-		var obj map[string]interface{}
+		var obj map[string]any
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			return fmt.Errorf("datacache: row %d: %w", i, err)
 		}
-		vals := make([]interface{}, len(meta.Schema.Fields))
+		vals := make([]any, len(meta.Schema.Fields))
 		for j, f := range meta.Schema.Fields {
 			v, ok := obj[f.Name]
 			if !ok {
@@ -242,7 +249,95 @@ func (m *DataCacheManager) AppendJSONBatch(name string, jsonArray []byte) error 
 		allVals[i] = vals
 	}
 
-	return slot.arena.AppendBatch(allVals)
+	err = slot.arena.AppendBatch(allVals)
+	if err == ErrArenaFull && meta.Growth == GrowthAuto {
+		if growErr := m.growCollection(name, meta); growErr == nil {
+			err = slot.arena.AppendBatch(allVals)
+		}
+	}
+	return err
+}
+
+// growCollection doubles a collection's capacity up to MaxCap.
+// It copies all existing row data column-by-column into a new buffer,
+// then atomically replaces the arena state under freeMu.
+func (m *DataCacheManager) growCollection(name string, meta *CollectionMeta) error {
+	slot := &m.pool.slots[meta.PoolIdx]
+	arena := &slot.arena
+
+	oldCap := arena.Cap
+	newCap := oldCap * 2
+	if meta.MaxCap > 0 && newCap > meta.MaxCap {
+		newCap = meta.MaxCap
+	}
+	if newCap <= oldCap {
+		return ErrArenaFull
+	}
+
+	// BakeSchema mutates FieldDef.Width in place; pass a copy to avoid aliasing.
+	fieldsCopy := append([]FieldDef(nil), meta.Schema.Fields...)
+	newSchema := BakeSchema(fieldsCopy, newCap)
+	if int64(newSchema.BufSize) > m.pool.maxBufBytes {
+		return ErrArenaFull
+	}
+
+	// Reserve additional quota for the larger buffer.
+	addBytes := int64(newSchema.BufSize - meta.Schema.BufSize)
+	if addBytes > 0 {
+		tenantID := meta.QuotaKey.TenantID
+		appEnd := 0
+		for appEnd < 32 && meta.QuotaKey.App[appEnd] != 0 {
+			appEnd++
+		}
+		app := string(meta.QuotaKey.App[:appEnd])
+		if err := m.quotas.Reserve(tenantID, app, addBytes, 0); err != nil {
+			return err
+		}
+	}
+
+	// Copy all existing row data into the new (larger) buffer column by column.
+	newBuf := make([]byte, newSchema.BufSize)
+	oldSize := int(arena.Size.Load())
+	for colIdx, oldReg := range arena.Schema.ColRegions {
+		newReg := newSchema.ColRegions[colIdx]
+		stride := oldReg.Stride
+		for row := range oldSize {
+			oldStart := oldReg.Offset + row*stride
+			newStart := newReg.Offset + row*stride
+			copy(newBuf[newStart:newStart+stride], arena.buf[oldStart:oldStart+stride])
+		}
+	}
+
+	// Grow sort indices slice if needed.
+	newIndices := slot.indices
+	if cap(newIndices) < newCap {
+		newIndices = make([]uint32, newCap)
+		copy(newIndices, slot.indices)
+	} else {
+		newIndices = newIndices[:newCap]
+	}
+
+	// Atomically replace the arena's buffer/schema/cap under freeMu.
+	arena.freeMu.Lock()
+	arena.buf = newBuf
+	arena.Cap = newCap
+	arena.Schema = newSchema
+	slot.indices = newIndices
+	arena.freeMu.Unlock()
+
+	// Publish updated metadata so future Get calls see the new schema/cap.
+	newMeta := &CollectionMeta{
+		PoolIdx:  meta.PoolIdx,
+		Schema:   newSchema,
+		Access:   meta.Access,
+		Growth:   meta.Growth,
+		MaxCap:   meta.MaxCap,
+		QuotaKey: meta.QuotaKey,
+		TTLSec:   meta.TTLSec,
+		Version:  meta.Version,
+	}
+	m.named.Store(name, newMeta)
+	return nil
 }
 
 // Close stops the TTL cleaner.

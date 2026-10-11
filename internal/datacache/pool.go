@@ -39,23 +39,13 @@ type ArenaPool struct {
 
 // NewArenaPool allocates a pool with maxSlots arena slots, each backed by
 // a maxBufBytes buffer and indices array for up to maxRecords entries.
-// All buffers and indices are pre-allocated once; Claim and Release do not allocate.
+// Buffers and indices are allocated lazily on InitSlot; Claim and Release do not allocate.
 func NewArenaPool(maxSlots int, maxBufBytes int64, maxRecords int) *ArenaPool {
 	slots := make([]poolSlot, maxSlots)
-
-	// Pre-allocate arena buffers and indices for all slots.
-	for i := range slots {
-		slots[i].arena.buf = make([]byte, maxBufBytes)
-		slots[i].indices = make([]uint32, maxRecords)
-		// liveBits is not pre-allocated; it will be lazily allocated on first use
-	}
-
-	// Create free channel with capacity maxSlots, pre-populated with all indices.
 	free := make(chan uint8, maxSlots)
-	for i := 0; i < maxSlots; i++ {
+	for i := range maxSlots {
 		free <- uint8(i)
 	}
-
 	return &ArenaPool{
 		slots:       slots,
 		free:        free,
@@ -125,9 +115,22 @@ func (p *ArenaPool) InitSlot(idx uint8, capacity int, schema Schema) {
 	// Reset freeRows from any previous reuse
 	slot.arena.freeRows = nil
 
-	// Re-slice indices to capacity and initialize to natural order (0, 1, 2, ..., capacity-1)
-	slot.indices = slot.indices[:capacity]
-	for i := 0; i < capacity; i++ {
+	// Allocate or reuse arena buffer; zero the portion this schema will use.
+	if len(slot.arena.buf) < schema.BufSize {
+		slot.arena.buf = make([]byte, schema.BufSize)
+	} else {
+		for i := range slot.arena.buf[:schema.BufSize] {
+			slot.arena.buf[i] = 0
+		}
+	}
+
+	// Allocate or reuse indices slice.
+	if cap(slot.indices) < capacity {
+		slot.indices = make([]uint32, capacity)
+	} else {
+		slot.indices = slot.indices[:capacity]
+	}
+	for i := range capacity {
 		slot.indices[i] = uint32(i)
 	}
 }

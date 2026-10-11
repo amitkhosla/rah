@@ -89,7 +89,7 @@ func (c *TTLCleaner) sweepSlots() {
 	now := time.Now().Unix()
 
 	// Iterate through all slots in the pool.
-	for slotIdx := uint8(0); slotIdx < uint8(c.pool.maxSlots); slotIdx++ {
+	for slotIdx := 0; slotIdx < c.pool.maxSlots; slotIdx++ {
 		slot := &c.pool.slots[slotIdx]
 
 		// Skip slots that are not in use.
@@ -128,7 +128,7 @@ func (c *TTLCleaner) sweepSlots() {
 		}
 
 		// Release the slot back to the pool.
-		c.pool.Release(slotIdx)
+		c.pool.Release(uint8(slotIdx))
 
 		// Log the expiry event.
 		log.Printf("datacache: TTL evicted collection=%q slot=%d tenantID=%d app=%s", collectionName, slotIdx, tenantID, app)

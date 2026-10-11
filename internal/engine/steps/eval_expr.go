@@ -49,10 +49,17 @@ func NewEvalExprStep(
 	outputSlot int,
 	outputIntSlot int,
 ) (engine.Instruction, error) {
+	// Build compile env from varNames with float64(0) placeholders.
+	// This allows expr.Compile to validate variable references at bake time.
+	compileEnv := make(map[string]interface{}, len(varNames))
+	for _, vn := range varNames {
+		compileEnv[vn] = float64(0)
+	}
+
 	// Compile the expression at bake time. Return error if syntax is invalid.
 	program, err := expr.Compile(
 		exprStr,
-		expr.Env(map[string]interface{}{}),
+		expr.Env(compileEnv),
 		expr.AsFloat64(),
 	)
 	if err != nil {
@@ -124,8 +131,9 @@ func evalExprAction(ctx *rctx.Context, state *engine.ExecutionState, cfg *EvalEx
 	ctx.ByteSlots[cfg.outputSlot] = outputBytes
 
 	// If outputIntSlot is set, write fixed-point result (×1000).
-	if cfg.outputIntSlot >= 0 && cfg.outputIntSlot < len(ctx.IntSlots) {
-		ctx.IntSlots[cfg.outputIntSlot] = int64(f * 1000)
+	// Use safe accessor for slots that may be in the overflow extension.
+	if cfg.outputIntSlot >= 0 {
+		ctx.SetInt(cfg.outputIntSlot, int64(f*1000))
 	}
 
 	// Add trace attribute if tracing is active.

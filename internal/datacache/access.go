@@ -14,15 +14,18 @@ func (m *DataCacheManager) AppendJSON(name string, jsonObj []byte) error {
 	if err != nil {
 		return err
 	}
+	if meta.Access == AccessReadOnly {
+		return ErrReadOnly
+	}
 	slot := &m.pool.slots[meta.PoolIdx]
 
-	var obj map[string]interface{}
+	var obj map[string]any
 	if err := json.Unmarshal(jsonObj, &obj); err != nil {
 		return err
 	}
 
 	// Build values slice aligned to schema fields
-	vals := make([]interface{}, len(meta.Schema.Fields))
+	vals := make([]any, len(meta.Schema.Fields))
 	for i, f := range meta.Schema.Fields {
 		v, ok := obj[f.Name]
 		if !ok {
@@ -39,17 +42,32 @@ func (m *DataCacheManager) AppendJSON(name string, jsonObj []byte) error {
 		}
 		vals[i] = v
 	}
-	return slot.arena.Append(vals)
+	appendErr := slot.arena.Append(vals)
+	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {
+		if growErr := m.growCollection(name, meta); growErr == nil {
+			appendErr = slot.arena.Append(vals)
+		}
+	}
+	return appendErr
 }
 
 // AppendVals appends one record given values in schema field order.
-func (m *DataCacheManager) AppendVals(name string, vals []interface{}) error {
+func (m *DataCacheManager) AppendVals(name string, vals []any) error {
 	meta, err := m.Get(name)
 	if err != nil {
 		return err
 	}
+	if meta.Access == AccessReadOnly {
+		return ErrReadOnly
+	}
 	slot := &m.pool.slots[meta.PoolIdx]
-	return slot.arena.Append(vals)
+	appendErr := slot.arena.Append(vals)
+	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {
+		if growErr := m.growCollection(name, meta); growErr == nil {
+			appendErr = slot.arena.Append(vals)
+		}
+	}
+	return appendErr
 }
 
 // QueryAll serializes all live (non-deleted) records to a JSON array.
@@ -75,7 +93,7 @@ func (m *DataCacheManager) QueryAll(name string, alloc func(int) []byte) ([]byte
 	} else {
 		size := int(arena.Size.Load())
 		liveIndices = make([]uint32, 0, liveCount)
-		for i := 0; i < size; i++ {
+		for i := range size {
 			if arena.IsLive(i) {
 				liveIndices = append(liveIndices, uint32(i))
 			}
@@ -136,7 +154,7 @@ func (m *DataCacheManager) FilterJSON(name string, fieldName string, op string, 
 	// Collect matching row indices
 	var matchedIndices []uint32
 	size := int(arena.Size.Load())
-	for i := 0; i < size; i++ {
+	for i := range size {
 		if !arena.IsLive(i) {
 			continue
 		}
@@ -194,7 +212,7 @@ func (m *DataCacheManager) AggregateField(name string, fieldName string, op stri
 	first := true
 
 	size := int(arena.Size.Load())
-	for i := 0; i < size; i++ {
+	for i := range size {
 		if !arena.IsLive(i) {
 			continue
 		}
@@ -303,7 +321,7 @@ func serializeArenaJSON(arena *Arena, indices []uint32, fields []FieldDef, alloc
 		row := int(rowIdx)
 
 		// Serialize one record as a JSON object
-		obj := make(map[string]interface{})
+		obj := make(map[string]any)
 		for colIdx, field := range fields {
 			switch field.Kind {
 			case FieldFloat64:
@@ -320,10 +338,11 @@ func serializeArenaJSON(arena *Arena, indices []uint32, fields []FieldDef, alloc
 		// Marshal to JSON
 		jsonBytes, _ := json.Marshal(obj)
 
-		// Ensure buffer has space
+		// Ensure buffer has space for the JSON bytes plus comma and closing bracket.
 		if pos+len(jsonBytes)+2 > len(buf) {
-			// Expand buffer
-			newBuf := alloc(len(buf) * 2)
+			needed := pos + len(jsonBytes) + 2
+			newSize := max(len(buf)*2, needed)
+			newBuf := alloc(newSize)
 			copy(newBuf, buf[:pos])
 			buf = newBuf
 		}

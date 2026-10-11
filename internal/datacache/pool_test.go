@@ -170,7 +170,7 @@ func TestPool_ResetSortIndex(t *testing.T) {
 
 	// Append values
 	for i := 0; i < 5; i++ {
-		arena.Append([]interface{}{float64(4 - i)}) // descending
+		_ = arena.Append([]interface{}{float64(4 - i)}) // descending
 	}
 
 	// Sort (ascending)
@@ -207,7 +207,7 @@ func TestPool_SortBy_Int64(t *testing.T) {
 	// Append values
 	vals := []int64{500, 100, 300, 200}
 	for _, v := range vals {
-		arena.Append([]interface{}{v})
+		_ = arena.Append([]interface{}{v})
 	}
 
 	// Sort
@@ -243,7 +243,7 @@ func TestPool_SortBy_String(t *testing.T) {
 	// Append values
 	vals := []string{"zebra", "apple", "banana"}
 	for _, v := range vals {
-		arena.Append([]interface{}{v})
+		_ = arena.Append([]interface{}{v})
 	}
 
 	// Sort

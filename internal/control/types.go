@@ -476,6 +476,7 @@ type ArenaSyncDef struct {
 	TenantID   uint16            `json:"tenant_id,omitempty"`  // 0 = platform-level (no tenant isolation)
 	App        string            `json:"app,omitempty"`        // app name for quota tracking
 	Action     string            `json:"action,omitempty"`     // "create" (default) or "drop"
+	Version    string            `json:"version,omitempty"`    // opaque schema version; re-create only when changed
 }
 
 // AppProtocolUpdate declares MCP and/or A2A protocol publishing for an app.

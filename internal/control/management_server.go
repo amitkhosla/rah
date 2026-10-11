@@ -913,13 +913,19 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				Access:   access,
 				Growth:   growth,
 				TTLSec:   def.TTLSec,
+				Version:  def.Version,
 			}
 			if err := s.Compiler.DataCacheMgr.Create(def.Name, opts); err == datacache.ErrCollectionExists {
-				// Re-sync: drop and recreate with updated schema.
-				_ = s.Compiler.DataCacheMgr.Drop(def.Name, def.TenantID, def.App)
-				if err2 := s.Compiler.DataCacheMgr.Create(def.Name, opts); err2 != nil {
-					log.Printf("[datacache] recreate %q: %v", def.Name, err2)
+				existing, getErr := s.Compiler.DataCacheMgr.Get(def.Name)
+				versionChanged := getErr != nil || (def.Version != "" && existing.Version != def.Version)
+				if versionChanged {
+					// Schema version changed: drop and recreate with the new schema.
+					_ = s.Compiler.DataCacheMgr.Drop(def.Name, def.TenantID, def.App)
+					if err2 := s.Compiler.DataCacheMgr.Create(def.Name, opts); err2 != nil {
+						log.Printf("[datacache] recreate %q: %v", def.Name, err2)
+					}
 				}
+				// Same version (or no version specified): leave existing data intact.
 			} else if err != nil {
 				log.Printf("[datacache] create %q: %v", def.Name, err)
 			}

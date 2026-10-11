@@ -516,7 +516,7 @@ func (c *Compiler) compileMemTrimOldest(step StepConfig) error {
 		Action: func(ctx *rctx.Context, state *engine.ExecutionState) int16 {
 			n := staticN
 			if nSlot >= 0 {
-				n = int(ctx.IntSlots[nSlot])
+				n = int(ctx.GetInt(nSlot))
 			}
 			if err := mgr.TrimOldest(mn.get(ctx), n); err != nil {
 				return memFail(ctx, "mem_trim_oldest failed", err)
