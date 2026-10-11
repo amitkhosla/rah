@@ -42,6 +42,7 @@ type GatewayMetrics struct {
 	TenantTopErrors        []TenantStatusCounts `json:"tenant_top_errors"`
 	CustomMetricTop        []MetricAgg          `json:"custom_metric_top"`
 	CacheStats             []CacheStat          `json:"cache_stats"`
+	DataCacheStats         []DataCacheStat      `json:"data_cache_stats"`
 }
 
 type NameLatency struct {
@@ -60,6 +61,17 @@ type CacheStat struct {
 	HitRate   float64 `json:"hit_rate"`   // 0.0—1.0
 	AvgHitNs  uint64  `json:"avg_hit_ns"` // mean store latency on a hit
 	AvgMissNs uint64  `json:"avg_miss_ns"`// mean store latency on a miss
+}
+
+// DataCacheStat tracks per-collection metrics for the in-process DataCache.
+type DataCacheStat struct {
+	CollectionName string  `json:"collection_name"`
+	TenantID       uint16  `json:"tenant_id"`
+	OpsTotal       uint64  `json:"ops_total"`
+	AvgLatNs       uint64  `json:"avg_lat_ns"`   // running average, updated atomically
+	RecordCount    int32   `json:"record_count"`
+	MemBytes       int64   `json:"mem_bytes"`
+	QuotaUsedPct   float32 `json:"quota_used_pct"` // 0.0 to 1.0
 }
 
 type TenantStatusCounts struct {
@@ -162,6 +174,16 @@ type apiStat struct {
 type metricCounter struct {
 	count uint64
 	total int64
+}
+
+// dataCacheCounter tracks per-collection metrics for the in-process DataCache.
+// Hot path: opsTotal and latTotal use atomics for zero-allocation recording.
+// Cold path: mu protects snapshot updates (RecordCount, MemBytes, QuotaUsedPct).
+type dataCacheCounter struct {
+	opsTotal atomic.Uint64
+	latTotal atomic.Int64   // nanoseconds, for running average
+	mu       sync.Mutex     // for RecordCount/MemBytes/QuotaUsedPct updates (rare)
+	snapshot DataCacheStat  // updated periodically
 }
 
 type Config struct {
@@ -285,6 +307,10 @@ type Telemetry struct {
 	// tenantNamer resolves TenantID â†’ human-readable name in async workers.
 	// Nil by default — call SetTenantNamer to wire in the registry manager.
 	tenantNamer TenantNamer
+
+	// dataCacheCounters stores per-collection DataCache metrics as string → *dataCacheCounter,
+	// keyed by collectionName. Uses sync.Map for lock-free hot-path reads after initial store.
+	dataCacheCounters sync.Map
 }
 
 func NewFromEnv() *Telemetry {
@@ -781,6 +807,105 @@ func (t *Telemetry) RecordCacheOp(name string, hit bool, durationNs int64) {
 		TimestampNs: time.Now().UnixNano(),
 	}
 	t.ingestPipeline.Emit(e)
+}
+
+// RecordDataCacheOp records a single DataCache operation (lookup).
+// collectionName is the collection being accessed (e.g., "users", "orders").
+// tenantID identifies the tenant.
+// durNs is the operation duration in nanoseconds.
+// Zero-allocation after the first call for a given collectionName (sync.Map LoadOrStore is
+// allocation-free on the hot path after initial store).
+func (t *Telemetry) RecordDataCacheOp(collectionName string, tenantID uint16, durNs int64) {
+	if !t.Enabled() || collectionName == "" {
+		return
+	}
+
+	// Load-or-store the counter for this collection. sync.Map LoadOrStore is zero-alloc on hot path.
+	val, _ := t.dataCacheCounters.LoadOrStore(collectionName, &dataCacheCounter{
+		snapshot: DataCacheStat{
+			CollectionName: collectionName,
+			TenantID:       tenantID,
+		},
+	})
+	c := val.(*dataCacheCounter)
+
+	// Atomic updates — no allocations on hot path.
+	c.opsTotal.Add(1)
+	c.latTotal.Add(durNs)
+}
+
+// UpdateDataCacheStat updates the periodic snapshot metrics for a DataCache collection.
+// Called by DataCacheManager periodically (not on hot path).
+// name is the collection name.
+// tenantID identifies the tenant.
+// records is the current record count in the collection.
+// memBytes is the memory used by the collection.
+// quotaPct is the quota usage as a fraction (0.0 to 1.0).
+func (t *Telemetry) UpdateDataCacheStat(name string, tenantID uint16, records int32, memBytes int64, quotaPct float32) {
+	if !t.Enabled() || name == "" {
+		return
+	}
+
+	// Load-or-store the counter for this collection.
+	val, _ := t.dataCacheCounters.LoadOrStore(name, &dataCacheCounter{
+		snapshot: DataCacheStat{
+			CollectionName: name,
+			TenantID:       tenantID,
+		},
+	})
+	c := val.(*dataCacheCounter)
+
+	// Lock for rare, non-hot-path updates.
+	c.mu.Lock()
+	c.snapshot.TenantID = tenantID
+	c.snapshot.RecordCount = records
+	c.snapshot.MemBytes = memBytes
+	c.snapshot.QuotaUsedPct = quotaPct
+	c.mu.Unlock()
+}
+
+// DataCacheMetrics returns aggregated DataCache metrics across all collections.
+// Ranges over dataCacheCounters, computes running averages from atomics, and returns
+// a slice of DataCacheStat. This method allocates — it's for metrics reporting, not hot path.
+func (t *Telemetry) DataCacheMetrics() []DataCacheStat {
+	if !t.Enabled() {
+		return nil
+	}
+
+	var out []DataCacheStat
+
+	// Range over sync.Map, building stats from each counter.
+	t.dataCacheCounters.Range(func(key, value any) bool {
+		c := value.(*dataCacheCounter)
+
+		// Get atomic values.
+		opsTotal := c.opsTotal.Load()
+		latTotal := c.latTotal.Load()
+
+		// Compute average latency if ops > 0.
+		var avgLatNs uint64
+		if opsTotal > 0 {
+			avgLatNs = uint64(latTotal) / opsTotal
+		}
+
+		// Lock to read periodic snapshot fields (rare, cold path).
+		c.mu.Lock()
+		stat := DataCacheStat{
+			CollectionName: c.snapshot.CollectionName,
+			TenantID:       c.snapshot.TenantID,
+			OpsTotal:       opsTotal,
+			AvgLatNs:       avgLatNs,
+			RecordCount:    c.snapshot.RecordCount,
+			MemBytes:       c.snapshot.MemBytes,
+			QuotaUsedPct:   c.snapshot.QuotaUsedPct,
+		}
+		c.mu.Unlock()
+
+		out = append(out, stat)
+		return true
+	})
+
+	return out
 }
 
 // RecordInstruction is a no-op. Per-instruction aggregation is now handled

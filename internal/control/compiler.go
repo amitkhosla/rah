@@ -11,6 +11,7 @@ import (
 	"sync"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datacache"
 	"github.com/amitkhosla/rah/internal/datastore"
 	"github.com/amitkhosla/rah/internal/datasource"
 	"github.com/amitkhosla/rah/internal/egress"
@@ -183,6 +184,7 @@ type Compiler struct {
 	DocumentConnectorMgr  *LiveDocConnMgr  // optional; enables doc_get/doc_put/doc_delete/doc_query/doc_count/doc_execute steps
 	MessagingPublisherMgr *LiveMessagingMgr // optional; enables message_publish steps
 	SFTPConnectorMgr      *LiveSFTPConnMgr  // optional; enables sftp_* steps
+	DataCacheMgr *datacache.DataCacheManager // optional; enables mem_* steps
 	GlobalTable  []engine.Instruction
 	FragmentMap  map[string]int16
 	// callInstrTargets maps the GlobalTable PC of each CALL instruction to its target fragment PC.
@@ -2931,6 +2933,31 @@ func (c *Compiler) compileStep(step StepConfig, fragments map[string][]StepConfi
 			return fmt.Errorf("cache_get_batched: %w", err)
 		}
 		c.GlobalTable = append(c.GlobalTable, steps.CacheGetBatched(keySlot, destSlot))
+
+	case "mem_create":
+		return c.compileMemCreate(step)
+	case "mem_drop":
+		return c.compileMemDrop(step)
+	case "mem_load":
+		return c.compileMemLoad(step)
+	case "mem_append":
+		return c.compileMemAppend(step)
+	case "mem_query":
+		return c.compileMemQuery(step)
+	case "mem_filter":
+		return c.compileMemFilter(step)
+	case "mem_sort":
+		return c.compileMemSort(step)
+	case "mem_aggregate":
+		return c.compileMemAggregate(step)
+	case "mem_trim_oldest":
+		return c.compileMemTrimOldest(step)
+	case "eval_expr":
+		return c.compileEvalExpr(step)
+	case "redis_exec":
+		return c.compileRedisExec(step)
+	case "array_sort":
+		return c.compileArraySort(step)
 
 	case "json_extract_emit":
 		bodySlot, err := c.getSlot(step.Variable)

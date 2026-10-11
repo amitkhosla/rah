@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"github.com/amitkhosla/rah/internal/cache"
 	"github.com/amitkhosla/rah/internal/config"
+	"github.com/amitkhosla/rah/internal/datacache"
 	"github.com/amitkhosla/rah/internal/gatewaylog"
 	mqttpool "github.com/amitkhosla/rah/internal/mqtt"
 	"github.com/amitkhosla/rah/internal/observability"
@@ -167,6 +168,9 @@ type FlowManager struct {
 	// Populated at startup from gateway config; nil when MQTT is not configured.
 	// Set on each request context via Pool.New so mqtt_publish/mqtt_call steps can access it.
 	MQTTPool *mqttpool.BrokerPool
+	// DataCache holds the in-process typed columnar data cache.
+	// Nil when DataCache is not configured. Used by mem_* steps via the Compiler.
+	DataCache *datacache.DataCacheManager
 }
 
 func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
