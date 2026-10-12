@@ -342,19 +342,19 @@ func TestMemoryStore_ListRoutingRules(t *testing.T) {
 		Environment: "production",
 	}))
 
-	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
+	require.NoError(t, store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    &tenantID2,
 		LogicalApp:  "orders",
 		ActiveApp:   "orders-v1",
 		Environment: "staging",
-	})
+	}))
 
-	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
+	require.NoError(t, store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    nil,
 		LogicalApp:  "payments",
 		ActiveApp:   "payments-v1",
 		Environment: "production",
-	})
+	}))
 
 	// List rules for "orders" — should get 2
 	ordersRules, err := store.ListRoutingRules(ctx, "orders")
