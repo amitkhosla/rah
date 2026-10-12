@@ -48,13 +48,9 @@ func (m *DataCacheManager) AppendJSON(name string, jsonObj []byte) error {
 	}
 	// Ring buffer: evict oldest live row when at window capacity.
 	if meta.WindowSize > 0 && int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
-		a := &slot.arena
-		for i := range int(a.Size.Load()) {
-			if a.IsLive(i) {
-				a.Delete(i)
-				break
-			}
-		}
+		evictIdx := int(slot.ringHead.Load()) % meta.WindowSize
+		slot.arena.Delete(evictIdx)
+		slot.ringHead.Add(1)
 	}
 	appendErr := slot.arena.Append(vals)
 	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {
@@ -81,13 +77,9 @@ func (m *DataCacheManager) AppendVals(name string, vals []any) error {
 	}
 	// Ring buffer: evict oldest live row when at window capacity.
 	if meta.WindowSize > 0 && int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
-		a := &slot.arena
-		for i := range int(a.Size.Load()) {
-			if a.IsLive(i) {
-				a.Delete(i)
-				break
-			}
-		}
+		evictIdx := int(slot.ringHead.Load()) % meta.WindowSize
+		slot.arena.Delete(evictIdx)
+		slot.ringHead.Add(1)
 	}
 	appendErr := slot.arena.Append(vals)
 	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {

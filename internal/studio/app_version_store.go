@@ -155,17 +155,17 @@ func newFileAppVersionStore(dir string) (*fileAppVersionStore, error) {
 		var fd appVersionFileData
 		if jsonErr := json.Unmarshal(data, &fd); jsonErr == nil {
 			for _, v := range fd.Versions {
-				s.inMemoryAppVersionStore.versions[v.AppName] = v
+				s.versions[v.AppName] = v
 			}
-			s.inMemoryAppVersionStore.rules = fd.Rules
+			s.rules = fd.Rules
 		}
 	}
 	return s, nil
 }
 
 func (s *fileAppVersionStore) persist() error {
-	fd := appVersionFileData{Rules: s.inMemoryAppVersionStore.rules}
-	for _, v := range s.inMemoryAppVersionStore.versions {
+	fd := appVersionFileData{Rules: s.rules}
+	for _, v := range s.versions {
 		fd.Versions = append(fd.Versions, v)
 	}
 	data, err := json.MarshalIndent(fd, "", "  ")

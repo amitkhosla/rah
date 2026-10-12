@@ -2266,7 +2266,7 @@ func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) appsHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	// Match /api/apps/{name}/versions  (GET or POST) — exact match only (len==1 means no trailing sub-path).
-	if parts := matchPath(path, "/api/apps/", "/versions"); parts != nil && len(parts) == 1 {
+	if parts := matchPath(path, "/api/apps/", "/versions"); len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
 			s.handleListVersions(w, r)

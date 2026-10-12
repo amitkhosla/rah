@@ -932,7 +932,7 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 			}
 			if err := s.Compiler.DataCacheMgr.Create(def.Name, opts); err == datacache.ErrCollectionExists {
 				existing, getErr := s.Compiler.DataCacheMgr.Get(def.Name)
-				schemaChanged := existing.WindowSize != def.WindowSize || len(existing.ComputedFields) != len(def.Computed)
+				schemaChanged := existing.WindowSize != def.WindowSize || !computedSrcEqual(existing.ComputedSrc, def.Computed)
 				versionChanged := getErr != nil || (def.Version != "" && existing.Version != def.Version) || schemaChanged
 				if versionChanged {
 					// Schema version changed: drop and recreate with the new schema.
@@ -1642,6 +1642,19 @@ func mergeConstants(apiConsts, epConsts map[string]string) map[string]string {
 		merged[k] = v
 	}
 	return merged
+}
+
+// computedSrcEqual returns true if two computed-field source maps have the same keys and values.
+func computedSrcEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // bakeEndpointSchema sets InstrSchema and Counters on the most recently appended

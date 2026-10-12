@@ -19,6 +19,7 @@ type poolSlot struct {
 	ownerKey   [48]byte     // ascii "tenantID:appName\0..." for quota release
 	ttlExpUnix atomic.Int64 // unix seconds, 0 = no TTL
 	name       [128]byte    // collection name for TTL cleaner sync.Map cleanup
+	ringHead   atomic.Int32 // FIFO eviction cursor for windowed collections
 }
 
 // ArenaPool is a GC-resistant pre-allocated pool of Arena slots.
@@ -91,6 +92,7 @@ func (p *ArenaPool) Release(idx uint8) {
 	slot.ttlExpUnix.Store(0)
 	slot.ownerKey = [48]byte{}
 	slot.name = [128]byte{}
+	slot.ringHead.Store(0)
 
 	// Non-blocking send back to free channel
 	select {

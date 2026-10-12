@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/amitkhosla/rah/internal/appversion"
+	"github.com/stretchr/testify/require"
 )
 
 // TestVersionIndex_FullLifecycle tests the complete lifecycle of version routing:
@@ -239,12 +240,12 @@ func TestMemoryStore_ResolveRoute_WithDefault(t *testing.T) {
 	store := appversion.NewMemoryStore()
 
 	// Upsert versions
-	store.UpsertVersion(ctx, appversion.AppVersion{
+	require.NoError(t, store.UpsertVersion(ctx, appversion.AppVersion{
 		AppName:    "orders-v1",
 		LogicalApp: "orders",
 		Version:    "v1",
 		Status:     "active",
-	})
+	}))
 
 	// Set default rule (nil tenant)
 	err := store.UpsertRoutingRule(ctx, appversion.RoutingRule{
@@ -282,35 +283,35 @@ func TestMemoryStore_TenantOverridesDefault(t *testing.T) {
 	store := appversion.NewMemoryStore()
 
 	// Upsert versions
-	store.UpsertVersion(ctx, appversion.AppVersion{
+	require.NoError(t, store.UpsertVersion(ctx, appversion.AppVersion{
 		AppName:    "orders-v1",
 		LogicalApp: "orders",
 		Version:    "v1",
 		Status:     "active",
-	})
-	store.UpsertVersion(ctx, appversion.AppVersion{
+	}))
+	require.NoError(t, store.UpsertVersion(ctx, appversion.AppVersion{
 		AppName:    "orders-v2",
 		LogicalApp: "orders",
 		Version:    "v2",
 		Status:     "active",
-	})
+	}))
 
 	// Set default rule
-	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
+	require.NoError(t, store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    nil,
 		LogicalApp:  "orders",
 		ActiveApp:   "orders-v1",
 		Environment: "production",
-	})
+	}))
 
 	// Set tenant-5 rule
 	tenantID := uint16(5)
-	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
+	require.NoError(t, store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    &tenantID,
 		LogicalApp:  "orders",
 		ActiveApp:   "orders-v2",
 		Environment: "production",
-	})
+	}))
 
 	// Tenant-5 should resolve to orders-v2
 	resolved, _ := store.ResolveRoute(ctx, 5, "orders", "production")
@@ -334,12 +335,12 @@ func TestMemoryStore_ListRoutingRules(t *testing.T) {
 	tenantID1 := uint16(1)
 	tenantID2 := uint16(2)
 
-	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
+	require.NoError(t, store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    &tenantID1,
 		LogicalApp:  "orders",
 		ActiveApp:   "orders-v2",
 		Environment: "production",
-	})
+	}))
 
 	store.UpsertRoutingRule(ctx, appversion.RoutingRule{
 		TenantID:    &tenantID2,

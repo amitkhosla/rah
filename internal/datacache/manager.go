@@ -41,8 +41,9 @@ type CollectionMeta struct {
 	QuotaKey       quotaKey
 	TTLSec         int
 	Version        string // opaque schema version; re-create only when changed
-	WindowSize     int    // ring-buffer depth; 0 = disabled
-	ComputedFields []ComputedField // compiled derived-column expressions
+	WindowSize     int               // ring-buffer depth; 0 = disabled
+	ComputedFields []ComputedField   // compiled derived-column expressions
+	ComputedSrc    map[string]string // source expressions; used to detect changes at re-sync
 }
 
 // CreateOpts are passed to Create.
@@ -167,6 +168,7 @@ func (m *DataCacheManager) Create(name string, opts CreateOpts) error {
 		Version:        opts.Version,
 		WindowSize:     opts.WindowSize,
 		ComputedFields: computed,
+		ComputedSrc:    opts.Computed,
 	}
 
 	// Store in named map
@@ -277,12 +279,9 @@ func (m *DataCacheManager) AppendJSONBatch(name string, jsonArray []byte) error 
 				return err
 			}
 			if int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
-				for i := range int(slot.arena.Size.Load()) {
-					if slot.arena.IsLive(i) {
-						slot.arena.Delete(i)
-						break
-					}
-				}
+				evictIdx := int(slot.ringHead.Load()) % meta.WindowSize
+				slot.arena.Delete(evictIdx)
+				slot.ringHead.Add(1)
 			}
 			if appendErr := slot.arena.Append(vals); appendErr != nil {
 				return appendErr
@@ -387,6 +386,7 @@ func (m *DataCacheManager) growCollection(name string, meta *CollectionMeta) err
 		TTLSec:         meta.TTLSec,
 		Version:        meta.Version,
 		ComputedFields: meta.ComputedFields,
+		ComputedSrc:    meta.ComputedSrc,
 	}
 	m.named.Store(name, newMeta)
 	return nil
