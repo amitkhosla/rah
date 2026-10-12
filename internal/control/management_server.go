@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/amitkhosla/rah/internal/appversion"
 	"github.com/amitkhosla/rah/internal/config"
 	"github.com/amitkhosla/rah/internal/connectors/document"
 	"github.com/amitkhosla/rah/internal/datacache"
@@ -144,6 +145,14 @@ type ManagementServer struct {
 	sftpConnStore      *gwConnStore[config.SFTPConnectorConfig]
 	gwStorageStore     *gwConnStore[storage.StorageProviderConfig]
 	sqlDataSourceStore *gwConnStore[datasource.DataSourceConfig]
+
+	// VersionIndex is the management-plane routing cache for tenant→version assignments.
+	// Owned here (not in the execution engine) so the engine stays configuration-driven.
+	VersionIndex *appversion.VersionIndex
+
+	// AppVersionStore persists tenant routing rules across restarts.
+	// Nil = memory-only (rules lost on restart). Set from main.go when Postgres is configured.
+	AppVersionStore appversion.Store
 
 	// SecretsResolver for rebuilding connector managers
 	SecretsResolver secrets.Resolver
@@ -540,6 +549,10 @@ func (s *ManagementServer) applyDraftSync(req UnifiedSyncRequest) error {
 			cleanPath := strings.TrimSuffix(a.Path, "/")
 			def := engine.BakeDefinition(id, cleanPath)
 			def.AppName = a.AppName
+			def.LogicalApp = a.LogicalApp
+			if def.LogicalApp == "" {
+				def.LogicalApp = a.AppName // unversioned apps: logical == physical
+			}
 			if len(a.AliasPaths) > 0 {
 				cleaned := make([]string, 0, len(a.AliasPaths))
 				for _, p := range a.AliasPaths {
@@ -914,10 +927,13 @@ func (s *ManagementServer) ApplyUnifiedSync(req UnifiedSyncRequest) error {
 				Growth:   growth,
 				TTLSec:   def.TTLSec,
 				Version:  def.Version,
+				WindowSize: def.WindowSize,
+				Computed:   def.Computed,
 			}
 			if err := s.Compiler.DataCacheMgr.Create(def.Name, opts); err == datacache.ErrCollectionExists {
 				existing, getErr := s.Compiler.DataCacheMgr.Get(def.Name)
-				versionChanged := getErr != nil || (def.Version != "" && existing.Version != def.Version)
+				schemaChanged := existing.WindowSize != def.WindowSize || len(existing.ComputedFields) != len(def.Computed)
+				versionChanged := getErr != nil || (def.Version != "" && existing.Version != def.Version) || schemaChanged
 				if versionChanged {
 					// Schema version changed: drop and recreate with the new schema.
 					_ = s.Compiler.DataCacheMgr.Drop(def.Name, def.TenantID, def.App)
@@ -1706,6 +1722,82 @@ func instrStepType(name string) string {
 	default:
 		return "system"
 	}
+}
+
+// getVersionIndex returns the management-plane routing index.
+func (s *ManagementServer) getVersionIndex() *appversion.VersionIndex {
+	return s.VersionIndex
+}
+
+// tenantRoutingRequest is the body for PUT /manage/v1/tenant-routing.
+type tenantRoutingRequest struct {
+	Rules []tenantRoutingRule `json:"rules"`
+}
+
+type tenantRoutingRule struct {
+	TenantID    *uint16 `json:"tenant_id,omitempty"`
+	LogicalApp  string  `json:"logical_app"`
+	Environment string  `json:"environment"`
+	ActiveApp   string  `json:"active_app"`
+}
+
+// TenantRoutingHandler handles PUT /manage/v1/tenant-routing.
+// Validates each rule's active_app is a known app in the gateway, then updates VersionIndex.
+func (s *ManagementServer) TenantRoutingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req tenantRoutingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Rules) == 0 {
+		http.Error(w, "rules must not be empty", http.StatusBadRequest)
+		return
+	}
+
+	// Access the VersionIndex — stored in FlowManager
+	vi := s.getVersionIndex()
+	if vi == nil {
+		http.Error(w, "version routing not initialised", http.StatusServiceUnavailable)
+		return
+	}
+
+	for i, rule := range req.Rules {
+		if rule.LogicalApp == "" {
+			http.Error(w, fmt.Sprintf("rule %d: logical_app is required", i), http.StatusBadRequest)
+			return
+		}
+		if rule.Environment == "" {
+			req.Rules[i].Environment = "production"
+		}
+		if rule.ActiveApp == "" {
+			http.Error(w, fmt.Sprintf("rule %d: active_app is required", i), http.StatusBadRequest)
+			return
+		}
+	}
+
+	for _, rule := range req.Rules {
+		vi.Set(rule.TenantID, rule.LogicalApp, rule.Environment, rule.ActiveApp)
+		// Persist to backing store so rules survive restart.
+		if s.AppVersionStore != nil {
+			stored := appversion.RoutingRule{
+				TenantID:    rule.TenantID,
+				LogicalApp:  rule.LogicalApp,
+				Environment: rule.Environment,
+				ActiveApp:   rule.ActiveApp,
+			}
+			if persistErr := s.AppVersionStore.UpsertRoutingRule(r.Context(), stored); persistErr != nil {
+				log.Printf("[tenant-routing] persist rule %s→%s: %v", rule.LogicalApp, rule.ActiveApp, persistErr)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "applied": len(req.Rules)})
 }
 
 // the compiler supports. Studio fetches this at load time to build its palette

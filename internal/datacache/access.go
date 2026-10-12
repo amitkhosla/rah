@@ -42,6 +42,20 @@ func (m *DataCacheManager) AppendJSON(name string, jsonObj []byte) error {
 		}
 		vals[i] = v
 	}
+	// Evaluate computed fields before eviction: if eval fails, no row is lost.
+	if err := evalComputed(meta.ComputedFields, vals); err != nil {
+		return err
+	}
+	// Ring buffer: evict oldest live row when at window capacity.
+	if meta.WindowSize > 0 && int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
+		a := &slot.arena
+		for i := range int(a.Size.Load()) {
+			if a.IsLive(i) {
+				a.Delete(i)
+				break
+			}
+		}
+	}
 	appendErr := slot.arena.Append(vals)
 	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {
 		if growErr := m.growCollection(name, meta); growErr == nil {
@@ -61,6 +75,20 @@ func (m *DataCacheManager) AppendVals(name string, vals []any) error {
 		return ErrReadOnly
 	}
 	slot := &m.pool.slots[meta.PoolIdx]
+	// Evaluate computed fields before eviction: if eval fails, no row is lost.
+	if evalErr := evalComputed(meta.ComputedFields, vals); evalErr != nil {
+		return evalErr
+	}
+	// Ring buffer: evict oldest live row when at window capacity.
+	if meta.WindowSize > 0 && int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
+		a := &slot.arena
+		for i := range int(a.Size.Load()) {
+			if a.IsLive(i) {
+				a.Delete(i)
+				break
+			}
+		}
+	}
 	appendErr := slot.arena.Append(vals)
 	if appendErr == ErrArenaFull && meta.Growth == GrowthAuto {
 		if growErr := m.growCollection(name, meta); growErr == nil {

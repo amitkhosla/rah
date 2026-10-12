@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/appversion"
 	a2apkg "github.com/amitkhosla/rah/internal/a2a"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
@@ -1887,7 +1888,12 @@ func main() {
 		log.Printf("[apikey] warn: restore failed: %v", err)
 	}
 
+	// AppVersionStore persists tenant routing rules; MemoryStore is the default.
+	// Swap in appversion.NewPostgresStore when cfg.AppVersion.StoreKind=="postgres".
+	avStore := appversion.NewMemoryStore()
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
+	ms.VersionIndex = &appversion.VersionIndex{}
+	ms.AppVersionStore = avStore
 	aks.ExtHandler = func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/blueprint") {
 			ms.BlueprintHandler(w, r)
@@ -2090,6 +2096,7 @@ func main() {
 	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersCRUDHandler)
 	mux.HandleFunc("/messaging-publishers/", ms.MessagingPublishersCRUDHandler)
 	mux.HandleFunc("/event-listeners", ms.EventListenersHandler)
+	mux.HandleFunc("/manage/v1/tenant-routing", ms.TenantRoutingHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {

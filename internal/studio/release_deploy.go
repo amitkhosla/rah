@@ -376,15 +376,18 @@ func (s *Server) runTestGates(ctx context.Context, targets []Target, suiteIDs []
 
 // deployToURLs sends the sync payload to each raw gateway URL in sequence.
 func (s *Server) deployToURLs(ctx context.Context, payload []byte, rawURLs []string) []ReleaseDeployResult {
+	// Enrich payload: set LogicalApp on each API if not already set.
+	enrichedPayload := enrichPayloadWithLogicalApp(payload)
+
 	results := make([]ReleaseDeployResult, 0, len(rawURLs))
 	for _, raw := range rawURLs {
-		s.preSyncDeploy(ctx, raw, payload)
+		s.preSyncDeploy(ctx, raw, enrichedPayload)
 		targetURL, err := buildTargetURL(raw, "/sync", "")
 		if err != nil {
 			results = append(results, ReleaseDeployResult{Target: raw, Success: false, Message: err.Error()})
 			continue
 		}
-		hReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
+		hReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(enrichedPayload))
 		if err != nil {
 			results = append(results, ReleaseDeployResult{Target: raw, Success: false, Message: err.Error()})
 			continue
@@ -482,4 +485,107 @@ func (s *Server) resolveTargetURLs(env string) ([]string, error) {
 		urls = append(urls, t.URLs...)
 	}
 	return urls, nil
+}
+
+// CloneAppVersion creates a new app draft by copying all flows and APIs from sourceApp,
+// rewriting internal references from sourceApp to targetApp.
+// sourceApp example: "orders-v1", targetApp: "orders-v2"
+func (s *Server) CloneAppVersion(ctx context.Context, sourceApp, targetApp string) error {
+	// Load source draft
+	draft, exists, err := s.draftStore.GetDraft(ctx, sourceApp)
+	if err != nil {
+		return fmt.Errorf("clone: get source draft: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("clone: source app %q not found", sourceApp)
+	}
+
+	// Deep-copy via JSON round-trip
+	data, err := json.Marshal(draft)
+	if err != nil {
+		return fmt.Errorf("clone: marshal: %w", err)
+	}
+	var cloned AppDraft
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return fmt.Errorf("clone: unmarshal: %w", err)
+	}
+
+	// Update the app name in the cloned draft
+	cloned.AppName = targetApp
+	cloned.UpdatedAt = time.Now()
+
+	// Rewrite app name references in the cloned draft
+	rewriteDraftAppName(&cloned, sourceApp, targetApp)
+
+	// Save as new draft
+	return s.draftStore.PutDraft(ctx, cloned)
+}
+
+// rewriteDraftAppName replaces all occurrences of oldApp with newApp in the draft payload.
+// This covers flow names, API app_name fields, and any string fields referencing the app.
+func rewriteDraftAppName(draft *AppDraft, oldApp, newApp string) {
+	// Re-marshal to string, replace, re-unmarshal — simple and safe for all nested fields
+	data, err := json.Marshal(draft)
+	if err != nil {
+		return
+	}
+	replaced := strings.ReplaceAll(string(data), `"`+oldApp+`"`, `"`+newApp+`"`)
+	_ = json.Unmarshal([]byte(replaced), draft)
+}
+
+// enrichPayloadWithLogicalApp sets LogicalApp on each API in the payload if not already set.
+// LogicalApp is derived from the AppName by stripping trailing -v{N} or -v{N}-{tenant} suffix.
+func enrichPayloadWithLogicalApp(payload []byte) []byte {
+	var bundle map[string]interface{}
+	if err := json.Unmarshal(payload, &bundle); err != nil {
+		return payload // if unparseable, return unchanged
+	}
+
+	// Process APIs
+	if apisRaw, ok := bundle["apis"]; ok {
+		if apis, ok := apisRaw.([]interface{}); ok {
+			for _, apiRaw := range apis {
+				if api, ok := apiRaw.(map[string]interface{}); ok {
+					// Only set LogicalApp if it's empty and AppName is present
+					if logicalApp, hasLogicalApp := api["logical_app"]; !hasLogicalApp || logicalApp == "" {
+						if appName, hasAppName := api["app_name"]; hasAppName {
+							if appNameStr, ok := appName.(string); ok && appNameStr != "" {
+								api["logical_app"] = extractLogicalApp(appNameStr)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Re-marshal and return
+	out, err := json.Marshal(bundle)
+	if err != nil {
+		return payload // if re-marshal fails, return original
+	}
+	return out
+}
+
+// extractLogicalApp derives the logical app family name from a versioned physical app name.
+// "orders-v2" → "orders", "orders-v2-acme" → "orders", "orders" → "orders"
+func extractLogicalApp(appName string) string {
+	// Strip trailing -v{N} or -v{N}-{tenant} suffix
+	parts := strings.Split(appName, "-")
+	for i, p := range parts {
+		if len(p) >= 2 && p[0] == 'v' {
+			allDigits := true
+			for _, c := range p[1:] {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits && i > 0 {
+				// Only consider it a version suffix if there's at least one part before it
+				return strings.Join(parts[:i], "-")
+			}
+		}
+	}
+	return appName // no version suffix found — logical == physical
 }
