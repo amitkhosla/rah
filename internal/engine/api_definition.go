@@ -63,6 +63,7 @@ type ApiDefinition struct {
 	VersionID   uint32
 	BaseRawPath string
 	AppName     string   // logical app this API belongs to; resolved at log time, never carried on request context
+	LogicalApp  string   // tenant→version routing target; unset = same as AppName
 	AliasPaths  []string // additional basepaths that also route to this API
 
 	MethodRoots [5]uint32

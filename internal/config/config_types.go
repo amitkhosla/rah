@@ -539,6 +539,12 @@ type RegistryConfig struct {
 	Audit RegistryAuditConfig `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
+// AppVersionConfig controls how app version routing rules are stored and propagated.
+type AppVersionConfig struct {
+	StoreKind  string `json:"store_kind,omitempty"`  // "memory" (default) | "postgres"
+	ConnString string `json:"conn_string,omitempty"` // postgres DSN; used when StoreKind="postgres"
+}
+
 // WSGatewayConfig controls the WebSocket gateway subsystem.
 type WSGatewayConfig struct {
 	Enabled         bool `json:"enabled,omitempty"           yaml:"enabled,omitempty"`
@@ -694,6 +700,7 @@ type GatewayConfig struct {
 	WebSocket        WSGatewayConfig                     `json:"websocket,omitempty"        yaml:"websocket,omitempty"`
 	WSUpstreams      []WSUpstreamConfig                  `json:"ws_upstreams,omitempty"     yaml:"ws_upstreams,omitempty"`
 	Scheduler        SchedulerConfig                     `json:"scheduler,omitempty"        yaml:"scheduler,omitempty"`
+	AppVersion       AppVersionConfig                    `json:"app_version,omitempty"      yaml:"app_version,omitempty"`
 	DataSources         []datasource.DataSourceConfig       `json:"data_sources,omitempty"           yaml:"data_sources,omitempty"`
 	RedisSources        []redissource.RedisSourceConfig     `json:"redis_sources,omitempty"         yaml:"redis_sources,omitempty"`
 	EmailProviders      []emailprovider.EmailProviderConfig `json:"email_providers,omitempty"       yaml:"email_providers,omitempty"`

@@ -848,3 +848,30 @@ export interface ConcurrencyPatch {
   add_step?: number
   cut_factor?: number
 }
+
+// ── App Versioning & Routing ─────────────────────────────────────────────────
+
+export interface AppVersion {
+  app_name: string;        // "orders-v2"
+  logical_app: string;     // "orders"
+  version: string;         // "v2"
+  status: 'draft' | 'active' | 'retired';
+  bundle_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoutingRule {
+  tenant_id: number | null;  // null = default for all tenants
+  logical_app: string;
+  active_app: string;
+  environment: string;
+  updated_at: string;
+  updated_by?: string;
+}
+
+export interface CreateVersionRequest {
+  source_version: string;
+  target_version: string;
+  changelog: string;
+}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/amitkhosla/rah/internal/apikey"
+	"github.com/amitkhosla/rah/internal/appversion"
 	a2apkg "github.com/amitkhosla/rah/internal/a2a"
 	"github.com/amitkhosla/rah/internal/avro"
 	"github.com/amitkhosla/rah/internal/cache"
@@ -1887,7 +1888,28 @@ func main() {
 		log.Printf("[apikey] warn: restore failed: %v", err)
 	}
 
+	// AppVersionStore persists tenant routing rules.
+	// When cfg.AppVersion.StoreKind=="postgres" and a ConnString is provided, use
+	// PostgresStore; otherwise fall back to the in-process MemoryStore.
+	var avStore appversion.Store
+	if cfgMgr.Gateway().AppVersion.StoreKind == "postgres" && cfgMgr.Gateway().AppVersion.ConnString != "" {
+		pgPool, pgErr := pgxpool.New(gatewayCtx, cfgMgr.Gateway().AppVersion.ConnString)
+		if pgErr != nil {
+			log.Fatalf("[appversion] postgres pool: %v", pgErr)
+		}
+		pgStore, pgErr := appversion.NewPostgresStore(gatewayCtx, pgPool)
+		if pgErr != nil {
+			log.Fatalf("[appversion] postgres store: %v", pgErr)
+		}
+		avStore = pgStore
+	} else {
+		avStore = appversion.NewMemoryStore()
+	}
 	ms := control.NewManagementServer(fm, compiler, registry, regMgr)
+	ms.VersionIndex = &appversion.VersionIndex{}
+	ms.AppVersionStore = avStore
+	// TODO: restore routing rules from store at startup (ListRoutingRules requires a
+	// specific logicalApp; there is no "list all" method on the Store interface yet).
 	aks.ExtHandler = func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/blueprint") {
 			ms.BlueprintHandler(w, r)
@@ -2090,6 +2112,7 @@ func main() {
 	mux.HandleFunc("/messaging-publishers", ms.MessagingPublishersCRUDHandler)
 	mux.HandleFunc("/messaging-publishers/", ms.MessagingPublishersCRUDHandler)
 	mux.HandleFunc("/event-listeners", ms.EventListenersHandler)
+	mux.HandleFunc("/manage/v1/tenant-routing", ms.TenantRoutingHandler)
 	ts.RegisterHandlers(mux)
 	aks.RegisterHandlers(mux)
 	if cacheMgr != nil {

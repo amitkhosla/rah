@@ -13,6 +13,7 @@ import {
 } from '../api'
 import type { App, APIKeyView, APIKeyCreateResponse, PaletteBlock, SavedFlow, FlowStep, GatewayApi } from '../types'
 import FlowDesigner from './FlowDesigner'
+import { VersionSection } from './VersionSection'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -2254,6 +2255,10 @@ function AppPanel({ app, onDeleted, flowNames = [], savedFlows = [], blocks = []
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>
         <ReleasesSection appName={app.name} />
+      </div>
+
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>
+        <VersionSection logicalApp={app.name} />
       </div>
 
       <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginBottom: 16 }}>

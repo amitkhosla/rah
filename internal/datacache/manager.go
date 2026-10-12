@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrCollectionNotFound = errors.New("datacache: collection not found")
-	ErrCollectionExists   = errors.New("datacache: collection already exists")
-	ErrReadOnly           = errors.New("datacache: collection is read-only")
+	ErrCollectionNotFound      = errors.New("datacache: collection not found")
+	ErrCollectionExists        = errors.New("datacache: collection already exists")
+	ErrReadOnly                = errors.New("datacache: collection is read-only")
+	ErrWindowSizeExceedsCapacity = errors.New("datacache: window_size must not exceed capacity")
 )
 
 // AccessMode controls how a collection can be accessed.
@@ -32,14 +33,17 @@ const (
 
 // CollectionMeta holds the metadata for a named collection.
 type CollectionMeta struct {
-	PoolIdx  uint8
-	Schema   Schema
-	Access   AccessMode
-	Growth   GrowthMode
-	MaxCap   int
-	QuotaKey quotaKey
-	TTLSec   int
-	Version  string // opaque schema version; re-create only when changed
+	PoolIdx        uint8
+	Schema         Schema
+	Access         AccessMode
+	Growth         GrowthMode
+	MaxCap         int
+	QuotaKey       quotaKey
+	TTLSec         int
+	Version        string // opaque schema version; re-create only when changed
+	WindowSize     int               // ring-buffer depth; 0 = disabled
+	ComputedFields []ComputedField   // compiled derived-column expressions
+	ComputedSrc    map[string]string // source expressions; used to detect changes at re-sync
 }
 
 // CreateOpts are passed to Create.
@@ -53,6 +57,8 @@ type CreateOpts struct {
 	Growth   GrowthMode
 	TTLSec   int    // 0 = no expiry
 	Version  string // opaque schema version tag
+	WindowSize int               // ring-buffer depth; 0 = disabled
+	Computed   map[string]string // field name → expression (compiled at Create time)
 }
 
 // DataCacheManager manages the lifecycle of named arena collections.
@@ -96,6 +102,14 @@ func (m *DataCacheManager) Create(name string, opts CreateOpts) error {
 		opts.Capacity = 1024
 	}
 
+	// Validate and normalise window_size.
+	if opts.WindowSize > 0 {
+		if opts.WindowSize > opts.Capacity {
+			return ErrWindowSizeExceedsCapacity
+		}
+		opts.Growth = GrowthFixed // windows are always fixed-size
+	}
+
 	// Build schema from caller-provided fields
 	schema := BakeSchema(opts.Fields, opts.Capacity)
 
@@ -106,8 +120,14 @@ func (m *DataCacheManager) Create(name string, opts CreateOpts) error {
 	// Build quota key
 	qk := makeQuotaKey(opts.TenantID, opts.App)
 
+	// Compile computed fields
+	computed, err := compileComputedFields(opts.Fields, opts.Computed)
+	if err != nil {
+		return err
+	}
+
 	// Reserve quota
-	err := m.quotas.Reserve(opts.TenantID, opts.App, int64(schema.BufSize), 1)
+	err = m.quotas.Reserve(opts.TenantID, opts.App, int64(schema.BufSize), 1)
 	if err != nil {
 		return err
 	}
@@ -138,14 +158,17 @@ func (m *DataCacheManager) Create(name string, opts CreateOpts) error {
 
 	// Create metadata
 	meta := &CollectionMeta{
-		PoolIdx:  poolIdx,
-		Schema:   schema,
-		Access:   opts.Access,
-		Growth:   opts.Growth,
-		MaxCap:   opts.MaxCap,
-		QuotaKey: qk,
-		TTLSec:   opts.TTLSec,
-		Version:  opts.Version,
+		PoolIdx:        poolIdx,
+		Schema:         schema,
+		Access:         opts.Access,
+		Growth:         opts.Growth,
+		MaxCap:         opts.MaxCap,
+		QuotaKey:       qk,
+		TTLSec:         opts.TTLSec,
+		Version:        opts.Version,
+		WindowSize:     opts.WindowSize,
+		ComputedFields: computed,
+		ComputedSrc:    opts.Computed,
 	}
 
 	// Store in named map
@@ -249,6 +272,30 @@ func (m *DataCacheManager) AppendJSONBatch(name string, jsonArray []byte) error 
 		allVals[i] = vals
 	}
 
+	// Windowed collections need per-row eviction; can't use batch.
+	if meta.WindowSize > 0 {
+		for _, vals := range allVals {
+			if err := evalComputed(meta.ComputedFields, vals); err != nil {
+				return err
+			}
+			if int(slot.arena.LiveCount.Load()) >= meta.WindowSize {
+				evictIdx := int(slot.ringHead.Load()) % meta.WindowSize
+				slot.arena.Delete(evictIdx)
+				slot.ringHead.Add(1)
+			}
+			if appendErr := slot.arena.Append(vals); appendErr != nil {
+				return appendErr
+			}
+		}
+		return nil
+	}
+
+	// Non-windowed: evaluate computed fields then atomic batch append.
+	for _, vals := range allVals {
+		if err := evalComputed(meta.ComputedFields, vals); err != nil {
+			return err
+		}
+	}
 	err = slot.arena.AppendBatch(allVals)
 	if err == ErrArenaFull && meta.Growth == GrowthAuto {
 		if growErr := m.growCollection(name, meta); growErr == nil {
@@ -266,6 +313,9 @@ func (m *DataCacheManager) growCollection(name string, meta *CollectionMeta) err
 	arena := &slot.arena
 
 	oldCap := arena.Cap
+	if meta.WindowSize > 0 {
+		return ErrArenaFull // windowed collections never grow
+	}
 	newCap := oldCap * 2
 	if meta.MaxCap > 0 && newCap > meta.MaxCap {
 		newCap = meta.MaxCap
@@ -327,14 +377,16 @@ func (m *DataCacheManager) growCollection(name string, meta *CollectionMeta) err
 
 	// Publish updated metadata so future Get calls see the new schema/cap.
 	newMeta := &CollectionMeta{
-		PoolIdx:  meta.PoolIdx,
-		Schema:   newSchema,
-		Access:   meta.Access,
-		Growth:   meta.Growth,
-		MaxCap:   meta.MaxCap,
-		QuotaKey: meta.QuotaKey,
-		TTLSec:   meta.TTLSec,
-		Version:  meta.Version,
+		PoolIdx:        meta.PoolIdx,
+		Schema:         newSchema,
+		Access:         meta.Access,
+		Growth:         meta.Growth,
+		MaxCap:         meta.MaxCap,
+		QuotaKey:       meta.QuotaKey,
+		TTLSec:         meta.TTLSec,
+		Version:        meta.Version,
+		ComputedFields: meta.ComputedFields,
+		ComputedSrc:    meta.ComputedSrc,
 	}
 	m.named.Store(name, newMeta)
 	return nil

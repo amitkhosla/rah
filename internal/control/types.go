@@ -349,6 +349,7 @@ type ApiUpdate struct {
 	Description     string             `json:"description,omitempty" yaml:"description,omitempty"`
 	FlowName        string             `json:"flow_name"`                 // Reference to a Flow name
 	AppName         string             `json:"app_name,omitempty"`        // App this API belongs to
+	LogicalApp      string             `json:"logical_app,omitempty"`
 	Source          string             `json:"source,omitempty"`          // "app" if created from an app in studio; "" if linked externally
 	RateLimitName   string             `json:"rate_limit,omitempty"`      // API-level rate limit config name
 	RateLimitMode   string             `json:"rate_limit_mode,omitempty"` // "global" | "tenant" | "ip" | "slot" | "" (inherit/default)
@@ -477,6 +478,8 @@ type ArenaSyncDef struct {
 	App        string            `json:"app,omitempty"`        // app name for quota tracking
 	Action     string            `json:"action,omitempty"`     // "create" (default) or "drop"
 	Version    string            `json:"version,omitempty"`    // opaque schema version; re-create only when changed
+	WindowSize int               `json:"window_size,omitempty"`    // ring-buffer depth; auto-evicts oldest row when full
+	Computed   map[string]string `json:"computed,omitempty"`       // field name → expression (e.g. "typical_price": "(high+low+close)/3")
 }
 
 // AppProtocolUpdate declares MCP and/or A2A protocol publishing for an app.

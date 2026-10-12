@@ -360,6 +360,7 @@ type Server struct {
 	appAssetCfgsMu sync.RWMutex
 	appAssetCfgs   map[string]appAssetCfg // appName → per-app connector selection
 	draftStore    DraftStore
+	AppVersions   AppVersionStore // manages app versions and tenant routing rules
 }
 
 func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
@@ -404,6 +405,13 @@ func NewServer(managementBaseURL string, cfg ServerConfig) (*Server, error) {
 		versionStore:      newMemVersionHistoryStore(),
 		draftStore:        NewDraftStore(cfg.StoreKind, cfg.StorePath),
 	}
+
+	// App version store — manages app versions and tenant routing rules
+	appVersionStore, err := newAppVersionStore(cfg.StoreKind, cfg.StorePath)
+	if err != nil {
+		return nil, fmt.Errorf("app version store: %w", err)
+	}
+	srv.AppVersions = appVersionStore
 
 	// Token store is always initialised so machine tokens work even without login auth.
 	tokenStorePath := cfg.TokenStorePath
@@ -2252,10 +2260,55 @@ func (s *Server) appsMgmtProxy(w http.ResponseWriter, r *http.Request) {
 	s.proxyPassThrough(w, r, strings.TrimPrefix(r.URL.Path, "/api"))
 }
 
-// appsHandler dispatches /api/apps and /api/apps/ requests. Draft sub-paths are
-// handled locally; everything else is forwarded to the gateway management API.
+// appsHandler dispatches /api/apps and /api/apps/ requests. Draft sub-paths,
+// version management, and routing are handled locally; everything else is
+// forwarded to the gateway management API.
 func (s *Server) appsHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	// Match /api/apps/{name}/versions  (GET or POST) — exact match only (len==1 means no trailing sub-path).
+	if parts := matchPath(path, "/api/apps/", "/versions"); len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleListVersions(w, r)
+		case http.MethodPost:
+			s.handleCreateVersion(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	// Match /api/apps/{name}/versions/{ver}/status  (PUT)
+	if parts := matchPath(path, "/api/apps/", "/status"); parts != nil && strings.Contains(path, "/versions/") {
+		if r.Method == http.MethodPut {
+			s.handleUpdateVersionStatus(w, r)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Match /api/apps/{name}/versions/{ver}/promote  (POST)
+	if parts := matchPath(path, "/api/apps/", "/promote"); parts != nil && strings.Contains(path, "/versions/") {
+		if r.Method == http.MethodPost {
+			s.handlePromoteVersion(w, r)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Match /api/apps/{name}/routing  (GET, PUT, or DELETE)
+	if parts := matchPath(path, "/api/apps/", "/routing"); parts != nil && len(parts[0]) > 0 {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleListRouting(w, r)
+		case http.MethodPut:
+			s.handleUpsertRouting(w, r)
+		case http.MethodDelete:
+			s.handleDeleteRouting(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
 	// Match /api/apps/{name}/asset-store-config  (GET or PUT)
 	if parts := matchPath(path, "/api/apps/", "/asset-store-config"); parts != nil {
 		s.appAssetStoreConfigHandler(w, r)
