@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 // pool_bench_test.go — compares three pool strategies for rctx.Context (~10.6 KB):
 //
@@ -38,7 +38,7 @@ import (
 // two heap slices + inline slot init. The struct itself (~10.6 KB) escapes to heap.
 func newBenchContext() *rctx.Context {
 	ctx := &rctx.Context{
-		MutationLog:     make([]rctx.HeaderMutation, 0, 16),
+		MutationLog:     make([]rctx.HeaderMutation, 16),
 		ResponseHeaders: make([]rctx.HeaderMutation, 32),
 	}
 	ctx.InitSlots()

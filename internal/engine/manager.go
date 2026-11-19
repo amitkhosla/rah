@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"bytes"
@@ -206,7 +206,9 @@ func NewFlowManager(maxAPIs int, cfg config.GlobalLayout) *FlowManager {
 		ctx := &rctx.Context{
 			// MutationLog and ResponseHeaders are one-time pool allocations
 			// (not per-request) — acceptable make() here.
-			MutationLog:     make([]rctx.HeaderMutation, 0, 16),
+			// len must be 16 (not 0): SetRequestHeader/CopyHeader/RemoveRequestHeader
+			// write by index at MutationCount and guard on len(MutationLog).
+			MutationLog:     make([]rctx.HeaderMutation, 16),
 			ResponseHeaders: make([]rctx.HeaderMutation, 32),
 		}
 		// Wire ByteSlots/IntSlots/BoolSlots to inline base arrays.

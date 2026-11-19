@@ -1,8 +1,9 @@
-﻿package steps
+package steps
 
 import (
 	"bytes"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -199,12 +200,27 @@ func BindBody(jsonPath string, slot int) engine.Instruction {
 				return state.PC + 1
 			}
 			for _, p := range paths {
-				res := gjson.GetBytes(body, strings.TrimSpace(p))
+				trimmed := strings.TrimSpace(p)
+				res := gjson.GetBytes(body, trimmed)
 				if res.Exists() && res.String() != "" {
 					str := res.String()
 					s := ctx.Alloc(len(str))
 					copy(s, str)
 					ctx.ByteSlots[slot] = s
+					return state.PC + 1
+				}
+				// Fallback: check x-www-form-urlencoded body (e.g. ICICI Breeze login callback)
+				if formVal := scanQuery(body, []byte(trimmed)); len(formVal) > 0 {
+					valStr := string(formVal)
+					if unescaped, err := url.QueryUnescape(valStr); err == nil {
+						s := ctx.Alloc(len(unescaped))
+						copy(s, unescaped)
+						ctx.ByteSlots[slot] = s
+					} else {
+						s := ctx.Alloc(len(formVal))
+						copy(s, formVal)
+						ctx.ByteSlots[slot] = s
+					}
 					return state.PC + 1
 				}
 			}

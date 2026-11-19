@@ -168,7 +168,6 @@ func LoopGate(source string, valueSlot int, iterSlot int, bodyStart int16, exitI
 		}
 
 		ctx.SetSlot(valueSlot, items[idx])
-		ctx.SetInt(iterSlot, idx+1)
 		return bodyStart // JUMP INTO BODY
 	}
 }
@@ -204,7 +203,7 @@ func LoopGateSlot(sourceSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exi
 				return exitID
 			}
 			// Pack (uint32 start, uint32 end) per element — 8 bytes each.
-			buf := ctx.Alloc(count * 8)
+			buf := make([]byte, count*8)
 			i := 0
 			arr.ForEach(func(_, v gjson.Result) bool {
 				start := uint32(v.Index)
@@ -228,7 +227,6 @@ func LoopGateSlot(sourceSlot, valueSlot, indexSlot, iterSlot int, bodyStart, exi
 		start := binary.LittleEndian.Uint32(index[idx*8:])
 		end := binary.LittleEndian.Uint32(index[idx*8+4:])
 		ctx.ByteSlots[valueSlot] = raw[start:end] // zero-copy slice
-		ctx.SetInt(iterSlot, idx+1)
 		return bodyStart
 	}
 }

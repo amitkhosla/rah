@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -169,11 +170,26 @@ func (a *Arena) writeRow(r int, vals []any) error {
 	for i, v := range vals {
 		switch a.Schema.Fields[i].Kind {
 		case FieldFloat64:
-			fv, ok := v.(float64)
-			if !ok {
+			switch vt := v.(type) {
+			case float64:
+				a.SetFloat64(i, r, vt)
+			case int64:
+				a.SetFloat64(i, r, float64(vt))
+			case []byte:
+				fv, err := strconv.ParseFloat(string(vt), 64)
+				if err != nil {
+					return ErrBadType
+				}
+				a.SetFloat64(i, r, fv)
+			case string:
+				fv, err := strconv.ParseFloat(vt, 64)
+				if err != nil {
+					return ErrBadType
+				}
+				a.SetFloat64(i, r, fv)
+			default:
 				return ErrBadType
 			}
-			a.SetFloat64(i, r, fv)
 
 		case FieldInt64:
 			switch vt := v.(type) {
@@ -181,6 +197,26 @@ func (a *Arena) writeRow(r int, vals []any) error {
 				a.SetInt64(i, r, vt)
 			case float64:
 				a.SetInt64(i, r, int64(vt))
+			case []byte:
+				iv, err := strconv.ParseInt(string(vt), 10, 64)
+				if err != nil {
+					fv, ferr := strconv.ParseFloat(string(vt), 64)
+					if ferr != nil {
+						return ErrBadType
+					}
+					iv = int64(fv)
+				}
+				a.SetInt64(i, r, iv)
+			case string:
+				iv, err := strconv.ParseInt(vt, 10, 64)
+				if err != nil {
+					fv, ferr := strconv.ParseFloat(vt, 64)
+					if ferr != nil {
+						return ErrBadType
+					}
+					iv = int64(fv)
+				}
+				a.SetInt64(i, r, iv)
 			default:
 				return ErrBadType
 			}
@@ -193,6 +229,18 @@ func (a *Arena) writeRow(r int, vals []any) error {
 				a.SetEnum(i, r, uint8(vt))
 			case int64:
 				a.SetEnum(i, r, uint8(vt))
+			case []byte:
+				iv, err := strconv.ParseInt(string(vt), 10, 64)
+				if err != nil {
+					return ErrBadType
+				}
+				a.SetEnum(i, r, uint8(iv))
+			case string:
+				iv, err := strconv.ParseInt(vt, 10, 64)
+				if err != nil {
+					return ErrBadType
+				}
+				a.SetEnum(i, r, uint8(iv))
 			default:
 				return ErrBadType
 			}

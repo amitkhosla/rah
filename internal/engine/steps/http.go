@@ -1395,10 +1395,13 @@ func HttpActionFromConfig(cfg HttpActionConfig) engine.Instruction {
 				// â"€â"€ Apply MutationLog (BUG FIX: was never applied to http_call) â"€â"€
 				for i := 0; i < ctx.MutationCount; i++ {
 					m := ctx.MutationLog[i]
+					k := string(m.Key)
 					if m.Op == 1 {
-						req.Header.Del(string(m.Key))
+						delete(req.Header, k)
+						req.Header.Del(k)
 					} else {
-						req.Header.Set(string(m.Key), string(m.Value))
+						delete(req.Header, http.CanonicalHeaderKey(k))
+						req.Header[k] = []string{string(m.Value)}
 					}
 				}
 
